@@ -1,5 +1,9 @@
 0.10.2 dev
 ------------------------
+Fixed 180 degree rotation not occurring in some situations.
+Fixed activation of DVD-Video menu buttons for PAL 16:9 format.
+Support for the deprecated IID_MediaSideDataDOVIMetadata has been removed. Only IID_MediaSideDataDOVIMetadataV2 will be used.
+Recommended MPC-BE 1.8.9.106 or newer.
 
 0.10.1.2531 - 2026-04-01
 ------------------------

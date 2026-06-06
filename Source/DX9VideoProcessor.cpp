@@ -1369,12 +1369,8 @@ HRESULT CDX9VideoProcessor::CopySample(IMediaSample* pSample)
 				if (size != sizeof(MediaSideDataDOVIMetadata)) {
 					hr = E_FAIL;
 				}
-			} else {
-				hr = pMediaSideData->GetSideData(IID_MediaSideDataDOVIMetadata, (const BYTE**)&pDOVIMetadata, &size);
-				if (size != offsetof(MediaSideDataDOVIMetadata, Extensions)) {
-					hr = E_FAIL;
-				}
 			}
+
 			if (SUCCEEDED(hr) && CheckDoviMetadata(pDOVIMetadata, 0)) {
 				const bool bYCCtoRGBChanged = !m_PSConvColorData.bEnable ||
 					(memcmp(
