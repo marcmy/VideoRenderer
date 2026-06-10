@@ -1,3 +1,6 @@
+0.10.4 dev
+------------------------
+
 0.10.3.2545 - 2026-06-07
 ------------------------
 Fixed 180 degree rotation not occurring in some situations.
