@@ -278,6 +278,10 @@ bool CVideoProcessor::CheckDoviMetadata(const MediaSideDataDOVIMetadata* pDOVIMe
 		return false;
 	}
 
+	// Ignore Profile 7 Full Enhancement Layer as its currently not supported
+	if (SourceIsDoviFel(pDOVIMetadata))
+		return false;
+
 	for (const auto& curve : pDOVIMetadata->Mapping.curves) {
 		if (curve.num_pivots < 2 || curve.num_pivots > 9) {
 			return false;

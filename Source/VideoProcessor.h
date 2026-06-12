@@ -244,6 +244,24 @@ protected:
 		return SourceIsPQorHLG() || m_Dovi.bValid;
 	}
 
+	// Check if source is Dolby Vision Full Enhancement Layer
+	inline bool SourceIsDoviFel(const MediaSideDataDOVIMetadata* pDOVIMetadata) {
+		if (pDOVIMetadata->Header.disable_residual_flag)
+			return false;
+
+		if (pDOVIMetadata->Mapping.nlq_method_idc == 0) {
+			for (uint8_t i = 0; i < 3; i++) {
+				if (pDOVIMetadata->Mapping.nlq[i].nlq_offset != 0 ||
+					pDOVIMetadata->Mapping.nlq[i].vdr_in_max != (1ULL << pDOVIMetadata->Header.coef_log2_denom) ||
+					pDOVIMetadata->Mapping.nlq[i].linear_deadzone_slope != 0 ||
+					pDOVIMetadata->Mapping.nlq[i].linear_deadzone_threshold != 0)
+					return true;
+			}
+		}
+
+		return false;
+	}
+
 	void UpdateStatsInputFmt();
 
 	CRefTime m_streamTime;
