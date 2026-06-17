@@ -1,5 +1,8 @@
 0.10.4 dev
 ------------------------
+Fixed a potential crash when using DXVA2 Video Processor.
+Fixed tone mapping when using 16-bit float textures.
+Dolby Vision Profile 7 Full Enhancement Layer is not processed because it is not supported.
 
 0.10.3.2545 - 2026-06-07
 ------------------------
