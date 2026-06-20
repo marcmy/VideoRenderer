@@ -1,4 +1,4 @@
-0.10.4 dev
+0.10.5.2552 - 2026-06-20
 ------------------------
 Fixed a potential crash when using DXVA2 Video Processor.
 Fixed tone mapping when using 16-bit float textures.
