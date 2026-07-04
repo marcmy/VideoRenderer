@@ -1,0 +1,67 @@
+name: Apply broader Maxine VSR support
+
+on:
+  push:
+    branches:
+      - feature/nvidia-maxine-vsr
+    paths:
+      - .github/workflows/apply-maxine-compat.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-build-commit:
+    runs-on: windows-2022
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: feature/nvidia-maxine-vsr
+          submodules: recursive
+
+      - name: Apply compatibility patch
+        shell: pwsh
+        env:
+          PATCH_GZIP_BASE64: "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"
+        run: |
+          $bytes = [Convert]::FromBase64String($env:PATCH_GZIP_BASE64)
+          $input = [IO.MemoryStream]::new($bytes)
+          $gzip = [IO.Compression.GzipStream]::new($input, [IO.Compression.CompressionMode]::Decompress)
+          $output = [IO.File]::Create('maxine-compat.patch')
+          try { $gzip.CopyTo($output) } finally { $output.Dispose(); $gzip.Dispose(); $input.Dispose() }
+          git apply --whitespace=nowarn maxine-compat.patch
+          Remove-Item maxine-compat.patch
+          Remove-Item .github/workflows/apply-maxine-compat.yml
+          git diff --check
+
+      - name: Build VideoRenderer
+        shell: pwsh
+        run: |
+          .\build_mpcvr.cmd NoWait *>&1 | Tee-Object build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Maxine-compat-build-log
+          path: build.log
+
+      - name: Commit compatibility update
+        shell: pwsh
+        run: |
+          Remove-Item build.log -ErrorAction SilentlyContinue
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: broaden Maxine VSR input and scaling support"
+          git push origin HEAD:feature/nvidia-maxine-vsr
+
+      - name: Upload test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: MPC-Video-Renderer-Maxine-VSR-compat
+          path: _bin/MpcVideoRenderer*.zip
+          compression-level: 0
