@@ -1,0 +1,130 @@
+name: Fix Maxine rotation and portrait display support
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - .github/workflows/fix-maxine-rotation.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build-commit:
+    runs-on: windows-2022
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: feature/nvidia-maxine-vsr
+          submodules: recursive
+
+      - name: Apply rotation fix
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+
+          path = Path("Source/DX11VideoProcessor.cpp")
+          text = path.read_text(encoding="utf-8")
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"Expected one match, found {count}: {old[:80]!r}")
+              text = text.replace(old, new, 1)
+
+          replace_once(
+          '''\tif (m_iRotation != 0 || m_bFlip) {
+          \t\tm_strMaxineVSRStatus = L"Rotation and flip are not supported yet";
+          \t\treturn false;
+          \t}
+
+          ''',
+          '''\t// Maxine processes the frame in its native orientation. Rotation and
+          \t// horizontal flipping are applied by MPCVR after the Maxine pass.
+
+          ''')
+
+          replace_once(
+          '''\tconst double scaleX = static_cast<double>(dstWidth) / m_srcRectWidth;
+          \tconst double scaleY = static_cast<double>(dstHeight) / m_srcRectHeight;
+          \tconst double requestedScale = std::max(scaleX, scaleY);
+          ''',
+          '''\tconst bool rotatedQuarterTurn = m_iRotation == 90 || m_iRotation == 270;
+          \tconst UINT presentationSourceWidth = rotatedQuarterTurn ? m_srcRectHeight : m_srcRectWidth;
+          \tconst UINT presentationSourceHeight = rotatedQuarterTurn ? m_srcRectWidth : m_srcRectHeight;
+          \tconst double scaleX = static_cast<double>(dstWidth) / presentationSourceWidth;
+          \tconst double scaleY = static_cast<double>(dstHeight) / presentationSourceHeight;
+          \tconst double requestedScale = std::max(scaleX, scaleY);
+          ''')
+
+          replace_once(
+          '''\t\tCRect rect(0, 0, m_TexConvertOutput.desc.Width, m_TexConvertOutput.desc.Height);
+          \t\thr = D3D11VPPass(m_TexConvertOutput.pTexture, rSrc, rect, second);
+          \t\tpInputTexture = &m_TexConvertOutput;
+          \t\trSrc = rect;
+          \t\trotation = 0;
+          ''',
+          '''\t\tCRect rect(0, 0, m_TexConvertOutput.desc.Width, m_TexConvertOutput.desc.Height);
+          \t\tconst bool deferRotationForMaxine = canUseMaxineVSR && m_iRotation != 0;
+          \t\tif (deferRotationForMaxine) {
+          \t\t\tm_D3D11VP.SetRotation(D3D11_VIDEO_PROCESSOR_ROTATION_IDENTITY);
+          \t\t}
+          \t\thr = D3D11VPPass(m_TexConvertOutput.pTexture, rSrc, rect, second);
+          \t\tif (deferRotationForMaxine) {
+          \t\t\tm_D3D11VP.SetRotation(static_cast<D3D11_VIDEO_PROCESSOR_ROTATION>(m_iRotation / 90));
+          \t\t}
+          \t\tpInputTexture = &m_TexConvertOutput;
+          \t\trSrc = rect;
+          \t\trotation = deferRotationForMaxine ? m_iRotation : 0;
+          ''')
+
+          replace_once(
+          '''\t\t\t\t\trSrc.SetRect(0, 0, maxineTargetSize.cx, maxineTargetSize.cy);
+          \t\t\t\t\trotation = 0;
+          \t\t\t\t\tm_bMaxineVSRUsed = true;
+          ''',
+          '''\t\t\t\t\trSrc.SetRect(0, 0, maxineTargetSize.cx, maxineTargetSize.cy);
+          \t\t\t\t\tm_bMaxineVSRUsed = true;
+          ''')
+
+          path.write_text(text, encoding="utf-8", newline="")
+          '@ | Set-Content -LiteralPath patch_rotation.py -Encoding utf8
+          python patch_rotation.py
+          Remove-Item patch_rotation.py
+          Remove-Item .github/workflows/fix-maxine-rotation.yml
+          git diff --check
+
+      - name: Build VideoRenderer
+        shell: pwsh
+        run: |
+          .\build_mpcvr.cmd NoWait *>&1 | Tee-Object build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Maxine-rotation-build-log
+          path: build.log
+
+      - name: Commit rotation fix
+        shell: pwsh
+        run: |
+          Remove-Item build.log -ErrorAction SilentlyContinue
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: support Maxine VSR with rotation and portrait displays"
+          git push origin HEAD:feature/nvidia-maxine-vsr
+
+      - name: Upload test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: MPC-Video-Renderer-Maxine-VSR-rotation
+          path: _bin/MpcVideoRenderer*.zip
+          compression-level: 0
