@@ -96,6 +96,7 @@ void CVRMainPPage::SetControls()
 	CheckDlgButton(IDC_CHECK3, m_SetsPP.bDeintDouble          ? BST_CHECKED : BST_UNCHECKED);
 	CheckDlgButton(IDC_CHECK5, m_SetsPP.bVPScaling            ? BST_CHECKED : BST_UNCHECKED);
 	SendDlgItemMessageW(IDC_COMBO8, CB_SETCURSEL, m_SetsPP.iVPSuperRes, 0);
+	SendDlgItemMessageW(IDC_COMBO11, CB_SETCURSEL, m_SetsPP.iMaxineVSR, 0);
 	CheckDlgButton(IDC_CHECK19, m_SetsPP.bVPRTXVideoHDR       ? BST_CHECKED : BST_UNCHECKED);
 
 	if (m_SetsPP.bHdrPassthrough) {
@@ -160,6 +161,8 @@ void CVRMainPPage::EnableControls()
 		GetDlgItem(IDC_STATIC7).EnableWindow(bEnable && m_SetsPP.bVPScaling);
 		GetDlgItem(IDC_COMBO8).EnableWindow(bEnable && m_SetsPP.bVPScaling);
 #ifdef _WIN64
+		GetDlgItem(IDC_STATIC_MAXINEVSR).EnableWindow(bEnable);
+		GetDlgItem(IDC_COMBO11).EnableWindow(bEnable);
 		GetDlgItem(IDC_CHECK19).EnableWindow(bEnable && m_SetsPP.bHdrPassthrough);
 #endif
 	}
@@ -220,12 +223,16 @@ HRESULT CVRMainPPage::OnActivate()
 		GetDlgItem(IDC_SLIDER1).EnableWindow(FALSE);
 		GetDlgItem(IDC_STATIC7).EnableWindow(FALSE);
 		GetDlgItem(IDC_COMBO8).EnableWindow(FALSE);
+		GetDlgItem(IDC_STATIC_MAXINEVSR).EnableWindow(FALSE);
+		GetDlgItem(IDC_COMBO11).EnableWindow(FALSE);
 		GetDlgItem(IDC_CHECK19).EnableWindow(FALSE);
 	}
 
 #ifndef _WIN64
 	GetDlgItem(IDC_STATIC7).EnableWindow(FALSE);
 	GetDlgItem(IDC_COMBO8).EnableWindow(FALSE);
+	GetDlgItem(IDC_STATIC_MAXINEVSR).EnableWindow(FALSE);
+	GetDlgItem(IDC_COMBO11).EnableWindow(FALSE);
 	GetDlgItem(IDC_CHECK19).EnableWindow(FALSE);
 #endif
 
@@ -248,6 +255,12 @@ HRESULT CVRMainPPage::OnActivate()
 	SendDlgItemMessageW(IDC_COMBO8, CB_ADDSTRING, 0, (LPARAM)L"for \x2264 720p");
 	SendDlgItemMessageW(IDC_COMBO8, CB_ADDSTRING, 0, (LPARAM)L"for \x2264 1080p");
 	SendDlgItemMessageW(IDC_COMBO8, CB_ADDSTRING, 0, (LPARAM)L"for \x2264 1440p");
+
+	SendDlgItemMessageW(IDC_COMBO11, CB_ADDSTRING, 0, (LPARAM)L"Off");
+	SendDlgItemMessageW(IDC_COMBO11, CB_ADDSTRING, 0, (LPARAM)L"Low");
+	SendDlgItemMessageW(IDC_COMBO11, CB_ADDSTRING, 0, (LPARAM)L"Medium");
+	SendDlgItemMessageW(IDC_COMBO11, CB_ADDSTRING, 0, (LPARAM)L"High");
+	SendDlgItemMessageW(IDC_COMBO11, CB_ADDSTRING, 0, (LPARAM)L"Ultra");
 
 	SendDlgItemMessageW(IDC_COMBO7, CB_ADDSTRING, 0, (LPARAM)L"Do not change");
 	SendDlgItemMessageW(IDC_COMBO7, CB_ADDSTRING, 0, (LPARAM)L"Allow turn on (fullscreen)");
@@ -307,6 +320,11 @@ HRESULT CVRMainPPage::OnActivate()
 		"Requires hardware and driver support:\n"
 		"- Intel Graphics UHD 610 or later\n"
 		"- Nvidia RTX (x64 only)");
+	AddHint(IDC_COMBO11,
+		L"Uses NVIDIA Maxine Video Super Resolution through the\n"
+		"NVIDIA Video Effects runtime. Available in the x64 D3D11\n"
+		"renderer for SDR 8-bit video. Unsupported content falls\n"
+		"back to the normal shader scaler.");
 	AddHint(IDC_CHECK19,
 		L"Available for Direct3D 11.\n"
 		"Requires hardware and driver support:\n"
@@ -471,6 +489,22 @@ INT_PTR CVRMainPPage::OnReceiveMessage(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 				lValue = SendDlgItemMessageW(IDC_COMBO8, CB_GETCURSEL, 0, 0);
 				if (lValue != m_SetsPP.iVPSuperRes) {
 					m_SetsPP.iVPSuperRes = lValue;
+					if (lValue != SUPERRES_Disable) {
+						m_SetsPP.iMaxineVSR = MAXINEVSR_Disable;
+						SendDlgItemMessageW(IDC_COMBO11, CB_SETCURSEL, m_SetsPP.iMaxineVSR, 0);
+					}
+					SetDirty();
+				}
+				return (LRESULT)1;
+			}
+			if (nID == IDC_COMBO11) {
+				lValue = SendDlgItemMessageW(IDC_COMBO11, CB_GETCURSEL, 0, 0);
+				if (lValue != m_SetsPP.iMaxineVSR) {
+					m_SetsPP.iMaxineVSR = lValue;
+					if (lValue != MAXINEVSR_Disable) {
+						m_SetsPP.iVPSuperRes = SUPERRES_Disable;
+						SendDlgItemMessageW(IDC_COMBO8, CB_SETCURSEL, m_SetsPP.iVPSuperRes, 0);
+					}
 					SetDirty();
 				}
 				return (LRESULT)1;

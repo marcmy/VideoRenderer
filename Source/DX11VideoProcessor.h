@@ -28,6 +28,7 @@
 #include "IVideoRenderer.h"
 #include "DX11Helper.h"
 #include "D3D11VP.h"
+#include "NvidiaMaxineVSR.h"
 #include "D3DUtil/D3D11Font.h"
 #include "D3DUtil/D3D11Geometry.h"
 #include "VideoProcessor.h"
@@ -69,6 +70,7 @@ private:
 
 	Tex11Video_t m_TexSrcVideo; // for copy of frame
 	Tex2D_t m_TexConvertOutput;
+	Tex2D_t m_TexMaxineVSR;
 	Tex2D_t m_TexResize;        // for intermediate result of two-pass resize
 	CTex2DRing m_TexsPostScale;
 	Tex2D_t m_TexDither;
@@ -181,6 +183,10 @@ private:
 
 	int m_iVPSuperRes = SUPERRES_Disable;
 	bool m_bVPUseSuperRes = false; // but it is not exactly
+
+	int m_iMaxineVSR = MAXINEVSR_Disable;
+	bool m_bMaxineVSRUsed = false;
+	CNvidiaMaxineVSR m_MaxineVSR;
 
 	bool m_bVPRTXVideoHDR = false;
 	bool m_bVPUseRTXVideoHDR = false;
@@ -341,6 +347,7 @@ public:
 	void SwitchFullScreen(bool set) override;
 
 private:
+	bool CanUseMaxineVSR(const CRect& dstRect);
 	void UpdateTexures();
 	void UpdatePostScaleTexures();
 	void UpdateUpscalingShaders();

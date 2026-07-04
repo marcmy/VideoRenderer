@@ -45,6 +45,15 @@ enum :int {
 };
 
 enum :int {
+	MAXINEVSR_Disable = 0,
+	MAXINEVSR_Low,
+	MAXINEVSR_Medium,
+	MAXINEVSR_High,
+	MAXINEVSR_Ultra,
+	MAXINEVSR_COUNT
+};
+
+enum :int {
 	CHROMA_Nearest = 0,
 	CHROMA_Bilinear,
 	CHROMA_CatmullRom,
@@ -132,6 +141,7 @@ struct Settings_t {
 	bool bHdrLocalToneMapping;
 	int  iHdrLocalToneMappingType;
 	int iHdrDisplayMaxNits;
+	int iMaxineVSR;
 
 	Settings_t() {
 		SetDefault();
@@ -182,6 +192,7 @@ struct Settings_t {
 		bConvertToSdr                   = true;
 		iHdrOsdBrightness               = 0;
 		iSDRDisplayNits                 = SDR_NITS_DEF;
+		iMaxineVSR                      = MAXINEVSR_Disable;
 	}
 };
 

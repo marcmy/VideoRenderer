@@ -109,6 +109,17 @@ static const ScalingShaderResId s_Downscaling11ResIDs[DOWNSCALE_COUNT] = {
 	{IDF_PS_11_CONVOL_LANCZOS_X,   IDF_PS_11_CONVOL_LANCZOS_Y,   L"Lanczos"      }
 };
 
+static const wchar_t* MaxineVSRQualityToString(const int quality)
+{
+	switch (quality) {
+	case MAXINEVSR_Low:    return L"Low";
+	case MAXINEVSR_Medium: return L"Medium";
+	case MAXINEVSR_High:   return L"High";
+	case MAXINEVSR_Ultra:  return L"Ultra";
+	default:               return L"Off";
+	}
+}
+
 const UINT dither_size = 32;
 
 struct VERTEX {
@@ -389,6 +400,7 @@ CDX11VideoProcessor::CDX11VideoProcessor(CMpcVideoRenderer* pFilter, const Setti
 	m_bDeintDouble         = config.bDeintDouble;
 	m_bVPScaling           = config.bVPScaling;
 	m_iVPSuperRes          = config.iVPSuperRes;
+	m_iMaxineVSR           = config.iMaxineVSR;
 	m_bVPRTXVideoHDR       = config.bVPRTXVideoHDR;
 	m_iChromaScaling       = config.iChromaScaling;
 	m_iUpscaling           = config.iUpscaling;
@@ -660,6 +672,9 @@ void CDX11VideoProcessor::ReleaseVP()
 		m_pDeviceContext->ClearState();
 	}
 
+	m_MaxineVSR.Reset();
+	m_bMaxineVSRUsed = false;
+	m_TexMaxineVSR.Release();
 	m_TexSrcVideo.Release();
 	m_TexConvertOutput.Release();
 	m_TexResize.Release();
@@ -1985,7 +2000,8 @@ HRESULT CDX11VideoProcessor::InitializeD3D11VP(const FmtConvParams_t& params, co
 		return hr;
 	}
 
-	auto superRes = (m_bVPScaling && (params.CDepth == 8 || !m_bACMEnabled)) ? m_iVPSuperRes : SUPERRES_Disable;
+	auto superRes = (m_bVPScaling && m_iMaxineVSR == MAXINEVSR_Disable && (params.CDepth == 8 || !m_bACMEnabled))
+		? m_iVPSuperRes : SUPERRES_Disable;
 	m_bVPUseSuperRes = (m_D3D11VP.SetSuperRes(superRes) == S_OK);
 
 	auto rtxHDR = m_bVPRTXVideoHDR && m_bHdrPassthroughSupport && m_bHdrPassthrough && m_iTexFormat != TEXFMT_8INT && !SourceIsHDR();
@@ -2866,17 +2882,54 @@ HRESULT CDX11VideoProcessor::FillBlack()
 	return hr;
 }
 
+bool CDX11VideoProcessor::CanUseMaxineVSR(const CRect& dstRect)
+{
+#ifdef _WIN64
+	if (m_iMaxineVSR == MAXINEVSR_Disable || m_VendorId != PCIV_NVIDIA
+			|| m_iRotation != 0 || m_bFlip || SourceIsHDR() || m_bVPUseRTXVideoHDR
+			|| !m_srcRectWidth || !m_srcRectHeight) {
+		return false;
+	}
+
+	const int dstWidthSigned = dstRect.Width();
+	const int dstHeightSigned = dstRect.Height();
+	if (dstWidthSigned <= 0 || dstHeightSigned <= 0) {
+		return false;
+	}
+
+	const UINT dstWidth = static_cast<UINT>(dstWidthSigned);
+	const UINT dstHeight = static_cast<UINT>(dstHeightSigned);
+	if (dstWidth <= m_srcRectWidth || dstHeight <= m_srcRectHeight
+			|| static_cast<unsigned long long>(dstWidth) > static_cast<unsigned long long>(m_srcRectWidth) * 4u
+			|| static_cast<unsigned long long>(dstHeight) > static_cast<unsigned long long>(m_srcRectHeight) * 4u) {
+		return false;
+	}
+
+	return static_cast<unsigned long long>(m_srcRectWidth) * dstHeight
+		== static_cast<unsigned long long>(m_srcRectHeight) * dstWidth;
+#else
+	UNREFERENCED_PARAMETER(dstRect);
+	return false;
+#endif
+}
+
 void CDX11VideoProcessor::UpdateTexures()
 {
 	if (!m_srcWidth || !m_srcHeight) {
 		return;
 	}
 
+	// D3D11 textures registered with CUDA must be unregistered before the
+	// renderer releases or recreates them.
+	m_MaxineVSR.Reset();
+	m_bMaxineVSRUsed = false;
+	m_TexMaxineVSR.Release();
+
 	// TODO: try making w and h a multiple of 128.
 	HRESULT hr = S_OK;
 
 	if (m_D3D11VP.IsReady()) {
-		if (m_bVPScaling) {
+		if (m_bVPScaling && !CanUseMaxineVSR(m_videoRect)) {
 			CSize texsize = m_videoRect.Size();
 			hr = m_TexConvertOutput.CheckCreate(m_pDevice, m_D3D11OutputFmt, texsize.cx, texsize.cy, Tex2D_DefaultShaderRTarget);
 			if (FAILED(hr)) {
@@ -3295,7 +3348,7 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 
 	if (m_D3D11VP.IsReady()) {
 		if (!(m_iSwapEffect == SWAPEFFECT_Discard && (m_VendorId == PCIV_AMDATI || m_VendorId == PCIV_INTEL))) {
-			const bool bNeedShaderTransform =
+			const bool bNeedShaderTransform = CanUseMaxineVSR(dstRect) ||
 				(m_TexConvertOutput.desc.Width != dstRect.Width() || m_TexConvertOutput.desc.Height != dstRect.Height() || m_bFlip
 				|| dstRect.right > m_windowRect.right || dstRect.bottom > m_windowRect.bottom)
 				|| (m_bHdrPassthroughSupport && (m_bHdrPassthrough || m_bHdrLocalToneMapping)); // At least on Nvidia we can sometimes get the "D3D11: Removing Device" error here when HDR Passthrough.
@@ -3320,6 +3373,46 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 	}
 	else {
 		pInputTexture = &m_TexSrcVideo;
+	}
+
+	m_bMaxineVSRUsed = false;
+	if (CanUseMaxineVSR(dstRect)) {
+		const CRect inputRect(0, 0, m_srcRectWidth, m_srcRectHeight);
+
+		// CPU-uploaded RGB textures can be dynamic and cannot be registered with
+		// CUDA. Copy them into the default RGB conversion texture first.
+		if (pInputTexture != &m_TexConvertOutput
+				&& m_TexConvertOutput.pTexture
+				&& m_TexConvertOutput.desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM
+				&& pInputTexture->pShaderResource) {
+			const HRESULT copyHr = TextureCopyRect(*pInputTexture, m_TexConvertOutput.pTexture,
+				rSrc, inputRect, m_pPS_Simple, nullptr, 0, false);
+			if (SUCCEEDED(copyHr)) {
+				pInputTexture = &m_TexConvertOutput;
+				rSrc = inputRect;
+			}
+		}
+
+		if (pInputTexture->desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM
+				&& rSrc == inputRect
+				&& pInputTexture->desc.Width == m_srcRectWidth
+				&& pInputTexture->desc.Height == m_srcRectHeight) {
+			if (m_TexMaxineVSR.desc.Width != static_cast<UINT>(dstRect.Width())
+					|| m_TexMaxineVSR.desc.Height != static_cast<UINT>(dstRect.Height())) {
+				m_MaxineVSR.Reset();
+			}
+
+			const HRESULT createHr = m_TexMaxineVSR.CheckCreate(m_pDevice, DXGI_FORMAT_B8G8R8A8_UNORM,
+				dstRect.Width(), dstRect.Height(), Tex2D_DefaultShaderRTarget);
+			if (SUCCEEDED(createHr)
+					&& m_MaxineVSR.Process(m_pDeviceContext, pInputTexture->pTexture,
+						m_TexMaxineVSR.pTexture, static_cast<unsigned>(m_iMaxineVSR))) {
+				pInputTexture = &m_TexMaxineVSR;
+				rSrc.SetRect(0, 0, dstRect.Width(), dstRect.Height());
+				rotation = 0;
+				m_bMaxineVSRUsed = true;
+			}
+		}
 	}
 
 	if (numSteps) {
@@ -3811,6 +3904,7 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 	bool changeNumTextures       = false;
 	bool changeResizeStats       = false;
 	bool changeSuperRes          = false;
+	bool changeMaxineVSR         = false;
 	bool changeRTXVideoHDR       = false;
 	bool changeLuminanceParams   = false;
 
@@ -3940,6 +4034,12 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 		changeSuperRes = true;
 	}
 
+	if (config.iMaxineVSR != m_iMaxineVSR) {
+		m_iMaxineVSR = config.iMaxineVSR;
+		changeMaxineVSR = true;
+		changeTextures = true;
+	}
+
 	if (config.bVPRTXVideoHDR != m_bVPRTXVideoHDR) {
 		m_bVPRTXVideoHDR = config.bVPRTXVideoHDR;
 		changeRTXVideoHDR = true;
@@ -4041,8 +4141,9 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 		UpdateStatsByDisplay();
 	}
 
-	if (changeSuperRes) {
-		auto superRes = (m_bVPScaling && (m_srcParams.CDepth == 8 || !m_bACMEnabled)) ? m_iVPSuperRes : SUPERRES_Disable;
+	if (changeSuperRes || changeMaxineVSR) {
+		auto superRes = (m_bVPScaling && m_iMaxineVSR == MAXINEVSR_Disable
+				&& (m_srcParams.CDepth == 8 || !m_bACMEnabled)) ? m_iVPSuperRes : SUPERRES_Disable;
 		m_bVPUseSuperRes = (m_D3D11VP.SetSuperRes(superRes) == S_OK);
 	}
 
@@ -4402,7 +4503,10 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 		str += std::format(L"\nScaling       : {}x{} -> {}x{}", m_srcRectWidth, m_srcRectHeight, dstW, dstH);
 	}
 	if (m_srcRectWidth != dstW || m_srcRectHeight != dstH) {
-		if (m_D3D11VP.IsReady() && m_bVPScaling && !m_bVPScalingUseShaders) {
+		if (m_bMaxineVSRUsed) {
+			str += std::format(L" NVIDIA Maxine VSR ({})*", MaxineVSRQualityToString(m_iMaxineVSR));
+		}
+		else if (m_D3D11VP.IsReady() && m_bVPScaling && !m_bVPScalingUseShaders) {
 			str.append(L" D3D11");
 			if (m_bVPUseSuperRes) {
 				str.append(L" SuperResolution*");
@@ -4419,6 +4523,9 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 				str.append(m_strShaderY);
 			}
 		}
+	}
+	if (m_iMaxineVSR != MAXINEVSR_Disable && !m_bMaxineVSRUsed) {
+		str += std::format(L"\nMaxine VSR   : fallback ({})", m_MaxineVSR.GetStatus());
 	}
 
 	if (m_strCorrection || m_pPostScaleShaders.size() || m_bDitherUsed) {
