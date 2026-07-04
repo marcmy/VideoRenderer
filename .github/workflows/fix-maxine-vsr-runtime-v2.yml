@@ -1,0 +1,76 @@
+name: Fix Maxine VSR runtime loading v2
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - .github/workflows/fix-maxine-vsr-runtime-v2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build-commit:
+    runs-on: windows-2022
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: feature/nvidia-maxine-vsr
+          submodules: recursive
+
+      - name: Recover corrected runtime-loader patch
+        shell: pwsh
+        run: |
+          $workflow = Get-Content .github/workflows/fix-maxine-vsr-runtime.yml
+          $start = [Array]::IndexOf($workflow, "          @'") + 1
+          $end = [Array]::IndexOf($workflow, "          '@ | Set-Content -LiteralPath patch_runtime.py -Encoding utf8")
+          if ($start -le 0 -or $end -le $start) { throw 'Could not recover runtime patch script.' }
+
+          $scriptLines = $workflow[$start..($end - 1)] | ForEach-Object {
+            if ($_.Length -ge 10) { $_.Substring(10) } else { $_ }
+          }
+          $script = $scriptLines -join "`n"
+          $old = 'return text[:start_pos] + replacement + text[end_pos:]'
+          $new = 'return text[:start_pos] + replacement.replace("\\t", "\t") + text[end_pos:]'
+          if (-not $script.Contains($old)) { throw 'Could not locate replace_between return statement.' }
+          $script = $script.Replace($old, $new)
+          [IO.File]::WriteAllText('patch_runtime.py', $script, [Text.UTF8Encoding]::new($false))
+
+          python patch_runtime.py
+          Remove-Item patch_runtime.py
+          Remove-Item .github/workflows/fix-maxine-vsr-runtime.yml
+          Remove-Item .github/workflows/fix-maxine-vsr-runtime-v2.yml
+          git diff --check
+
+      - name: Build VideoRenderer
+        shell: pwsh
+        run: |
+          .\build_mpcvr.cmd NoWait *>&1 | Tee-Object build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Maxine-runtime-loader-v2-build-log
+          path: build.log
+
+      - name: Commit runtime loader fix
+        shell: pwsh
+        run: |
+          Remove-Item build.log -ErrorAction SilentlyContinue
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: load complete Maxine VideoSuperRes runtime"
+          git push origin HEAD:feature/nvidia-maxine-vsr
+
+      - name: Upload test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: MPC-Video-Renderer-Maxine-VSR-runtime-fix
+          path: _bin/MpcVideoRenderer*.zip
+          compression-level: 0
