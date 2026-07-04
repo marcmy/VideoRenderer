@@ -1,0 +1,34 @@
+name: Source snapshot
+
+on:
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out renderer source
+        uses: actions/checkout@v4
+
+      - name: Fetch NVIDIA SDK references
+        run: |
+          git clone --depth 1 https://github.com/NVIDIA-Maxine/Maxine-VFX-SDK.git _nvidia_maxine_sdk
+          git clone --depth 1 --recurse-submodules https://github.com/NVIDIA-Maxine/VFX-SDK-Samples.git _nvidia_vfx_samples
+
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-tree
+          path: |
+            .
+            !.git
+            !_nvidia_maxine_sdk/.git
+            !_nvidia_vfx_samples/.git
+          include-hidden-files: true
+          retention-days: 1
