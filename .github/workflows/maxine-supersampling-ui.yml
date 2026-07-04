@@ -1,0 +1,137 @@
+name: Add Maxine supersampling and fix settings layout
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - .github/workflows/maxine-supersampling-ui.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build-commit:
+    runs-on: windows-2022
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: feature/nvidia-maxine-vsr
+          submodules: recursive
+
+      - name: Apply supersampling and layout changes
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+
+          def replace_once(path_str: str, old: str, new: str) -> None:
+              path = Path(path_str)
+              data = path.read_text(encoding="utf-8")
+              count = data.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{path_str}: expected one match, found {count}")
+              path.write_text(data.replace(old, new, 1), encoding="utf-8", newline="")
+
+          replace_once(
+              "Source/DX11VideoProcessor.cpp",
+              '''\tconst double scaleX = static_cast<double>(dstWidth) / m_srcRectWidth;
+          \tconst double scaleY = static_cast<double>(dstHeight) / m_srcRectHeight;
+          \tconst double requestedScale = std::max(scaleX, scaleY);
+          \tif (requestedScale <= 1.0) {
+          \t\tm_strMaxineVSRStatus = L"Not needed: output does not upscale the source";
+          \t\treturn false;
+          \t}
+
+          \tconst UINT scale = static_cast<UINT>(std::clamp(std::ceil(requestedScale), 2.0, 4.0));
+          \ttargetSize = CSize(m_srcRectWidth * scale, m_srcRectHeight * scale);
+          \tm_strMaxineVSRStatus = requestedScale > 4.0
+          \t\t? L"Eligible: Maxine 4x plus renderer scaling"
+          \t\t: L"Eligible";
+          \treturn true;''',
+              '''\tconst double scaleX = static_cast<double>(dstWidth) / m_srcRectWidth;
+          \tconst double scaleY = static_cast<double>(dstHeight) / m_srcRectHeight;
+          \tconst double requestedScale = std::max(scaleX, scaleY);
+
+          \t// The source-resolution selector controls eligibility, not whether the
+          \t// presentation rectangle happens to be larger. When displaying at the
+          \t// source resolution (or smaller), run Maxine at a higher internal
+          \t// resolution and let MPCVR downsample the enhanced result.
+          \tconst bool landscape = m_srcRectWidth >= m_srcRectHeight;
+          \tconst double maxOutputWidth = landscape ? 3840.0 : 2160.0;
+          \tconst double maxOutputHeight = landscape ? 2160.0 : 3840.0;
+          \tconst double maxScale = std::min({
+          \t\t4.0,
+          \t\tmaxOutputWidth / m_srcRectWidth,
+          \t\tmaxOutputHeight / m_srcRectHeight,
+          \t});
+          \tif (maxScale <= 1.0) {
+          \t\tm_strMaxineVSRStatus = L"Source is already at the 4K processing ceiling";
+          \t\treturn false;
+          \t}
+
+          \tconst double minimumEnhancementScale = std::min(2.0, maxScale);
+          \tconst double targetScale = std::min(maxScale, std::max(requestedScale, minimumEnhancementScale));
+          \tauto ScaleDimension = [targetScale](const UINT value) {
+          \t\tconst UINT scaled = static_cast<UINT>(std::lround(value * targetScale));
+          \t\treturn static_cast<int>((scaled + 1u) & ~1u);
+          \t};
+          \ttargetSize = CSize(ScaleDimension(m_srcRectWidth), ScaleDimension(m_srcRectHeight));
+
+          \tif (requestedScale > maxScale) {
+          \t\tm_strMaxineVSRStatus = std::format(L"Eligible: {:.2f}x Maxine plus renderer scaling", targetScale);
+          \t}
+          \telse if (requestedScale <= 1.0) {
+          \t\tm_strMaxineVSRStatus = std::format(L"Eligible: {:.2f}x supersampling", targetScale);
+          \t}
+          \telse {
+          \t\tm_strMaxineVSRStatus = std::format(L"Eligible: {:.2f}x Maxine scaling", targetScale);
+          \t}
+          \treturn true;''')
+
+          replace_once(
+              "Source/MpcVideoRenderer.rc",
+              '    GROUPBOX        "DXVA2 and D3D11 video processor",IDC_STATIC1,5,35,162,101',
+              '    GROUPBOX        "DXVA2 and D3D11 video processor",IDC_STATIC1,5,35,164,101')
+
+          replace_once(
+              "Source/MpcVideoRenderer.rc",
+              '    COMBOBOX        IDC_COMBO8,102,111,62,30,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP',
+              '    COMBOBOX        IDC_COMBO8,101,111,64,30,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP')
+          '@ | Set-Content -LiteralPath patch.py -Encoding utf8
+          python patch.py
+          Remove-Item patch.py
+          Remove-Item .github/workflows/maxine-supersampling-ui.yml
+          git diff --check
+
+      - name: Build VideoRenderer
+        shell: pwsh
+        run: |
+          .\build_mpcvr.cmd NoWait *>&1 | Tee-Object build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Maxine-supersampling-build-log
+          path: build.log
+
+      - name: Commit changes
+        shell: pwsh
+        run: |
+          Remove-Item build.log -ErrorAction SilentlyContinue
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: enable Maxine supersampling at native output size"
+          git push origin HEAD:feature/nvidia-maxine-vsr
+
+      - name: Upload test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: MPC-Video-Renderer-Maxine-VSR-supersampling
+          path: _bin/MpcVideoRenderer*.zip
+          compression-level: 0
