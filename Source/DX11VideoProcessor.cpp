@@ -4641,12 +4641,16 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 		str += std::format(L"\nScaling       : {}x{} -> {}x{}", m_srcRectWidth, m_srcRectHeight, dstW, dstH);
 	}
 	if (m_srcRectWidth != dstW || m_srcRectHeight != dstH) {
-		if (m_D3D11VP.IsReady() && m_bVPScaling && !m_bVPScalingUseShaders && !m_bMaxineVSRUsed) {
+		if (m_bMaxineVSRUsed) {
+			str.append(L" NVIDIA Maxine VSR");
+		}
+		else if (m_D3D11VP.IsReady() && m_bVPScaling && !m_bVPScalingUseShaders) {
 			str.append(L" D3D11");
 			if (m_bVPUseSuperRes) {
 				str.append(L" SuperResolution*");
 			}
-		} else {
+		}
+		else {
 			str += L' ';
 			if (m_strShaderX) {
 				str.append(m_strShaderX);
@@ -4654,7 +4658,8 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 					str += L'/';
 					str.append(m_strShaderY);
 				}
-			} else if (m_strShaderY) {
+			}
+			else if (m_strShaderY) {
 				str.append(m_strShaderY);
 			}
 		}

@@ -263,20 +263,64 @@ struct CNvidiaMaxineVSR::Impl
 		DLog(L"NVIDIA Maxine VSR: {}", status);
 	}
 
-	void ReleaseImages()
+	void ReleaseD3DImages()
 	{
 		if (NvCVImage_Dealloc) {
 			NvCVImage_Dealloc(&d3dInput);
 			NvCVImage_Dealloc(&d3dOutput);
-			NvCVImage_Dealloc(&gpuInput);
-			NvCVImage_Dealloc(&gpuOutput);
 		}
 		d3dInput = {};
 		d3dOutput = {};
-		gpuInput = {};
-		gpuOutput = {};
 		inputTexture = nullptr;
 		outputTexture = nullptr;
+	}
+
+	void ReleaseImages()
+	{
+		ReleaseD3DImages();
+		if (NvCVImage_Dealloc) {
+			NvCVImage_Dealloc(&gpuInput);
+			NvCVImage_Dealloc(&gpuOutput);
+		}
+		gpuInput = {};
+		gpuOutput = {};
+	}
+
+	bool AttachD3DImages(ID3D11Texture2D* input, ID3D11Texture2D* output)
+	{
+		if (inputTexture == input && outputTexture == output) {
+			return true;
+		}
+
+		ReleaseD3DImages();
+
+		NvCV_Status code = NvCVImage_InitFromD3D11Texture(&d3dInput, input);
+		if (code != NVCV_SUCCESS) {
+			SetError(L"NvCVImage_InitFromD3D11Texture(input)", code);
+			ReleaseD3DImages();
+			return false;
+		}
+
+		code = NvCVImage_InitFromD3D11Texture(&d3dOutput, output);
+		if (code != NVCV_SUCCESS) {
+			SetError(L"NvCVImage_InitFromD3D11Texture(output)", code);
+			ReleaseD3DImages();
+			return false;
+		}
+
+		if ((d3dInput.pixelFormat != NVCV_RGBA && d3dInput.pixelFormat != NVCV_BGRA)
+				|| d3dInput.componentType != NVCV_U8 || d3dInput.planar != NVCV_INTERLEAVED
+				|| (d3dOutput.pixelFormat != NVCV_RGBA && d3dOutput.pixelFormat != NVCV_BGRA)
+				|| d3dOutput.componentType != NVCV_U8 || d3dOutput.planar != NVCV_INTERLEAVED) {
+			status = L"Only RGBA/BGRA 8-bit D3D11 textures are supported";
+			DLog(L"NVIDIA Maxine VSR: {}", status);
+			ReleaseD3DImages();
+			return false;
+		}
+
+		inputTexture = input;
+		outputTexture = output;
+		return true;
 	}
 
 	void ResetEffect()
@@ -457,8 +501,20 @@ struct CNvidiaMaxineVSR::Impl
 			return false;
 		}
 
-		if (effect && inputTexture == input && outputTexture == output && quality == requestedMode) {
-			return true;
+		D3D11_TEXTURE2D_DESC inputDesc = {};
+		D3D11_TEXTURE2D_DESC outputDesc = {};
+		input->GetDesc(&inputDesc);
+		output->GetDesc(&outputDesc);
+
+		const bool effectMatches = effect
+			&& quality == requestedMode
+			&& gpuInput.width == inputDesc.Width
+			&& gpuInput.height == inputDesc.Height
+			&& gpuOutput.width == outputDesc.Width
+			&& gpuOutput.height == outputDesc.Height;
+
+		if (effectMatches) {
+			return AttachD3DImages(input, output);
 		}
 
 		ResetEffect();
@@ -470,29 +526,7 @@ struct CNvidiaMaxineVSR::Impl
 			return false;
 		}
 
-		code = NvCVImage_InitFromD3D11Texture(&d3dInput, input);
-		if (code != NVCV_SUCCESS) {
-			SetError(L"NvCVImage_InitFromD3D11Texture(input)", code);
-			failed = true;
-			ResetEffect();
-			failed = true;
-			return false;
-		}
-		code = NvCVImage_InitFromD3D11Texture(&d3dOutput, output);
-		if (code != NVCV_SUCCESS) {
-			SetError(L"NvCVImage_InitFromD3D11Texture(output)", code);
-			failed = true;
-			ResetEffect();
-			failed = true;
-			return false;
-		}
-
-		if ((d3dInput.pixelFormat != NVCV_RGBA && d3dInput.pixelFormat != NVCV_BGRA)
-				|| d3dInput.componentType != NVCV_U8 || d3dInput.planar != NVCV_INTERLEAVED
-				|| (d3dOutput.pixelFormat != NVCV_RGBA && d3dOutput.pixelFormat != NVCV_BGRA)
-				|| d3dOutput.componentType != NVCV_U8 || d3dOutput.planar != NVCV_INTERLEAVED) {
-			status = L"Only RGBA/BGRA 8-bit D3D11 textures are supported";
-			DLog(L"NVIDIA Maxine VSR: {}", status);
+		if (!AttachD3DImages(input, output)) {
 			ResetEffect();
 			failed = true;
 			return false;
@@ -556,12 +590,11 @@ struct CNvidiaMaxineVSR::Impl
 			return false;
 		}
 
-		inputTexture = input;
-		outputTexture = output;
 		quality = requestedMode;
 		status = std::format(L"Active, quality {}", quality);
 		return true;
 	}
+
 #endif // _WIN64
 };
 
@@ -653,6 +686,13 @@ bool CNvidiaMaxineVSR::Process(
 	if (code == NVCV_SUCCESS) {
 		code = unmapCode;
 	}
+
+	// Each Maxine pass owns its GPU-side effect state, but D3D11/CUDA
+	// interop resources must not stay registered across passes. The VSR
+	// output is the denoise input, and the denoise output is the deblur
+	// input; leaving either registered causes CUDA to reject the next pass
+	// with NVCV_ERR_INVALID_RESOURCE_HANDLE.
+	m_impl->ReleaseD3DImages();
 
 	if (code != NVCV_SUCCESS) {
 		m_impl->SetError(L"Frame processing", code);
