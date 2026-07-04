@@ -3651,7 +3651,14 @@ void CDX11VideoProcessor::SetVideoRect(const CRect& videoRect)
 {
 	m_videoRect = videoRect;
 	UpdateRenderRect();
-	UpdateTexures();
+
+	// Maxine uses a fixed source-derived inference size. Zoom, stretch,
+	// pan and other presentation-only changes must not destroy and reload
+	// the Maxine effects on every hotkey step.
+	CSize maxineTargetSize;
+	if (!GetMaxineVSRTargetSize(m_videoRect, maxineTargetSize)) {
+		UpdateTexures();
+	}
 }
 
 HRESULT CDX11VideoProcessor::SetWindowRect(const CRect& windowRect)
