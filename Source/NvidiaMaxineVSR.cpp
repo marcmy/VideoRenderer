@@ -451,13 +451,13 @@ struct CNvidiaMaxineVSR::Impl
 		return true;
 	}
 
-	bool EnsureEffect(ID3D11Texture2D* input, ID3D11Texture2D* output, unsigned requestedQuality)
+	bool EnsureEffect(ID3D11Texture2D* input, ID3D11Texture2D* output, unsigned requestedMode)
 	{
 		if (!LoadRuntime() || failed) {
 			return false;
 		}
 
-		if (effect && inputTexture == input && outputTexture == output && quality == requestedQuality) {
+		if (effect && inputTexture == input && outputTexture == output && quality == requestedMode) {
 			return true;
 		}
 
@@ -537,7 +537,7 @@ struct CNvidiaMaxineVSR::Impl
 			{L"NvVFX_SetImage(input)", NvVFX_SetImage(effect, "SrcImage0", &gpuInput)},
 			{L"NvVFX_SetImage(output)", NvVFX_SetImage(effect, "DstImage0", &gpuOutput)},
 			{L"NvVFX_SetCudaStream", NvVFX_SetCudaStream(effect, "CudaStream", stream)},
-			{L"NvVFX_SetU32(QualityLevel)", NvVFX_SetU32(effect, "QualityLevel", requestedQuality)},
+			{L"NvVFX_SetU32(QualityLevel)", NvVFX_SetU32(effect, "QualityLevel", requestedMode)},
 		}};
 		for (const auto& [operation, result] : setupResults) {
 			if (result != NVCV_SUCCESS) {
@@ -558,7 +558,7 @@ struct CNvidiaMaxineVSR::Impl
 
 		inputTexture = input;
 		outputTexture = output;
-		quality = requestedQuality;
+		quality = requestedMode;
 		status = std::format(L"Active, quality {}", quality);
 		return true;
 	}
@@ -584,10 +584,12 @@ bool CNvidiaMaxineVSR::Process(
 	ID3D11DeviceContext* pDeviceContext,
 	ID3D11Texture2D* pInputTexture,
 	ID3D11Texture2D* pOutputTexture,
-	unsigned quality)
+	unsigned mode)
 {
 #ifdef _WIN64
-	if (!pDeviceContext || !pInputTexture || !pOutputTexture || quality < 1 || quality > 4) {
+	const bool upscaleMode = mode >= 1 && mode <= 4;
+	const bool sameSizeMode = mode >= 8 && mode <= 15;
+	if (!pDeviceContext || !pInputTexture || !pOutputTexture || (!upscaleMode && !sameSizeMode)) {
 		m_impl->status = L"Invalid processing parameters";
 		return false;
 	}
@@ -597,15 +599,22 @@ bool CNvidiaMaxineVSR::Process(
 	pInputTexture->GetDesc(&inputDesc);
 	pOutputTexture->GetDesc(&outputDesc);
 
-	if (inputDesc.Width >= outputDesc.Width || inputDesc.Height >= outputDesc.Height
-			|| static_cast<unsigned long long>(inputDesc.Width) * outputDesc.Height
-				!= static_cast<unsigned long long>(inputDesc.Height) * outputDesc.Width
-			|| outputDesc.Width > inputDesc.Width * 4u || outputDesc.Height > inputDesc.Height * 4u) {
-		m_impl->status = L"Unsupported VSR scale or aspect ratio";
+	if (upscaleMode) {
+		const bool scale2x = outputDesc.Width == inputDesc.Width * 2u
+			&& outputDesc.Height == inputDesc.Height * 2u;
+		const bool scale4x = outputDesc.Width == inputDesc.Width * 4u
+			&& outputDesc.Height == inputDesc.Height * 4u;
+		if (!scale2x && !scale4x) {
+			m_impl->status = L"VSR output must be exactly 2x or 4x";
+			return false;
+		}
+	}
+	else if (inputDesc.Width != outputDesc.Width || inputDesc.Height != outputDesc.Height) {
+		m_impl->status = L"Denoise and deblur require equal input and output sizes";
 		return false;
 	}
 
-	if (!m_impl->EnsureEffect(pInputTexture, pOutputTexture, quality)) {
+	if (!m_impl->EnsureEffect(pInputTexture, pOutputTexture, mode)) {
 		return false;
 	}
 
@@ -652,13 +661,13 @@ bool CNvidiaMaxineVSR::Process(
 		return false;
 	}
 
-	m_impl->status = std::format(L"Active, quality {}", quality);
+	m_impl->status = std::format(L"Active, mode {}", mode);
 	return true;
 #else
 	UNREFERENCED_PARAMETER(pDeviceContext);
 	UNREFERENCED_PARAMETER(pInputTexture);
 	UNREFERENCED_PARAMETER(pOutputTexture);
-	UNREFERENCED_PARAMETER(quality);
+	UNREFERENCED_PARAMETER(mode);
 	return false;
 #endif
 }

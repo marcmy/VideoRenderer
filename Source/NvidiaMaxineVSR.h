@@ -24,7 +24,7 @@ public:
 		ID3D11DeviceContext* pDeviceContext,
 		ID3D11Texture2D* pInputTexture,
 		ID3D11Texture2D* pOutputTexture,
-		unsigned quality);
+		unsigned mode);
 
 	void Reset();
 	const std::wstring& GetStatus() const;

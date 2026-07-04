@@ -96,7 +96,10 @@ void CVRMainPPage::SetControls()
 	CheckDlgButton(IDC_CHECK3, m_SetsPP.bDeintDouble          ? BST_CHECKED : BST_UNCHECKED);
 	CheckDlgButton(IDC_CHECK5, m_SetsPP.bVPScaling            ? BST_CHECKED : BST_UNCHECKED);
 	SendDlgItemMessageW(IDC_COMBO8, CB_SETCURSEL, m_SetsPP.iVPSuperRes, 0);
+	ComboBox_SelectByItemData(m_hWnd, IDC_COMBO12, m_SetsPP.iMaxineVSRScale);
 	SendDlgItemMessageW(IDC_COMBO11, CB_SETCURSEL, m_SetsPP.iMaxineVSR, 0);
+	SendDlgItemMessageW(IDC_COMBO13, CB_SETCURSEL, m_SetsPP.iMaxineVSRDenoise, 0);
+	SendDlgItemMessageW(IDC_COMBO14, CB_SETCURSEL, m_SetsPP.iMaxineVSRDeblur, 0);
 	CheckDlgButton(IDC_CHECK19, m_SetsPP.bVPRTXVideoHDR       ? BST_CHECKED : BST_UNCHECKED);
 
 	if (m_SetsPP.bHdrPassthrough) {
@@ -163,8 +166,15 @@ void CVRMainPPage::EnableControls()
 		GetDlgItem(IDC_STATIC7).EnableWindow(bEnableSuperResLimit);
 		GetDlgItem(IDC_COMBO8).EnableWindow(bEnableSuperResLimit);
 #ifdef _WIN64
+		GetDlgItem(IDC_STATIC_MAXINESCALE).EnableWindow(bEnable);
+		GetDlgItem(IDC_COMBO12).EnableWindow(bEnable);
 		GetDlgItem(IDC_STATIC_MAXINEVSR).EnableWindow(bEnable);
 		GetDlgItem(IDC_COMBO11).EnableWindow(bEnable);
+		const BOOL bEnableMaxineFilters = bEnable && m_SetsPP.iMaxineVSR != MAXINEVSR_Disable;
+		GetDlgItem(IDC_STATIC_MAXINEDENOISE).EnableWindow(bEnableMaxineFilters);
+		GetDlgItem(IDC_COMBO13).EnableWindow(bEnableMaxineFilters);
+		GetDlgItem(IDC_STATIC_MAXINEDEBLUR).EnableWindow(bEnableMaxineFilters);
+		GetDlgItem(IDC_COMBO14).EnableWindow(bEnableMaxineFilters);
 		GetDlgItem(IDC_CHECK19).EnableWindow(bEnable && m_SetsPP.bHdrPassthrough);
 #endif
 	}
@@ -225,16 +235,28 @@ HRESULT CVRMainPPage::OnActivate()
 		GetDlgItem(IDC_SLIDER1).EnableWindow(FALSE);
 		GetDlgItem(IDC_STATIC7).EnableWindow(FALSE);
 		GetDlgItem(IDC_COMBO8).EnableWindow(FALSE);
+		GetDlgItem(IDC_STATIC_MAXINESCALE).EnableWindow(FALSE);
+		GetDlgItem(IDC_COMBO12).EnableWindow(FALSE);
 		GetDlgItem(IDC_STATIC_MAXINEVSR).EnableWindow(FALSE);
 		GetDlgItem(IDC_COMBO11).EnableWindow(FALSE);
+		GetDlgItem(IDC_STATIC_MAXINEDENOISE).EnableWindow(FALSE);
+		GetDlgItem(IDC_COMBO13).EnableWindow(FALSE);
+		GetDlgItem(IDC_STATIC_MAXINEDEBLUR).EnableWindow(FALSE);
+		GetDlgItem(IDC_COMBO14).EnableWindow(FALSE);
 		GetDlgItem(IDC_CHECK19).EnableWindow(FALSE);
 	}
 
 #ifndef _WIN64
 	GetDlgItem(IDC_STATIC7).EnableWindow(FALSE);
 	GetDlgItem(IDC_COMBO8).EnableWindow(FALSE);
+	GetDlgItem(IDC_STATIC_MAXINESCALE).EnableWindow(FALSE);
+	GetDlgItem(IDC_COMBO12).EnableWindow(FALSE);
 	GetDlgItem(IDC_STATIC_MAXINEVSR).EnableWindow(FALSE);
 	GetDlgItem(IDC_COMBO11).EnableWindow(FALSE);
+	GetDlgItem(IDC_STATIC_MAXINEDENOISE).EnableWindow(FALSE);
+	GetDlgItem(IDC_COMBO13).EnableWindow(FALSE);
+	GetDlgItem(IDC_STATIC_MAXINEDEBLUR).EnableWindow(FALSE);
+	GetDlgItem(IDC_COMBO14).EnableWindow(FALSE);
 	GetDlgItem(IDC_CHECK19).EnableWindow(FALSE);
 #endif
 
@@ -258,11 +280,22 @@ HRESULT CVRMainPPage::OnActivate()
 	SendDlgItemMessageW(IDC_COMBO8, CB_ADDSTRING, 0, (LPARAM)L"for \x2264 1080p");
 	SendDlgItemMessageW(IDC_COMBO8, CB_ADDSTRING, 0, (LPARAM)L"for \x2264 1440p");
 
+	ComboBox_AddStringData(m_hWnd, IDC_COMBO12, L"2x", MAXINEVSR_SCALE_2X);
+	ComboBox_AddStringData(m_hWnd, IDC_COMBO12, L"4x", MAXINEVSR_SCALE_4X);
+
 	SendDlgItemMessageW(IDC_COMBO11, CB_ADDSTRING, 0, (LPARAM)L"Off");
 	SendDlgItemMessageW(IDC_COMBO11, CB_ADDSTRING, 0, (LPARAM)L"Low");
 	SendDlgItemMessageW(IDC_COMBO11, CB_ADDSTRING, 0, (LPARAM)L"Medium");
 	SendDlgItemMessageW(IDC_COMBO11, CB_ADDSTRING, 0, (LPARAM)L"High");
 	SendDlgItemMessageW(IDC_COMBO11, CB_ADDSTRING, 0, (LPARAM)L"Ultra");
+
+	for (const int id : {IDC_COMBO13, IDC_COMBO14}) {
+		SendDlgItemMessageW(id, CB_ADDSTRING, 0, (LPARAM)L"Off");
+		SendDlgItemMessageW(id, CB_ADDSTRING, 0, (LPARAM)L"Low");
+		SendDlgItemMessageW(id, CB_ADDSTRING, 0, (LPARAM)L"Medium");
+		SendDlgItemMessageW(id, CB_ADDSTRING, 0, (LPARAM)L"High");
+		SendDlgItemMessageW(id, CB_ADDSTRING, 0, (LPARAM)L"Ultra");
+	}
 
 	SendDlgItemMessageW(IDC_COMBO7, CB_ADDSTRING, 0, (LPARAM)L"Do not change");
 	SendDlgItemMessageW(IDC_COMBO7, CB_ADDSTRING, 0, (LPARAM)L"Allow turn on (fullscreen)");
@@ -322,11 +355,20 @@ HRESULT CVRMainPPage::OnActivate()
 		"When Maxine VSR is enabled, this limit is used by Maxine.\n"
 		"When Maxine VSR is Off, it controls the hardware video\n"
 		"processor Super Resolution request.");
+	AddHint(IDC_COMBO12,
+		L"Selects the fixed Maxine inference scale. The scale is\n"
+		"independent of the player window or display resolution.");
 	AddHint(IDC_COMBO11,
 		L"Selects NVIDIA Maxine Video Super Resolution quality.\n"
 		"The Super Resolution source limit above is shared with\n"
 		"the normal hardware VSR path. SDR input is converted to\n"
 		"BGRA8 for Maxine; HDR is not supported yet.");
+	AddHint(IDC_COMBO13,
+		L"Runs an additional same-resolution Maxine denoise pass\n"
+		"after upscaling. This adds substantial GPU cost.");
+	AddHint(IDC_COMBO14,
+		L"Runs an additional same-resolution Maxine deblur pass\n"
+		"after denoise. This adds substantial GPU cost.");
 	AddHint(IDC_CHECK19,
 		L"Available for Direct3D 11.\n"
 		"Requires hardware and driver support:\n"
@@ -494,11 +536,35 @@ INT_PTR CVRMainPPage::OnReceiveMessage(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 				}
 				return (LRESULT)1;
 			}
+			if (nID == IDC_COMBO12) {
+				lValue = ComboBox_GetCurItemData(m_hWnd, IDC_COMBO12);
+				if (lValue != CB_ERR && lValue != m_SetsPP.iMaxineVSRScale) {
+					m_SetsPP.iMaxineVSRScale = static_cast<int>(lValue);
+					SetDirty();
+				}
+				return (LRESULT)1;
+			}
 			if (nID == IDC_COMBO11) {
 				lValue = SendDlgItemMessageW(IDC_COMBO11, CB_GETCURSEL, 0, 0);
 				if (lValue != m_SetsPP.iMaxineVSR) {
 					m_SetsPP.iMaxineVSR = lValue;
 					EnableControls();
+					SetDirty();
+				}
+				return (LRESULT)1;
+			}
+			if (nID == IDC_COMBO13) {
+				lValue = SendDlgItemMessageW(IDC_COMBO13, CB_GETCURSEL, 0, 0);
+				if (lValue != m_SetsPP.iMaxineVSRDenoise) {
+					m_SetsPP.iMaxineVSRDenoise = lValue;
+					SetDirty();
+				}
+				return (LRESULT)1;
+			}
+			if (nID == IDC_COMBO14) {
+				lValue = SendDlgItemMessageW(IDC_COMBO14, CB_GETCURSEL, 0, 0);
+				if (lValue != m_SetsPP.iMaxineVSRDeblur) {
+					m_SetsPP.iMaxineVSRDeblur = lValue;
 					SetDirty();
 				}
 				return (LRESULT)1;

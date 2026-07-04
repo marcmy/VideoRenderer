@@ -72,6 +72,8 @@ private:
 	Tex2D_t m_TexConvertOutput;
 	Tex2D_t m_TexMaxineInput;
 	Tex2D_t m_TexMaxineVSR;
+	Tex2D_t m_TexMaxineDenoise;
+	Tex2D_t m_TexMaxineDeblur;
 	Tex2D_t m_TexResize;        // for intermediate result of two-pass resize
 	CTex2DRing m_TexsPostScale;
 	Tex2D_t m_TexDither;
@@ -186,9 +188,15 @@ private:
 	bool m_bVPUseSuperRes = false; // but it is not exactly
 
 	int m_iMaxineVSR = MAXINEVSR_Disable;
+	int m_iMaxineVSRScale = MAXINEVSR_SCALE_2X;
+	int m_iMaxineVSRDenoise = MAXINEVSR_FILTER_Off;
+	int m_iMaxineVSRDeblur = MAXINEVSR_FILTER_Off;
 	bool m_bMaxineVSRUsed = false;
+	CSize m_MaxineVSRSize;
 	std::wstring m_strMaxineVSRStatus = L"Disabled";
 	CNvidiaMaxineVSR m_MaxineVSR;
+	CNvidiaMaxineVSR m_MaxineDenoise;
+	CNvidiaMaxineVSR m_MaxineDeblur;
 
 	bool m_bVPRTXVideoHDR = false;
 	bool m_bVPUseRTXVideoHDR = false;

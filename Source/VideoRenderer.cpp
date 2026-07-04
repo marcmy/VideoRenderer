@@ -47,6 +47,9 @@
 #define OPT_VPScaling                      L"VPScaling"
 #define OPT_VPSuperResolution              L"VPSuperResolution"
 #define OPT_MaxineVideoSuperResolution      L"MaxineVideoSuperResolution"
+#define OPT_MaxineVideoSuperResolutionScale L"MaxineVideoSuperResolutionScale"
+#define OPT_MaxineVideoDenoise              L"MaxineVideoDenoise"
+#define OPT_MaxineVideoDeblur               L"MaxineVideoDeblur"
 #define OPT_VPRTXVideoHDR                  L"VPRTXVideoHDR"
 #define OPT_ChromaUpsampling               L"ChromaUpsampling"
 #define OPT_Upscaling                      L"Upscaling"
@@ -211,6 +214,16 @@ CMpcVideoRenderer::CMpcVideoRenderer(LPUNKNOWN pUnk, HRESULT* phr)
 #ifdef _WIN64
 		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoSuperResolution, dw)) {
 			m_Sets.iMaxineVSR = discard<int>(dw, MAXINEVSR_Disable, 0, MAXINEVSR_COUNT-1);
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoSuperResolutionScale, dw)
+				&& (dw == MAXINEVSR_SCALE_2X || dw == MAXINEVSR_SCALE_4X)) {
+			m_Sets.iMaxineVSRScale = dw;
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoDenoise, dw)) {
+			m_Sets.iMaxineVSRDenoise = discard<int>(dw, MAXINEVSR_FILTER_Off, 0, MAXINEVSR_FILTER_COUNT-1);
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoDeblur, dw)) {
+			m_Sets.iMaxineVSRDeblur = discard<int>(dw, MAXINEVSR_FILTER_Off, 0, MAXINEVSR_FILTER_COUNT-1);
 		}
 		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_VPRTXVideoHDR, dw)) {
 			m_Sets.bVPRTXVideoHDR = !!dw;
@@ -1291,7 +1304,10 @@ STDMETHODIMP CMpcVideoRenderer::SaveSettings()
 		key.SetDWORDValue(OPT_VPScaling,           m_Sets.bVPScaling);
 		key.SetDWORDValue(OPT_VPSuperResolution,   m_Sets.iVPSuperRes);
 #ifdef _WIN64
-		key.SetDWORDValue(OPT_MaxineVideoSuperResolution, m_Sets.iMaxineVSR);
+		key.SetDWORDValue(OPT_MaxineVideoSuperResolution,      m_Sets.iMaxineVSR);
+		key.SetDWORDValue(OPT_MaxineVideoSuperResolutionScale, m_Sets.iMaxineVSRScale);
+		key.SetDWORDValue(OPT_MaxineVideoDenoise,              m_Sets.iMaxineVSRDenoise);
+		key.SetDWORDValue(OPT_MaxineVideoDeblur,               m_Sets.iMaxineVSRDeblur);
 		key.SetDWORDValue(OPT_VPRTXVideoHDR,       m_Sets.bVPRTXVideoHDR);
 #endif
 		key.SetDWORDValue(OPT_ChromaUpsampling,    m_Sets.iChromaScaling);

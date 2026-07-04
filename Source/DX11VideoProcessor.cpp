@@ -121,6 +121,11 @@ static const wchar_t* MaxineVSRQualityToString(const int quality)
 	}
 }
 
+static const wchar_t* MaxineVSRFilterToString(const int quality)
+{
+	return MaxineVSRQualityToString(quality);
+}
+
 static bool SourceMatchesSuperResLimit(const UINT width, const UINT height, const int limit)
 {
 	auto CheckDimension = [width, height](const UINT maxWidth, const UINT maxHeight) {
@@ -419,6 +424,9 @@ CDX11VideoProcessor::CDX11VideoProcessor(CMpcVideoRenderer* pFilter, const Setti
 	m_bVPScaling           = config.bVPScaling;
 	m_iVPSuperRes          = config.iVPSuperRes;
 	m_iMaxineVSR           = config.iMaxineVSR;
+	m_iMaxineVSRScale      = config.iMaxineVSRScale;
+	m_iMaxineVSRDenoise    = config.iMaxineVSRDenoise;
+	m_iMaxineVSRDeblur     = config.iMaxineVSRDeblur;
 	m_bVPRTXVideoHDR       = config.bVPRTXVideoHDR;
 	m_iChromaScaling       = config.iChromaScaling;
 	m_iUpscaling           = config.iUpscaling;
@@ -691,9 +699,14 @@ void CDX11VideoProcessor::ReleaseVP()
 	}
 
 	m_MaxineVSR.Reset();
+	m_MaxineDenoise.Reset();
+	m_MaxineDeblur.Reset();
 	m_bMaxineVSRUsed = false;
+	m_MaxineVSRSize = CSize(0, 0);
 	m_TexMaxineInput.Release();
 	m_TexMaxineVSR.Release();
+	m_TexMaxineDenoise.Release();
+	m_TexMaxineDeblur.Release();
 	m_TexSrcVideo.Release();
 	m_TexConvertOutput.Release();
 	m_TexResize.Release();
@@ -2944,47 +2957,21 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSize(const CRect& dstRect, CSize& ta
 		return false;
 	}
 
-	const bool rotatedQuarterTurn = m_iRotation == 90 || m_iRotation == 270;
-	const UINT presentationSourceWidth = rotatedQuarterTurn ? m_srcRectHeight : m_srcRectWidth;
-	const UINT presentationSourceHeight = rotatedQuarterTurn ? m_srcRectWidth : m_srcRectHeight;
-	const double scaleX = static_cast<double>(dstWidth) / presentationSourceWidth;
-	const double scaleY = static_cast<double>(dstHeight) / presentationSourceHeight;
-	const double requestedScale = std::max(scaleX, scaleY);
-
-	// The source-resolution selector controls eligibility, not whether the
-	// presentation rectangle happens to be larger. When displaying at the
-	// source resolution (or smaller), run Maxine at a higher internal
-	// resolution and let MPCVR downsample the enhanced result.
-	const bool landscape = m_srcRectWidth >= m_srcRectHeight;
-	const double maxOutputWidth = landscape ? 3840.0 : 2160.0;
-	const double maxOutputHeight = landscape ? 2160.0 : 3840.0;
-	const double maxScale = std::min({
-		4.0,
-		maxOutputWidth / m_srcRectWidth,
-		maxOutputHeight / m_srcRectHeight,
-	});
-	if (maxScale <= 1.0) {
-		m_strMaxineVSRStatus = L"Source is already at the 4K processing ceiling";
+	if (m_iMaxineVSRScale != MAXINEVSR_SCALE_2X && m_iMaxineVSRScale != MAXINEVSR_SCALE_4X) {
+		m_strMaxineVSRStatus = L"Invalid Maxine scale setting";
 		return false;
 	}
 
-	const double minimumEnhancementScale = std::min(2.0, maxScale);
-	const double targetScale = std::min(maxScale, std::max(requestedScale, minimumEnhancementScale));
-	auto ScaleDimension = [targetScale](const UINT value) {
-		const UINT scaled = static_cast<UINT>(std::lround(value * targetScale));
-		return static_cast<int>((scaled + 1u) & ~1u);
-	};
-	targetSize = CSize(ScaleDimension(m_srcRectWidth), ScaleDimension(m_srcRectHeight));
+	const unsigned long long targetWidth = static_cast<unsigned long long>(m_srcRectWidth) * m_iMaxineVSRScale;
+	const unsigned long long targetHeight = static_cast<unsigned long long>(m_srcRectHeight) * m_iMaxineVSRScale;
+	if (targetWidth > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION
+			|| targetHeight > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) {
+		m_strMaxineVSRStatus = L"Selected Maxine scale exceeds the D3D11 texture-size limit";
+		return false;
+	}
 
-	if (requestedScale > maxScale) {
-		m_strMaxineVSRStatus = std::format(L"Eligible: {:.2f}x Maxine plus renderer scaling", targetScale);
-	}
-	else if (requestedScale <= 1.0) {
-		m_strMaxineVSRStatus = std::format(L"Eligible: {:.2f}x supersampling", targetScale);
-	}
-	else {
-		m_strMaxineVSRStatus = std::format(L"Eligible: {:.2f}x Maxine scaling", targetScale);
-	}
+	targetSize = CSize(static_cast<int>(targetWidth), static_cast<int>(targetHeight));
+	m_strMaxineVSRStatus = std::format(L"Eligible: {}x fixed inference scale", m_iMaxineVSRScale);
 	return true;
 #else
 	UNREFERENCED_PARAMETER(dstRect);
@@ -3002,9 +2989,14 @@ void CDX11VideoProcessor::UpdateTexures()
 	// D3D11 textures registered with CUDA must be unregistered before the
 	// renderer releases or recreates them.
 	m_MaxineVSR.Reset();
+	m_MaxineDenoise.Reset();
+	m_MaxineDeblur.Reset();
 	m_bMaxineVSRUsed = false;
+	m_MaxineVSRSize = CSize(0, 0);
 	m_TexMaxineInput.Release();
 	m_TexMaxineVSR.Release();
+	m_TexMaxineDenoise.Release();
+	m_TexMaxineDeblur.Release();
 
 	// TODO: try making w and h a multiple of 128.
 	HRESULT hr = S_OK;
@@ -3468,6 +3460,7 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 	}
 
 	m_bMaxineVSRUsed = false;
+	m_MaxineVSRSize = CSize(0, 0);
 	if (canUseMaxineVSR) {
 		const CRect inputRect(0, 0, m_srcRectWidth, m_srcRectHeight);
 		const HRESULT inputCreateHr = m_TexMaxineInput.CheckCreate(m_pDevice,
@@ -3489,6 +3482,8 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 				if (m_TexMaxineVSR.desc.Width != static_cast<UINT>(maxineTargetSize.cx)
 						|| m_TexMaxineVSR.desc.Height != static_cast<UINT>(maxineTargetSize.cy)) {
 					m_MaxineVSR.Reset();
+					m_MaxineDenoise.Reset();
+					m_MaxineDeblur.Reset();
 				}
 
 				const HRESULT outputCreateHr = m_TexMaxineVSR.CheckCreate(m_pDevice,
@@ -3497,15 +3492,55 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 				if (FAILED(outputCreateHr)) {
 					m_strMaxineVSRStatus = L"Could not create the Maxine output texture";
 				}
-				else if (m_MaxineVSR.Process(m_pDeviceContext, m_TexMaxineInput.pTexture,
+				else if (!m_MaxineVSR.Process(m_pDeviceContext, m_TexMaxineInput.pTexture,
 						m_TexMaxineVSR.pTexture, static_cast<unsigned>(m_iMaxineVSR))) {
-					pInputTexture = &m_TexMaxineVSR;
-					rSrc.SetRect(0, 0, maxineTargetSize.cx, maxineTargetSize.cy);
-					m_bMaxineVSRUsed = true;
 					m_strMaxineVSRStatus = m_MaxineVSR.GetStatus();
 				}
 				else {
-					m_strMaxineVSRStatus = m_MaxineVSR.GetStatus();
+					Tex2D_t* pMaxineResult = &m_TexMaxineVSR;
+					bool passesOk = true;
+
+					if (m_iMaxineVSRDenoise != MAXINEVSR_FILTER_Off) {
+						const HRESULT createHr = m_TexMaxineDenoise.CheckCreate(m_pDevice,
+							DXGI_FORMAT_B8G8R8A8_UNORM, maxineTargetSize.cx, maxineTargetSize.cy,
+							Tex2D_DefaultShaderRTarget);
+						const unsigned denoiseMode = 7u + static_cast<unsigned>(m_iMaxineVSRDenoise);
+						if (FAILED(createHr) || !m_MaxineDenoise.Process(m_pDeviceContext,
+							pMaxineResult->pTexture, m_TexMaxineDenoise.pTexture, denoiseMode)) {
+							m_strMaxineVSRStatus = FAILED(createHr)
+								? L"Could not create the Maxine denoise texture"
+								: std::format(L"Denoise failed: {}", m_MaxineDenoise.GetStatus());
+							passesOk = false;
+						}
+						else {
+							pMaxineResult = &m_TexMaxineDenoise;
+						}
+					}
+
+					if (passesOk && m_iMaxineVSRDeblur != MAXINEVSR_FILTER_Off) {
+						const HRESULT createHr = m_TexMaxineDeblur.CheckCreate(m_pDevice,
+							DXGI_FORMAT_B8G8R8A8_UNORM, maxineTargetSize.cx, maxineTargetSize.cy,
+							Tex2D_DefaultShaderRTarget);
+						const unsigned deblurMode = 11u + static_cast<unsigned>(m_iMaxineVSRDeblur);
+						if (FAILED(createHr) || !m_MaxineDeblur.Process(m_pDeviceContext,
+							pMaxineResult->pTexture, m_TexMaxineDeblur.pTexture, deblurMode)) {
+							m_strMaxineVSRStatus = FAILED(createHr)
+								? L"Could not create the Maxine deblur texture"
+								: std::format(L"Deblur failed: {}", m_MaxineDeblur.GetStatus());
+							passesOk = false;
+						}
+						else {
+							pMaxineResult = &m_TexMaxineDeblur;
+						}
+					}
+
+					if (passesOk) {
+						pInputTexture = pMaxineResult;
+						rSrc.SetRect(0, 0, maxineTargetSize.cx, maxineTargetSize.cy);
+						m_bMaxineVSRUsed = true;
+						m_MaxineVSRSize = maxineTargetSize;
+						m_strMaxineVSRStatus = L"Active";
+					}
 				}
 			}
 		}
@@ -4131,8 +4166,14 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 		changeTextures = true;
 	}
 
-	if (config.iMaxineVSR != m_iMaxineVSR) {
+	if (config.iMaxineVSR != m_iMaxineVSR
+			|| config.iMaxineVSRScale != m_iMaxineVSRScale
+			|| config.iMaxineVSRDenoise != m_iMaxineVSRDenoise
+			|| config.iMaxineVSRDeblur != m_iMaxineVSRDeblur) {
 		m_iMaxineVSR = config.iMaxineVSR;
+		m_iMaxineVSRScale = config.iMaxineVSRScale;
+		m_iMaxineVSRDenoise = config.iMaxineVSRDenoise;
+		m_iMaxineVSRDeblur = config.iMaxineVSRDeblur;
 		changeMaxineVSR = true;
 		changeTextures = true;
 	}
@@ -4600,10 +4641,7 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 		str += std::format(L"\nScaling       : {}x{} -> {}x{}", m_srcRectWidth, m_srcRectHeight, dstW, dstH);
 	}
 	if (m_srcRectWidth != dstW || m_srcRectHeight != dstH) {
-		if (m_bMaxineVSRUsed) {
-			str += std::format(L" NVIDIA Maxine VSR ({})*", MaxineVSRQualityToString(m_iMaxineVSR));
-		}
-		else if (m_D3D11VP.IsReady() && m_bVPScaling && !m_bVPScalingUseShaders) {
+		if (m_D3D11VP.IsReady() && m_bVPScaling && !m_bVPScalingUseShaders && !m_bMaxineVSRUsed) {
 			str.append(L" D3D11");
 			if (m_bVPUseSuperRes) {
 				str.append(L" SuperResolution*");
@@ -4621,7 +4659,16 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 			}
 		}
 	}
-	if (m_iMaxineVSR != MAXINEVSR_Disable && !m_bMaxineVSRUsed) {
+	if (m_bMaxineVSRUsed) {
+		str += std::format(L"\nMaxine VSR   : {}x {}, {}x{} -> {}x{}, denoise {}, deblur {}",
+			m_iMaxineVSRScale,
+			MaxineVSRQualityToString(m_iMaxineVSR),
+			m_srcRectWidth, m_srcRectHeight,
+			m_MaxineVSRSize.cx, m_MaxineVSRSize.cy,
+			MaxineVSRFilterToString(m_iMaxineVSRDenoise),
+			MaxineVSRFilterToString(m_iMaxineVSRDeblur));
+	}
+	else if (m_iMaxineVSR != MAXINEVSR_Disable) {
 		str += std::format(L"\nMaxine VSR   : not used ({})", m_strMaxineVSRStatus);
 	}
 
