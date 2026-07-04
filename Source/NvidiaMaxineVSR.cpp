@@ -134,26 +134,47 @@ std::vector<std::wstring> GetRuntimeSearchDirectories()
 		}
 	};
 
-	Add(GetModuleDirectoryFromAddress(&g_moduleAddressMarker));
+	auto AddRoot = [&Add](const std::filesystem::path& root) {
+		Add(root.wstring());
+		Add((root / L"nvvfx" / L"libs").wstring());
+		Add((root / L"_internal" / L"nvvfx" / L"libs").wstring());
+	};
 
-	wchar_t path[MAX_PATH] = {};
-	if (GetModuleFileNameW(nullptr, path, std::size(path))) {
-		Add(std::filesystem::path(path).parent_path().wstring());
-	}
-
+	// Explicit runtime locations must win over old SDK installations beside
+	// the player or in Program Files.
 	wchar_t envPath[32768] = {};
-	const DWORD envLen = GetEnvironmentVariableW(L"NV_VIDEO_EFFECTS_PATH", envPath, std::size(envPath));
-	if (envLen && envLen < std::size(envPath) && _wcsicmp(envPath, L"USE_APP_PATH") != 0) {
-		const std::filesystem::path configuredPath(envPath);
-		Add(configuredPath.wstring());
-		Add((configuredPath / L"nvvfx" / L"libs").wstring());
-	}
-
-	for (const wchar_t* envName : {L"SMOOTHJAS_GPU_RUNTIME", L"JASNA_WORKING_DIR"}) {
+	for (const wchar_t* envName : {L"NV_VIDEO_EFFECTS_PATH", L"SMOOTHJAS_GPU_RUNTIME", L"JASNA_WORKING_DIR"}) {
 		ZeroMemory(envPath, sizeof(envPath));
 		const DWORD len = GetEnvironmentVariableW(envName, envPath, std::size(envPath));
-		if (len && len < std::size(envPath)) {
-			Add((std::filesystem::path(envPath) / L"nvvfx" / L"libs").wstring());
+		if (len && len < std::size(envPath)
+				&& (_wcsicmp(envName, L"NV_VIDEO_EFFECTS_PATH") != 0 || _wcsicmp(envPath, L"USE_APP_PATH") != 0)) {
+			AddRoot(std::filesystem::path(envPath));
+		}
+	}
+
+	const std::filesystem::path moduleDir(GetModuleDirectoryFromAddress(&g_moduleAddressMarker));
+	if (!moduleDir.empty()) {
+		AddRoot(moduleDir);
+	}
+
+	wchar_t pathBuffer[MAX_PATH] = {};
+	if (GetModuleFileNameW(nullptr, pathBuffer, std::size(pathBuffer))) {
+		AddRoot(std::filesystem::path(pathBuffer).parent_path());
+	}
+
+	// Also honor directories already placed on PATH by a launcher.
+	ZeroMemory(envPath, sizeof(envPath));
+	const DWORD pathLen = GetEnvironmentVariableW(L"PATH", envPath, std::size(envPath));
+	if (pathLen && pathLen < std::size(envPath)) {
+		std::wstring pathValue(envPath, pathLen);
+		size_t offset = 0;
+		while (offset <= pathValue.size()) {
+			const size_t separator = pathValue.find(L';', offset);
+			Add(pathValue.substr(offset, separator == std::wstring::npos ? std::wstring::npos : separator - offset));
+			if (separator == std::wstring::npos) {
+				break;
+			}
+			offset = separator + 1;
 		}
 	}
 
@@ -181,6 +202,8 @@ struct CNvidiaMaxineVSR::Impl
 #ifdef _WIN64
 	HMODULE hNvCVImage = nullptr;
 	HMODULE hNvVideoEffects = nullptr;
+	std::vector<HMODULE> hRuntimeDependencies;
+	std::wstring runtimeDirectory;
 
 	PFN_NvVFX_GetVersion NvVFX_GetVersion = nullptr;
 	PFN_NvVFX_CreateEffect NvVFX_CreateEffect = nullptr;
@@ -274,6 +297,14 @@ struct CNvidiaMaxineVSR::Impl
 	void UnloadRuntime()
 	{
 		ResetEffect();
+
+		for (auto it = hRuntimeDependencies.rbegin(); it != hRuntimeDependencies.rend(); ++it) {
+			if (*it) {
+				FreeLibrary(*it);
+			}
+		}
+		hRuntimeDependencies.clear();
+
 		if (hNvVideoEffects) {
 			FreeLibrary(hNvVideoEffects);
 			hNvVideoEffects = nullptr;
@@ -282,6 +313,7 @@ struct CNvidiaMaxineVSR::Impl
 			FreeLibrary(hNvCVImage);
 			hNvCVImage = nullptr;
 		}
+		runtimeDirectory.clear();
 	}
 
 	bool LoadRuntime()
@@ -294,24 +326,86 @@ struct CNvidiaMaxineVSR::Impl
 		}
 		runtimeAttempted = true;
 
+		static constexpr std::array<const wchar_t*, 12> optionalDependencies = {
+			L"nppc64_12.dll",
+			L"nppial64_12.dll",
+			L"nppicc64_12.dll",
+			L"nppidei64_12.dll",
+			L"nppif64_12.dll",
+			L"nppig64_12.dll",
+			L"nppim64_12.dll",
+			L"nppist64_12.dll",
+			L"nppitc64_12.dll",
+			L"nvinfer_10.dll",
+			L"nvinfer_plugin_10.dll",
+			L"nvonnxparser_10.dll",
+		};
+
 		for (const auto& directory : GetRuntimeSearchDirectories()) {
-			HMODULE imageModule = LoadRuntimeLibrary(directory, L"NVCVImage.dll");
-			if (!imageModule) {
-				continue;
-			}
-			HMODULE effectsModule = LoadRuntimeLibrary(directory, L"NVVideoEffects.dll");
-			if (!effectsModule) {
-				FreeLibrary(imageModule);
+			const std::filesystem::path base(directory);
+			const auto imagePath = base / L"NVCVImage.dll";
+			const auto effectsPath = base / L"NVVideoEffects.dll";
+			const auto ngxRuntimePath = base / L"nvngxruntime.dll";
+			const auto ngxVsrPath = base / L"nvngx_vsr.dll";
+			const auto featurePath = base / L"nvVFXVideoSuperRes.dll";
+
+			// Core-only/older Maxine installations expose NvVFX_CreateEffect but
+			// cannot create the modern VideoSuperRes selector. Skip them.
+			if (!std::filesystem::is_regular_file(imagePath)
+					|| !std::filesystem::is_regular_file(effectsPath)
+					|| !std::filesystem::is_regular_file(ngxRuntimePath)
+					|| !std::filesystem::is_regular_file(ngxVsrPath)
+					|| !std::filesystem::is_regular_file(featurePath)) {
 				continue;
 			}
 
-			hNvCVImage = imageModule;
-			hNvVideoEffects = effectsModule;
-			break;
+			std::vector<HMODULE> dependencies;
+			auto LoadDependency = [&](const wchar_t* filename, bool required) {
+				const auto dependencyPath = base / filename;
+				if (!std::filesystem::is_regular_file(dependencyPath)) {
+					return !required;
+				}
+				HMODULE module = LoadRuntimeLibrary(directory, filename);
+				if (!module) {
+					return !required;
+				}
+				dependencies.push_back(module);
+				return true;
+			};
+
+			for (const wchar_t* dependency : optionalDependencies) {
+				LoadDependency(dependency, false);
+			}
+
+			HMODULE imageModule = LoadRuntimeLibrary(directory, L"NVCVImage.dll");
+			HMODULE ngxRuntimeModule = LoadRuntimeLibrary(directory, L"nvngxruntime.dll");
+			HMODULE effectsModule = LoadRuntimeLibrary(directory, L"NVVideoEffects.dll");
+			HMODULE ngxVsrModule = LoadRuntimeLibrary(directory, L"nvngx_vsr.dll");
+			HMODULE featureModule = LoadRuntimeLibrary(directory, L"nvVFXVideoSuperRes.dll");
+
+			if (imageModule && ngxRuntimeModule && effectsModule && ngxVsrModule && featureModule) {
+				hNvCVImage = imageModule;
+				hNvVideoEffects = effectsModule;
+				dependencies.push_back(ngxRuntimeModule);
+				dependencies.push_back(ngxVsrModule);
+				dependencies.push_back(featureModule);
+				hRuntimeDependencies = std::move(dependencies);
+				runtimeDirectory = directory;
+				break;
+			}
+
+			if (featureModule) FreeLibrary(featureModule);
+			if (ngxVsrModule) FreeLibrary(ngxVsrModule);
+			if (effectsModule) FreeLibrary(effectsModule);
+			if (ngxRuntimeModule) FreeLibrary(ngxRuntimeModule);
+			if (imageModule) FreeLibrary(imageModule);
+			for (auto it = dependencies.rbegin(); it != dependencies.rend(); ++it) {
+				FreeLibrary(*it);
+			}
 		}
 
 		if (!hNvCVImage || !hNvVideoEffects) {
-			status = L"NVIDIA Video Effects runtime not found";
+			status = L"Compatible VideoSuperRes runtime not found; set NV_VIDEO_EFFECTS_PATH to the nvvfx\\libs directory";
 			return false;
 		}
 
@@ -336,7 +430,7 @@ struct CNvidiaMaxineVSR::Impl
 		LoadProc(hNvCVImage, "NvCV_GetErrorStringFromCode", NvCV_GetErrorStringFromCode);
 
 		if (!ok) {
-			status = L"NVIDIA Video Effects runtime is missing required exports";
+			status = std::format(L"VideoSuperRes runtime at {} is missing required exports", runtimeDirectory);
 			UnloadRuntime();
 			return false;
 		}
@@ -348,10 +442,11 @@ struct CNvidiaMaxineVSR::Impl
 			return false;
 		}
 
-		status = std::format(L"Runtime {}.{}.{} loaded",
+		status = std::format(L"Runtime {}.{}.{} loaded from {}",
 			(sdkVersion >> 24) & 0xff,
 			(sdkVersion >> 16) & 0xff,
-			(sdkVersion >> 8) & 0xff);
+			(sdkVersion >> 8) & 0xff,
+			runtimeDirectory);
 		DLog(L"NVIDIA Maxine VSR: {}", status);
 		return true;
 	}
@@ -422,7 +517,17 @@ struct CNvidiaMaxineVSR::Impl
 
 		code = NvVFX_CreateEffect("VideoSuperRes", &effect);
 		if (code != NVCV_SUCCESS) {
-			SetError(L"NvVFX_CreateEffect(VideoSuperRes)", code);
+			if (code == -2) {
+				status = std::format(L"VideoSuperRes feature did not register in runtime {}.{}.{} at {}",
+					(sdkVersion >> 24) & 0xff,
+					(sdkVersion >> 16) & 0xff,
+					(sdkVersion >> 8) & 0xff,
+					runtimeDirectory);
+				DLog(L"NVIDIA Maxine VSR: {}", status);
+			}
+			else {
+				SetError(L"NvVFX_CreateEffect(VideoSuperRes)", code);
+			}
 			ResetEffect();
 			failed = true;
 			return false;
