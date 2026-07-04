@@ -2949,16 +2949,41 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSize(const CRect& dstRect, CSize& ta
 	const double scaleX = static_cast<double>(dstWidth) / m_srcRectWidth;
 	const double scaleY = static_cast<double>(dstHeight) / m_srcRectHeight;
 	const double requestedScale = std::max(scaleX, scaleY);
-	if (requestedScale <= 1.0) {
-		m_strMaxineVSRStatus = L"Not needed: output does not upscale the source";
+
+	// The source-resolution selector controls eligibility, not whether the
+	// presentation rectangle happens to be larger. When displaying at the
+	// source resolution (or smaller), run Maxine at a higher internal
+	// resolution and let MPCVR downsample the enhanced result.
+	const bool landscape = m_srcRectWidth >= m_srcRectHeight;
+	const double maxOutputWidth = landscape ? 3840.0 : 2160.0;
+	const double maxOutputHeight = landscape ? 2160.0 : 3840.0;
+	const double maxScale = std::min({
+		4.0,
+		maxOutputWidth / m_srcRectWidth,
+		maxOutputHeight / m_srcRectHeight,
+	});
+	if (maxScale <= 1.0) {
+		m_strMaxineVSRStatus = L"Source is already at the 4K processing ceiling";
 		return false;
 	}
 
-	const UINT scale = static_cast<UINT>(std::clamp(std::ceil(requestedScale), 2.0, 4.0));
-	targetSize = CSize(m_srcRectWidth * scale, m_srcRectHeight * scale);
-	m_strMaxineVSRStatus = requestedScale > 4.0
-		? L"Eligible: Maxine 4x plus renderer scaling"
-		: L"Eligible";
+	const double minimumEnhancementScale = std::min(2.0, maxScale);
+	const double targetScale = std::min(maxScale, std::max(requestedScale, minimumEnhancementScale));
+	auto ScaleDimension = [targetScale](const UINT value) {
+		const UINT scaled = static_cast<UINT>(std::lround(value * targetScale));
+		return static_cast<int>((scaled + 1u) & ~1u);
+	};
+	targetSize = CSize(ScaleDimension(m_srcRectWidth), ScaleDimension(m_srcRectHeight));
+
+	if (requestedScale > maxScale) {
+		m_strMaxineVSRStatus = std::format(L"Eligible: {:.2f}x Maxine plus renderer scaling", targetScale);
+	}
+	else if (requestedScale <= 1.0) {
+		m_strMaxineVSRStatus = std::format(L"Eligible: {:.2f}x supersampling", targetScale);
+	}
+	else {
+		m_strMaxineVSRStatus = std::format(L"Eligible: {:.2f}x Maxine scaling", targetScale);
+	}
 	return true;
 #else
 	UNREFERENCED_PARAMETER(dstRect);
