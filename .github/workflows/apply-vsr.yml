@@ -19,6 +19,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: feature/nvidia-maxine-vsr
+          submodules: recursive
 
       - name: Extract and apply implementation patch
         shell: pwsh
@@ -38,7 +39,16 @@ jobs:
 
       - name: Build VideoRenderer
         shell: pwsh
-        run: .\build_mpcvr.cmd NoWait
+        run: |
+          .\build_mpcvr.cmd NoWait *>&1 | Tee-Object build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Maxine-VSR-build-log
+          path: build.log
 
       - name: Commit implementation
         shell: pwsh
