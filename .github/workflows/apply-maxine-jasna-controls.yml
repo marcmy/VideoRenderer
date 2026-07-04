@@ -1,0 +1,73 @@
+name: Apply Maxine Jasna controls
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - .github/workflows/apply-maxine-jasna-controls.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-build-commit:
+    runs-on: windows-2022
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: feature/nvidia-maxine-vsr
+          submodules: recursive
+
+      - name: Reconstruct and apply implementation patch
+        shell: pwsh
+        run: |
+          $chunks = Get-ChildItem .github/patches/maxine-jasna-controls.b64.* | Sort-Object Name
+          if (-not $chunks) { throw 'Maxine patch chunks were not found.' }
+          $encoded = ($chunks | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
+          $compressed = [Convert]::FromBase64String($encoded)
+          $input = [IO.MemoryStream]::new($compressed)
+          $gzip = [IO.Compression.GzipStream]::new($input, [IO.Compression.CompressionMode]::Decompress)
+          $output = [IO.File]::Create('maxine-jasna-controls.patch')
+          try { $gzip.CopyTo($output) } finally { $output.Dispose(); $gzip.Dispose(); $input.Dispose() }
+
+          git apply --3way --whitespace=nowarn maxine-jasna-controls.patch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          Remove-Item maxine-jasna-controls.patch
+          Remove-Item .github/patches/maxine-jasna-controls.b64.*
+          Remove-Item .github/workflows/apply-maxine-jasna-controls.yml
+          Remove-Item .github/workflows/snapshot-maxine-current.yml -ErrorAction SilentlyContinue
+          git diff --check
+
+      - name: Build VideoRenderer
+        shell: pwsh
+        run: |
+          .\build_mpcvr.cmd NoWait *>&1 | Tee-Object build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Maxine-Jasna-controls-build-log
+          path: build.log
+
+      - name: Commit implementation
+        shell: pwsh
+        run: |
+          Remove-Item build.log -ErrorAction SilentlyContinue
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: add Maxine scale denoise and deblur controls"
+          git push origin HEAD:feature/nvidia-maxine-vsr
+
+      - name: Upload test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: MPC-Video-Renderer-Maxine-VSR-Jasna-controls
+          path: _bin/MpcVideoRenderer*.zip
+          compression-level: 0
