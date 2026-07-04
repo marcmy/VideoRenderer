@@ -1,0 +1,57 @@
+name: Apply Maxine VSR patch
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - .github/workflows/apply-vsr.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-build-commit:
+    runs-on: windows-2022
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: feature/nvidia-maxine-vsr
+
+      - name: Extract and apply implementation patch
+        shell: pwsh
+        run: |
+          $match = Select-String -Path .github/workflows/source-snapshot.yml -Pattern 'PATCH_GZIP_BASE64: "([^"]+)"'
+          if (-not $match) { throw 'Embedded implementation patch was not found.' }
+          $encoded = $match.Matches[0].Groups[1].Value
+          $compressed = [Convert]::FromBase64String($encoded)
+          $input = [IO.MemoryStream]::new($compressed)
+          $gzip = [IO.Compression.GzipStream]::new($input, [IO.Compression.CompressionMode]::Decompress)
+          $output = [IO.File]::Create('maxine-vsr.patch')
+          try { $gzip.CopyTo($output) } finally { $output.Dispose(); $gzip.Dispose(); $input.Dispose() }
+          git apply --whitespace=nowarn maxine-vsr.patch
+          Remove-Item maxine-vsr.patch
+          Remove-Item .github/workflows/source-snapshot.yml
+          Remove-Item .github/workflows/apply-vsr.yml
+
+      - name: Build VideoRenderer
+        shell: pwsh
+        run: .\build_mpcvr.cmd NoWait
+
+      - name: Commit implementation
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: add optional NVIDIA Maxine VSR"
+          git push origin HEAD:feature/nvidia-maxine-vsr
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MPC-Video-Renderer-Maxine-VSR
+          path: _bin/MpcVideoRenderer*.zip
+          compression-level: 0
