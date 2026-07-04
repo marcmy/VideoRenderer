@@ -2934,10 +2934,8 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSize(const CRect& dstRect, CSize& ta
 		m_strMaxineVSRStatus = L"Disable RTX Video HDR to use Maxine VSR";
 		return false;
 	}
-	if (m_iRotation != 0 || m_bFlip) {
-		m_strMaxineVSRStatus = L"Rotation and flip are not supported yet";
-		return false;
-	}
+	// Maxine processes the frame in its native orientation. Rotation and
+	// horizontal flipping are applied by MPCVR after the Maxine pass.
 
 	const int dstWidth = dstRect.Width();
 	const int dstHeight = dstRect.Height();
@@ -2946,8 +2944,11 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSize(const CRect& dstRect, CSize& ta
 		return false;
 	}
 
-	const double scaleX = static_cast<double>(dstWidth) / m_srcRectWidth;
-	const double scaleY = static_cast<double>(dstHeight) / m_srcRectHeight;
+	const bool rotatedQuarterTurn = m_iRotation == 90 || m_iRotation == 270;
+	const UINT presentationSourceWidth = rotatedQuarterTurn ? m_srcRectHeight : m_srcRectWidth;
+	const UINT presentationSourceHeight = rotatedQuarterTurn ? m_srcRectWidth : m_srcRectHeight;
+	const double scaleX = static_cast<double>(dstWidth) / presentationSourceWidth;
+	const double scaleY = static_cast<double>(dstHeight) / presentationSourceHeight;
 	const double requestedScale = std::max(scaleX, scaleY);
 
 	// The source-resolution selector controls eligibility, not whether the
@@ -3445,10 +3446,17 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 		}
 
 		CRect rect(0, 0, m_TexConvertOutput.desc.Width, m_TexConvertOutput.desc.Height);
+		const bool deferRotationForMaxine = canUseMaxineVSR && m_iRotation != 0;
+		if (deferRotationForMaxine) {
+			m_D3D11VP.SetRotation(D3D11_VIDEO_PROCESSOR_ROTATION_IDENTITY);
+		}
 		hr = D3D11VPPass(m_TexConvertOutput.pTexture, rSrc, rect, second);
+		if (deferRotationForMaxine) {
+			m_D3D11VP.SetRotation(static_cast<D3D11_VIDEO_PROCESSOR_ROTATION>(m_iRotation / 90));
+		}
 		pInputTexture = &m_TexConvertOutput;
 		rSrc = rect;
-		rotation = 0;
+		rotation = deferRotationForMaxine ? m_iRotation : 0;
 	}
 	else if (m_PSConvColorData.bEnable) {
 		ConvertColorPass(m_TexConvertOutput.pTexture);
@@ -3493,7 +3501,6 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 						m_TexMaxineVSR.pTexture, static_cast<unsigned>(m_iMaxineVSR))) {
 					pInputTexture = &m_TexMaxineVSR;
 					rSrc.SetRect(0, 0, maxineTargetSize.cx, maxineTargetSize.cy);
-					rotation = 0;
 					m_bMaxineVSRUsed = true;
 					m_strMaxineVSRStatus = m_MaxineVSR.GetStatus();
 				}
