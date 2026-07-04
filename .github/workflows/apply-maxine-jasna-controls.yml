@@ -66,6 +66,7 @@ jobs:
           path: |
             patch-diagnostics.log
             maxine-jasna-controls.patch
+            .github/patches/maxine-jasna-controls.b64.*
 
       - name: Build VideoRenderer
         shell: pwsh
