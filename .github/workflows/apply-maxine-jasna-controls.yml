@@ -21,19 +21,35 @@ jobs:
           ref: feature/nvidia-maxine-vsr
           submodules: recursive
 
-      - name: Reconstruct and apply implementation patch
+      - name: Reconstruct implementation patch
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $chunks = Get-ChildItem .github/patches/maxine-jasna-controls.b64.* | Sort-Object Name
           if (-not $chunks) { throw 'Maxine patch chunks were not found.' }
+          $chunks | Select-Object Name, Length | Format-Table | Out-String | Set-Content patch-diagnostics.log
           $encoded = ($chunks | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
-          $compressed = [Convert]::FromBase64String($encoded)
-          $input = [IO.MemoryStream]::new($compressed)
-          $gzip = [IO.Compression.GzipStream]::new($input, [IO.Compression.CompressionMode]::Decompress)
-          $output = [IO.File]::Create('maxine-jasna-controls.patch')
-          try { $gzip.CopyTo($output) } finally { $output.Dispose(); $gzip.Dispose(); $input.Dispose() }
+          "Encoded characters: $($encoded.Length)" | Add-Content patch-diagnostics.log
+          try {
+            $compressed = [Convert]::FromBase64String($encoded)
+            "Compressed bytes: $($compressed.Length)" | Add-Content patch-diagnostics.log
+            $input = [IO.MemoryStream]::new($compressed)
+            $gzip = [IO.Compression.GzipStream]::new($input, [IO.Compression.CompressionMode]::Decompress)
+            $output = [IO.File]::Create('maxine-jasna-controls.patch')
+            try { $gzip.CopyTo($output) } finally { $output.Dispose(); $gzip.Dispose(); $input.Dispose() }
+            "Patch bytes: $((Get-Item maxine-jasna-controls.patch).Length)" | Add-Content patch-diagnostics.log
+          }
+          catch {
+            $_ | Out-String | Add-Content patch-diagnostics.log
+            throw
+          }
 
-          git apply --3way --whitespace=nowarn maxine-jasna-controls.patch
+      - name: Check and apply implementation patch
+        shell: pwsh
+        run: |
+          git apply --check --whitespace=nowarn maxine-jasna-controls.patch *>&1 | Tee-Object -Append patch-diagnostics.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git apply --whitespace=nowarn maxine-jasna-controls.patch
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           Remove-Item maxine-jasna-controls.patch
@@ -41,6 +57,15 @@ jobs:
           Remove-Item .github/workflows/apply-maxine-jasna-controls.yml
           Remove-Item .github/workflows/snapshot-maxine-current.yml -ErrorAction SilentlyContinue
           git diff --check
+
+      - name: Upload patch diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Maxine-Jasna-patch-diagnostics
+          path: |
+            patch-diagnostics.log
+            maxine-jasna-controls.patch
 
       - name: Build VideoRenderer
         shell: pwsh
@@ -59,6 +84,7 @@ jobs:
         shell: pwsh
         run: |
           Remove-Item build.log -ErrorAction SilentlyContinue
+          Remove-Item patch-diagnostics.log -ErrorAction SilentlyContinue
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
