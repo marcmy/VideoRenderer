@@ -40,6 +40,7 @@ jobs:
       - name: Build VideoRenderer
         shell: pwsh
         run: |
+          $env:CL = "/FIHelper.h"
           .\build_mpcvr.cmd NoWait *>&1 | Tee-Object build.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
