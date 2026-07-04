@@ -70,6 +70,7 @@ private:
 
 	Tex11Video_t m_TexSrcVideo; // for copy of frame
 	Tex2D_t m_TexConvertOutput;
+	Tex2D_t m_TexMaxineInput;
 	Tex2D_t m_TexMaxineVSR;
 	Tex2D_t m_TexResize;        // for intermediate result of two-pass resize
 	CTex2DRing m_TexsPostScale;
@@ -186,6 +187,7 @@ private:
 
 	int m_iMaxineVSR = MAXINEVSR_Disable;
 	bool m_bMaxineVSRUsed = false;
+	std::wstring m_strMaxineVSRStatus = L"Disabled";
 	CNvidiaMaxineVSR m_MaxineVSR;
 
 	bool m_bVPRTXVideoHDR = false;
@@ -347,7 +349,7 @@ public:
 	void SwitchFullScreen(bool set) override;
 
 private:
-	bool CanUseMaxineVSR(const CRect& dstRect);
+	bool GetMaxineVSRTargetSize(const CRect& dstRect, CSize& targetSize);
 	void UpdateTexures();
 	void UpdatePostScaleTexures();
 	void UpdateUpscalingShaders();

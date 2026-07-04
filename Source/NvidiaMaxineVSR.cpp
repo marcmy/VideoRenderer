@@ -144,7 +144,17 @@ std::vector<std::wstring> GetRuntimeSearchDirectories()
 	wchar_t envPath[32768] = {};
 	const DWORD envLen = GetEnvironmentVariableW(L"NV_VIDEO_EFFECTS_PATH", envPath, std::size(envPath));
 	if (envLen && envLen < std::size(envPath) && _wcsicmp(envPath, L"USE_APP_PATH") != 0) {
-		Add(envPath);
+		const std::filesystem::path configuredPath(envPath);
+		Add(configuredPath.wstring());
+		Add((configuredPath / L"nvvfx" / L"libs").wstring());
+	}
+
+	for (const wchar_t* envName : {L"SMOOTHJAS_GPU_RUNTIME", L"JASNA_WORKING_DIR"}) {
+		ZeroMemory(envPath, sizeof(envPath));
+		const DWORD len = GetEnvironmentVariableW(envName, envPath, std::size(envPath));
+		if (len && len < std::size(envPath)) {
+			Add((std::filesystem::path(envPath) / L"nvvfx" / L"libs").wstring());
+		}
 	}
 
 	wchar_t programFiles[MAX_PATH] = {};

@@ -158,8 +158,10 @@ void CVRMainPPage::EnableControls()
 		GetDlgItem(IDC_COMBO7).EnableWindow(bEnable);
 		GetDlgItem(IDC_STATIC6).EnableWindow(bEnable);
 		GetDlgItem(IDC_SLIDER1).EnableWindow(bEnable);
-		GetDlgItem(IDC_STATIC7).EnableWindow(bEnable && m_SetsPP.bVPScaling);
-		GetDlgItem(IDC_COMBO8).EnableWindow(bEnable && m_SetsPP.bVPScaling);
+		const BOOL bEnableSuperResLimit = bEnable
+			&& (m_SetsPP.bVPScaling || m_SetsPP.iMaxineVSR != MAXINEVSR_Disable);
+		GetDlgItem(IDC_STATIC7).EnableWindow(bEnableSuperResLimit);
+		GetDlgItem(IDC_COMBO8).EnableWindow(bEnableSuperResLimit);
 #ifdef _WIN64
 		GetDlgItem(IDC_STATIC_MAXINEVSR).EnableWindow(bEnable);
 		GetDlgItem(IDC_COMBO11).EnableWindow(bEnable);
@@ -316,15 +318,15 @@ HRESULT CVRMainPPage::OnActivate()
 		L"It works fast, but it's not always good.\n"
 		"Disable it if you want to use shaders for resizing.");
 	AddHint(IDC_COMBO8,
-		L"Available for Direct3D 11.\n"
-		"Requires hardware and driver support:\n"
-		"- Intel Graphics UHD 610 or later\n"
-		"- Nvidia RTX (x64 only)");
+		L"Sets the maximum source resolution for Super Resolution.\n"
+		"When Maxine VSR is enabled, this limit is used by Maxine.\n"
+		"When Maxine VSR is Off, it controls the hardware video\n"
+		"processor Super Resolution request.");
 	AddHint(IDC_COMBO11,
-		L"Uses NVIDIA Maxine Video Super Resolution through the\n"
-		"NVIDIA Video Effects runtime. Available in the x64 D3D11\n"
-		"renderer for SDR 8-bit video. Unsupported content falls\n"
-		"back to the normal shader scaler.");
+		L"Selects NVIDIA Maxine Video Super Resolution quality.\n"
+		"The Super Resolution source limit above is shared with\n"
+		"the normal hardware VSR path. SDR input is converted to\n"
+		"BGRA8 for Maxine; HDR is not supported yet.");
 	AddHint(IDC_CHECK19,
 		L"Available for Direct3D 11.\n"
 		"Requires hardware and driver support:\n"
@@ -371,9 +373,8 @@ INT_PTR CVRMainPPage::OnReceiveMessage(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 			}
 			if (nID == IDC_CHECK5) {
 				m_SetsPP.bVPScaling = IsDlgButtonChecked(IDC_CHECK5) == BST_CHECKED;
+				EnableControls();
 				SetDirty();
-				GetDlgItem(IDC_STATIC7).EnableWindow(m_SetsPP.bVPScaling && m_SetsPP.bUseD3D11 && IsWindows10OrGreater());
-				GetDlgItem(IDC_COMBO8).EnableWindow(m_SetsPP.bVPScaling && m_SetsPP.bUseD3D11 && IsWindows10OrGreater());
 				return (LRESULT)1;
 			}
 			if (nID == IDC_CHECK6) {
@@ -489,10 +490,6 @@ INT_PTR CVRMainPPage::OnReceiveMessage(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 				lValue = SendDlgItemMessageW(IDC_COMBO8, CB_GETCURSEL, 0, 0);
 				if (lValue != m_SetsPP.iVPSuperRes) {
 					m_SetsPP.iVPSuperRes = lValue;
-					if (lValue != SUPERRES_Disable) {
-						m_SetsPP.iMaxineVSR = MAXINEVSR_Disable;
-						SendDlgItemMessageW(IDC_COMBO11, CB_SETCURSEL, m_SetsPP.iMaxineVSR, 0);
-					}
 					SetDirty();
 				}
 				return (LRESULT)1;
@@ -501,10 +498,7 @@ INT_PTR CVRMainPPage::OnReceiveMessage(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 				lValue = SendDlgItemMessageW(IDC_COMBO11, CB_GETCURSEL, 0, 0);
 				if (lValue != m_SetsPP.iMaxineVSR) {
 					m_SetsPP.iMaxineVSR = lValue;
-					if (lValue != MAXINEVSR_Disable) {
-						m_SetsPP.iVPSuperRes = SUPERRES_Disable;
-						SendDlgItemMessageW(IDC_COMBO8, CB_SETCURSEL, m_SetsPP.iVPSuperRes, 0);
-					}
+					EnableControls();
 					SetDirty();
 				}
 				return (LRESULT)1;
