@@ -1362,7 +1362,7 @@ HRESULT CDX9VideoProcessor::CopySample(IMediaSample* pSample)
 			m_nStereoSubtitlesOffsetInPixels = offset->offset[0];
 		}
 
-		if (m_srcParams.CSType == CS_YUV && (m_bHdrPreferDoVi || !SourceIsPQorHLG())) {
+		if (m_srcParams.CSType == CS_YUV && (m_bHdrPreferDoVi || !SourceIsHDR10orHLG())) {
 			MediaSideDataDOVIMetadata* pDOVIMetadata = nullptr;
 			hr = pMediaSideData->GetSideData(IID_MediaSideDataDOVIMetadataV2, (const BYTE**)&pDOVIMetadata, &size);
 			if (SUCCEEDED(hr) && size == sizeof(MediaSideDataDOVIMetadata) && CheckDoviMetadata(pDOVIMetadata, 0)) {
@@ -1990,7 +1990,7 @@ void CDX9VideoProcessor::Configure(const Settings_t& config)
 	}
 
 	if (config.bHdrPreferDoVi != m_bHdrPreferDoVi) {
-		if (m_Dovi.bValid && !config.bHdrPreferDoVi && SourceIsPQorHLG()) {
+		if (m_Dovi.bValid && !config.bHdrPreferDoVi && SourceIsHDR10orHLG()) {
 			m_Dovi = {};
 			changeVP = true;
 		}
