@@ -955,7 +955,7 @@ STDMETHODIMP CMpcVideoRenderer::GetVideoSize(long *pWidth, long *pHeight)
 	m_VideoProcessor->GetAspectRatio(lAspectX, lAspectY);
 	if (lAspectX && lAspectY) {
 		// Apply aspect ratio (as in VMR9 and madVR) so that DVD-Video menu buttons are activated correctly with the mouse.
-		*pWidth = *pHeight * lAspectX / lAspectY;
+		*pWidth = static_cast<long>(llMulDiv(*pHeight, lAspectX, lAspectY, 0));
 	}
 
 	return S_OK;

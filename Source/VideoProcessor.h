@@ -236,12 +236,13 @@ public:
 	virtual void SwitchFullScreen(bool set) {};
 
 protected:
-	inline bool SourceIsPQorHLG() {
-		return m_srcExFmt.VideoTransferFunction == MFVideoTransFunc_2084 || m_srcExFmt.VideoTransferFunction == MFVideoTransFunc_HLG;
+	inline bool SourceIsHDR10orHLG() {
+		return (m_decExFmt.VideoTransferFunction == MFVideoTransFunc_2084 && m_decExFmt.VideoTransferMatrix != DXVA2_VideoTransferMatrix_Unknown)
+			|| m_decExFmt.VideoTransferFunction == MFVideoTransFunc_HLG;
 	}
 	// source is PQ, HLG or Dolby Vision
 	inline bool SourceIsHDR() {
-		return SourceIsPQorHLG() || m_Dovi.bValid;
+		return SourceIsHDR10orHLG() || m_Dovi.bValid;
 	}
 
 	// Check if source is Dolby Vision Full Enhancement Layer
