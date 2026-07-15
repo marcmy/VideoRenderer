@@ -13,6 +13,82 @@ on:
 permissions: {}
 
 jobs:
+  cleanup-obsolete-workflow-history:
+    name: Remove obsolete workflow history
+    if: github.event_name == 'push' && github.event.head_commit.message == 'chore: remove obsolete Actions sidebar entries v2'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Delete retired workflow runs and record results
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          declare -A targets=(
+            ["Add Maxine supersampling and fix settings layout"]=1
+            ["Apply broader Maxine VSR support"]=1
+            ["Apply Maxine Jasna controls"]=1
+            ["Apply Maxine VSR patch"]=1
+            ["Fix Maxine chained passes and stats"]=1
+            ["Fix Maxine hotkey resize latency"]=1
+            ["Fix Maxine rotation and portrait display support"]=1
+            ["Fix Maxine VSR runtime loading"]=1
+            ["Fix Maxine VSR runtime loading v2"]=1
+            ["Reapply broader Maxine VSR support"]=1
+            ["Snapshot current Maxine source"]=1
+            ["Source snapshot"]=1
+          )
+
+          mapfile -t runs < <(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" \
+              --jq '.workflow_runs[] | [.id, .name, .path] | @tsv'
+          )
+
+          deleted=0
+          failed=0
+          deleted_rows=()
+
+          for row in "${runs[@]}"; do
+            IFS=$'\t' read -r run_id workflow_name workflow_path <<< "$row"
+            if [[ -z "${targets[$workflow_name]+present}" ]]; then
+              continue
+            fi
+
+            echo "Deleting run ${run_id}: ${workflow_name} (${workflow_path})"
+            if gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}"; then
+              deleted=$((deleted + 1))
+              deleted_rows+=("${run_id}\t${workflow_name}\t${workflow_path}")
+            else
+              failed=$((failed + 1))
+            fi
+          done
+
+          {
+            echo "Obsolete GitHub Actions workflow-history cleanup"
+            echo "Completed: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "Deleted runs: ${deleted}"
+            echo "Failed deletions: ${failed}"
+            echo
+            if (( deleted > 0 )); then
+              printf '%b\n' "${deleted_rows[@]}"
+            else
+              echo "No matching workflow runs remained."
+            fi
+          } > .github/obsolete-workflow-cleanup-report.txt
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/obsolete-workflow-cleanup-report.txt
+          git commit -m "Record obsolete Actions sidebar cleanup results"
+          git push origin HEAD:master
+
   trivy:
     name: Trivy security scan
     runs-on: ubuntu-24.04
