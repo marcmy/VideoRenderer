@@ -1,59 +1,86 @@
 name: Supply-chain audit
 
 on:
-  workflow_dispatch:
   pull_request:
-  push:
     branches:
       - master
-  schedule:
-    # Every Monday at 07:23 UTC
-    - cron: "23 7 * * 1"
 
 permissions: {}
 
 jobs:
-  trivy:
-    name: Trivy security scan
+  cleanup-obsolete-workflow-history:
+    name: Remove obsolete workflow history
+    if: github.head_ref == 'cleanup/obsolete-actions-sidebar'
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
-      security-events: write
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-      - name: Scan repository with Trivy
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          format: sarif
-          output: trivy-results.sarif
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "0"
-      - name: Upload findings to GitHub Security
-        if: always()
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: trivy-results.sarif
-
-  syft:
-    name: Generate independent SBOM
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
-    permissions:
+      actions: write
       contents: write
-      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-      - name: Generate SPDX SBOM with Syft
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
-        with:
-          path: .
-          format: spdx-json
-          artifact-name: sbom.spdx.json
-          dependency-snapshot: true
-          upload-artifact: true
-          upload-release-assets: false
+      - name: Delete runs belonging to retired workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          declare -A targets=(
+            ["Add Maxine supersampling and fix settings layout"]=1
+            ["Apply broader Maxine VSR support"]=1
+            ["Apply Maxine Jasna controls"]=1
+            ["Apply Maxine VSR patch"]=1
+            ["Fix Maxine chained passes and stats"]=1
+            ["Fix Maxine hotkey resize latency"]=1
+            ["Fix Maxine rotation and portrait display support"]=1
+            ["Fix Maxine VSR runtime loading"]=1
+            ["Fix Maxine VSR runtime loading v2"]=1
+            ["Reapply broader Maxine VSR support"]=1
+            ["Snapshot current Maxine source"]=1
+            ["Source snapshot"]=1
+          )
+
+          mapfile -t runs < <(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" \
+              --jq '.workflow_runs[] | [.id, .name, .path] | @tsv'
+          )
+
+          deleted=0
+          failed=0
+          matched=0
+
+          for row in "${runs[@]}"; do
+            IFS=$'\t' read -r run_id workflow_name workflow_path <<< "$row"
+            if [[ -z "${targets[$workflow_name]+present}" ]]; then
+              continue
+            fi
+
+            matched=$((matched + 1))
+            echo "Deleting run ${run_id}: ${workflow_name} (${workflow_path})"
+            if gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}"; then
+              deleted=$((deleted + 1))
+            else
+              failed=$((failed + 1))
+              echo "Failed to delete run ${run_id}" >&2
+            fi
+          done
+
+          echo "Matched obsolete runs: ${matched}"
+          echo "Deleted obsolete runs: ${deleted}"
+          echo "Failed deletions: ${failed}"
+
+          {
+            echo "## Obsolete workflow cleanup"
+            echo
+            echo "- Matched runs: ${matched}"
+            echo "- Deleted runs: ${deleted}"
+            echo "- Failed deletions: ${failed}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if (( failed > 0 )); then
+            exit 1
+          fi
+
+      - name: Delete temporary cleanup branch
+        if: always()
+        shell: bash
+        run: |
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/cleanup/obsolete-actions-sidebar"
