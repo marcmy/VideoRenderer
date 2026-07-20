@@ -374,12 +374,12 @@ long CMpcVideoRenderer::CalcImageSize(CMediaType& mt, bool redefine_mt)
 		BOOL ret = m_VideoProcessor->GetAlignmentSize(mt, Size);
 
 		if (ret && (Size.cx != pBIH->biWidth || Size.cy != pBIH->biHeight)) {
-			BYTE* pbFormat = mt.ReallocFormatBuffer(112 + sizeof(VR_Extradata));
+			BYTE* pbFormat = mt.ReallocFormatBuffer(VR_EXRADATA_POS + sizeof(VR_Extradata));
 			if (pbFormat) {
 				// update pointer after realoc
 				pBIH = GetBIHfromVIHs(&mt);
 				// copy data to VR_Extradata
-				VR_Extradata* vrextra = reinterpret_cast<VR_Extradata*>(pbFormat + 112);
+				VR_Extradata* vrextra = reinterpret_cast<VR_Extradata*>(pbFormat + VR_EXRADATA_POS);
 				vrextra->QueryWidth  = Size.cx;
 				vrextra->QueryHeight = Size.cy;
 				vrextra->FrameWidth  = pBIH->biWidth;

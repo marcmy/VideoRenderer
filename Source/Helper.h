@@ -54,6 +54,8 @@ constexpr UINT PCIV_INTEL  = 0x8086;
 
 constexpr REFERENCE_TIME INVALID_TIME = INT64_MIN;
 
+constexpr ULONG VR_EXRADATA_POS = std::max(sizeof(VIDEOINFOHEADER2), sizeof(VIDEOINFOHEADER));
+
 struct VR_Extradata {
 	LONG  QueryWidth;
 	LONG  QueryHeight;

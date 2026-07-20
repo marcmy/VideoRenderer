@@ -1160,8 +1160,8 @@ BOOL CDX9VideoProcessor::InitMediaType(const CMediaType* pmt)
 
 	UINT origW = biWidth;
 	UINT origH = biHeight;
-	if (pmt->FormatLength() == 112 + sizeof(VR_Extradata)) {
-		const VR_Extradata* vrextra = reinterpret_cast<VR_Extradata*>(pmt->pbFormat + 112);
+	if (pmt->FormatLength() == VR_EXRADATA_POS + sizeof(VR_Extradata)) {
+		const VR_Extradata* vrextra = reinterpret_cast<VR_Extradata*>(pmt->pbFormat + VR_EXRADATA_POS);
 		if (vrextra->QueryWidth == pBIH->biWidth && vrextra->QueryHeight == pBIH->biHeight && vrextra->Compression == pBIH->biCompression) {
 			origW  = vrextra->FrameWidth;
 			origH = abs(vrextra->FrameHeight);
