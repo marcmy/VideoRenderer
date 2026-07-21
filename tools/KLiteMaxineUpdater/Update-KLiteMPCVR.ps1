@@ -9,8 +9,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$releaseBaseUrl = 'https://github.com/marcmy/VideoRenderer/releases/download/maxine-latest'
-$assetName = 'MpcVideoRenderer-Maxine-latest.zip'
+$releaseBaseUrl = 'https://github.com/marcmy/VideoRenderer/releases/latest/download'
+$assetName = 'MpcVideoRenderer-Maxine.zip'
 $checksumName = "$assetName.sha256"
 
 $targets = [ordered]@{
@@ -105,8 +105,16 @@ try {
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
     Write-Host 'Downloading the latest custom Maxine build...'
-    Invoke-WebRequest -Uri "$releaseBaseUrl/$assetName" -OutFile $archivePath
-    Invoke-WebRequest -Uri "$releaseBaseUrl/$checksumName" -OutFile $checksumPath
+    try {
+        Invoke-WebRequest -Uri "$releaseBaseUrl/$assetName" -OutFile $archivePath
+        Invoke-WebRequest -Uri "$releaseBaseUrl/$checksumName" -OutFile $checksumPath
+    }
+    catch {
+        if ($_.Exception.Response.StatusCode -eq [Net.HttpStatusCode]::NotFound) {
+            throw 'No published Maxine build is available yet. Merge the updater fix and wait for the master release workflow to finish.'
+        }
+        throw
+    }
 
     $expectedHash = ((Get-Content -LiteralPath $checksumPath -Raw) -split '\s+')[0].Trim().ToLowerInvariant()
     if ($expectedHash -notmatch '^[a-f0-9]{64}$') {
