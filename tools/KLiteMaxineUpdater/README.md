@@ -4,11 +4,11 @@ K-Lite Codec Pack updates can overwrite the custom MPC Video Renderer build. Thi
 
 ## Setup
 
-1. Download this folder or the setup ZIP from the related pull request.
+1. Download this folder or `KLiteMaxineUpdater-Setup.zip` from the latest Maxine release.
 2. Run `Install-KLiteMPCVRUpdater.cmd` once.
 3. Use the **Restore MPC-VR Maxine** desktop shortcut after a K-Lite update.
 
-The updater downloads the rolling `maxine-latest` release, verifies its SHA-256 checksum, requests administrator access, and replaces:
+The updater downloads the assets from the repository's latest immutable Maxine release, verifies the published SHA-256 checksum, requests administrator access, and replaces:
 
 - `C:\Program Files (x86)\K-Lite Codec Pack\Filters\MPCVR\MpcVideoRenderer.ax`
 - `C:\Program Files (x86)\K-Lite Codec Pack\MPC-HC64\MPCVR\MpcVideoRenderer64.ax`
