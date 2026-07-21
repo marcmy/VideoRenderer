@@ -715,8 +715,19 @@ bool CNvidiaMaxineVSR::Process(
 void CNvidiaMaxineVSR::Reset()
 {
 #ifdef _WIN64
+	const bool runtimeLoadFailed = m_impl->runtimeAttempted && !m_impl->hNvVideoEffects;
+	const std::wstring runtimeError = runtimeLoadFailed ? m_impl->status : std::wstring();
+
 	m_impl->ResetEffect();
-	m_impl->status = m_impl->hNvVideoEffects ? L"Runtime loaded" : L"Disabled";
+	if (m_impl->hNvVideoEffects) {
+		m_impl->status = L"Runtime loaded";
+	}
+	else if (!runtimeError.empty()) {
+		m_impl->status = runtimeError;
+	}
+	else {
+		m_impl->status = L"Disabled";
+	}
 #else
 	m_impl->status = L"Requires a 64-bit build";
 #endif
