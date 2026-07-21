@@ -2,17 +2,13 @@ name: Build VideoRenderer
 
 on:
   push:
-    tags-ignore:
-      - 'maxine-*'
     paths-ignore:
-      - .github/workflows/main.yml
       - '**.txt'
       - '**.md'
       - '**.cmd'
       - '**.vcxproj.filters'
   pull_request:
     paths-ignore:
-      - .github/workflows/main.yml
       - '**.txt'
       - '**.md'
       - '**.cmd'
