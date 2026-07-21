@@ -1,0 +1,39 @@
+name: Test K-Lite updater
+
+on:
+  push:
+    paths:
+      - tools/KLiteMaxineUpdater/**
+      - .github/workflows/test-klite-updater.yml
+  pull_request:
+    paths:
+      - tools/KLiteMaxineUpdater/**
+      - .github/workflows/test-klite-updater.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Parse and validate updater
+        shell: pwsh
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path '.\tools\KLiteMaxineUpdater\Update-KLiteMPCVR.ps1'),
+            [ref]$null,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+
+          .\tools\KLiteMaxineUpdater\Update-KLiteMPCVR.ps1 -ValidateOnly -NoPause
