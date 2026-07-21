@@ -78,8 +78,18 @@ jobs:
           fi
 
           cp "$package" release/MpcVideoRenderer-Maxine-latest.zip
+          (
+            cd tools/KLiteMaxineUpdater
+            zip -j ../../release/KLiteMaxineUpdater-Setup.zip \
+              Install-KLiteMPCVRUpdater.cmd \
+              Install-KLiteMPCVRUpdater.ps1 \
+              Update-KLiteMPCVR.ps1 \
+              README.md
+          )
+
           cd release
           sha256sum MpcVideoRenderer-Maxine-latest.zip > MpcVideoRenderer-Maxine-latest.zip.sha256
+          sha256sum KLiteMaxineUpdater-Setup.zip > KLiteMaxineUpdater-Setup.zip.sha256
 
       - name: Publish rolling release
         shell: bash
@@ -108,4 +118,6 @@ jobs:
           gh release upload maxine-latest \
             release/MpcVideoRenderer-Maxine-latest.zip \
             release/MpcVideoRenderer-Maxine-latest.zip.sha256 \
+            release/KLiteMaxineUpdater-Setup.zip \
+            release/KLiteMaxineUpdater-Setup.zip.sha256 \
             --clobber
