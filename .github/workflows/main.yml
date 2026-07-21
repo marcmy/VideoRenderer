@@ -3,7 +3,7 @@ name: Build VideoRenderer
 on:
   push:
     tags-ignore:
-      - maxine-latest
+      - 'maxine-*'
     paths-ignore:
       - .github/workflows/main.yml
       - '**.txt'
@@ -35,7 +35,7 @@ jobs:
 
       - name: Build VideoRenderer
         run: |
-          .\\build_mpcvr.cmd NoWait
+          .\build_mpcvr.cmd NoWait
         shell: pwsh
 
       - name: Upload build artifacts
@@ -46,7 +46,7 @@ jobs:
           compression-level: 0
 
   publish-maxine:
-    name: Publish rolling Maxine build
+    name: Publish latest Maxine build
     needs: build
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
@@ -67,7 +67,7 @@ jobs:
           name: "MPC Video Renderer"
           path: release
 
-      - name: Prepare rolling release assets
+      - name: Prepare release assets
         shell: bash
         run: |
           set -euo pipefail
@@ -77,7 +77,7 @@ jobs:
             exit 1
           fi
 
-          cp "$package" release/MpcVideoRenderer-Maxine-latest.zip
+          cp "$package" release/MpcVideoRenderer-Maxine.zip
           (
             cd tools/KLiteMaxineUpdater
             zip -j ../../release/KLiteMaxineUpdater-Setup.zip \
@@ -88,36 +88,25 @@ jobs:
           )
 
           cd release
-          sha256sum MpcVideoRenderer-Maxine-latest.zip > MpcVideoRenderer-Maxine-latest.zip.sha256
+          sha256sum MpcVideoRenderer-Maxine.zip > MpcVideoRenderer-Maxine.zip.sha256
           sha256sum KLiteMaxineUpdater-Setup.zip > KLiteMaxineUpdater-Setup.zip.sha256
 
-      - name: Publish rolling release
+      - name: Publish immutable release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          notes="Rolling custom Maxine build from master commit ${GITHUB_SHA}. The assets are replaced after every successful master build."
+          short_sha="${GITHUB_SHA:0:8}"
+          tag="maxine-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}-${short_sha}"
+          notes="Custom Maxine build from master commit ${GITHUB_SHA}. This release was produced by workflow run ${GITHUB_RUN_NUMBER}, attempt ${GITHUB_RUN_ATTEMPT}."
 
-          git tag -f maxine-latest "$GITHUB_SHA"
-          git push --force origin refs/tags/maxine-latest
-
-          if gh release view maxine-latest >/dev/null 2>&1; then
-            gh release edit maxine-latest \
-              --title "Latest MPC Video Renderer Maxine build" \
-              --notes "$notes" \
-              --prerelease
-          else
-            gh release create maxine-latest \
-              --verify-tag \
-              --title "Latest MPC Video Renderer Maxine build" \
-              --notes "$notes" \
-              --prerelease
-          fi
-
-          gh release upload maxine-latest \
-            release/MpcVideoRenderer-Maxine-latest.zip \
-            release/MpcVideoRenderer-Maxine-latest.zip.sha256 \
+          gh release create "$tag" \
+            release/MpcVideoRenderer-Maxine.zip \
+            release/MpcVideoRenderer-Maxine.zip.sha256 \
             release/KLiteMaxineUpdater-Setup.zip \
             release/KLiteMaxineUpdater-Setup.zip.sha256 \
-            --clobber
+            --target "$GITHUB_SHA" \
+            --title "MPC Video Renderer Maxine build ${GITHUB_RUN_NUMBER}" \
+            --notes "$notes" \
+            --latest
