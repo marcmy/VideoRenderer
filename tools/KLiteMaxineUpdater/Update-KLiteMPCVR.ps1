@@ -2,14 +2,15 @@
 
 [CmdletBinding()]
 param(
-    [switch]$NoPause
+    [switch]$NoPause,
+    [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$releaseBaseUrl = 'https://github.com/marcmy/VideoRenderer/releases/download/maxine-latest'
-$assetName = 'MpcVideoRenderer-Maxine-latest.zip'
+$releaseBaseUrl = 'https://github.com/marcmy/VideoRenderer/releases/latest/download'
+$assetName = 'MpcVideoRenderer-Maxine.zip'
 $checksumName = "$assetName.sha256"
 
 $targets = [ordered]@{
@@ -21,6 +22,19 @@ function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-TargetDirectory {
+    param(
+        [Parameter(Mandatory)]
+        [string]$TargetPath
+    )
+
+    $directory = [IO.Path]::GetDirectoryName($TargetPath)
+    if ([string]::IsNullOrWhiteSpace($directory)) {
+        throw "Could not determine the parent directory for: $TargetPath"
+    }
+    return $directory
 }
 
 function Complete-Run {
@@ -40,22 +54,27 @@ if (-not $IsWindows) {
     Complete-Run -ExitCode 1
 }
 
+if ($ValidateOnly) {
+    foreach ($destination in $targets.Values) {
+        $directory = Get-TargetDirectory -TargetPath $destination
+        if (-not [IO.Path]::IsPathFullyQualified($directory)) {
+            throw "Target directory is not fully qualified: $directory"
+        }
+    }
+
+    Write-Host 'K-Lite updater validation passed.' -ForegroundColor Green
+    Complete-Run -ExitCode 0
+}
+
 if (-not (Test-IsAdministrator)) {
     $pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
-    $arguments = @(
-        '-NoLogo'
-        '-NoProfile'
-        '-ExecutionPolicy'
-        'Bypass'
-        '-File'
-        ('"{0}"' -f $PSCommandPath)
-    )
+    $argumentList = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $PSCommandPath
     if ($NoPause) {
-        $arguments += '-NoPause'
+        $argumentList += ' -NoPause'
     }
 
     try {
-        $process = Start-Process -FilePath $pwsh -ArgumentList $arguments -Verb RunAs -Wait -PassThru
+        $process = Start-Process -FilePath $pwsh -ArgumentList $argumentList -Verb RunAs -Wait -PassThru
         exit $process.ExitCode
     }
     catch {
@@ -77,7 +96,7 @@ try {
     }
 
     foreach ($destination in $targets.Values) {
-        $destinationDirectory = Split-Path -LiteralPath $destination -Parent
+        $destinationDirectory = Get-TargetDirectory -TargetPath $destination
         if (-not (Test-Path -LiteralPath $destinationDirectory -PathType Container)) {
             throw "K-Lite destination directory was not found: $destinationDirectory"
         }
@@ -86,8 +105,16 @@ try {
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
     Write-Host 'Downloading the latest custom Maxine build...'
-    Invoke-WebRequest -Uri "$releaseBaseUrl/$assetName" -OutFile $archivePath
-    Invoke-WebRequest -Uri "$releaseBaseUrl/$checksumName" -OutFile $checksumPath
+    try {
+        Invoke-WebRequest -Uri "$releaseBaseUrl/$assetName" -OutFile $archivePath
+        Invoke-WebRequest -Uri "$releaseBaseUrl/$checksumName" -OutFile $checksumPath
+    }
+    catch {
+        if ($_.Exception.Response.StatusCode -eq [Net.HttpStatusCode]::NotFound) {
+            throw 'No published Maxine build is available yet. Merge the updater fix and wait for the master release workflow to finish.'
+        }
+        throw
+    }
 
     $expectedHash = ((Get-Content -LiteralPath $checksumPath -Raw) -split '\s+')[0].Trim().ToLowerInvariant()
     if ($expectedHash -notmatch '^[a-f0-9]{64}$') {
@@ -134,6 +161,10 @@ catch {
     $exitCode = 1
     Write-Host
     Write-Host "Update failed: $($_.Exception.Message)" -ForegroundColor Red
+
+    if ($_.InvocationInfo.PositionMessage) {
+        Write-Host $_.InvocationInfo.PositionMessage -ForegroundColor DarkGray
+    }
 }
 finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
