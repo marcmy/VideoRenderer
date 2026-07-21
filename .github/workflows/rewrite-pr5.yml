@@ -1,0 +1,70 @@
+name: Rewrite PR 5
+
+on:
+  push:
+    branches:
+      - agent/fix-maxine-regression
+    paths:
+      - .github/workflows/rewrite-pr5.yml
+
+permissions:
+  contents: write
+
+jobs:
+  rewrite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: agent/fix-maxine-regression
+
+      - name: Apply focused diagnostic fix
+        shell: pwsh
+        run: |
+          $path = 'Source/NvidiaMaxineVSR.cpp'
+          $content = [System.IO.File]::ReadAllText($path)
+          $old = @'
+          void CNvidiaMaxineVSR::Reset()
+          {
+          #ifdef _WIN64
+          	m_impl->ResetEffect();
+          	m_impl->status = m_impl->hNvVideoEffects ? L"Runtime loaded" : L"Disabled";
+          #else
+          	m_impl->status = L"Requires a 64-bit build";
+          #endif
+          }
+          '@
+          $new = @'
+          void CNvidiaMaxineVSR::Reset()
+          {
+          #ifdef _WIN64
+          	const bool runtimeLoadFailed = m_impl->runtimeAttempted && !m_impl->hNvVideoEffects;
+          	const std::wstring runtimeError = runtimeLoadFailed ? m_impl->status : std::wstring();
+
+          	m_impl->ResetEffect();
+          	if (m_impl->hNvVideoEffects) {
+          		m_impl->status = L"Runtime loaded";
+          	}
+          	else if (!runtimeError.empty()) {
+          		m_impl->status = runtimeError;
+          	}
+          	else {
+          		m_impl->status = L"Disabled";
+          	}
+          #else
+          	m_impl->status = L"Requires a 64-bit build";
+          #endif
+          }
+          '@
+          $old = ($old -split "`n" | ForEach-Object { $_ -replace '^          ', '' }) -join "`n"
+          $new = ($new -split "`n" | ForEach-Object { $_ -replace '^          ', '' }) -join "`n"
+          if (!$content.Contains($old)) { throw 'Expected Reset implementation was not found.' }
+          $content = $content.Replace($old, $new)
+          [System.IO.File]::WriteAllText($path, $content, [System.Text.UTF8Encoding]::new($false))
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/rewrite-pr5.yml
+          git add $path
+          git commit -m 'Preserve Maxine runtime load errors across resets'
+          git push origin HEAD:agent/fix-maxine-regression
