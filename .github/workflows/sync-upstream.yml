@@ -1,0 +1,86 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v6
+        with:
+          ref: master
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Fetch and merge upstream
+        id: merge
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/Aleksoid1978/VideoRenderer.git
+          git fetch --no-tags upstream master
+
+          $pending = [int](git rev-list --count HEAD..upstream/master)
+          "pending=$pending" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+          if ($pending -eq 0) {
+            'changed=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            'Already synchronized with upstream.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            exit 0
+          }
+
+          $upstreamSha = (git rev-parse upstream/master).Trim()
+          $shortSha = $upstreamSha.Substring(0, 8)
+
+          git merge --no-ff --no-edit -m "Merge Aleksoid1978/VideoRenderer upstream master ($shortSha)" upstream/master
+          if ($LASTEXITCODE -ne 0) {
+            git merge --abort
+            throw 'Upstream merge produced conflicts and requires manual resolution.'
+          }
+
+          git submodule sync --recursive
+          git submodule update --init --recursive
+
+          'changed=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "upstream_sha=$upstreamSha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "Merged $pending upstream commit(s) through $upstreamSha." | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Build merged source
+        if: steps.merge.outputs.changed == 'true'
+        shell: pwsh
+        run: |
+          .\build_mpcvr.cmd NoWait
+          if ($LASTEXITCODE -ne 0) {
+            throw "Merged source failed to build with exit code $LASTEXITCODE. Master was not updated."
+          }
+
+      - name: Push verified merge
+        if: steps.merge.outputs.changed == 'true'
+        shell: pwsh
+        run: |
+          git push origin HEAD:master
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not push the verified upstream merge to master. A newer master commit may have arrived during the run.'
+          }
+
+      - name: Record result
+        if: steps.merge.outputs.changed == 'true'
+        shell: pwsh
+        run: |
+          'The verified merge was pushed to master. The normal master build will publish a fresh maxine-latest release.' |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
