@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: upstream-sync
@@ -34,6 +35,9 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git remote add upstream https://github.com/Aleksoid1978/VideoRenderer.git
           git fetch --no-tags upstream master
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not fetch Aleksoid1978/VideoRenderer master.'
+          }
 
           $pending = [int](git rev-list --count HEAD..upstream/master)
           "pending=$pending" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
@@ -54,7 +58,14 @@ jobs:
           }
 
           git submodule sync --recursive
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not synchronize submodule configuration after the upstream merge.'
+          }
+
           git submodule update --init --recursive
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not update submodules after the upstream merge.'
+          }
 
           'changed=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "upstream_sha=$upstreamSha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
@@ -78,9 +89,20 @@ jobs:
             throw 'Could not push the verified upstream merge to master. A newer master commit may have arrived during the run.'
           }
 
+      - name: Dispatch rolling build
+        if: steps.merge.outputs.changed == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run main.yml --ref master
+          if ($LASTEXITCODE -ne 0) {
+            throw 'The upstream merge was pushed, but the rolling master build could not be dispatched.'
+          }
+
       - name: Record result
         if: steps.merge.outputs.changed == 'true'
         shell: pwsh
         run: |
-          'The verified merge was pushed to master. The normal master build will publish a fresh maxine-latest release.' |
+          'The verified merge was pushed to master and a fresh rolling Maxine build was dispatched.' |
             Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
