@@ -2,7 +2,8 @@
 
 [CmdletBinding()]
 param(
-    [switch]$NoPause
+    [switch]$NoPause,
+    [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +24,19 @@ function Test-IsAdministrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Get-TargetDirectory {
+    param(
+        [Parameter(Mandatory)]
+        [string]$TargetPath
+    )
+
+    $directory = [IO.Path]::GetDirectoryName($TargetPath)
+    if ([string]::IsNullOrWhiteSpace($directory)) {
+        throw "Could not determine the parent directory for: $TargetPath"
+    }
+    return $directory
+}
+
 function Complete-Run {
     param(
         [int]$ExitCode
@@ -40,22 +54,27 @@ if (-not $IsWindows) {
     Complete-Run -ExitCode 1
 }
 
+if ($ValidateOnly) {
+    foreach ($destination in $targets.Values) {
+        $directory = Get-TargetDirectory -TargetPath $destination
+        if (-not [IO.Path]::IsPathFullyQualified($directory)) {
+            throw "Target directory is not fully qualified: $directory"
+        }
+    }
+
+    Write-Host 'K-Lite updater validation passed.' -ForegroundColor Green
+    Complete-Run -ExitCode 0
+}
+
 if (-not (Test-IsAdministrator)) {
     $pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
-    $arguments = @(
-        '-NoLogo'
-        '-NoProfile'
-        '-ExecutionPolicy'
-        'Bypass'
-        '-File'
-        ('"{0}"' -f $PSCommandPath)
-    )
+    $argumentList = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $PSCommandPath
     if ($NoPause) {
-        $arguments += '-NoPause'
+        $argumentList += ' -NoPause'
     }
 
     try {
-        $process = Start-Process -FilePath $pwsh -ArgumentList $arguments -Verb RunAs -Wait -PassThru
+        $process = Start-Process -FilePath $pwsh -ArgumentList $argumentList -Verb RunAs -Wait -PassThru
         exit $process.ExitCode
     }
     catch {
@@ -77,7 +96,7 @@ try {
     }
 
     foreach ($destination in $targets.Values) {
-        $destinationDirectory = Split-Path -LiteralPath $destination -Parent
+        $destinationDirectory = Get-TargetDirectory -TargetPath $destination
         if (-not (Test-Path -LiteralPath $destinationDirectory -PathType Container)) {
             throw "K-Lite destination directory was not found: $destinationDirectory"
         }
@@ -134,6 +153,10 @@ catch {
     $exitCode = 1
     Write-Host
     Write-Host "Update failed: $($_.Exception.Message)" -ForegroundColor Red
+
+    if ($_.InvocationInfo.PositionMessage) {
+        Write-Host $_.InvocationInfo.PositionMessage -ForegroundColor DarkGray
+    }
 }
 finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
