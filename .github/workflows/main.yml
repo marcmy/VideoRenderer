@@ -2,6 +2,8 @@ name: Build VideoRenderer
 
 on:
   push:
+    tags-ignore:
+      - maxine-latest
     paths-ignore:
       - .github/workflows/main.yml
       - '**.txt'
@@ -15,6 +17,7 @@ on:
       - '**.md'
       - '**.cmd'
       - '**.vcxproj.filters'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -41,3 +44,80 @@ jobs:
           name: "MPC Video Renderer"
           path: _bin/MpcVideoRenderer*.zip
           compression-level: 0
+
+  publish-maxine:
+    name: Publish rolling Maxine build
+    needs: build
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: "MPC Video Renderer"
+          path: release
+
+      - name: Prepare rolling release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="$(find release -maxdepth 1 -type f -name 'MpcVideoRenderer*.zip' -print -quit)"
+          if [[ -z "$package" ]]; then
+            echo "No MPC Video Renderer package was found in the build artifact." >&2
+            exit 1
+          fi
+
+          cp "$package" release/MpcVideoRenderer-Maxine-latest.zip
+          (
+            cd tools/KLiteMaxineUpdater
+            zip -j ../../release/KLiteMaxineUpdater-Setup.zip \
+              Install-KLiteMPCVRUpdater.cmd \
+              Install-KLiteMPCVRUpdater.ps1 \
+              Update-KLiteMPCVR.ps1 \
+              README.md
+          )
+
+          cd release
+          sha256sum MpcVideoRenderer-Maxine-latest.zip > MpcVideoRenderer-Maxine-latest.zip.sha256
+          sha256sum KLiteMaxineUpdater-Setup.zip > KLiteMaxineUpdater-Setup.zip.sha256
+
+      - name: Publish rolling release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes="Rolling custom Maxine build from master commit ${GITHUB_SHA}. The assets are replaced after every successful master build."
+
+          git tag -f maxine-latest "$GITHUB_SHA"
+          git push --force origin refs/tags/maxine-latest
+
+          if gh release view maxine-latest >/dev/null 2>&1; then
+            gh release edit maxine-latest \
+              --title "Latest MPC Video Renderer Maxine build" \
+              --notes "$notes" \
+              --prerelease
+          else
+            gh release create maxine-latest \
+              --verify-tag \
+              --title "Latest MPC Video Renderer Maxine build" \
+              --notes "$notes" \
+              --prerelease
+          fi
+
+          gh release upload maxine-latest \
+            release/MpcVideoRenderer-Maxine-latest.zip \
+            release/MpcVideoRenderer-Maxine-latest.zip.sha256 \
+            release/KLiteMaxineUpdater-Setup.zip \
+            release/KLiteMaxineUpdater-Setup.zip.sha256 \
+            --clobber
