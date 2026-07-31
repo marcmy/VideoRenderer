@@ -95,7 +95,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh workflow run main.yml --ref master
+          gh workflow run main.yml --ref master --repo $env:GITHUB_REPOSITORY
           if ($LASTEXITCODE -ne 0) {
             throw 'The upstream merge was pushed, but the rolling master build could not be dispatched.'
           }
