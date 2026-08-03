@@ -35,7 +35,7 @@ jobs:
           set -euo pipefail
 
           base64 -d .tmp/maxine-panel.patch.gz.b64 | gzip -dc > /tmp/maxine-panel.patch
-          echo "d4023995320c5bc716e5baa54d8441235429e82556674ec3a805c1c9acb10f34  /tmp/maxine-panel.patch" | sha256sum -c -
+          echo "f5702532fdae1eccd7780d9f18ba64e50bbc54d51b7fdeb62cea39efabe14eb4  /tmp/maxine-panel.patch" | sha256sum -c -
 
           for file in \
             DX11VideoProcessor.cpp \
