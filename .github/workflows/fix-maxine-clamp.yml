@@ -1,0 +1,56 @@
+name: Fix Maxine quality clamp
+
+on:
+  push:
+    branches:
+      - feature/maxine-settings-panel-v2
+    paths:
+      - .github/workflows/fix-maxine-clamp.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v6
+        with:
+          ref: feature/maxine-settings-panel-v2
+          fetch-depth: 0
+
+      - name: Apply focused compile fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('Source/DX11VideoProcessor.cpp')
+          text = path.read_text(encoding='utf-8')
+          old = '''const unsigned quality = static_cast<unsigned>(std::clamp(m_iMaxineQuality,
+          \t\tMAXINE_QUALITY_Low, MAXINE_QUALITY_Ultra));'''
+          new = '''const unsigned quality = static_cast<unsigned>(std::clamp(m_iMaxineQuality,
+          \t\tstatic_cast<int>(MAXINE_QUALITY_Low), static_cast<int>(MAXINE_QUALITY_Ultra)));'''
+          if text.count(old) != 1:
+              raise SystemExit(f'Expected one Maxine quality clamp, found {text.count(old)}')
+          path.write_text(text.replace(old, new), encoding='utf-8', newline='')
+          PY
+
+          rm -f .github/workflows/fix-maxine-clamp.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m "fix: use consistent types for Maxine quality clamp"
+          git push origin HEAD:feature/maxine-settings-panel-v2
+
+      - name: Dispatch renderer build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run main.yml --ref feature/maxine-settings-panel-v2 --repo "${GITHUB_REPOSITORY}"
