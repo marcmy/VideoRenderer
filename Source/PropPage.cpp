@@ -74,6 +74,7 @@ void CopyMaxineSettings(Settings_t& dst, const Settings_t& src)
 	dst.iMaxineSourceMode = src.iMaxineSourceMode;
 	dst.iMaxineQuality = src.iMaxineQuality;
 	dst.iMaxineScale = src.iMaxineScale;
+	dst.iMaxineOversample = src.iMaxineOversample;
 	dst.iMaxineSourceLimit = src.iMaxineSourceLimit;
 	dst.iMaxineDenoise = src.iMaxineDenoise;
 	dst.iMaxineDeblur = src.iMaxineDeblur;
@@ -88,6 +89,7 @@ bool MaxineSettingsEqual(const Settings_t& a, const Settings_t& b)
 		&& a.iMaxineSourceMode == b.iMaxineSourceMode
 		&& a.iMaxineQuality == b.iMaxineQuality
 		&& a.iMaxineScale == b.iMaxineScale
+		&& a.iMaxineOversample == b.iMaxineOversample
 		&& a.iMaxineSourceLimit == b.iMaxineSourceLimit
 		&& a.iMaxineDenoise == b.iMaxineDenoise
 		&& a.iMaxineDeblur == b.iMaxineDeblur
@@ -108,6 +110,7 @@ void EnableMaxineDialogControls(HWND hwnd)
 {
 	const LONG_PTR operation = ComboBox_GetCurItemData(hwnd, IDC_MAXINE_OPERATION);
 	const LONG_PTR sourceMode = ComboBox_GetCurItemData(hwnd, IDC_MAXINE_SOURCE_MODE);
+	const LONG_PTR scale = ComboBox_GetCurItemData(hwnd, IDC_MAXINE_SCALE);
 	const bool enabled = operation != MAXINE_OPERATION_Disabled;
 	const bool upscale = operation == MAXINE_OPERATION_Upscale;
 	const bool denoiseOnly = operation == MAXINE_OPERATION_Denoise;
@@ -119,6 +122,8 @@ void EnableMaxineDialogControls(HWND hwnd)
 	}
 	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_QUALITY), enabled && upscale && sourceMode != MAXINE_SOURCE_Bicubic);
 	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_MAXINE_QUALITY), enabled && upscale && sourceMode != MAXINE_SOURCE_Bicubic);
+	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_MAXINE_OVERSAMPLE), enabled && upscale && scale == MAXINE_SCALE_MatchOutput);
+	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_OVERSAMPLE), enabled && upscale && scale == MAXINE_SCALE_MatchOutput);
 	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_SOURCE_LIMIT), enabled);
 	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_DENOISE), enabled && (upscale || denoiseOnly));
 	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_DEBLUR), enabled && (upscale || deblurOnly));
@@ -133,6 +138,7 @@ void SetMaxineDialogControls(HWND hwnd, const Settings_t& settings)
 	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_SOURCE_MODE, settings.iMaxineSourceMode);
 	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_QUALITY, settings.iMaxineQuality);
 	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_SCALE, settings.iMaxineScale);
+	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_OVERSAMPLE, settings.iMaxineOversample);
 	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_SOURCE_LIMIT, settings.iMaxineSourceLimit);
 	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_DENOISE, settings.iMaxineDenoise);
 	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_DEBLUR, settings.iMaxineDeblur);
@@ -169,6 +175,12 @@ void InitializeMaxineDialog(HWND hwnd, const Settings_t& settings)
 		{L"2x", MAXINE_SCALE_2X},
 		{L"3x", MAXINE_SCALE_3X},
 		{L"4x", MAXINE_SCALE_4X},
+	});
+	PopulateMaxineCombo(hwnd, IDC_MAXINE_OVERSAMPLE, {
+		{L"Off", MAXINE_OVERSAMPLE_Off},
+		{L"1.33x (4/3)", MAXINE_OVERSAMPLE_4_3X},
+		{L"1.5x", MAXINE_OVERSAMPLE_1_5X},
+		{L"2x", MAXINE_OVERSAMPLE_2X},
 	});
 	PopulateMaxineCombo(hwnd, IDC_MAXINE_SOURCE_LIMIT, {
 		{L"Disabled", SUPERRES_Disable},
@@ -212,6 +224,7 @@ bool ReadMaxineDialog(HWND hwnd, Settings_t& settings)
 	settings.iMaxineSourceMode = ReadCombo(IDC_MAXINE_SOURCE_MODE);
 	settings.iMaxineQuality = ReadCombo(IDC_MAXINE_QUALITY);
 	settings.iMaxineScale = ReadCombo(IDC_MAXINE_SCALE);
+	settings.iMaxineOversample = ReadCombo(IDC_MAXINE_OVERSAMPLE);
 	settings.iMaxineSourceLimit = ReadCombo(IDC_MAXINE_SOURCE_LIMIT);
 	settings.iMaxineDenoise = ReadCombo(IDC_MAXINE_DENOISE);
 	settings.iMaxineDeblur = ReadCombo(IDC_MAXINE_DEBLUR);
@@ -257,6 +270,7 @@ INT_PTR CALLBACK MaxineSettingsDlgProc(HWND hwnd, UINT message, WPARAM wParam, L
 		switch (LOWORD(wParam)) {
 		case IDC_MAXINE_OPERATION:
 		case IDC_MAXINE_SOURCE_MODE:
+		case IDC_MAXINE_SCALE:
 			if (HIWORD(wParam) == CBN_SELCHANGE) {
 				EnableMaxineDialogControls(hwnd);
 				return TRUE;

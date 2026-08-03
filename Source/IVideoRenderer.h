@@ -77,6 +77,13 @@ enum :int {
 };
 
 enum :int {
+	MAXINE_OVERSAMPLE_Off = 100,
+	MAXINE_OVERSAMPLE_4_3X = 133,
+	MAXINE_OVERSAMPLE_1_5X = 150,
+	MAXINE_OVERSAMPLE_2X = 200,
+};
+
+enum :int {
 	MAXINE_FILTER_Off = 0,
 	MAXINE_FILTER_Low,
 	MAXINE_FILTER_Medium,
@@ -192,6 +199,7 @@ struct Settings_t {
 	int iMaxineSourceMode;
 	int iMaxineQuality;
 	int iMaxineScale;
+	int iMaxineOversample;
 	int iMaxineSourceLimit;
 	int iMaxineDenoise;
 	int iMaxineDeblur;
@@ -252,6 +260,7 @@ struct Settings_t {
 		iMaxineSourceMode               = MAXINE_SOURCE_Auto;
 		iMaxineQuality                  = MAXINE_QUALITY_High;
 		iMaxineScale                    = MAXINE_SCALE_MatchOutput;
+		iMaxineOversample               = MAXINE_OVERSAMPLE_Off;
 		iMaxineSourceLimit              = SUPERRES_1080p;
 		iMaxineDenoise                  = MAXINE_FILTER_Off;
 		iMaxineDeblur                   = MAXINE_FILTER_Off;

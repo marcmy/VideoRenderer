@@ -144,6 +144,28 @@ static const wchar_t* MaxineOperationToString(const int operation)
 	}
 }
 
+static int NormalizeMaxineOversample(const int oversample)
+{
+	switch (oversample) {
+	case MAXINE_OVERSAMPLE_4_3X:
+	case MAXINE_OVERSAMPLE_1_5X:
+	case MAXINE_OVERSAMPLE_2X:
+		return oversample;
+	default:
+		return MAXINE_OVERSAMPLE_Off;
+	}
+}
+
+static const wchar_t* MaxineOversampleToString(const int oversample)
+{
+	switch (NormalizeMaxineOversample(oversample)) {
+	case MAXINE_OVERSAMPLE_4_3X: return L"1.33x";
+	case MAXINE_OVERSAMPLE_1_5X: return L"1.5x";
+	case MAXINE_OVERSAMPLE_2X:   return L"2x";
+	default:                     return L"Off";
+	}
+}
+
 static const wchar_t* MaxineModeToString(const int mode)
 {
 	switch (mode) {
@@ -487,6 +509,7 @@ CDX11VideoProcessor::CDX11VideoProcessor(CMpcVideoRenderer* pFilter, const Setti
 	m_iMaxineSourceMode    = config.iMaxineSourceMode;
 	m_iMaxineQuality       = config.iMaxineQuality;
 	m_iMaxineScale         = config.iMaxineScale;
+	m_iMaxineOversample    = config.iMaxineOversample;
 	m_iMaxineSourceLimit   = config.iMaxineSourceLimit;
 	m_iMaxineDenoise       = config.iMaxineDenoise;
 	m_iMaxineDeblur        = config.iMaxineDeblur;
@@ -3011,6 +3034,7 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSize(const CRect& dstRect, CSize& ta
 {
 	targetSize = CSize(0, 0);
 	upscaleNeeded = false;
+	m_bMaxineOversampleClamped = false;
 
 #ifdef _WIN64
 	if (m_iMaxineOperation == MAXINE_OPERATION_Disabled) {
@@ -3073,8 +3097,23 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSize(const CRect& dstRect, CSize& ta
 			m_strMaxineVSRStatus = L"Invalid player output size";
 			return false;
 		}
-		targetWidth = static_cast<unsigned long long>(dstWidth);
-		targetHeight = static_cast<unsigned long long>(dstHeight);
+
+		const int oversample = NormalizeMaxineOversample(m_iMaxineOversample);
+		targetWidth = (static_cast<unsigned long long>(dstWidth) * oversample + 50ull) / 100ull;
+		targetHeight = (static_cast<unsigned long long>(dstHeight) * oversample + 50ull) / 100ull;
+
+		const unsigned long long maxWidth = static_cast<unsigned long long>(m_srcRectWidth) * 4ull;
+		const unsigned long long maxHeight = static_cast<unsigned long long>(m_srcRectHeight) * 4ull;
+		if (targetWidth > maxWidth || targetHeight > maxHeight) {
+			const long double scaleX = static_cast<long double>(maxWidth) / targetWidth;
+			const long double scaleY = static_cast<long double>(maxHeight) / targetHeight;
+			const long double scale = std::min(scaleX, scaleY);
+			targetWidth = std::min(maxWidth, std::max<unsigned long long>(m_srcRectWidth,
+				static_cast<unsigned long long>(std::llround(targetWidth * scale))));
+			targetHeight = std::min(maxHeight, std::max<unsigned long long>(m_srcRectHeight,
+				static_cast<unsigned long long>(std::llround(targetHeight * scale))));
+			m_bMaxineOversampleClamped = true;
+		}
 	}
 	else {
 		const int scale = m_iMaxineScale;
@@ -4353,6 +4392,7 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 			|| config.iMaxineSourceMode != m_iMaxineSourceMode
 			|| config.iMaxineQuality != m_iMaxineQuality
 			|| config.iMaxineScale != m_iMaxineScale
+			|| config.iMaxineOversample != m_iMaxineOversample
 			|| config.iMaxineSourceLimit != m_iMaxineSourceLimit
 			|| config.iMaxineDenoise != m_iMaxineDenoise
 			|| config.iMaxineDeblur != m_iMaxineDeblur
@@ -4363,6 +4403,7 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 		m_iMaxineSourceMode = config.iMaxineSourceMode;
 		m_iMaxineQuality = config.iMaxineQuality;
 		m_iMaxineScale = config.iMaxineScale;
+		m_iMaxineOversample = config.iMaxineOversample;
 		m_iMaxineSourceLimit = config.iMaxineSourceLimit;
 		m_iMaxineDenoise = config.iMaxineDenoise;
 		m_iMaxineDeblur = config.iMaxineDeblur;
@@ -4881,6 +4922,12 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 		str += std::format(L"\nMaxine config: quality {}, denoise {}, deblur {}, GPU {}",
 			MaxineQualityToString(m_iMaxineQuality), MaxineFilterToString(m_iMaxineDenoise),
 			MaxineFilterToString(m_iMaxineDeblur), gpuLabel);
+		if (m_iMaxineScale == MAXINE_SCALE_MatchOutput) {
+			str += std::format(L", output oversampling {}", MaxineOversampleToString(m_iMaxineOversample));
+			if (m_bMaxineOversampleClamped) {
+				str.append(L" (clamped to 4x source limit)");
+			}
+		}
 		if (m_dwSourceBitRate) {
 			str += std::format(L", source {:.1f} Mbps", m_dwSourceBitRate / 1000000.0);
 		}
