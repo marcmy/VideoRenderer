@@ -2988,7 +2988,7 @@ HRESULT CDX11VideoProcessor::FillBlack()
 unsigned CDX11VideoProcessor::ResolveMaxineUpscaleMode() const
 {
 	const unsigned quality = static_cast<unsigned>(std::clamp(m_iMaxineQuality,
-		MAXINE_QUALITY_Low, MAXINE_QUALITY_Ultra));
+		static_cast<int>(MAXINE_QUALITY_Low), static_cast<int>(MAXINE_QUALITY_Ultra)));
 
 	switch (m_iMaxineSourceMode) {
 	case MAXINE_SOURCE_Bicubic:
