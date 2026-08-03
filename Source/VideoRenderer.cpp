@@ -46,10 +46,18 @@
 #define OPT_DoubleFrateDeint               L"DoubleFramerateDeinterlace"
 #define OPT_VPScaling                      L"VPScaling"
 #define OPT_VPSuperResolution              L"VPSuperResolution"
+// Legacy Maxine keys are kept for migration from the original four-control UI.
 #define OPT_MaxineVideoSuperResolution      L"MaxineVideoSuperResolution"
 #define OPT_MaxineVideoSuperResolutionScale L"MaxineVideoSuperResolutionScale"
+#define OPT_MaxineOperation                 L"MaxineOperation"
+#define OPT_MaxineSourceMode                L"MaxineSourceMode"
+#define OPT_MaxineQuality                   L"MaxineQuality"
+#define OPT_MaxineSourceLimit               L"MaxineSourceLimit"
 #define OPT_MaxineVideoDenoise              L"MaxineVideoDenoise"
 #define OPT_MaxineVideoDeblur               L"MaxineVideoDeblur"
+#define OPT_MaxinePipeline                  L"MaxinePipeline"
+#define OPT_MaxineGPU                       L"MaxineGPU"
+#define OPT_MaxineAutoBitrate               L"MaxineAutoBitrateMbps"
 #define OPT_VPRTXVideoHDR                  L"VPRTXVideoHDR"
 #define OPT_ChromaUpsampling               L"ChromaUpsampling"
 #define OPT_Upscaling                      L"Upscaling"
@@ -212,18 +220,59 @@ CMpcVideoRenderer::CMpcVideoRenderer(LPUNKNOWN pUnk, HRESULT* phr)
 			m_Sets.iVPSuperRes = discard<int>(dw, SUPERRES_Disable, 0, SUPERRES_COUNT-1);
 		}
 #ifdef _WIN64
-		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoSuperResolution, dw)) {
-			m_Sets.iMaxineVSR = discard<int>(dw, MAXINEVSR_Disable, 0, MAXINEVSR_COUNT-1);
+		const bool hasMaxineOperation = ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineOperation, dw);
+		if (hasMaxineOperation) {
+			m_Sets.iMaxineOperation = discard<int>(dw, MAXINE_OPERATION_Disabled, 0, MAXINE_OPERATION_COUNT - 1);
 		}
-		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoSuperResolutionScale, dw)
-				&& (dw == MAXINEVSR_SCALE_2X || dw == MAXINEVSR_SCALE_4X)) {
-			m_Sets.iMaxineVSRScale = dw;
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineSourceMode, dw)) {
+			m_Sets.iMaxineSourceMode = discard<int>(dw, MAXINE_SOURCE_Auto, 0, MAXINE_SOURCE_COUNT - 1);
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineQuality, dw)) {
+			m_Sets.iMaxineQuality = discard<int>(dw, MAXINE_QUALITY_High, MAXINE_QUALITY_Low, MAXINE_QUALITY_Ultra);
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoSuperResolutionScale, dw)) {
+			// Version 1 stored literal multipliers 2 and 4. Version 2 stores percent.
+			if (dw == 2) dw = MAXINE_SCALE_2X;
+			if (dw == 4) dw = MAXINE_SCALE_4X;
+			if (dw == MAXINE_SCALE_MatchOutput || dw == MAXINE_SCALE_4_3X || dw == MAXINE_SCALE_1_5X
+					|| dw == MAXINE_SCALE_2X || dw == MAXINE_SCALE_3X || dw == MAXINE_SCALE_4X) {
+				m_Sets.iMaxineScale = static_cast<int>(dw);
+			}
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineSourceLimit, dw)) {
+			m_Sets.iMaxineSourceLimit = discard<int>(dw, SUPERRES_1080p, 0, SUPERRES_COUNT - 1);
 		}
 		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoDenoise, dw)) {
-			m_Sets.iMaxineVSRDenoise = discard<int>(dw, MAXINEVSR_FILTER_Off, 0, MAXINEVSR_FILTER_COUNT-1);
+			m_Sets.iMaxineDenoise = discard<int>(dw, MAXINE_FILTER_Off, 0, MAXINE_FILTER_COUNT - 1);
 		}
 		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoDeblur, dw)) {
-			m_Sets.iMaxineVSRDeblur = discard<int>(dw, MAXINEVSR_FILTER_Off, 0, MAXINEVSR_FILTER_COUNT-1);
+			m_Sets.iMaxineDeblur = discard<int>(dw, MAXINE_FILTER_Off, 0, MAXINE_FILTER_COUNT - 1);
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxinePipeline, dw)) {
+			m_Sets.iMaxinePipeline = discard<int>(dw, MAXINE_PIPELINE_UpscaleDenoiseDeblur, 0, MAXINE_PIPELINE_COUNT - 1);
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineGPU, dw)) {
+			if (dw == MAXDWORD) {
+				m_Sets.iMaxineGPU = MAXINE_GPU_Auto;
+			}
+			else if (dw <= 7) {
+				m_Sets.iMaxineGPU = static_cast<int>(dw);
+			}
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineAutoBitrate, dw)) {
+			m_Sets.iMaxineAutoBitrate = discard<int>(dw, MAXINE_AUTO_BITRATE_DEF,
+				MAXINE_AUTO_BITRATE_MIN, MAXINE_AUTO_BITRATE_MAX);
+		}
+
+		if (!hasMaxineOperation && ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoSuperResolution, dw)) {
+			// Migrate the original Off/Low/Medium/High/Ultra selector.
+			const int legacyQuality = discard<int>(dw, 0, 0, 4);
+			if (legacyQuality > 0) {
+				m_Sets.iMaxineOperation = MAXINE_OPERATION_Upscale;
+				m_Sets.iMaxineSourceMode = MAXINE_SOURCE_Standard;
+				m_Sets.iMaxineQuality = legacyQuality;
+				m_Sets.iMaxineSourceLimit = m_Sets.iVPSuperRes;
+			}
 		}
 		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_VPRTXVideoHDR, dw)) {
 			m_Sets.bVPRTXVideoHDR = !!dw;
@@ -1304,11 +1353,17 @@ STDMETHODIMP CMpcVideoRenderer::SaveSettings()
 		key.SetDWORDValue(OPT_VPScaling,           m_Sets.bVPScaling);
 		key.SetDWORDValue(OPT_VPSuperResolution,   m_Sets.iVPSuperRes);
 #ifdef _WIN64
-		key.SetDWORDValue(OPT_MaxineVideoSuperResolution,      m_Sets.iMaxineVSR);
-		key.SetDWORDValue(OPT_MaxineVideoSuperResolutionScale, m_Sets.iMaxineVSRScale);
-		key.SetDWORDValue(OPT_MaxineVideoDenoise,              m_Sets.iMaxineVSRDenoise);
-		key.SetDWORDValue(OPT_MaxineVideoDeblur,               m_Sets.iMaxineVSRDeblur);
-		key.SetDWORDValue(OPT_VPRTXVideoHDR,       m_Sets.bVPRTXVideoHDR);
+		key.SetDWORDValue(OPT_MaxineOperation,                 m_Sets.iMaxineOperation);
+		key.SetDWORDValue(OPT_MaxineSourceMode,                m_Sets.iMaxineSourceMode);
+		key.SetDWORDValue(OPT_MaxineQuality,                   m_Sets.iMaxineQuality);
+		key.SetDWORDValue(OPT_MaxineVideoSuperResolutionScale, m_Sets.iMaxineScale);
+		key.SetDWORDValue(OPT_MaxineSourceLimit,               m_Sets.iMaxineSourceLimit);
+		key.SetDWORDValue(OPT_MaxineVideoDenoise,              m_Sets.iMaxineDenoise);
+		key.SetDWORDValue(OPT_MaxineVideoDeblur,               m_Sets.iMaxineDeblur);
+		key.SetDWORDValue(OPT_MaxinePipeline,                  m_Sets.iMaxinePipeline);
+		key.SetDWORDValue(OPT_MaxineGPU,                       static_cast<DWORD>(m_Sets.iMaxineGPU));
+		key.SetDWORDValue(OPT_MaxineAutoBitrate,               m_Sets.iMaxineAutoBitrate);
+		key.SetDWORDValue(OPT_VPRTXVideoHDR,                   m_Sets.bVPRTXVideoHDR);
 #endif
 		key.SetDWORDValue(OPT_ChromaUpsampling,    m_Sets.iChromaScaling);
 		key.SetDWORDValue(OPT_Upscaling,           m_Sets.iUpscaling);

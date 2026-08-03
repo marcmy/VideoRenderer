@@ -66,6 +66,227 @@ void ComboBox_SelectByItemData(HWND hWnd, int nIDComboBox, LONG_PTR data)
 }
 
 
+namespace {
+
+void CopyMaxineSettings(Settings_t& dst, const Settings_t& src)
+{
+	dst.iMaxineOperation = src.iMaxineOperation;
+	dst.iMaxineSourceMode = src.iMaxineSourceMode;
+	dst.iMaxineQuality = src.iMaxineQuality;
+	dst.iMaxineScale = src.iMaxineScale;
+	dst.iMaxineSourceLimit = src.iMaxineSourceLimit;
+	dst.iMaxineDenoise = src.iMaxineDenoise;
+	dst.iMaxineDeblur = src.iMaxineDeblur;
+	dst.iMaxinePipeline = src.iMaxinePipeline;
+	dst.iMaxineGPU = src.iMaxineGPU;
+	dst.iMaxineAutoBitrate = src.iMaxineAutoBitrate;
+}
+
+bool MaxineSettingsEqual(const Settings_t& a, const Settings_t& b)
+{
+	return a.iMaxineOperation == b.iMaxineOperation
+		&& a.iMaxineSourceMode == b.iMaxineSourceMode
+		&& a.iMaxineQuality == b.iMaxineQuality
+		&& a.iMaxineScale == b.iMaxineScale
+		&& a.iMaxineSourceLimit == b.iMaxineSourceLimit
+		&& a.iMaxineDenoise == b.iMaxineDenoise
+		&& a.iMaxineDeblur == b.iMaxineDeblur
+		&& a.iMaxinePipeline == b.iMaxinePipeline
+		&& a.iMaxineGPU == b.iMaxineGPU
+		&& a.iMaxineAutoBitrate == b.iMaxineAutoBitrate;
+}
+
+void PopulateMaxineCombo(HWND hwnd, int id, std::initializer_list<std::pair<LPCWSTR, LONG_PTR>> items)
+{
+	SendDlgItemMessageW(hwnd, id, CB_RESETCONTENT, 0, 0);
+	for (const auto& [label, value] : items) {
+		ComboBox_AddStringData(hwnd, id, label, value);
+	}
+}
+
+void EnableMaxineDialogControls(HWND hwnd)
+{
+	const LONG_PTR operation = ComboBox_GetCurItemData(hwnd, IDC_MAXINE_OPERATION);
+	const LONG_PTR sourceMode = ComboBox_GetCurItemData(hwnd, IDC_MAXINE_SOURCE_MODE);
+	const bool enabled = operation != MAXINE_OPERATION_Disabled;
+	const bool upscale = operation == MAXINE_OPERATION_Upscale;
+	const bool denoiseOnly = operation == MAXINE_OPERATION_Denoise;
+	const bool deblurOnly = operation == MAXINE_OPERATION_Deblur;
+
+	for (const int id : {IDC_MAXINE_SOURCE_MODE, IDC_STATIC_MAXINE_QUALITY, IDC_MAXINE_QUALITY,
+		IDC_STATIC_MAXINE_SCALE, IDC_MAXINE_SCALE, IDC_STATIC_MAXINE_PIPELINE, IDC_MAXINE_PIPELINE}) {
+		EnableWindow(GetDlgItem(hwnd, id), enabled && upscale);
+	}
+	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_QUALITY), enabled && upscale && sourceMode != MAXINE_SOURCE_Bicubic);
+	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_MAXINE_QUALITY), enabled && upscale && sourceMode != MAXINE_SOURCE_Bicubic);
+	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_SOURCE_LIMIT), enabled);
+	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_DENOISE), enabled && (upscale || denoiseOnly));
+	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_DEBLUR), enabled && (upscale || deblurOnly));
+	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_GPU), enabled);
+	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_MAXINE_AUTO_BITRATE), enabled && upscale && sourceMode == MAXINE_SOURCE_Auto);
+	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_AUTO_BITRATE), enabled && upscale && sourceMode == MAXINE_SOURCE_Auto);
+}
+
+void SetMaxineDialogControls(HWND hwnd, const Settings_t& settings)
+{
+	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_OPERATION, settings.iMaxineOperation);
+	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_SOURCE_MODE, settings.iMaxineSourceMode);
+	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_QUALITY, settings.iMaxineQuality);
+	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_SCALE, settings.iMaxineScale);
+	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_SOURCE_LIMIT, settings.iMaxineSourceLimit);
+	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_DENOISE, settings.iMaxineDenoise);
+	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_DEBLUR, settings.iMaxineDeblur);
+	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_PIPELINE, settings.iMaxinePipeline);
+	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_GPU, settings.iMaxineGPU);
+	SetDlgItemInt(hwnd, IDC_MAXINE_AUTO_BITRATE, settings.iMaxineAutoBitrate, FALSE);
+	EnableMaxineDialogControls(hwnd);
+}
+
+void InitializeMaxineDialog(HWND hwnd, const Settings_t& settings)
+{
+	PopulateMaxineCombo(hwnd, IDC_MAXINE_OPERATION, {
+		{L"Disabled", MAXINE_OPERATION_Disabled},
+		{L"Upscale, with optional cleanup passes", MAXINE_OPERATION_Upscale},
+		{L"Denoise only, keep source resolution", MAXINE_OPERATION_Denoise},
+		{L"Deblur only, keep source resolution", MAXINE_OPERATION_Deblur},
+	});
+	PopulateMaxineCombo(hwnd, IDC_MAXINE_SOURCE_MODE, {
+		{L"Automatic from reported source bitrate", MAXINE_SOURCE_Auto},
+		{L"Standard, compressed video", MAXINE_SOURCE_Standard},
+		{L"High bitrate / clean source", MAXINE_SOURCE_HighBitrate},
+		{L"Bicubic baseline, no AI enhancement", MAXINE_SOURCE_Bicubic},
+	});
+	PopulateMaxineCombo(hwnd, IDC_MAXINE_QUALITY, {
+		{L"Low", MAXINE_QUALITY_Low},
+		{L"Medium", MAXINE_QUALITY_Medium},
+		{L"High", MAXINE_QUALITY_High},
+		{L"Ultra", MAXINE_QUALITY_Ultra},
+	});
+	PopulateMaxineCombo(hwnd, IDC_MAXINE_SCALE, {
+		{L"Match player output", MAXINE_SCALE_MatchOutput},
+		{L"1.33x (4/3)", MAXINE_SCALE_4_3X},
+		{L"1.5x", MAXINE_SCALE_1_5X},
+		{L"2x", MAXINE_SCALE_2X},
+		{L"3x", MAXINE_SCALE_3X},
+		{L"4x", MAXINE_SCALE_4X},
+	});
+	PopulateMaxineCombo(hwnd, IDC_MAXINE_SOURCE_LIMIT, {
+		{L"Disabled", SUPERRES_Disable},
+		{L"SD or lower", SUPERRES_SD},
+		{L"720p or lower", SUPERRES_720p},
+		{L"1080p or lower", SUPERRES_1080p},
+		{L"1440p or lower", SUPERRES_1440p},
+	});
+	for (const int id : {IDC_MAXINE_DENOISE, IDC_MAXINE_DEBLUR}) {
+		PopulateMaxineCombo(hwnd, id, {
+			{L"Off", MAXINE_FILTER_Off},
+			{L"Low", MAXINE_FILTER_Low},
+			{L"Medium", MAXINE_FILTER_Medium},
+			{L"High", MAXINE_FILTER_High},
+			{L"Ultra", MAXINE_FILTER_Ultra},
+		});
+	}
+	PopulateMaxineCombo(hwnd, IDC_MAXINE_PIPELINE, {
+		{L"Upscale -> Denoise -> Deblur", MAXINE_PIPELINE_UpscaleDenoiseDeblur},
+		{L"Upscale -> Deblur -> Denoise", MAXINE_PIPELINE_UpscaleDeblurDenoise},
+		{L"Denoise -> Deblur -> Upscale", MAXINE_PIPELINE_DenoiseDeblurUpscale},
+		{L"Deblur -> Denoise -> Upscale", MAXINE_PIPELINE_DeblurDenoiseUpscale},
+		{L"Denoise -> Upscale -> Deblur", MAXINE_PIPELINE_DenoiseUpscaleDeblur},
+		{L"Deblur -> Upscale -> Denoise", MAXINE_PIPELINE_DeblurUpscaleDenoise},
+	});
+	PopulateMaxineCombo(hwnd, IDC_MAXINE_GPU, {
+		{L"Auto", MAXINE_GPU_Auto},
+		{L"GPU 0", 0}, {L"GPU 1", 1}, {L"GPU 2", 2}, {L"GPU 3", 3},
+		{L"GPU 4", 4}, {L"GPU 5", 5}, {L"GPU 6", 6}, {L"GPU 7", 7},
+	});
+	SetMaxineDialogControls(hwnd, settings);
+}
+
+bool ReadMaxineDialog(HWND hwnd, Settings_t& settings)
+{
+	auto ReadCombo = [hwnd](int id) -> int {
+		return static_cast<int>(ComboBox_GetCurItemData(hwnd, id));
+	};
+
+	settings.iMaxineOperation = ReadCombo(IDC_MAXINE_OPERATION);
+	settings.iMaxineSourceMode = ReadCombo(IDC_MAXINE_SOURCE_MODE);
+	settings.iMaxineQuality = ReadCombo(IDC_MAXINE_QUALITY);
+	settings.iMaxineScale = ReadCombo(IDC_MAXINE_SCALE);
+	settings.iMaxineSourceLimit = ReadCombo(IDC_MAXINE_SOURCE_LIMIT);
+	settings.iMaxineDenoise = ReadCombo(IDC_MAXINE_DENOISE);
+	settings.iMaxineDeblur = ReadCombo(IDC_MAXINE_DEBLUR);
+	settings.iMaxinePipeline = ReadCombo(IDC_MAXINE_PIPELINE);
+	settings.iMaxineGPU = ReadCombo(IDC_MAXINE_GPU);
+
+	BOOL valid = FALSE;
+	const UINT bitrate = GetDlgItemInt(hwnd, IDC_MAXINE_AUTO_BITRATE, &valid, FALSE);
+	if (!valid || bitrate < MAXINE_AUTO_BITRATE_MIN || bitrate > MAXINE_AUTO_BITRATE_MAX) {
+		MessageBoxW(hwnd, L"Enter an automatic high-bitrate threshold from 1 to 1000 Mbps.",
+			L"NVIDIA Maxine settings", MB_OK | MB_ICONERROR);
+		return false;
+	}
+	settings.iMaxineAutoBitrate = static_cast<int>(bitrate);
+
+	if (settings.iMaxineOperation == MAXINE_OPERATION_Denoise
+			&& settings.iMaxineDenoise == MAXINE_FILTER_Off) {
+		MessageBoxW(hwnd, L"Choose a denoise strength for Denoise-only operation.",
+			L"NVIDIA Maxine settings", MB_OK | MB_ICONERROR);
+		return false;
+	}
+	if (settings.iMaxineOperation == MAXINE_OPERATION_Deblur
+			&& settings.iMaxineDeblur == MAXINE_FILTER_Off) {
+		MessageBoxW(hwnd, L"Choose a deblur strength for Deblur-only operation.",
+			L"NVIDIA Maxine settings", MB_OK | MB_ICONERROR);
+		return false;
+	}
+	return true;
+}
+
+INT_PTR CALLBACK MaxineSettingsDlgProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+	auto* settings = reinterpret_cast<Settings_t*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+
+	switch (message) {
+	case WM_INITDIALOG:
+		settings = reinterpret_cast<Settings_t*>(lParam);
+		SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(settings));
+		InitializeMaxineDialog(hwnd, *settings);
+		return TRUE;
+
+	case WM_COMMAND:
+		switch (LOWORD(wParam)) {
+		case IDC_MAXINE_OPERATION:
+		case IDC_MAXINE_SOURCE_MODE:
+			if (HIWORD(wParam) == CBN_SELCHANGE) {
+				EnableMaxineDialogControls(hwnd);
+				return TRUE;
+			}
+			break;
+		case IDC_BUTTON_MAXINE_DEFAULTS:
+			if (HIWORD(wParam) == BN_CLICKED) {
+				Settings_t defaults;
+				CopyMaxineSettings(*settings, defaults);
+				SetMaxineDialogControls(hwnd, *settings);
+				return TRUE;
+			}
+			break;
+		case IDOK:
+			if (ReadMaxineDialog(hwnd, *settings)) {
+				EndDialog(hwnd, IDOK);
+			}
+			return TRUE;
+		case IDCANCEL:
+			EndDialog(hwnd, IDCANCEL);
+			return TRUE;
+		}
+		break;
+	}
+	return FALSE;
+}
+
+} // namespace
+
+
 // CVRMainPPage
 
 // https://msdn.microsoft.com/ru-ru/library/windows/desktop/dd375010(v=vs.85).aspx
@@ -96,10 +317,6 @@ void CVRMainPPage::SetControls()
 	CheckDlgButton(IDC_CHECK3, m_SetsPP.bDeintDouble          ? BST_CHECKED : BST_UNCHECKED);
 	CheckDlgButton(IDC_CHECK5, m_SetsPP.bVPScaling            ? BST_CHECKED : BST_UNCHECKED);
 	SendDlgItemMessageW(IDC_COMBO8, CB_SETCURSEL, m_SetsPP.iVPSuperRes, 0);
-	ComboBox_SelectByItemData(m_hWnd, IDC_COMBO12, m_SetsPP.iMaxineVSRScale);
-	SendDlgItemMessageW(IDC_COMBO11, CB_SETCURSEL, m_SetsPP.iMaxineVSR, 0);
-	SendDlgItemMessageW(IDC_COMBO13, CB_SETCURSEL, m_SetsPP.iMaxineVSRDenoise, 0);
-	SendDlgItemMessageW(IDC_COMBO14, CB_SETCURSEL, m_SetsPP.iMaxineVSRDeblur, 0);
 	CheckDlgButton(IDC_CHECK19, m_SetsPP.bVPRTXVideoHDR       ? BST_CHECKED : BST_UNCHECKED);
 
 	if (m_SetsPP.bHdrPassthrough) {
@@ -161,20 +378,11 @@ void CVRMainPPage::EnableControls()
 		GetDlgItem(IDC_COMBO7).EnableWindow(bEnable);
 		GetDlgItem(IDC_STATIC6).EnableWindow(bEnable);
 		GetDlgItem(IDC_SLIDER1).EnableWindow(bEnable);
-		const BOOL bEnableSuperResLimit = bEnable
-			&& (m_SetsPP.bVPScaling || m_SetsPP.iMaxineVSR != MAXINEVSR_Disable);
-		GetDlgItem(IDC_STATIC7).EnableWindow(bEnableSuperResLimit);
-		GetDlgItem(IDC_COMBO8).EnableWindow(bEnableSuperResLimit);
+		const BOOL bEnableSuperRes = bEnable && m_SetsPP.bVPScaling;
+		GetDlgItem(IDC_STATIC7).EnableWindow(bEnableSuperRes);
+		GetDlgItem(IDC_COMBO8).EnableWindow(bEnableSuperRes);
 #ifdef _WIN64
-		GetDlgItem(IDC_STATIC_MAXINESCALE).EnableWindow(bEnable);
-		GetDlgItem(IDC_COMBO12).EnableWindow(bEnable);
-		GetDlgItem(IDC_STATIC_MAXINEVSR).EnableWindow(bEnable);
-		GetDlgItem(IDC_COMBO11).EnableWindow(bEnable);
-		const BOOL bEnableMaxineFilters = bEnable && m_SetsPP.iMaxineVSR != MAXINEVSR_Disable;
-		GetDlgItem(IDC_STATIC_MAXINEDENOISE).EnableWindow(bEnableMaxineFilters);
-		GetDlgItem(IDC_COMBO13).EnableWindow(bEnableMaxineFilters);
-		GetDlgItem(IDC_STATIC_MAXINEDEBLUR).EnableWindow(bEnableMaxineFilters);
-		GetDlgItem(IDC_COMBO14).EnableWindow(bEnableMaxineFilters);
+		GetDlgItem(IDC_BUTTON_MAXINE).EnableWindow(bEnable);
 		GetDlgItem(IDC_CHECK19).EnableWindow(bEnable && m_SetsPP.bHdrPassthrough);
 #endif
 	}
@@ -183,6 +391,23 @@ void CVRMainPPage::EnableControls()
 	GetDlgItem(IDC_EDIT1).EnableWindow(m_SetsPP.bConvertToSdr);
 	GetDlgItem(IDC_SLIDER2).EnableWindow(m_SetsPP.bConvertToSdr);
 	GetDlgItem(IDC_EDIT_DISPLAYMAX).EnableWindow(m_SetsPP.bHdrLocalToneMapping);
+}
+
+bool CVRMainPPage::ShowMaxineSettings()
+{
+	Settings_t candidate = m_SetsPP;
+	const INT_PTR result = DialogBoxParamW(g_hInst, MAKEINTRESOURCEW(IDD_MAXINESETTINGS),
+		m_hWnd, MaxineSettingsDlgProc, reinterpret_cast<LPARAM>(&candidate));
+	if (result == -1) {
+		MessageBoxW(L"The NVIDIA Maxine settings window could not be opened.", L"MPC Video Renderer",
+			MB_OK | MB_ICONERROR);
+		return false;
+	}
+	if (result != IDOK || MaxineSettingsEqual(candidate, m_SetsPP)) {
+		return false;
+	}
+	CopyMaxineSettings(m_SetsPP, candidate);
+	return true;
 }
 
 HRESULT CVRMainPPage::OnConnect(IUnknown *pUnk)
@@ -235,28 +460,14 @@ HRESULT CVRMainPPage::OnActivate()
 		GetDlgItem(IDC_SLIDER1).EnableWindow(FALSE);
 		GetDlgItem(IDC_STATIC7).EnableWindow(FALSE);
 		GetDlgItem(IDC_COMBO8).EnableWindow(FALSE);
-		GetDlgItem(IDC_STATIC_MAXINESCALE).EnableWindow(FALSE);
-		GetDlgItem(IDC_COMBO12).EnableWindow(FALSE);
-		GetDlgItem(IDC_STATIC_MAXINEVSR).EnableWindow(FALSE);
-		GetDlgItem(IDC_COMBO11).EnableWindow(FALSE);
-		GetDlgItem(IDC_STATIC_MAXINEDENOISE).EnableWindow(FALSE);
-		GetDlgItem(IDC_COMBO13).EnableWindow(FALSE);
-		GetDlgItem(IDC_STATIC_MAXINEDEBLUR).EnableWindow(FALSE);
-		GetDlgItem(IDC_COMBO14).EnableWindow(FALSE);
+		GetDlgItem(IDC_BUTTON_MAXINE).EnableWindow(FALSE);
 		GetDlgItem(IDC_CHECK19).EnableWindow(FALSE);
 	}
 
 #ifndef _WIN64
 	GetDlgItem(IDC_STATIC7).EnableWindow(FALSE);
 	GetDlgItem(IDC_COMBO8).EnableWindow(FALSE);
-	GetDlgItem(IDC_STATIC_MAXINESCALE).EnableWindow(FALSE);
-	GetDlgItem(IDC_COMBO12).EnableWindow(FALSE);
-	GetDlgItem(IDC_STATIC_MAXINEVSR).EnableWindow(FALSE);
-	GetDlgItem(IDC_COMBO11).EnableWindow(FALSE);
-	GetDlgItem(IDC_STATIC_MAXINEDENOISE).EnableWindow(FALSE);
-	GetDlgItem(IDC_COMBO13).EnableWindow(FALSE);
-	GetDlgItem(IDC_STATIC_MAXINEDEBLUR).EnableWindow(FALSE);
-	GetDlgItem(IDC_COMBO14).EnableWindow(FALSE);
+	GetDlgItem(IDC_BUTTON_MAXINE).EnableWindow(FALSE);
 	GetDlgItem(IDC_CHECK19).EnableWindow(FALSE);
 #endif
 
@@ -279,23 +490,6 @@ HRESULT CVRMainPPage::OnActivate()
 	SendDlgItemMessageW(IDC_COMBO8, CB_ADDSTRING, 0, (LPARAM)L"for \x2264 720p");
 	SendDlgItemMessageW(IDC_COMBO8, CB_ADDSTRING, 0, (LPARAM)L"for \x2264 1080p");
 	SendDlgItemMessageW(IDC_COMBO8, CB_ADDSTRING, 0, (LPARAM)L"for \x2264 1440p");
-
-	ComboBox_AddStringData(m_hWnd, IDC_COMBO12, L"2x", MAXINEVSR_SCALE_2X);
-	ComboBox_AddStringData(m_hWnd, IDC_COMBO12, L"4x", MAXINEVSR_SCALE_4X);
-
-	SendDlgItemMessageW(IDC_COMBO11, CB_ADDSTRING, 0, (LPARAM)L"Off");
-	SendDlgItemMessageW(IDC_COMBO11, CB_ADDSTRING, 0, (LPARAM)L"Low");
-	SendDlgItemMessageW(IDC_COMBO11, CB_ADDSTRING, 0, (LPARAM)L"Medium");
-	SendDlgItemMessageW(IDC_COMBO11, CB_ADDSTRING, 0, (LPARAM)L"High");
-	SendDlgItemMessageW(IDC_COMBO11, CB_ADDSTRING, 0, (LPARAM)L"Ultra");
-
-	for (const int id : {IDC_COMBO13, IDC_COMBO14}) {
-		SendDlgItemMessageW(id, CB_ADDSTRING, 0, (LPARAM)L"Off");
-		SendDlgItemMessageW(id, CB_ADDSTRING, 0, (LPARAM)L"Low");
-		SendDlgItemMessageW(id, CB_ADDSTRING, 0, (LPARAM)L"Medium");
-		SendDlgItemMessageW(id, CB_ADDSTRING, 0, (LPARAM)L"High");
-		SendDlgItemMessageW(id, CB_ADDSTRING, 0, (LPARAM)L"Ultra");
-	}
 
 	SendDlgItemMessageW(IDC_COMBO7, CB_ADDSTRING, 0, (LPARAM)L"Do not change");
 	SendDlgItemMessageW(IDC_COMBO7, CB_ADDSTRING, 0, (LPARAM)L"Allow turn on (fullscreen)");
@@ -351,24 +545,11 @@ HRESULT CVRMainPPage::OnActivate()
 		L"It works fast, but it's not always good.\n"
 		"Disable it if you want to use shaders for resizing.");
 	AddHint(IDC_COMBO8,
-		L"Sets the maximum source resolution for Super Resolution.\n"
-		"When Maxine VSR is enabled, this limit is used by Maxine.\n"
-		"When Maxine VSR is Off, it controls the hardware video\n"
-		"processor Super Resolution request.");
-	AddHint(IDC_COMBO12,
-		L"Selects the fixed Maxine inference scale. The scale is\n"
-		"independent of the player window or display resolution.");
-	AddHint(IDC_COMBO11,
-		L"Selects NVIDIA Maxine Video Super Resolution quality.\n"
-		"The Super Resolution source limit above is shared with\n"
-		"the normal hardware VSR path. SDR input is converted to\n"
-		"BGRA8 for Maxine; HDR is not supported yet.");
-	AddHint(IDC_COMBO13,
-		L"Runs an additional same-resolution Maxine denoise pass\n"
-		"after upscaling. This adds substantial GPU cost.");
-	AddHint(IDC_COMBO14,
-		L"Runs an additional same-resolution Maxine deblur pass\n"
-		"after denoise. This adds substantial GPU cost.");
+		L"Sets the maximum source resolution for hardware video-processor\n"
+		"Super Resolution. Maxine has its own source limit.");
+	AddHint(IDC_BUTTON_MAXINE,
+		L"Opens the dedicated NVIDIA Maxine settings window.\n"
+		"Maxine is available in the 64-bit Direct3D 11 renderer.");
 	AddHint(IDC_CHECK19,
 		L"Available for Direct3D 11.\n"
 		"Requires hardware and driver support:\n"
@@ -491,6 +672,13 @@ INT_PTR CVRMainPPage::OnReceiveMessage(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 				return (LRESULT)1;
 			}
 
+			if (nID == IDC_BUTTON_MAXINE) {
+				if (ShowMaxineSettings()) {
+					SetDirty();
+				}
+				return (LRESULT)1;
+			}
+
 			if (nID == IDC_BUTTON1) {
 				m_SetsPP.SetDefault();
 				SetControls();
@@ -532,39 +720,6 @@ INT_PTR CVRMainPPage::OnReceiveMessage(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 				lValue = SendDlgItemMessageW(IDC_COMBO8, CB_GETCURSEL, 0, 0);
 				if (lValue != m_SetsPP.iVPSuperRes) {
 					m_SetsPP.iVPSuperRes = lValue;
-					SetDirty();
-				}
-				return (LRESULT)1;
-			}
-			if (nID == IDC_COMBO12) {
-				lValue = ComboBox_GetCurItemData(m_hWnd, IDC_COMBO12);
-				if (lValue != CB_ERR && lValue != m_SetsPP.iMaxineVSRScale) {
-					m_SetsPP.iMaxineVSRScale = static_cast<int>(lValue);
-					SetDirty();
-				}
-				return (LRESULT)1;
-			}
-			if (nID == IDC_COMBO11) {
-				lValue = SendDlgItemMessageW(IDC_COMBO11, CB_GETCURSEL, 0, 0);
-				if (lValue != m_SetsPP.iMaxineVSR) {
-					m_SetsPP.iMaxineVSR = lValue;
-					EnableControls();
-					SetDirty();
-				}
-				return (LRESULT)1;
-			}
-			if (nID == IDC_COMBO13) {
-				lValue = SendDlgItemMessageW(IDC_COMBO13, CB_GETCURSEL, 0, 0);
-				if (lValue != m_SetsPP.iMaxineVSRDenoise) {
-					m_SetsPP.iMaxineVSRDenoise = lValue;
-					SetDirty();
-				}
-				return (LRESULT)1;
-			}
-			if (nID == IDC_COMBO14) {
-				lValue = SendDlgItemMessageW(IDC_COMBO14, CB_GETCURSEL, 0, 0);
-				if (lValue != m_SetsPP.iMaxineVSRDeblur) {
-					m_SetsPP.iMaxineVSRDeblur = lValue;
 					SetDirty();
 				}
 				return (LRESULT)1;

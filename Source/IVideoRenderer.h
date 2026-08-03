@@ -45,27 +45,60 @@ enum :int {
 };
 
 enum :int {
-	MAXINEVSR_Disable = 0,
-	MAXINEVSR_Low,
-	MAXINEVSR_Medium,
-	MAXINEVSR_High,
-	MAXINEVSR_Ultra,
-	MAXINEVSR_COUNT
+	MAXINE_OPERATION_Disabled = 0,
+	MAXINE_OPERATION_Upscale,
+	MAXINE_OPERATION_Denoise,
+	MAXINE_OPERATION_Deblur,
+	MAXINE_OPERATION_COUNT
 };
 
 enum :int {
-	MAXINEVSR_SCALE_2X = 2,
-	MAXINEVSR_SCALE_4X = 4,
+	MAXINE_SOURCE_Auto = 0,
+	MAXINE_SOURCE_Standard,
+	MAXINE_SOURCE_HighBitrate,
+	MAXINE_SOURCE_Bicubic,
+	MAXINE_SOURCE_COUNT
 };
 
 enum :int {
-	MAXINEVSR_FILTER_Off = 0,
-	MAXINEVSR_FILTER_Low,
-	MAXINEVSR_FILTER_Medium,
-	MAXINEVSR_FILTER_High,
-	MAXINEVSR_FILTER_Ultra,
-	MAXINEVSR_FILTER_COUNT
+	MAXINE_QUALITY_Low = 1,
+	MAXINE_QUALITY_Medium,
+	MAXINE_QUALITY_High,
+	MAXINE_QUALITY_Ultra,
 };
+
+enum :int {
+	MAXINE_SCALE_MatchOutput = 0,
+	MAXINE_SCALE_4_3X = 133,
+	MAXINE_SCALE_1_5X = 150,
+	MAXINE_SCALE_2X = 200,
+	MAXINE_SCALE_3X = 300,
+	MAXINE_SCALE_4X = 400,
+};
+
+enum :int {
+	MAXINE_FILTER_Off = 0,
+	MAXINE_FILTER_Low,
+	MAXINE_FILTER_Medium,
+	MAXINE_FILTER_High,
+	MAXINE_FILTER_Ultra,
+	MAXINE_FILTER_COUNT
+};
+
+enum :int {
+	MAXINE_PIPELINE_UpscaleDenoiseDeblur = 0,
+	MAXINE_PIPELINE_UpscaleDeblurDenoise,
+	MAXINE_PIPELINE_DenoiseDeblurUpscale,
+	MAXINE_PIPELINE_DeblurDenoiseUpscale,
+	MAXINE_PIPELINE_DenoiseUpscaleDeblur,
+	MAXINE_PIPELINE_DeblurUpscaleDenoise,
+	MAXINE_PIPELINE_COUNT
+};
+
+constexpr inline int MAXINE_GPU_Auto = -1;
+constexpr inline int MAXINE_AUTO_BITRATE_DEF = 20;
+constexpr inline int MAXINE_AUTO_BITRATE_MIN = 1;
+constexpr inline int MAXINE_AUTO_BITRATE_MAX = 1000;
 
 enum :int {
 	CHROMA_Nearest = 0,
@@ -155,10 +188,16 @@ struct Settings_t {
 	bool bHdrLocalToneMapping;
 	int  iHdrLocalToneMappingType;
 	int iHdrDisplayMaxNits;
-	int iMaxineVSR;
-	int iMaxineVSRScale;
-	int iMaxineVSRDenoise;
-	int iMaxineVSRDeblur;
+	int iMaxineOperation;
+	int iMaxineSourceMode;
+	int iMaxineQuality;
+	int iMaxineScale;
+	int iMaxineSourceLimit;
+	int iMaxineDenoise;
+	int iMaxineDeblur;
+	int iMaxinePipeline;
+	int iMaxineGPU;
+	int iMaxineAutoBitrate;
 
 	Settings_t() {
 		SetDefault();
@@ -209,10 +248,16 @@ struct Settings_t {
 		bConvertToSdr                   = true;
 		iHdrOsdBrightness               = 0;
 		iSDRDisplayNits                 = SDR_NITS_DEF;
-		iMaxineVSR                      = MAXINEVSR_Disable;
-		iMaxineVSRScale                 = MAXINEVSR_SCALE_2X;
-		iMaxineVSRDenoise               = MAXINEVSR_FILTER_Off;
-		iMaxineVSRDeblur                = MAXINEVSR_FILTER_Off;
+		iMaxineOperation                = MAXINE_OPERATION_Disabled;
+		iMaxineSourceMode               = MAXINE_SOURCE_Auto;
+		iMaxineQuality                  = MAXINE_QUALITY_High;
+		iMaxineScale                    = MAXINE_SCALE_MatchOutput;
+		iMaxineSourceLimit              = SUPERRES_1080p;
+		iMaxineDenoise                  = MAXINE_FILTER_Off;
+		iMaxineDeblur                   = MAXINE_FILTER_Off;
+		iMaxinePipeline                 = MAXINE_PIPELINE_UpscaleDenoiseDeblur;
+		iMaxineGPU                      = MAXINE_GPU_Auto;
+		iMaxineAutoBitrate              = MAXINE_AUTO_BITRATE_DEF;
 	}
 };
 
