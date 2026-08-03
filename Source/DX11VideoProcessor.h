@@ -187,13 +187,23 @@ private:
 	int m_iVPSuperRes = SUPERRES_Disable;
 	bool m_bVPUseSuperRes = false; // but it is not exactly
 
-	int m_iMaxineVSR = MAXINEVSR_Disable;
-	int m_iMaxineVSRScale = MAXINEVSR_SCALE_2X;
-	int m_iMaxineVSRDenoise = MAXINEVSR_FILTER_Off;
-	int m_iMaxineVSRDeblur = MAXINEVSR_FILTER_Off;
+	int m_iMaxineOperation = MAXINE_OPERATION_Disabled;
+	int m_iMaxineSourceMode = MAXINE_SOURCE_Auto;
+	int m_iMaxineQuality = MAXINE_QUALITY_High;
+	int m_iMaxineScale = MAXINE_SCALE_MatchOutput;
+	int m_iMaxineSourceLimit = SUPERRES_1080p;
+	int m_iMaxineDenoise = MAXINE_FILTER_Off;
+	int m_iMaxineDeblur = MAXINE_FILTER_Off;
+	int m_iMaxinePipeline = MAXINE_PIPELINE_UpscaleDenoiseDeblur;
+	int m_iMaxineGPU = MAXINE_GPU_Auto;
+	int m_iMaxineAutoBitrate = MAXINE_AUTO_BITRATE_DEF;
+	DWORD m_dwSourceBitRate = 0;
 	bool m_bMaxineVSRUsed = false;
 	CSize m_MaxineVSRSize;
+	int m_iMaxineResolvedMode = -1;
 	std::wstring m_strMaxineVSRStatus = L"Disabled";
+	std::wstring m_strMaxinePipeline;
+	std::wstring m_strMaxineRuntimeInfo;
 	CNvidiaMaxineVSR m_MaxineVSR;
 	CNvidiaMaxineVSR m_MaxineDenoise;
 	CNvidiaMaxineVSR m_MaxineDeblur;
@@ -357,7 +367,8 @@ public:
 	void SwitchFullScreen(bool set) override;
 
 private:
-	bool GetMaxineVSRTargetSize(const CRect& dstRect, CSize& targetSize);
+	bool GetMaxineVSRTargetSize(const CRect& dstRect, CSize& targetSize, bool& upscaleNeeded);
+	unsigned ResolveMaxineUpscaleMode() const;
 	void UpdateTexures();
 	void UpdatePostScaleTexures();
 	void UpdateUpscalingShaders();

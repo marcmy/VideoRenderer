@@ -42,6 +42,7 @@ public:
 private:
 	void SetControls();
 	void EnableControls();
+	bool ShowMaxineSettings();
 
 	HRESULT OnConnect(IUnknown* pUnknown) override;
 	HRESULT OnDisconnect() override;

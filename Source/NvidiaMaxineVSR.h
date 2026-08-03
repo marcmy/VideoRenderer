@@ -24,10 +24,13 @@ public:
 		ID3D11DeviceContext* pDeviceContext,
 		ID3D11Texture2D* pInputTexture,
 		ID3D11Texture2D* pOutputTexture,
-		unsigned mode);
+		unsigned mode,
+		int gpuIndex = -1);
 
 	void Reset();
 	const std::wstring& GetStatus() const;
+	const std::wstring& GetRuntimeInfo() const;
+	double GetLastProcessTimeMs() const;
 
 private:
 	struct Impl;

@@ -11,6 +11,7 @@
 #include "Helper.h"
 
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <format>
 #include <utility>
@@ -65,6 +66,7 @@ using PFN_NvVFX_GetVersion = NvCV_Status (__cdecl*)(unsigned int* version);
 using PFN_NvVFX_CreateEffect = NvCV_Status (__cdecl*)(const char* code, NvVFX_Handle* effect);
 using PFN_NvVFX_DestroyEffect = void (__cdecl*)(NvVFX_Handle effect);
 using PFN_NvVFX_SetU32 = NvCV_Status (__cdecl*)(NvVFX_Handle effect, const char* paramName, unsigned int value);
+using PFN_NvVFX_SetS32 = NvCV_Status (__cdecl*)(NvVFX_Handle effect, const char* paramName, int value);
 using PFN_NvVFX_SetImage = NvCV_Status (__cdecl*)(NvVFX_Handle effect, const char* paramName, NvCVImage* image);
 using PFN_NvVFX_SetCudaStream = NvCV_Status (__cdecl*)(NvVFX_Handle effect, const char* paramName, CUstream stream);
 using PFN_NvVFX_Load = NvCV_Status (__cdecl*)(NvVFX_Handle effect);
@@ -209,6 +211,7 @@ struct CNvidiaMaxineVSR::Impl
 	PFN_NvVFX_CreateEffect NvVFX_CreateEffect = nullptr;
 	PFN_NvVFX_DestroyEffect NvVFX_DestroyEffect = nullptr;
 	PFN_NvVFX_SetU32 NvVFX_SetU32 = nullptr;
+	PFN_NvVFX_SetS32 NvVFX_SetS32 = nullptr;
 	PFN_NvVFX_SetImage NvVFX_SetImage = nullptr;
 	PFN_NvVFX_SetCudaStream NvVFX_SetCudaStream = nullptr;
 	PFN_NvVFX_Load NvVFX_Load = nullptr;
@@ -237,9 +240,12 @@ struct CNvidiaMaxineVSR::Impl
 	bool runtimeAttempted = false;
 	bool failed = false;
 	unsigned int sdkVersion = 0;
+	int selectedGPU = -1;
 #endif
 
 	std::wstring status = L"Disabled";
+	std::wstring runtimeInfo;
+	double lastProcessTimeMs = 0.0;
 
 #ifdef _WIN64
 	template<class T>
@@ -358,6 +364,7 @@ struct CNvidiaMaxineVSR::Impl
 			hNvCVImage = nullptr;
 		}
 		runtimeDirectory.clear();
+		runtimeInfo.clear();
 	}
 
 	bool LoadRuntime()
@@ -471,6 +478,7 @@ struct CNvidiaMaxineVSR::Impl
 			LoadProc(hNvCVImage, "NvCVImage_MapResource", NvCVImage_MapResource) &&
 			LoadProc(hNvCVImage, "NvCVImage_UnmapResource", NvCVImage_UnmapResource);
 
+		LoadProc(hNvVideoEffects, "NvVFX_SetS32", NvVFX_SetS32);
 		LoadProc(hNvCVImage, "NvCV_GetErrorStringFromCode", NvCV_GetErrorStringFromCode);
 
 		if (!ok) {
@@ -486,17 +494,41 @@ struct CNvidiaMaxineVSR::Impl
 			return false;
 		}
 
-		status = std::format(L"Runtime {}.{}.{} loaded from {}",
+		if (selectedGPU >= 0) {
+			if (!NvVFX_SetS32) {
+				status = L"This Maxine runtime cannot select a CUDA GPU";
+				UnloadRuntime();
+				return false;
+			}
+			const NvCV_Status gpuStatus = NvVFX_SetS32(nullptr, "GPU", selectedGPU);
+			if (gpuStatus != NVCV_SUCCESS) {
+				SetError(L"NvVFX_SetS32(GPU)", gpuStatus);
+				UnloadRuntime();
+				return false;
+			}
+		}
+
+		const std::wstring gpuInfo = selectedGPU >= 0
+			? std::format(L" (GPU {})", selectedGPU)
+			: std::wstring(L" (GPU auto)");
+		runtimeInfo = std::format(L"{}.{}.{} from {}{}",
 			(sdkVersion >> 24) & 0xff,
 			(sdkVersion >> 16) & 0xff,
 			(sdkVersion >> 8) & 0xff,
-			runtimeDirectory);
+			runtimeDirectory, gpuInfo);
+		status = std::format(L"Runtime {} loaded", runtimeInfo);
 		DLog(L"NVIDIA Maxine VSR: {}", status);
 		return true;
 	}
 
-	bool EnsureEffect(ID3D11Texture2D* input, ID3D11Texture2D* output, unsigned requestedMode)
+	bool EnsureEffect(ID3D11Texture2D* input, ID3D11Texture2D* output, unsigned requestedMode, int requestedGPU)
 	{
+		if (requestedGPU != selectedGPU) {
+			UnloadRuntime();
+			runtimeAttempted = false;
+			selectedGPU = requestedGPU;
+		}
+
 		if (!LoadRuntime() || failed) {
 			return false;
 		}
@@ -617,14 +649,22 @@ bool CNvidiaMaxineVSR::Process(
 	ID3D11DeviceContext* pDeviceContext,
 	ID3D11Texture2D* pInputTexture,
 	ID3D11Texture2D* pOutputTexture,
-	unsigned mode)
+	unsigned mode,
+	int gpuIndex)
 {
 #ifdef _WIN64
-	const bool upscaleMode = mode >= 1 && mode <= 4;
+	const auto started = std::chrono::steady_clock::now();
+	auto Finish = [&](bool result) {
+		m_impl->lastProcessTimeMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - started).count();
+		return result;
+	};
+
+	const bool upscaleMode = mode <= 4 || (mode >= 16 && mode <= 19);
 	const bool sameSizeMode = mode >= 8 && mode <= 15;
 	if (!pDeviceContext || !pInputTexture || !pOutputTexture || (!upscaleMode && !sameSizeMode)) {
 		m_impl->status = L"Invalid processing parameters";
-		return false;
+		return Finish(false);
 	}
 
 	D3D11_TEXTURE2D_DESC inputDesc = {};
@@ -633,22 +673,18 @@ bool CNvidiaMaxineVSR::Process(
 	pOutputTexture->GetDesc(&outputDesc);
 
 	if (upscaleMode) {
-		const bool scale2x = outputDesc.Width == inputDesc.Width * 2u
-			&& outputDesc.Height == inputDesc.Height * 2u;
-		const bool scale4x = outputDesc.Width == inputDesc.Width * 4u
-			&& outputDesc.Height == inputDesc.Height * 4u;
-		if (!scale2x && !scale4x) {
-			m_impl->status = L"VSR output must be exactly 2x or 4x";
-			return false;
+		if (outputDesc.Width <= inputDesc.Width && outputDesc.Height <= inputDesc.Height) {
+			m_impl->status = L"VSR output must be larger than the input";
+			return Finish(false);
 		}
 	}
 	else if (inputDesc.Width != outputDesc.Width || inputDesc.Height != outputDesc.Height) {
 		m_impl->status = L"Denoise and deblur require equal input and output sizes";
-		return false;
+		return Finish(false);
 	}
 
-	if (!m_impl->EnsureEffect(pInputTexture, pOutputTexture, mode)) {
-		return false;
+	if (!m_impl->EnsureEffect(pInputTexture, pOutputTexture, mode, gpuIndex)) {
+		return Finish(false);
 	}
 
 	ID3D11ShaderResourceView* nullViews[3] = {};
@@ -687,27 +723,25 @@ bool CNvidiaMaxineVSR::Process(
 		code = unmapCode;
 	}
 
-	// Each Maxine pass owns its GPU-side effect state, but D3D11/CUDA
-	// interop resources must not stay registered across passes. The VSR
-	// output is the denoise input, and the denoise output is the deblur
-	// input; leaving either registered causes CUDA to reject the next pass
-	// with NVCV_ERR_INVALID_RESOURCE_HANDLE.
+	// D3D11/CUDA interop resources cannot remain registered between chained
+	// passes because one pass's output becomes the next pass's input.
 	m_impl->ReleaseD3DImages();
 
 	if (code != NVCV_SUCCESS) {
 		m_impl->SetError(L"Frame processing", code);
 		m_impl->ResetEffect();
 		m_impl->failed = true;
-		return false;
+		return Finish(false);
 	}
 
 	m_impl->status = std::format(L"Active, mode {}", mode);
-	return true;
+	return Finish(true);
 #else
 	UNREFERENCED_PARAMETER(pDeviceContext);
 	UNREFERENCED_PARAMETER(pInputTexture);
 	UNREFERENCED_PARAMETER(pOutputTexture);
 	UNREFERENCED_PARAMETER(mode);
+	UNREFERENCED_PARAMETER(gpuIndex);
 	return false;
 #endif
 }
@@ -719,6 +753,7 @@ void CNvidiaMaxineVSR::Reset()
 	const std::wstring runtimeError = runtimeLoadFailed ? m_impl->status : std::wstring();
 
 	m_impl->ResetEffect();
+	m_impl->lastProcessTimeMs = 0.0;
 	if (m_impl->hNvVideoEffects) {
 		m_impl->status = L"Runtime loaded";
 	}
@@ -736,4 +771,14 @@ void CNvidiaMaxineVSR::Reset()
 const std::wstring& CNvidiaMaxineVSR::GetStatus() const
 {
 	return m_impl->status;
+}
+
+const std::wstring& CNvidiaMaxineVSR::GetRuntimeInfo() const
+{
+	return m_impl->runtimeInfo;
+}
+
+double CNvidiaMaxineVSR::GetLastProcessTimeMs() const
+{
+	return m_impl->lastProcessTimeMs;
 }

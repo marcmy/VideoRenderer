@@ -4,6 +4,8 @@
 //
 #define IDD_MAINPROPPAGE                102
 #define IDD_INFOPROPPAGE                103
+#define IDD_MAXINESETTINGS              106
+// Dedicated NVIDIA Maxine settings dialog controls
 #define IDS_MAINPROPPAGE_TITLE          104
 #define IDS_INFOPROPPAGE_TITLE          105
 #define IDF_DITHER_32X32_FLOAT16        401
@@ -132,22 +134,30 @@
 #define IDC_COMBO10                     1063
 #define IDC_STATIC99                    1064
 #define IDC_STATIC100                   1065
-#define IDC_COMBO11                     1066
-#define IDC_STATIC_MAXINEVSR            1067
-#define IDC_COMBO12                     1068
-#define IDC_COMBO13                     1069
-#define IDC_COMBO14                     1070
-#define IDC_STATIC_MAXINESCALE          1071
-#define IDC_STATIC_MAXINEDENOISE        1072
-#define IDC_STATIC_MAXINEDEBLUR         1073
+#define IDC_BUTTON_MAXINE               1074
+#define IDC_MAXINE_OPERATION            1075
+#define IDC_MAXINE_SOURCE_MODE          1076
+#define IDC_MAXINE_QUALITY              1077
+#define IDC_MAXINE_SCALE                1078
+#define IDC_MAXINE_SOURCE_LIMIT         1079
+#define IDC_MAXINE_DENOISE              1080
+#define IDC_MAXINE_DEBLUR               1081
+#define IDC_MAXINE_PIPELINE             1082
+#define IDC_MAXINE_GPU                  1083
+#define IDC_MAXINE_AUTO_BITRATE         1084
+#define IDC_STATIC_MAXINE_QUALITY       1085
+#define IDC_STATIC_MAXINE_SCALE         1086
+#define IDC_STATIC_MAXINE_PIPELINE      1087
+#define IDC_STATIC_MAXINE_AUTO_BITRATE  1088
+#define IDC_BUTTON_MAXINE_DEFAULTS      1089
 
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        106
+#define _APS_NEXT_RESOURCE_VALUE        107
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1074
+#define _APS_NEXT_CONTROL_VALUE         1090
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif
