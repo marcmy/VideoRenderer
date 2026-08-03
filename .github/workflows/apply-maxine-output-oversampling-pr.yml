@@ -1,0 +1,58 @@
+name: Apply Maxine output oversampling from PR
+
+on:
+  pull_request:
+    branches:
+      - master
+    types:
+      - opened
+      - reopened
+      - synchronize
+    paths:
+      - .github/workflows/apply-maxine-output-oversampling.yml
+      - .github/workflows/apply-maxine-output-oversampling-pr.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'feature/maxine-output-oversampling'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v6
+        with:
+          ref: feature/maxine-output-oversampling
+          fetch-depth: 0
+
+      - name: Extract and run the focused source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/apply-maxine-output-oversampling.yml').read_text(encoding='utf-8')
+          start_marker = "          python - <<'PY'\n"
+          end_marker = "\n          PY\n\n      - name: Commit completed implementation"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          script = textwrap.dedent(workflow[start:end])
+          Path('/tmp/apply-maxine-output-oversampling.py').write_text(script, encoding='utf-8')
+          PY
+          python /tmp/apply-maxine-output-oversampling.py
+
+      - name: Commit completed implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/apply-maxine-output-oversampling.yml
+          rm -f .github/workflows/apply-maxine-output-oversampling-pr.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m "feat: add Maxine match-output oversampling"
+          git push origin HEAD:feature/maxine-output-oversampling
