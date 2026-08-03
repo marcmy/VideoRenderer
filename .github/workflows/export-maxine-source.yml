@@ -1,0 +1,27 @@
+name: Export Maxine source snapshot
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/export-maxine-source.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Archive editable source
+        shell: bash
+        run: |
+          zip -r maxine-source-snapshot.zip Source .github/workflows/main.yml build_mpcvr.cmd
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v7
+        with:
+          name: maxine-source-snapshot
+          path: maxine-source-snapshot.zip
+          compression-level: 0
