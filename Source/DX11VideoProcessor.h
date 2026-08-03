@@ -191,6 +191,7 @@ private:
 	int m_iMaxineSourceMode = MAXINE_SOURCE_Auto;
 	int m_iMaxineQuality = MAXINE_QUALITY_High;
 	int m_iMaxineScale = MAXINE_SCALE_MatchOutput;
+	int m_iMaxineOversample = MAXINE_OVERSAMPLE_Off;
 	int m_iMaxineSourceLimit = SUPERRES_1080p;
 	int m_iMaxineDenoise = MAXINE_FILTER_Off;
 	int m_iMaxineDeblur = MAXINE_FILTER_Off;
@@ -201,6 +202,7 @@ private:
 	bool m_bMaxineVSRUsed = false;
 	CSize m_MaxineVSRSize;
 	int m_iMaxineResolvedMode = -1;
+	bool m_bMaxineOversampleClamped = false;
 	std::wstring m_strMaxineVSRStatus = L"Disabled";
 	std::wstring m_strMaxinePipeline;
 	std::wstring m_strMaxineRuntimeInfo;

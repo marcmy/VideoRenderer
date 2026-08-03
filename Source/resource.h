@@ -5,7 +5,7 @@
 #define IDD_MAINPROPPAGE                102
 #define IDD_INFOPROPPAGE                103
 #define IDD_MAXINESETTINGS              106
-// Dedicated NVIDIA Maxine settings dialog controls
+// Dedicated NVIDIA Maxine settings dialog controls, including output oversampling
 #define IDS_MAINPROPPAGE_TITLE          104
 #define IDS_INFOPROPPAGE_TITLE          105
 #define IDF_DITHER_32X32_FLOAT16        401
@@ -150,6 +150,8 @@
 #define IDC_STATIC_MAXINE_PIPELINE      1087
 #define IDC_STATIC_MAXINE_AUTO_BITRATE  1088
 #define IDC_BUTTON_MAXINE_DEFAULTS      1089
+#define IDC_MAXINE_OVERSAMPLE           1090
+#define IDC_STATIC_MAXINE_OVERSAMPLE    1091
 
 // Next default values for new objects
 // 
@@ -157,7 +159,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        107
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1090
+#define _APS_NEXT_CONTROL_VALUE         1092
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

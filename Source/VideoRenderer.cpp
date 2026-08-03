@@ -52,6 +52,7 @@
 #define OPT_MaxineOperation                 L"MaxineOperation"
 #define OPT_MaxineSourceMode                L"MaxineSourceMode"
 #define OPT_MaxineQuality                   L"MaxineQuality"
+#define OPT_MaxineOutputOversample          L"MaxineOutputOversample"
 #define OPT_MaxineSourceLimit               L"MaxineSourceLimit"
 #define OPT_MaxineVideoDenoise              L"MaxineVideoDenoise"
 #define OPT_MaxineVideoDeblur               L"MaxineVideoDeblur"
@@ -237,6 +238,16 @@ CMpcVideoRenderer::CMpcVideoRenderer(LPUNKNOWN pUnk, HRESULT* phr)
 			if (dw == MAXINE_SCALE_MatchOutput || dw == MAXINE_SCALE_4_3X || dw == MAXINE_SCALE_1_5X
 					|| dw == MAXINE_SCALE_2X || dw == MAXINE_SCALE_3X || dw == MAXINE_SCALE_4X) {
 				m_Sets.iMaxineScale = static_cast<int>(dw);
+			}
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineOutputOversample, dw)) {
+			switch (dw) {
+			case MAXINE_OVERSAMPLE_Off:
+			case MAXINE_OVERSAMPLE_4_3X:
+			case MAXINE_OVERSAMPLE_1_5X:
+			case MAXINE_OVERSAMPLE_2X:
+				m_Sets.iMaxineOversample = static_cast<int>(dw);
+				break;
 			}
 		}
 		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineSourceLimit, dw)) {
@@ -1357,6 +1368,7 @@ STDMETHODIMP CMpcVideoRenderer::SaveSettings()
 		key.SetDWORDValue(OPT_MaxineSourceMode,                m_Sets.iMaxineSourceMode);
 		key.SetDWORDValue(OPT_MaxineQuality,                   m_Sets.iMaxineQuality);
 		key.SetDWORDValue(OPT_MaxineVideoSuperResolutionScale, m_Sets.iMaxineScale);
+		key.SetDWORDValue(OPT_MaxineOutputOversample,          m_Sets.iMaxineOversample);
 		key.SetDWORDValue(OPT_MaxineSourceLimit,               m_Sets.iMaxineSourceLimit);
 		key.SetDWORDValue(OPT_MaxineVideoDenoise,              m_Sets.iMaxineDenoise);
 		key.SetDWORDValue(OPT_MaxineVideoDeblur,               m_Sets.iMaxineDeblur);
