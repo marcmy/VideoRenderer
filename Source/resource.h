@@ -5,6 +5,7 @@
 #define IDD_MAINPROPPAGE                102
 #define IDD_INFOPROPPAGE                103
 #define IDD_MAXINESETTINGS              106
+// Dedicated NVIDIA Maxine settings dialog controls
 #define IDS_MAINPROPPAGE_TITLE          104
 #define IDS_INFOPROPPAGE_TITLE          105
 #define IDF_DITHER_32X32_FLOAT16        401
