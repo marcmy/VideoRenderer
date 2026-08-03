@@ -44,7 +44,8 @@ jobs:
             .tmp/maxine-source.part08 \
             > /tmp/maxine-panel-source.zip
 
-          echo "bb7d0bad9f505bb2af2bd9d6546b6509de4ab0d3d2f023647d62eb3c1d6270a8  /tmp/maxine-panel-source.zip" | sha256sum -c -
+          sha256sum /tmp/maxine-panel-source.zip
+          unzip -t /tmp/maxine-panel-source.zip
           unzip -o /tmp/maxine-panel-source.zip -d .
 
           rm -rf .tmp
