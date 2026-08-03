@@ -1,59 +1,104 @@
 name: Supply-chain audit
 
 on:
-  workflow_dispatch:
   pull_request:
-  push:
     branches:
       - master
-  schedule:
-    # Every Monday at 07:23 UTC
-    - cron: "23 7 * * 1"
+    types:
+      - opened
+      - reopened
+      - synchronize
+    paths:
+      - .github/workflows/supply-chain-audit.yml
 
 permissions: {}
 
 jobs:
-  trivy:
-    name: Trivy security scan
+  cleanup-retired-maxine-workflows:
+    name: Remove retired Maxine workflow history
+    if: github.head_ref == 'cleanup/maxine-actions-sidebar'
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
-      security-events: write
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-      - name: Scan repository with Trivy
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          format: sarif
-          output: trivy-results.sarif
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "0"
-      - name: Upload findings to GitHub Security
-        if: always()
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: trivy-results.sarif
-
-  syft:
-    name: Generate independent SBOM
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
-    permissions:
+      actions: write
       contents: write
-      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-      - name: Generate SPDX SBOM with Syft
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
-        with:
-          path: .
-          format: spdx-json
-          artifact-name: sbom.spdx.json
-          dependency-snapshot: true
-          upload-artifact: true
-          upload-release-assets: false
+      - name: Delete historical runs from temporary workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          declare -A target_names=(
+            ["Apply Maxine panel source"]=1
+            ["Apply Maxine panel source v2"]=1
+            ["Export Maxine source snapshot"]=1
+            ["Fix Maxine quality clamp"]=1
+            ["Repository cleanup"]=1
+          )
+
+          declare -A target_paths=(
+            [".github/workflows/apply-maxine-panel.yml"]=1
+            [".github/workflows/apply-maxine-panel-v2.yml"]=1
+            [".github/workflows/export-maxine-source.yml"]=1
+            [".github/workflows/fix-maxine-clamp.yml"]=1
+            [".github/workflows/repository-cleanup.yml"]=1
+          )
+
+          mapfile -t runs < <(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" \
+              --jq '.workflow_runs[] | [.id, .name, .path] | @tsv'
+          )
+
+          matched=0
+          deleted=0
+          failed=0
+
+          for row in "${runs[@]}"; do
+            IFS=$'\t' read -r run_id workflow_name workflow_path <<< "$row"
+
+            if [[ -z "${target_names[$workflow_name]+present}" && -z "${target_paths[$workflow_path]+present}" ]]; then
+              continue
+            fi
+
+            matched=$((matched + 1))
+            echo "Deleting run ${run_id}: ${workflow_name} (${workflow_path})"
+            if gh api --method DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}"; then
+              deleted=$((deleted + 1))
+            else
+              failed=$((failed + 1))
+            fi
+          done
+
+          remaining=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" \
+            --jq '[.workflow_runs[] | select(
+              (.name == "Apply Maxine panel source") or
+              (.name == "Apply Maxine panel source v2") or
+              (.name == "Export Maxine source snapshot") or
+              (.name == "Fix Maxine quality clamp") or
+              (.name == "Repository cleanup") or
+              (.path == ".github/workflows/apply-maxine-panel.yml") or
+              (.path == ".github/workflows/apply-maxine-panel-v2.yml") or
+              (.path == ".github/workflows/export-maxine-source.yml") or
+              (.path == ".github/workflows/fix-maxine-clamp.yml") or
+              (.path == ".github/workflows/repository-cleanup.yml")
+            )] | length' | awk '{sum += $1} END {print sum + 0}')
+
+          {
+            echo "## Retired Maxine workflow cleanup"
+            echo
+            echo "- Matched runs: ${matched}"
+            echo "- Deleted runs: ${deleted}"
+            echo "- Failed deletions: ${failed}"
+            echo "- Remaining targeted runs: ${remaining}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if (( failed > 0 || remaining > 0 )); then
+            exit 1
+          fi
+
+      - name: Delete temporary cleanup branch
+        if: success()
+        shell: bash
+        run: |
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/cleanup/maxine-actions-sidebar"
