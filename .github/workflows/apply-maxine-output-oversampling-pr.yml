@@ -45,14 +45,14 @@ jobs:
           bad_start = script.index(r"replace_once('Source/DX11VideoProcessor.cpp', '''\t\tstr += std::format")
           bad_end = script.index("\n\nreplace_once('Source/PropPage.cpp'", bad_start)
           stats_insert = r"""replace_once('Source/DX11VideoProcessor.cpp', '''\t\t\tMaxineFilterToString(m_iMaxineDeblur), gpuLabel);
-''', '''\t\t\tMaxineFilterToString(m_iMaxineDeblur), gpuLabel);
-\t\tif (m_iMaxineScale == MAXINE_SCALE_MatchOutput) {
-\t\t\tstr += std::format(L\", output oversampling {}\", MaxineOversampleToString(m_iMaxineOversample));
-\t\t\tif (m_bMaxineOversampleClamped) {
-\t\t\t\tstr.append(L\" (clamped to 4x source limit)\");
-\t\t\t}
-\t\t}
-''')"""
+          ''', '''\t\t\tMaxineFilterToString(m_iMaxineDeblur), gpuLabel);
+          \t\tif (m_iMaxineScale == MAXINE_SCALE_MatchOutput) {
+          \t\t\tstr += std::format(L\", output oversampling {}\", MaxineOversampleToString(m_iMaxineOversample));
+          \t\t\tif (m_bMaxineOversampleClamped) {
+          \t\t\t\tstr.append(L\" (clamped to 4x source limit)\");
+          \t\t\t}
+          \t\t}
+          ''')"""
           script = script[:bad_start] + stats_insert + script[bad_end:]
           Path('/tmp/apply-maxine-output-oversampling.py').write_text(script, encoding='utf-8')
           PY
