@@ -59,3 +59,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh workflow run main.yml --ref feature/maxine-settings-panel --repo "${GITHUB_REPOSITORY}"
+
+# retrigger source application
