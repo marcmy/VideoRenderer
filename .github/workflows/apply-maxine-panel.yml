@@ -10,7 +10,7 @@ on:
       - synchronize
     paths:
       - .github/workflows/apply-maxine-panel.yml
-      - .tmp/maxine-source.part*
+      - .tmp/maxine-panel.patch.gz.b64
   workflow_dispatch:
 
 permissions:
@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   apply:
-    if: github.head_ref == 'feature/maxine-settings-panel'
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'feature/maxine-settings-panel'
     runs-on: ubuntu-latest
 
     steps:
@@ -29,39 +29,41 @@ jobs:
           ref: feature/maxine-settings-panel
           fetch-depth: 0
 
-      - name: Reassemble staged source
+      - name: Verify and apply source patch
         shell: bash
         run: |
           set -euo pipefail
-          cat \
-            .tmp/maxine-source.part00 \
-            .tmp/maxine-source.part01 \
-            .tmp/maxine-source.part02 \
-            .tmp/maxine-source.part03 \
-            .tmp/maxine-source.part04-05 \
-            .tmp/maxine-source.part06-07 \
-            .tmp/maxine-source.part08 \
-            > maxine-panel-source-assembled.zip
-          sha256sum maxine-panel-source-assembled.zip
 
-      - name: Upload assembled archive for verification
-        uses: actions/upload-artifact@v7
-        with:
-          name: maxine-panel-source-assembled
-          path: maxine-panel-source-assembled.zip
-          compression-level: 0
+          base64 -d .tmp/maxine-panel.patch.gz.b64 | gzip -dc > /tmp/maxine-panel.patch
+          echo "d4023995320c5bc716e5baa54d8441235429e82556674ec3a805c1c9acb10f34  /tmp/maxine-panel.patch" | sha256sum -c -
 
-      - name: Validate and apply source
+          for file in \
+            DX11VideoProcessor.cpp \
+            DX11VideoProcessor.h \
+            IVideoRenderer.h \
+            MpcVideoRenderer.rc \
+            NvidiaMaxineVSR.cpp \
+            NvidiaMaxineVSR.h \
+            PropPage.cpp \
+            PropPage.h \
+            VideoRenderer.cpp \
+            resource.h; do
+            sed -i 's/\r$//' "Source/$file"
+          done
+
+          git apply --check /tmp/maxine-panel.patch
+          git apply /tmp/maxine-panel.patch
+
+      - name: Commit completed implementation
         shell: bash
         run: |
           set -euo pipefail
-          unzip -t maxine-panel-source-assembled.zip
-          unzip -o maxine-panel-source-assembled.zip -d .
+
           rm -rf .tmp
           rm -f tree-test.txt
-          rm -f maxine-panel-source-assembled.zip
           rm -f .github/workflows/apply-maxine-panel.yml
           rm -f .github/workflows/export-maxine-source.yml
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
