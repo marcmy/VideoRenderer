@@ -1,0 +1,456 @@
+name: Apply Maxine output oversampling
+
+on:
+  push:
+    branches:
+      - feature/maxine-output-oversampling
+    paths:
+      - .github/workflows/apply-maxine-output-oversampling.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v6
+        with:
+          ref: feature/maxine-output-oversampling
+          fetch-depth: 0
+
+      - name: Apply focused source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          def load(path_name):
+              path = Path(path_name)
+              raw = path.read_bytes()
+              bom = raw.startswith(b'\xef\xbb\xbf')
+              text = raw.decode('utf-8-sig').replace('\r\n', '\n')
+              newline = '\r\n' if b'\r\n' in raw else '\n'
+              return path, text, newline, bom
+
+          def save(path, text, newline, bom):
+              data = text.replace('\n', newline).encode('utf-8')
+              if bom:
+                  data = b'\xef\xbb\xbf' + data
+              path.write_bytes(data)
+
+          def replace_once(path_name, old, new):
+              path, text, newline, bom = load(path_name)
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path_name}: expected one match, found {count}: {old[:100]!r}')
+              save(path, text.replace(old, new), newline, bom)
+
+          def regex_once(path_name, pattern, replacement):
+              path, text, newline, bom = load(path_name)
+              updated, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+              if count != 1:
+                  raise SystemExit(f'{path_name}: expected one regex match, found {count}: {pattern!r}')
+              save(path, updated, newline, bom)
+
+          replace_once('Source/IVideoRenderer.h', '''enum :int {
+          \tMAXINE_SCALE_MatchOutput = 0,
+          \tMAXINE_SCALE_4_3X = 133,
+          \tMAXINE_SCALE_1_5X = 150,
+          \tMAXINE_SCALE_2X = 200,
+          \tMAXINE_SCALE_3X = 300,
+          \tMAXINE_SCALE_4X = 400,
+          };
+          
+          enum :int {
+          \tMAXINE_FILTER_Off = 0,
+          ''', '''enum :int {
+          \tMAXINE_SCALE_MatchOutput = 0,
+          \tMAXINE_SCALE_4_3X = 133,
+          \tMAXINE_SCALE_1_5X = 150,
+          \tMAXINE_SCALE_2X = 200,
+          \tMAXINE_SCALE_3X = 300,
+          \tMAXINE_SCALE_4X = 400,
+          };
+          
+          enum :int {
+          \tMAXINE_OVERSAMPLE_Off = 100,
+          \tMAXINE_OVERSAMPLE_4_3X = 133,
+          \tMAXINE_OVERSAMPLE_1_5X = 150,
+          \tMAXINE_OVERSAMPLE_2X = 200,
+          };
+          
+          enum :int {
+          \tMAXINE_FILTER_Off = 0,
+          ''')
+          replace_once('Source/IVideoRenderer.h', '''\tint iMaxineQuality;
+          \tint iMaxineScale;
+          \tint iMaxineSourceLimit;
+          ''', '''\tint iMaxineQuality;
+          \tint iMaxineScale;
+          \tint iMaxineOversample;
+          \tint iMaxineSourceLimit;
+          ''')
+          replace_once('Source/IVideoRenderer.h', '''\t\tiMaxineQuality                  = MAXINE_QUALITY_High;
+          \t\tiMaxineScale                    = MAXINE_SCALE_MatchOutput;
+          \t\tiMaxineSourceLimit              = SUPERRES_1080p;
+          ''', '''\t\tiMaxineQuality                  = MAXINE_QUALITY_High;
+          \t\tiMaxineScale                    = MAXINE_SCALE_MatchOutput;
+          \t\tiMaxineOversample               = MAXINE_OVERSAMPLE_Off;
+          \t\tiMaxineSourceLimit              = SUPERRES_1080p;
+          ''')
+
+          replace_once('Source/DX11VideoProcessor.h', '''\tint m_iMaxineQuality = MAXINE_QUALITY_High;
+          \tint m_iMaxineScale = MAXINE_SCALE_MatchOutput;
+          \tint m_iMaxineSourceLimit = SUPERRES_1080p;
+          ''', '''\tint m_iMaxineQuality = MAXINE_QUALITY_High;
+          \tint m_iMaxineScale = MAXINE_SCALE_MatchOutput;
+          \tint m_iMaxineOversample = MAXINE_OVERSAMPLE_Off;
+          \tint m_iMaxineSourceLimit = SUPERRES_1080p;
+          ''')
+          replace_once('Source/DX11VideoProcessor.h', '''\tint m_iMaxineResolvedMode = -1;
+          \tstd::wstring m_strMaxineVSRStatus = L"Disabled";
+          ''', '''\tint m_iMaxineResolvedMode = -1;
+          \tbool m_bMaxineOversampleClamped = false;
+          \tstd::wstring m_strMaxineVSRStatus = L"Disabled";
+          ''')
+
+          replace_once('Source/DX11VideoProcessor.cpp', '''static const wchar_t* MaxineOperationToString(const int operation)
+          {
+          \tswitch (operation) {
+          \tcase MAXINE_OPERATION_Upscale: return L"Upscale";
+          \tcase MAXINE_OPERATION_Denoise: return L"Denoise only";
+          \tcase MAXINE_OPERATION_Deblur:  return L"Deblur only";
+          \tdefault:                       return L"Disabled";
+          \t}
+          }
+          
+          static const wchar_t* MaxineModeToString(const int mode)
+          ''', '''static const wchar_t* MaxineOperationToString(const int operation)
+          {
+          \tswitch (operation) {
+          \tcase MAXINE_OPERATION_Upscale: return L"Upscale";
+          \tcase MAXINE_OPERATION_Denoise: return L"Denoise only";
+          \tcase MAXINE_OPERATION_Deblur:  return L"Deblur only";
+          \tdefault:                       return L"Disabled";
+          \t}
+          }
+          
+          static int NormalizeMaxineOversample(const int oversample)
+          {
+          \tswitch (oversample) {
+          \tcase MAXINE_OVERSAMPLE_4_3X:
+          \tcase MAXINE_OVERSAMPLE_1_5X:
+          \tcase MAXINE_OVERSAMPLE_2X:
+          \t\treturn oversample;
+          \tdefault:
+          \t\treturn MAXINE_OVERSAMPLE_Off;
+          \t}
+          }
+          
+          static const wchar_t* MaxineOversampleToString(const int oversample)
+          {
+          \tswitch (NormalizeMaxineOversample(oversample)) {
+          \tcase MAXINE_OVERSAMPLE_4_3X: return L"1.33x";
+          \tcase MAXINE_OVERSAMPLE_1_5X: return L"1.5x";
+          \tcase MAXINE_OVERSAMPLE_2X:   return L"2x";
+          \tdefault:                     return L"Off";
+          \t}
+          }
+          
+          static const wchar_t* MaxineModeToString(const int mode)
+          ''')
+          replace_once('Source/DX11VideoProcessor.cpp', '''\tm_iMaxineQuality       = config.iMaxineQuality;
+          \tm_iMaxineScale         = config.iMaxineScale;
+          \tm_iMaxineSourceLimit   = config.iMaxineSourceLimit;
+          ''', '''\tm_iMaxineQuality       = config.iMaxineQuality;
+          \tm_iMaxineScale         = config.iMaxineScale;
+          \tm_iMaxineOversample    = config.iMaxineOversample;
+          \tm_iMaxineSourceLimit   = config.iMaxineSourceLimit;
+          ''')
+          replace_once('Source/DX11VideoProcessor.cpp', '''\ttargetSize = CSize(0, 0);
+          \tupscaleNeeded = false;
+          
+          #ifdef _WIN64
+          ''', '''\ttargetSize = CSize(0, 0);
+          \tupscaleNeeded = false;
+          \tm_bMaxineOversampleClamped = false;
+          
+          #ifdef _WIN64
+          ''')
+          replace_once('Source/DX11VideoProcessor.cpp', '''\tif (m_iMaxineScale == MAXINE_SCALE_MatchOutput) {
+          \t\tint dstWidth = dstRect.Width();
+          \t\tint dstHeight = dstRect.Height();
+          \t\tif (m_iRotation == 90 || m_iRotation == 270) {
+          \t\t\tstd::swap(dstWidth, dstHeight);
+          \t\t}
+          \t\tif (dstWidth <= 0 || dstHeight <= 0) {
+          \t\t\tm_strMaxineVSRStatus = L"Invalid player output size";
+          \t\t\treturn false;
+          \t\t}
+          \t\ttargetWidth = static_cast<unsigned long long>(dstWidth);
+          \t\ttargetHeight = static_cast<unsigned long long>(dstHeight);
+          \t}
+          ''', '''\tif (m_iMaxineScale == MAXINE_SCALE_MatchOutput) {
+          \t\tint dstWidth = dstRect.Width();
+          \t\tint dstHeight = dstRect.Height();
+          \t\tif (m_iRotation == 90 || m_iRotation == 270) {
+          \t\t\tstd::swap(dstWidth, dstHeight);
+          \t\t}
+          \t\tif (dstWidth <= 0 || dstHeight <= 0) {
+          \t\t\tm_strMaxineVSRStatus = L"Invalid player output size";
+          \t\t\treturn false;
+          \t\t}
+          
+          \t\tconst int oversample = NormalizeMaxineOversample(m_iMaxineOversample);
+          \t\ttargetWidth = (static_cast<unsigned long long>(dstWidth) * oversample + 50ull) / 100ull;
+          \t\ttargetHeight = (static_cast<unsigned long long>(dstHeight) * oversample + 50ull) / 100ull;
+          
+          \t\tconst unsigned long long maxWidth = static_cast<unsigned long long>(m_srcRectWidth) * 4ull;
+          \t\tconst unsigned long long maxHeight = static_cast<unsigned long long>(m_srcRectHeight) * 4ull;
+          \t\tif (targetWidth > maxWidth || targetHeight > maxHeight) {
+          \t\t\tconst long double scaleX = static_cast<long double>(maxWidth) / targetWidth;
+          \t\t\tconst long double scaleY = static_cast<long double>(maxHeight) / targetHeight;
+          \t\t\tconst long double scale = std::min(scaleX, scaleY);
+          \t\t\ttargetWidth = std::min(maxWidth, std::max<unsigned long long>(m_srcRectWidth,
+          \t\t\t\tstatic_cast<unsigned long long>(std::llround(targetWidth * scale))));
+          \t\t\ttargetHeight = std::min(maxHeight, std::max<unsigned long long>(m_srcRectHeight,
+          \t\t\t\tstatic_cast<unsigned long long>(std::llround(targetHeight * scale))));
+          \t\t\tm_bMaxineOversampleClamped = true;
+          \t\t}
+          \t}
+          ''')
+          replace_once('Source/DX11VideoProcessor.cpp', '''\tif (config.iMaxineOperation != m_iMaxineOperation
+          \t\t\t|| config.iMaxineSourceMode != m_iMaxineSourceMode
+          \t\t\t|| config.iMaxineQuality != m_iMaxineQuality
+          \t\t\t|| config.iMaxineScale != m_iMaxineScale
+          \t\t\t|| config.iMaxineSourceLimit != m_iMaxineSourceLimit
+          ''', '''\tif (config.iMaxineOperation != m_iMaxineOperation
+          \t\t\t|| config.iMaxineSourceMode != m_iMaxineSourceMode
+          \t\t\t|| config.iMaxineQuality != m_iMaxineQuality
+          \t\t\t|| config.iMaxineScale != m_iMaxineScale
+          \t\t\t|| config.iMaxineOversample != m_iMaxineOversample
+          \t\t\t|| config.iMaxineSourceLimit != m_iMaxineSourceLimit
+          ''')
+          replace_once('Source/DX11VideoProcessor.cpp', '''\t\tm_iMaxineQuality = config.iMaxineQuality;
+          \t\tm_iMaxineScale = config.iMaxineScale;
+          \t\tm_iMaxineSourceLimit = config.iMaxineSourceLimit;
+          ''', '''\t\tm_iMaxineQuality = config.iMaxineQuality;
+          \t\tm_iMaxineScale = config.iMaxineScale;
+          \t\tm_iMaxineOversample = config.iMaxineOversample;
+          \t\tm_iMaxineSourceLimit = config.iMaxineSourceLimit;
+          ''')
+          replace_once('Source/DX11VideoProcessor.cpp', '''\t\tstr += std::format(L"\\
+          Maxine config: quality {}, denoise {}, deblur {}, GPU {}",
+          \t\t\tMaxineQualityToString(m_iMaxineQuality), MaxineFilterToString(m_iMaxineDenoise),
+          \t\t\tMaxineFilterToString(m_iMaxineDeblur), gpuLabel);
+          \t\tif (m_dwSourceBitRate) {
+          ''', '''\t\tstr += std::format(L"\\
+          Maxine config: quality {}, denoise {}, deblur {}, GPU {}",
+          \t\t\tMaxineQualityToString(m_iMaxineQuality), MaxineFilterToString(m_iMaxineDenoise),
+          \t\t\tMaxineFilterToString(m_iMaxineDeblur), gpuLabel);
+          \t\tif (m_iMaxineScale == MAXINE_SCALE_MatchOutput) {
+          \t\t\tstr += std::format(L", output oversampling {}", MaxineOversampleToString(m_iMaxineOversample));
+          \t\t\tif (m_bMaxineOversampleClamped) {
+          \t\t\t\tstr.append(L" (clamped to 4x source limit)");
+          \t\t\t}
+          \t\t}
+          \t\tif (m_dwSourceBitRate) {
+          ''')
+
+          replace_once('Source/PropPage.cpp', '''\tdst.iMaxineQuality = src.iMaxineQuality;
+          \tdst.iMaxineScale = src.iMaxineScale;
+          \tdst.iMaxineSourceLimit = src.iMaxineSourceLimit;
+          ''', '''\tdst.iMaxineQuality = src.iMaxineQuality;
+          \tdst.iMaxineScale = src.iMaxineScale;
+          \tdst.iMaxineOversample = src.iMaxineOversample;
+          \tdst.iMaxineSourceLimit = src.iMaxineSourceLimit;
+          ''')
+          replace_once('Source/PropPage.cpp', '''\t\t&& a.iMaxineQuality == b.iMaxineQuality
+          \t\t&& a.iMaxineScale == b.iMaxineScale
+          \t\t&& a.iMaxineSourceLimit == b.iMaxineSourceLimit
+          ''', '''\t\t&& a.iMaxineQuality == b.iMaxineQuality
+          \t\t&& a.iMaxineScale == b.iMaxineScale
+          \t\t&& a.iMaxineOversample == b.iMaxineOversample
+          \t\t&& a.iMaxineSourceLimit == b.iMaxineSourceLimit
+          ''')
+          replace_once('Source/PropPage.cpp', '''\tconst LONG_PTR operation = ComboBox_GetCurItemData(hwnd, IDC_MAXINE_OPERATION);
+          \tconst LONG_PTR sourceMode = ComboBox_GetCurItemData(hwnd, IDC_MAXINE_SOURCE_MODE);
+          \tconst bool enabled = operation != MAXINE_OPERATION_Disabled;
+          ''', '''\tconst LONG_PTR operation = ComboBox_GetCurItemData(hwnd, IDC_MAXINE_OPERATION);
+          \tconst LONG_PTR sourceMode = ComboBox_GetCurItemData(hwnd, IDC_MAXINE_SOURCE_MODE);
+          \tconst LONG_PTR scale = ComboBox_GetCurItemData(hwnd, IDC_MAXINE_SCALE);
+          \tconst bool enabled = operation != MAXINE_OPERATION_Disabled;
+          ''')
+          replace_once('Source/PropPage.cpp', '''\tEnableWindow(GetDlgItem(hwnd, IDC_MAXINE_QUALITY), enabled && upscale && sourceMode != MAXINE_SOURCE_Bicubic);
+          \tEnableWindow(GetDlgItem(hwnd, IDC_STATIC_MAXINE_QUALITY), enabled && upscale && sourceMode != MAXINE_SOURCE_Bicubic);
+          \tEnableWindow(GetDlgItem(hwnd, IDC_MAXINE_SOURCE_LIMIT), enabled);
+          ''', '''\tEnableWindow(GetDlgItem(hwnd, IDC_MAXINE_QUALITY), enabled && upscale && sourceMode != MAXINE_SOURCE_Bicubic);
+          \tEnableWindow(GetDlgItem(hwnd, IDC_STATIC_MAXINE_QUALITY), enabled && upscale && sourceMode != MAXINE_SOURCE_Bicubic);
+          \tEnableWindow(GetDlgItem(hwnd, IDC_STATIC_MAXINE_OVERSAMPLE), enabled && upscale && scale == MAXINE_SCALE_MatchOutput);
+          \tEnableWindow(GetDlgItem(hwnd, IDC_MAXINE_OVERSAMPLE), enabled && upscale && scale == MAXINE_SCALE_MatchOutput);
+          \tEnableWindow(GetDlgItem(hwnd, IDC_MAXINE_SOURCE_LIMIT), enabled);
+          ''')
+          replace_once('Source/PropPage.cpp', '''\tComboBox_SelectByItemData(hwnd, IDC_MAXINE_QUALITY, settings.iMaxineQuality);
+          \tComboBox_SelectByItemData(hwnd, IDC_MAXINE_SCALE, settings.iMaxineScale);
+          \tComboBox_SelectByItemData(hwnd, IDC_MAXINE_SOURCE_LIMIT, settings.iMaxineSourceLimit);
+          ''', '''\tComboBox_SelectByItemData(hwnd, IDC_MAXINE_QUALITY, settings.iMaxineQuality);
+          \tComboBox_SelectByItemData(hwnd, IDC_MAXINE_SCALE, settings.iMaxineScale);
+          \tComboBox_SelectByItemData(hwnd, IDC_MAXINE_OVERSAMPLE, settings.iMaxineOversample);
+          \tComboBox_SelectByItemData(hwnd, IDC_MAXINE_SOURCE_LIMIT, settings.iMaxineSourceLimit);
+          ''')
+          replace_once('Source/PropPage.cpp', '''\tPopulateMaxineCombo(hwnd, IDC_MAXINE_SCALE, {
+          \t\t{L"Match player output", MAXINE_SCALE_MatchOutput},
+          \t\t{L"1.33x (4/3)", MAXINE_SCALE_4_3X},
+          \t\t{L"1.5x", MAXINE_SCALE_1_5X},
+          \t\t{L"2x", MAXINE_SCALE_2X},
+          \t\t{L"3x", MAXINE_SCALE_3X},
+          \t\t{L"4x", MAXINE_SCALE_4X},
+          \t});
+          \tPopulateMaxineCombo(hwnd, IDC_MAXINE_SOURCE_LIMIT, {
+          ''', '''\tPopulateMaxineCombo(hwnd, IDC_MAXINE_SCALE, {
+          \t\t{L"Match player output", MAXINE_SCALE_MatchOutput},
+          \t\t{L"1.33x (4/3)", MAXINE_SCALE_4_3X},
+          \t\t{L"1.5x", MAXINE_SCALE_1_5X},
+          \t\t{L"2x", MAXINE_SCALE_2X},
+          \t\t{L"3x", MAXINE_SCALE_3X},
+          \t\t{L"4x", MAXINE_SCALE_4X},
+          \t});
+          \tPopulateMaxineCombo(hwnd, IDC_MAXINE_OVERSAMPLE, {
+          \t\t{L"Off", MAXINE_OVERSAMPLE_Off},
+          \t\t{L"1.33x (4/3)", MAXINE_OVERSAMPLE_4_3X},
+          \t\t{L"1.5x", MAXINE_OVERSAMPLE_1_5X},
+          \t\t{L"2x", MAXINE_OVERSAMPLE_2X},
+          \t});
+          \tPopulateMaxineCombo(hwnd, IDC_MAXINE_SOURCE_LIMIT, {
+          ''')
+          replace_once('Source/PropPage.cpp', '''\tsettings.iMaxineQuality = ReadCombo(IDC_MAXINE_QUALITY);
+          \tsettings.iMaxineScale = ReadCombo(IDC_MAXINE_SCALE);
+          \tsettings.iMaxineSourceLimit = ReadCombo(IDC_MAXINE_SOURCE_LIMIT);
+          ''', '''\tsettings.iMaxineQuality = ReadCombo(IDC_MAXINE_QUALITY);
+          \tsettings.iMaxineScale = ReadCombo(IDC_MAXINE_SCALE);
+          \tsettings.iMaxineOversample = ReadCombo(IDC_MAXINE_OVERSAMPLE);
+          \tsettings.iMaxineSourceLimit = ReadCombo(IDC_MAXINE_SOURCE_LIMIT);
+          ''')
+          replace_once('Source/PropPage.cpp', '''\t\tcase IDC_MAXINE_OPERATION:
+          \t\tcase IDC_MAXINE_SOURCE_MODE:
+          \t\t\tif (HIWORD(wParam) == CBN_SELCHANGE) {
+          ''', '''\t\tcase IDC_MAXINE_OPERATION:
+          \t\tcase IDC_MAXINE_SOURCE_MODE:
+          \t\tcase IDC_MAXINE_SCALE:
+          \t\t\tif (HIWORD(wParam) == CBN_SELCHANGE) {
+          ''')
+
+          replace_once('Source/VideoRenderer.cpp', '''#define OPT_MaxineQuality                   L"MaxineQuality"
+          #define OPT_MaxineSourceLimit               L"MaxineSourceLimit"
+          ''', '''#define OPT_MaxineQuality                   L"MaxineQuality"
+          #define OPT_MaxineOutputOversample          L"MaxineOutputOversample"
+          #define OPT_MaxineSourceLimit               L"MaxineSourceLimit"
+          ''')
+          replace_once('Source/VideoRenderer.cpp', '''\t\tif (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineSourceLimit, dw)) {
+          \t\t\tm_Sets.iMaxineSourceLimit = discard<int>(dw, SUPERRES_1080p, 0, SUPERRES_COUNT - 1);
+          \t\t}
+          ''', '''\t\tif (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineOutputOversample, dw)) {
+          \t\t\tswitch (dw) {
+          \t\t\tcase MAXINE_OVERSAMPLE_Off:
+          \t\t\tcase MAXINE_OVERSAMPLE_4_3X:
+          \t\t\tcase MAXINE_OVERSAMPLE_1_5X:
+          \t\t\tcase MAXINE_OVERSAMPLE_2X:
+          \t\t\t\tm_Sets.iMaxineOversample = static_cast<int>(dw);
+          \t\t\t\tbreak;
+          \t\t\t}
+          \t\t}
+          \t\tif (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineSourceLimit, dw)) {
+          \t\t\tm_Sets.iMaxineSourceLimit = discard<int>(dw, SUPERRES_1080p, 0, SUPERRES_COUNT - 1);
+          \t\t}
+          ''')
+          replace_once('Source/VideoRenderer.cpp', '''\t\tkey.SetDWORDValue(OPT_MaxineQuality,                   m_Sets.iMaxineQuality);
+          \t\tkey.SetDWORDValue(OPT_MaxineVideoSuperResolutionScale, m_Sets.iMaxineScale);
+          \t\tkey.SetDWORDValue(OPT_MaxineSourceLimit,               m_Sets.iMaxineSourceLimit);
+          ''', '''\t\tkey.SetDWORDValue(OPT_MaxineQuality,                   m_Sets.iMaxineQuality);
+          \t\tkey.SetDWORDValue(OPT_MaxineVideoSuperResolutionScale, m_Sets.iMaxineScale);
+          \t\tkey.SetDWORDValue(OPT_MaxineOutputOversample,          m_Sets.iMaxineOversample);
+          \t\tkey.SetDWORDValue(OPT_MaxineSourceLimit,               m_Sets.iMaxineSourceLimit);
+          ''')
+
+          replace_once('Source/resource.h', '''#define IDC_BUTTON_MAXINE_DEFAULTS      1089
+          
+          // Next default values for new objects
+          ''', '''#define IDC_BUTTON_MAXINE_DEFAULTS      1089
+          #define IDC_MAXINE_OVERSAMPLE          1090
+          #define IDC_STATIC_MAXINE_OVERSAMPLE   1091
+          
+          // Next default values for new objects
+          ''')
+          replace_once('Source/resource.h', '''#define _APS_NEXT_CONTROL_VALUE         1090
+          ''', '''#define _APS_NEXT_CONTROL_VALUE         1092
+          ''')
+
+          dialog = '''IDD_MAXINESETTINGS DIALOGEX 0, 0, 304, 269
+          STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+          CAPTION "NVIDIA Maxine settings"
+          FONT 9, "Segoe UI", 400, 0, 0x0
+          BEGIN
+              GROUPBOX        "Processing",IDC_STATIC,7,7,290,164
+              LTEXT           "Operation:",IDC_STATIC,16,21,63,8
+              COMBOBOX        IDC_MAXINE_OPERATION,91,19,194,70,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+              LTEXT           "Source type:",IDC_STATIC,16,40,63,8
+              COMBOBOX        IDC_MAXINE_SOURCE_MODE,91,38,194,70,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+              LTEXT           "Quality:",IDC_STATIC_MAXINE_QUALITY,16,59,63,8
+              COMBOBOX        IDC_MAXINE_QUALITY,91,57,194,70,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+              LTEXT           "Output size:",IDC_STATIC_MAXINE_SCALE,16,78,63,8
+              COMBOBOX        IDC_MAXINE_SCALE,91,76,194,70,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+              LTEXT           "Oversampling:",IDC_STATIC_MAXINE_OVERSAMPLE,16,97,63,8
+              COMBOBOX        IDC_MAXINE_OVERSAMPLE,91,95,194,70,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+              LTEXT           "Max source:",IDC_STATIC,16,116,63,8
+              COMBOBOX        IDC_MAXINE_SOURCE_LIMIT,91,114,194,70,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+              LTEXT           "Denoise:",IDC_STATIC,16,135,63,8
+              COMBOBOX        IDC_MAXINE_DENOISE,91,133,91,70,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+              LTEXT           "Deblur:",IDC_STATIC,190,135,39,8
+              COMBOBOX        IDC_MAXINE_DEBLUR,233,133,52,70,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+              LTEXT           "Pipeline:",IDC_STATIC_MAXINE_PIPELINE,16,154,63,8
+              COMBOBOX        IDC_MAXINE_PIPELINE,91,152,194,90,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+              GROUPBOX        "Advanced",IDC_STATIC,7,176,290,56
+              LTEXT           "CUDA GPU:",IDC_STATIC,16,190,63,8
+              COMBOBOX        IDC_MAXINE_GPU,91,188,75,80,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+              LTEXT           "Auto high-bitrate threshold:",IDC_STATIC_MAXINE_AUTO_BITRATE,16,211,104,8
+              EDITTEXT        IDC_MAXINE_AUTO_BITRATE,125,208,35,13,ES_AUTOHSCROLL | ES_NUMBER
+              LTEXT           "Mbps",IDC_STATIC,164,211,24,8
+              LTEXT           "Auto uses Standard when the media type does not report bitrate.",IDC_STATIC,194,190,91,30,SS_LEFT
+              PUSHBUTTON      "Defaults",IDC_BUTTON_MAXINE_DEFAULTS,7,245,48,16
+              DEFPUSHBUTTON   "OK",IDOK,193,245,48,16
+              PUSHBUTTON      "Cancel",IDCANCEL,249,245,48,16
+          END'''
+          regex_once('Source/MpcVideoRenderer.rc', r'IDD_MAXINESETTINGS DIALOGEX.*?\nEND\n\nIDD_INFOPROPPAGE', dialog + '\n\nIDD_INFOPROPPAGE')
+          replace_once('Source/MpcVideoRenderer.rc', '''    IDD_MAXINESETTINGS, DIALOG
+              BEGIN
+                  LEFTMARGIN, 7
+                  RIGHTMARGIN, 297
+                  TOPMARGIN, 7
+                  BOTTOMMARGIN, 242
+              END
+          ''', '''    IDD_MAXINESETTINGS, DIALOG
+              BEGIN
+                  LEFTMARGIN, 7
+                  RIGHTMARGIN, 297
+                  TOPMARGIN, 7
+                  BOTTOMMARGIN, 261
+              END
+          ''')
+          PY
+
+      - name: Commit completed implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/apply-maxine-output-oversampling.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m "feat: add Maxine match-output oversampling"
+          git push origin HEAD:feature/maxine-output-oversampling
