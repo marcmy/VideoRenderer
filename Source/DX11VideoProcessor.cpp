@@ -516,6 +516,11 @@ CDX11VideoProcessor::CDX11VideoProcessor(CMpcVideoRenderer* pFilter, const Setti
 	m_iMaxinePipeline      = config.iMaxinePipeline;
 	m_iMaxineGPU           = config.iMaxineGPU;
 	m_iMaxineAutoBitrate   = config.iMaxineAutoBitrate;
+	m_iFrameInterpolationMode = config.iFrameInterpolationMode;
+	m_iFrameInterpolationSourceLimit = config.iFrameInterpolationSourceLimit;
+	m_iFrameInterpolationMaxOutput = config.iFrameInterpolationMaxOutput;
+	m_iFrameInterpolationGPU = config.iFrameInterpolationGPU;
+	m_bFrameInterpolationFallback = config.bFrameInterpolationFallback;
 	m_bVPRTXVideoHDR       = config.bVPRTXVideoHDR;
 	m_iChromaScaling       = config.iChromaScaling;
 	m_iUpscaling           = config.iUpscaling;
@@ -787,6 +792,7 @@ void CDX11VideoProcessor::ReleaseVP()
 		m_pDeviceContext->ClearState();
 	}
 
+	ResetFrameInterpolation();
 	m_MaxineVSR.Reset();
 	m_MaxineDenoise.Reset();
 	m_MaxineDeblur.Reset();
@@ -2282,6 +2288,219 @@ BOOL CDX11VideoProcessor::GetAlignmentSize(const CMediaType& mt, SIZE& Size)
 	return FALSE;
 }
 
+bool CDX11VideoProcessor::IsFrameInterpolationEligible(const REFERENCE_TIME frameDuration)
+{
+#ifdef _WIN64
+	if (m_iFrameInterpolationMode != FRUC_MODE_Double) {
+		m_strFrameInterpolationStatus = L"Disabled";
+		return false;
+	}
+	if (m_VendorId != PCIV_NVIDIA) {
+		m_strFrameInterpolationStatus = L"Requires an NVIDIA GPU";
+		return false;
+	}
+	if (m_iFrameInterpolationGPU != FRUC_GPU_Auto
+			&& static_cast<UINT>(m_iFrameInterpolationGPU) != m_nCurrentAdapter) {
+		m_strFrameInterpolationStatus = L"The selected GPU is not the renderer adapter";
+		return false;
+	}
+	if (m_bInterlaced) {
+		m_strFrameInterpolationStatus = L"Interlaced input is not supported";
+		return false;
+	}
+	if (SourceIsHDR()) {
+		m_strFrameInterpolationStatus = L"HDR input is not supported yet";
+		return false;
+	}
+	if (frameDuration <= 0) {
+		m_strFrameInterpolationStatus = L"The source frame duration is unavailable";
+		return false;
+	}
+
+	auto Fits = [this](const UINT maxWidth, const UINT maxHeight) {
+		return m_srcRectWidth >= m_srcRectHeight
+			? m_srcRectWidth <= maxWidth && m_srcRectHeight <= maxHeight
+			: m_srcRectHeight <= maxWidth && m_srcRectWidth <= maxHeight;
+	};
+	bool sourceAllowed = false;
+	switch (m_iFrameInterpolationSourceLimit) {
+	case FRUC_SOURCE_LIMIT_720p:  sourceAllowed = Fits(1280, 720); break;
+	case FRUC_SOURCE_LIMIT_1080p: sourceAllowed = Fits(1920, 1080); break;
+	case FRUC_SOURCE_LIMIT_1440p: sourceAllowed = Fits(2560, 1440); break;
+	case FRUC_SOURCE_LIMIT_2160p: sourceAllowed = Fits(3840, 2160); break;
+	}
+	if (!sourceAllowed) {
+		m_strFrameInterpolationStatus = L"Source exceeds the configured resolution limit";
+		return false;
+	}
+
+	const double outputRate = 2.0 * static_cast<double>(UNITS) / static_cast<double>(frameDuration);
+	if (outputRate > static_cast<double>(m_iFrameInterpolationMaxOutput) + 0.01) {
+		m_strFrameInterpolationStatus = std::format(L"Doubled rate {:.2f} fps exceeds the {} fps limit",
+			outputRate, m_iFrameInterpolationMaxOutput);
+		return false;
+	}
+	if (m_windowRect.Width() <= 0 || m_windowRect.Height() <= 0) {
+		m_strFrameInterpolationStatus = L"Waiting for a valid output size";
+		return false;
+	}
+	return true;
+#else
+	UNREFERENCED_PARAMETER(frameDuration);
+	m_strFrameInterpolationStatus = L"Requires a 64-bit build";
+	return false;
+#endif
+}
+
+void CDX11VideoProcessor::ResetFrameInterpolation()
+{
+	m_FrameInterpolation.Reset();
+	m_bFrameInterpolationPrepared = false;
+	m_bFrameInterpolationOutputReady = false;
+	m_bFrameInterpolationRepeated = false;
+	m_rtFrameInterpolationPrepared = INVALID_TIME;
+	m_rtFrameInterpolationMidpoint = INVALID_TIME;
+	m_rtFrameInterpolationLastInput = INVALID_TIME;
+	m_pFrameInterpolationTexture = nullptr;
+	m_pFrameInterpolationView = nullptr;
+	m_strFrameInterpolationStatus = m_iFrameInterpolationMode == FRUC_MODE_Disabled
+		? L"Disabled" : L"Waiting for frames";
+}
+
+bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFERENCE_TIME& midpointTime)
+{
+	midpointTime = INVALID_TIME;
+#ifdef _WIN64
+	if (!pSample || !m_pDevice || !m_pDeviceContext || !m_pDXGISwapChain1) {
+		return false;
+	}
+
+	REFERENCE_TIME rtStart = 0, rtEnd = 0;
+	if (FAILED(pSample->GetTime(&rtStart, &rtEnd))) {
+		rtStart = m_pFilter->m_FrameStats.GeTimestamp();
+	}
+	const REFERENCE_TIME frameDuration = m_pFilter->m_FrameStats.GetAverageFrameDuration();
+	if (!IsFrameInterpolationEligible(frameDuration)) {
+		if (m_bFrameInterpolationPrepared || m_rtFrameInterpolationLastInput != INVALID_TIME) {
+			ResetFrameInterpolation();
+		}
+		return false;
+	}
+
+	if (m_rtFrameInterpolationLastInput != INVALID_TIME
+			&& (rtStart <= m_rtFrameInterpolationLastInput
+				|| rtStart - m_rtFrameInterpolationLastInput > frameDuration * 4)) {
+		ResetFrameInterpolation();
+	}
+
+	const UINT outputWidth = static_cast<UINT>(m_windowRect.Width());
+	const UINT outputHeight = static_cast<UINT>(m_windowRect.Height());
+	if (!m_FrameInterpolation.Initialize(m_pDevice, outputWidth, outputHeight)) {
+		m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
+		return false;
+	}
+
+	HRESULT hr = CopySample(pSample);
+	if (FAILED(hr)) {
+		m_strFrameInterpolationStatus = L"Could not prepare the source frame";
+		return false;
+	}
+
+	ID3D11Texture2D* inputTexture = nullptr;
+	if (!m_FrameInterpolation.BeginInputFrame(&inputTexture)) {
+		m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
+		return false;
+	}
+
+	CComPtr<ID3D11RenderTargetView> renderTargetView;
+	hr = m_pDevice->CreateRenderTargetView(inputTexture, nullptr, &renderTargetView);
+	if (SUCCEEDED(hr)) {
+		const FLOAT clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+		m_pDeviceContext->ClearRenderTargetView(renderTargetView, clearColor);
+		hr = Process(inputTexture, m_srcRect, m_videoRect, false);
+	}
+	if (FAILED(hr)) {
+		m_FrameInterpolation.CancelInputFrame();
+		m_strFrameInterpolationStatus = L"Could not render the processed frame for interpolation";
+		return false;
+	}
+	m_pDeviceContext->Flush();
+
+	const REFERENCE_TIME requestedMidpoint = m_rtFrameInterpolationLastInput == INVALID_TIME
+		? rtStart - frameDuration / 2
+		: m_rtFrameInterpolationLastInput + (rtStart - m_rtFrameInterpolationLastInput) / 2;
+	bool outputReady = false;
+	bool repeated = false;
+	if (!m_FrameInterpolation.SubmitInputFrame(
+			static_cast<double>(rtStart) / static_cast<double>(UNITS),
+			static_cast<double>(requestedMidpoint) / static_cast<double>(UNITS),
+			outputReady, repeated)) {
+		m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
+		return false;
+	}
+
+	m_bFrameInterpolationPrepared = true;
+	m_bFrameInterpolationOutputReady = outputReady && (!repeated || m_bFrameInterpolationFallback);
+	m_bFrameInterpolationRepeated = repeated;
+	m_rtFrameInterpolationPrepared = rtStart;
+	m_rtFrameInterpolationMidpoint = requestedMidpoint;
+	m_rtFrameInterpolationLastInput = rtStart;
+	m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
+
+	if (m_bFrameInterpolationOutputReady) {
+		midpointTime = requestedMidpoint;
+		return true;
+	}
+#endif
+	return false;
+}
+
+HRESULT CDX11VideoProcessor::RenderPreparedFrame(const bool interpolated, const REFERENCE_TIME frameStartTime)
+{
+#ifdef _WIN64
+	ID3D11Texture2D* texture = nullptr;
+	ID3D11ShaderResourceView* view = nullptr;
+	const bool acquired = interpolated
+		? m_FrameInterpolation.AcquireInterpolatedFrame(&texture, &view)
+		: m_FrameInterpolation.AcquireCurrentFrame(&texture, &view);
+	if (!acquired) {
+		m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
+		return E_FAIL;
+	}
+
+	m_pFrameInterpolationTexture = texture;
+	m_pFrameInterpolationView = view;
+	m_rtStart = frameStartTime;
+	const HRESULT hr = Render(interpolated ? 0 : 1, frameStartTime);
+	m_pFrameInterpolationTexture = nullptr;
+	m_pFrameInterpolationView = nullptr;
+	if (interpolated) {
+		m_FrameInterpolation.ReleaseInterpolatedFrame();
+	}
+	else {
+		m_FrameInterpolation.ReleaseCurrentFrame();
+	}
+	return hr;
+#else
+	UNREFERENCED_PARAMETER(interpolated);
+	UNREFERENCED_PARAMETER(frameStartTime);
+	return E_NOTIMPL;
+#endif
+}
+
+HRESULT CDX11VideoProcessor::RenderFrameInterpolation(const REFERENCE_TIME frameStartTime)
+{
+	if (!m_bFrameInterpolationOutputReady || frameStartTime != m_rtFrameInterpolationMidpoint) {
+		return S_FALSE;
+	}
+	const HRESULT hr = RenderPreparedFrame(true, frameStartTime);
+	if (SUCCEEDED(hr)) {
+		m_pFilter->m_DrawStats.Add(GetPreciseTick());
+	}
+	m_bFrameInterpolationOutputReady = false;
+	return hr;
+}
+
 HRESULT CDX11VideoProcessor::ProcessSample(IMediaSample* pSample)
 {
 	REFERENCE_TIME rtStart, rtEnd;
@@ -2294,14 +2513,25 @@ HRESULT CDX11VideoProcessor::ProcessSample(IMediaSample* pSample)
 	m_rtStart = rtStart;
 	CRefTime rtClock(rtStart);
 
-	HRESULT hr = CopySample(pSample);
-	if (FAILED(hr)) {
-		m_RenderStats.failed++;
-		return hr;
+	HRESULT hr = S_OK;
+	if (m_bFrameInterpolationPrepared && rtStart == m_rtFrameInterpolationPrepared) {
+		hr = RenderPreparedFrame(false, rtStart);
+		m_bFrameInterpolationPrepared = false;
+		m_rtFrameInterpolationPrepared = INVALID_TIME;
 	}
+	else {
+		if (m_bFrameInterpolationPrepared) {
+			ResetFrameInterpolation();
+		}
+		hr = CopySample(pSample);
+		if (FAILED(hr)) {
+			m_RenderStats.failed++;
+			return hr;
+		}
 
-	// always Render(1) a frame after CopySample()
-	hr = Render(1, rtStart);
+		// always Render(1) a frame after CopySample()
+		hr = Render(1, rtStart);
+	}
 	m_pFilter->m_DrawStats.Add(GetPreciseTick());
 	if (m_pFilter->m_filterState == State_Running) {
 		m_pFilter->StreamTime(rtClock);
@@ -3589,6 +3819,16 @@ void CDX11VideoProcessor::DrawSubtitles(ID3D11Texture2D* pRenderTarget)
 
 HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect& srcRect, const CRect& dstRect, const bool second)
 {
+	if (m_pFrameInterpolationTexture && m_pFrameInterpolationView) {
+		Tex2D_t prepared;
+		prepared.pTexture = m_pFrameInterpolationTexture;
+		prepared.pShaderResource = m_pFrameInterpolationView;
+		m_pFrameInterpolationTexture->GetDesc(&prepared.desc);
+		const CRect fullRect(0, 0, prepared.desc.Width, prepared.desc.Height);
+		return TextureCopyRect(prepared, pRenderTarget, fullRect, fullRect,
+			m_pPS_Simple, nullptr, 0, false);
+	}
+
 	HRESULT hr = S_OK;
 	m_bDitherUsed = false;
 	int rotation = m_iRotation;
@@ -3878,6 +4118,9 @@ void CDX11VideoProcessor::SetVideoRect(const CRect& videoRect)
 
 HRESULT CDX11VideoProcessor::SetWindowRect(const CRect& windowRect)
 {
+	if (m_windowRect.Size() != windowRect.Size()) {
+		ResetFrameInterpolation();
+	}
 	m_windowRect = windowRect;
 	UpdateRenderRect();
 
@@ -4258,6 +4501,7 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 	bool changeResizeStats       = false;
 	bool changeSuperRes          = false;
 	bool changeMaxineVSR         = false;
+	bool changeFrameInterpolation = false;
 	bool changeRTXVideoHDR       = false;
 	bool changeLuminanceParams   = false;
 
@@ -4414,6 +4658,19 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 		changeTextures = true;
 	}
 
+	if (config.iFrameInterpolationMode != m_iFrameInterpolationMode
+			|| config.iFrameInterpolationSourceLimit != m_iFrameInterpolationSourceLimit
+			|| config.iFrameInterpolationMaxOutput != m_iFrameInterpolationMaxOutput
+			|| config.iFrameInterpolationGPU != m_iFrameInterpolationGPU
+			|| config.bFrameInterpolationFallback != m_bFrameInterpolationFallback) {
+		m_iFrameInterpolationMode = config.iFrameInterpolationMode;
+		m_iFrameInterpolationSourceLimit = config.iFrameInterpolationSourceLimit;
+		m_iFrameInterpolationMaxOutput = config.iFrameInterpolationMaxOutput;
+		m_iFrameInterpolationGPU = config.iFrameInterpolationGPU;
+		m_bFrameInterpolationFallback = config.bFrameInterpolationFallback;
+		changeFrameInterpolation = true;
+	}
+
 	if (config.bVPRTXVideoHDR != m_bVPRTXVideoHDR) {
 		m_bVPRTXVideoHDR = config.bVPRTXVideoHDR;
 		changeRTXVideoHDR = true;
@@ -4515,6 +4772,10 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 		UpdateStatsByDisplay();
 	}
 
+	if (changeFrameInterpolation) {
+		ResetFrameInterpolation();
+	}
+
 	if (changeSuperRes || changeMaxineVSR) {
 		auto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled
 				&& (m_srcParams.CDepth == 8 || !m_bACMEnabled)) ? m_iVPSuperRes : SUPERRES_Disable;
@@ -4548,6 +4809,8 @@ void CDX11VideoProcessor::SetStereo3dTransform(int value)
 
 void CDX11VideoProcessor::Flush()
 {
+	ResetFrameInterpolation();
+
 	if (m_D3D11VP.IsReady()) {
 		m_D3D11VP.ResetFrameOrder();
 	}

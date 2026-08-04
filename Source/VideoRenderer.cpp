@@ -1,4 +1,4 @@
-﻿/*
+/*
  * (C) 2018-2026 see Authors.txt
  *
  * This file is part of MPC-BE.
@@ -646,6 +646,17 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 
 		CAutoLock cRendererLock(&m_RendererLock);
 		DoRenderSample(m_pMediaSample);
+	}
+
+	REFERENCE_TIME interpolationTime = INVALID_TIME;
+	bool interpolationReady = false;
+	if (m_State == State_Running && m_VideoProcessor->Type() == VP_DX11) {
+		CAutoLock cRendererLock(&m_RendererLock);
+		interpolationReady = m_VideoProcessor->PrepareFrameInterpolation(m_pMediaSample, interpolationTime);
+	}
+	if (interpolationReady && m_State == State_Running) {
+		CAutoLock cRendererLock(&m_RendererLock);
+		m_VideoProcessor->RenderFrameInterpolation(interpolationTime);
 	}
 
 	// Having set an advise link with the clock we sit and wait. We may be
