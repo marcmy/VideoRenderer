@@ -24,9 +24,9 @@ It then creates or updates the current user's environment variable:
 
 No system-wide PATH modification is required.
 
-## Required runtime files
+## Core runtime files
 
-The runtime bundle must contain these five files in one directory:
+The first release candidate intentionally contains only the five files MPC-VR requires before attempting to load VideoSuperRes:
 
 - `NVCVImage.dll`
 - `NVVideoEffects.dll`
@@ -34,18 +34,28 @@ The runtime bundle must contain these five files in one directory:
 - `nvngx_vsr.dll`
 - `nvVFXVideoSuperRes.dll`
 
-The installer copies the entire matching directory so CUDA, NPP, TensorRT, model, and other companion files remain together.
+This keeps the unpacked candidate around 46 MiB instead of carrying hundreds of MiB of optional TensorRT and NPP libraries. The slim candidate must be runtime-tested across Standard and High Bitrate VSR, all quality levels, denoise, deblur, oversampling, window resizing, and a fresh MPC-HC restart before it is published.
+
+The installer still copies every file present in the verified bundle. If testing proves that a specific optional dependency is required, it can be added without redesigning the installer.
 
 ## Publishing a known-good runtime bundle
 
-`Export-MPCVRMaxineRuntime.ps1` packages the runtime currently selected by `NV_VIDEO_EFFECTS_PATH` into:
+`Export-MPCVRMaxineRuntime.ps1` reads the runtime selected by `NV_VIDEO_EFFECTS_PATH` and creates:
 
 - `MPCVR-Maxine-Runtime.zip`
 - `MPCVR-Maxine-Runtime.zip.sha256`
 
-The exporter also writes `runtime-manifest.json` with file sizes and SHA-256 values. Review the applicable NVIDIA software and model licenses and include all required license and notice files before publishing the bundle.
+By default, the exporter copies only the five core DLLs plus obvious license, notice, EULA, and README files. It writes `runtime-manifest.json` with packaged and excluded file sizes so the candidate remains auditable.
 
-The release workflow carries an existing verified runtime bundle forward from the previous latest release, so the large runtime does not need to be rebuilt for every renderer release.
+For diagnostic comparison only, `-IncludeAllFiles` recreates the old full-directory bundle:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Export-MPCVRMaxineRuntime.ps1 -IncludeAllFiles
+```
+
+Review the applicable NVIDIA software and model licenses and include all required license and notice files before publishing any runtime binaries.
+
+The release workflow carries an existing verified runtime bundle forward from the previous latest release, so the runtime does not need to be rebuilt for every renderer release.
 
 ## Security behavior
 
