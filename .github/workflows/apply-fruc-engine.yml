@@ -1,0 +1,38 @@
+name: Apply NvOFFRUC engine source
+
+on:
+  push:
+    branches:
+      - feature/nvoffruc-engine
+    paths:
+      - '.github/workflows/apply-fruc-engine.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Decode and apply source patch
+        shell: bash
+        run: |
+          base64 --decode .github/fruc-engine.patch.gz.b64 | gzip --decompress > "$RUNNER_TEMP/fruc-engine.patch"
+          git apply --check "$RUNNER_TEMP/fruc-engine.patch"
+          git apply "$RUNNER_TEMP/fruc-engine.patch"
+          rm -f .github/fruc-engine.patch.gz.b64 .github/workflows/apply-fruc-engine.yml
+
+      - name: Commit engine source
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: implement NvOFFRUC frame interpolation engine"
+          git push origin HEAD:feature/nvoffruc-engine
