@@ -638,10 +638,10 @@ HRESULT CMpcVideoRenderer::WaitForStreamTime(const REFERENCE_TIME streamTime)
 }
 
 
-void CMpcVideoRenderer::QueueFrameInterpolationSource(const UINT sourceSurface, const REFERENCE_TIME streamTime)
+bool CMpcVideoRenderer::QueueFrameInterpolationSource(const UINT sourceSurface, const REFERENCE_TIME streamTime)
 {
 	if (sourceSurface == UINT_MAX || streamTime == INVALID_TIME) {
-		return;
+		return false;
 	}
 
 	bool queued = false;
@@ -660,10 +660,7 @@ void CMpcVideoRenderer::QueueFrameInterpolationSource(const UINT sourceSurface, 
 	if (queued) {
 		m_FrameInterpolationPresenterWake.Set();
 	}
-	else if (m_VideoProcessor) {
-		CAutoLock cRendererLock(&m_RendererLock);
-		m_VideoProcessor->ReleaseFrameInterpolationSource(sourceSurface);
-	}
+	return queued;
 }
 
 void CMpcVideoRenderer::ResetFrameInterpolationPresenterQueue()
@@ -799,7 +796,7 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 				if (frame.generation == m_FrameInterpolationPresenterGeneration.load()) {
 					const HRESULT hr = m_VideoProcessor->RenderFrameInterpolationSource(
 						frame.sourceSurface, frame.streamTime);
-					rendered = SUCCEEDED(hr);
+					rendered = hr == S_OK;
 					if (rendered) {
 						m_bValidBuffer = true;
 					}
@@ -864,33 +861,42 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 	}
 
 	REFERENCE_TIME interpolationTime = INVALID_TIME;
+	REFERENCE_TIME requestedMidpoint = INVALID_TIME;
 	REFERENCE_TIME currentFrameTime = INVALID_TIME;
 	UINT sourceSurface = UINT_MAX;
 	bool frameInterpolationPrepared = false;
 	if (m_State == State_Running && m_VideoProcessor->Type() == VP_DX11) {
 		frameInterpolationPrepared = m_VideoProcessor->PrepareFrameInterpolation(
-			m_pMediaSample, currentFrameTime, interpolationTime, sourceSurface);
+			m_pMediaSample, currentFrameTime, requestedMidpoint, sourceSurface);
 	}
 
 	if (frameInterpolationPrepared) {
-		// The original source frame is presented by a dedicated clocked worker.
-		// Returning from Receive() after the midpoint lets the decoder deliver
-		// the next source frame half an interval early, hiding NvOFFRUC latency.
+		// Queue the preserved source before entering NvOFFRUC. The presenter can
+		// now hit the source timestamp while the receive thread performs the
+		// synchronous optical-flow/CUDA work for the following midpoint.
 		CancelNotification();
-		QueueFrameInterpolationSource(sourceSurface, currentFrameTime);
+		const bool sourceQueued = QueueFrameInterpolationSource(sourceSurface, currentFrameTime);
+		const bool interpolationSubmitted = m_VideoProcessor->SubmitFrameInterpolation(
+			currentFrameTime, requestedMidpoint, interpolationTime);
+		if (!sourceQueued) {
+			CAutoLock cRendererLock(&m_RendererLock);
+			m_VideoProcessor->ReleaseFrameInterpolationSource(sourceSurface);
+		}
 
-		if (interpolationTime != INVALID_TIME && m_State == State_Running) {
+		if (interpolationSubmitted
+				&& interpolationTime != INVALID_TIME
+				&& m_State == State_Running) {
 			hr = WaitForStreamTime(interpolationTime);
 			if (SUCCEEDED(hr) && m_State == State_Running) {
 				CAutoLock cRendererLock(&m_RendererLock);
 				const HRESULT renderHr = m_VideoProcessor->RenderFrameInterpolation(interpolationTime);
-				if (SUCCEEDED(renderHr)) {
+				if (renderHr == S_OK) {
 					m_bValidBuffer = true;
 				}
 			}
 		}
 		else {
-			hr = S_OK; // first input frame warms up NvOFFRUC
+			hr = S_OK; // first frame warms up, or FRUC failed and source-only fallback remains queued
 		}
 	}
 	else {

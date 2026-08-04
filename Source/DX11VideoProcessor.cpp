@@ -2354,6 +2354,7 @@ bool CDX11VideoProcessor::IsFrameInterpolationEligible(const REFERENCE_TIME fram
 
 void CDX11VideoProcessor::ResetFrameInterpolation()
 {
+	m_FrameInterpolationGeneration.fetch_add(1);
 	m_FrameInterpolation.Reset();
 	m_bFrameInterpolationPrepared = false;
 	m_bFrameInterpolationOutputReady = false;
@@ -2373,10 +2374,10 @@ void CDX11VideoProcessor::ResetFrameInterpolation()
 }
 
 bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFERENCE_TIME& sourceTime,
-	REFERENCE_TIME& midpointTime, UINT& sourceSurface)
+	REFERENCE_TIME& requestedMidpoint, UINT& sourceSurface)
 {
 	sourceTime = INVALID_TIME;
-	midpointTime = INVALID_TIME;
+	requestedMidpoint = INVALID_TIME;
 	sourceSurface = UINT_MAX;
 #ifdef _WIN64
 	if (!pSample) {
@@ -2389,136 +2390,141 @@ bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFER
 	}
 	sourceTime = rtStart;
 	const REFERENCE_TIME frameDuration = m_pFilter->m_FrameStats.GetAverageFrameDuration();
-	REFERENCE_TIME requestedMidpoint = INVALID_TIME;
 
-	{
-		// Keep D3D11 immediate-context work serialized with presentation, but do
-		// not hold this lock while NvOFFRUC performs its synchronous CUDA work.
-		CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
+	// All D3D11 immediate-context work stays serialized with presentation.
+	// NvOFFRUC itself is submitted separately after the source frame has been
+	// queued, so the presenter can display that source while CUDA is working.
+	CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
 
-		if (!m_pDevice || !m_pDeviceContext || !m_pDXGISwapChain1) {
-			return false;
-		}
-		if (!IsFrameInterpolationEligible(frameDuration)) {
-			if (m_bFrameInterpolationPrepared || m_rtFrameInterpolationLastInput != INVALID_TIME) {
-				ResetFrameInterpolation();
-			}
-			return false;
-		}
-
-		if (m_rtFrameInterpolationLastInput != INVALID_TIME
-				&& (rtStart <= m_rtFrameInterpolationLastInput
-					|| rtStart - m_rtFrameInterpolationLastInput > frameDuration * 4)) {
+	if (!m_pDevice || !m_pDeviceContext || !m_pDXGISwapChain1) {
+		return false;
+	}
+	if (!IsFrameInterpolationEligible(frameDuration)) {
+		if (m_bFrameInterpolationPrepared || m_rtFrameInterpolationLastInput != INVALID_TIME) {
 			ResetFrameInterpolation();
 		}
-
-		const UINT outputWidth = static_cast<UINT>(m_windowRect.Width());
-		const UINT outputHeight = static_cast<UINT>(m_windowRect.Height());
-		if (!m_FrameInterpolation.Initialize(m_pDevice, outputWidth, outputHeight)) {
-			m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
-			return false;
-		}
-
-		m_rtStart = rtStart;
-		HRESULT hr = CopySample(pSample);
-		if (FAILED(hr)) {
-			m_strFrameInterpolationStatus = L"Could not prepare the source frame";
-			return false;
-		}
-
-		ID3D11Texture2D* inputTexture = nullptr;
-		if (!m_FrameInterpolation.BeginInputFrame(&inputTexture)) {
-			m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
-			return false;
-		}
-
-		CComPtr<ID3D11RenderTargetView> renderTargetView;
-		hr = m_pDevice->CreateRenderTargetView(inputTexture, nullptr, &renderTargetView);
-		if (SUCCEEDED(hr)) {
-			const FLOAT clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-			m_pDeviceContext->ClearRenderTargetView(renderTargetView, clearColor);
-			hr = Process(inputTexture, m_srcRect, m_videoRect, false);
-		}
-		if (FAILED(hr)) {
-			m_FrameInterpolation.CancelInputFrame();
-			m_strFrameInterpolationStatus = L"Could not render the processed frame for interpolation";
-			return false;
-		}
-		m_pDeviceContext->Flush();
-
-		requestedMidpoint = m_rtFrameInterpolationLastInput == INVALID_TIME
-			? rtStart - frameDuration / 2
-			: m_rtFrameInterpolationLastInput + (rtStart - m_rtFrameInterpolationLastInput) / 2;
+		return false;
 	}
 
-	bool outputReady = false;
-	bool repeated = false;
-	if (!m_FrameInterpolation.SubmitInputFrame(
-			static_cast<double>(rtStart) / static_cast<double>(UNITS),
-			static_cast<double>(requestedMidpoint) / static_cast<double>(UNITS),
-			outputReady, repeated)) {
-		CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
+	if (m_rtFrameInterpolationLastInput != INVALID_TIME
+			&& (rtStart <= m_rtFrameInterpolationLastInput
+				|| rtStart - m_rtFrameInterpolationLastInput > frameDuration * 4)) {
+		ResetFrameInterpolation();
+	}
+
+	const UINT outputWidth = static_cast<UINT>(m_windowRect.Width());
+	const UINT outputHeight = static_cast<UINT>(m_windowRect.Height());
+	if (!m_FrameInterpolation.Initialize(m_pDevice, outputWidth, outputHeight)) {
 		m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
 		return false;
 	}
 
-	{
-		CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
+	m_rtStart = rtStart;
+	HRESULT hr = CopySample(pSample);
+	if (FAILED(hr)) {
+		m_strFrameInterpolationStatus = L"Could not prepare the source frame";
+		return false;
+	}
 
-		m_bFrameInterpolationPrepared = false;
-		m_bFrameInterpolationOutputReady = outputReady && (!repeated || m_bFrameInterpolationFallback);
-		m_bFrameInterpolationRepeated = repeated;
-		m_rtFrameInterpolationPrepared = INVALID_TIME;
-		m_rtFrameInterpolationMidpoint = requestedMidpoint;
-		m_rtFrameInterpolationLastInput = rtStart;
+	ID3D11Texture2D* inputTexture = nullptr;
+	if (!m_FrameInterpolation.BeginInputFrame(&inputTexture)) {
 		m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
+		return false;
+	}
 
-		ID3D11Texture2D* currentTexture = nullptr;
-		ID3D11ShaderResourceView* currentView = nullptr;
-		if (!m_FrameInterpolation.AcquireCurrentFrame(&currentTexture, &currentView)) {
-			m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
-			return false;
-		}
-		UNREFERENCED_PARAMETER(currentView);
+	CComPtr<ID3D11RenderTargetView> renderTargetView;
+	hr = m_pDevice->CreateRenderTargetView(inputTexture, nullptr, &renderTargetView);
+	if (SUCCEEDED(hr)) {
+		const FLOAT clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+		m_pDeviceContext->ClearRenderTargetView(renderTargetView, clearColor);
+		hr = Process(inputTexture, m_srcRect, m_videoRect, false);
+	}
+	if (FAILED(hr)) {
+		m_FrameInterpolation.CancelInputFrame();
+		m_strFrameInterpolationStatus = L"Could not render the processed frame for interpolation";
+		return false;
+	}
 
-		D3D11_TEXTURE2D_DESC currentDesc = {};
-		currentTexture->GetDesc(&currentDesc);
-		UINT freeSurface = UINT_MAX;
-		for (UINT i = 0; i < FrameInterpolationSurfaceCount; ++i) {
-			if (!m_FrameInterpolationPresentationSurfaces[i].inUse) {
-				freeSurface = i;
-				break;
-			}
-		}
-
-		HRESULT copyHr = E_OUTOFMEMORY;
-		if (freeSurface != UINT_MAX) {
-			auto& surface = m_FrameInterpolationPresentationSurfaces[freeSurface];
-			copyHr = surface.texture.CheckCreate(m_pDevice, currentDesc.Format,
-				currentDesc.Width, currentDesc.Height, Tex2D_DefaultShader);
-			if (SUCCEEDED(copyHr)) {
-				m_pDeviceContext->CopyResource(surface.texture.pTexture, currentTexture);
-				m_pDeviceContext->Flush();
-				surface.inUse = true;
-				sourceSurface = freeSurface;
-			}
-		}
-		m_FrameInterpolation.ReleaseCurrentFrame();
-
-		if (FAILED(copyHr)) {
-			m_strFrameInterpolationStatus = freeSurface == UINT_MAX
-				? L"Frame-interpolation presentation queue is full"
-				: L"Could not preserve the source frame for asynchronous presentation";
-			return false;
-		}
-
-		if (m_bFrameInterpolationOutputReady) {
-			midpointTime = requestedMidpoint;
+	D3D11_TEXTURE2D_DESC inputDesc = {};
+	inputTexture->GetDesc(&inputDesc);
+	UINT freeSurface = UINT_MAX;
+	for (UINT i = 0; i < FrameInterpolationSurfaceCount; ++i) {
+		if (!m_FrameInterpolationPresentationSurfaces[i].inUse) {
+			freeSurface = i;
+			break;
 		}
 	}
-	return sourceSurface != UINT_MAX;
+
+	HRESULT copyHr = E_OUTOFMEMORY;
+	if (freeSurface != UINT_MAX) {
+		auto& surface = m_FrameInterpolationPresentationSurfaces[freeSurface];
+		copyHr = surface.texture.CheckCreate(m_pDevice, inputDesc.Format,
+			inputDesc.Width, inputDesc.Height, Tex2D_DefaultShader);
+		if (SUCCEEDED(copyHr)) {
+			m_pDeviceContext->CopyResource(surface.texture.pTexture, inputTexture);
+			m_pDeviceContext->Flush();
+			surface.inUse = true;
+			sourceSurface = freeSurface;
+		}
+	}
+
+	if (FAILED(copyHr)) {
+		m_FrameInterpolation.CancelInputFrame();
+		m_strFrameInterpolationStatus = freeSurface == UINT_MAX
+			? L"Frame-interpolation presentation queue is full"
+			: L"Could not preserve the source frame for asynchronous presentation";
+		return false;
+	}
+
+	requestedMidpoint = m_rtFrameInterpolationLastInput == INVALID_TIME
+		? rtStart - frameDuration / 2
+		: m_rtFrameInterpolationLastInput + (rtStart - m_rtFrameInterpolationLastInput) / 2;
+	m_FrameInterpolationPendingGeneration = m_FrameInterpolationGeneration.load();
+	return true;
 #else
 	UNREFERENCED_PARAMETER(pSample);
+	return false;
+#endif
+}
+
+bool CDX11VideoProcessor::SubmitFrameInterpolation(const REFERENCE_TIME sourceTime,
+	const REFERENCE_TIME requestedMidpoint, REFERENCE_TIME& midpointTime)
+{
+	midpointTime = INVALID_TIME;
+#ifdef _WIN64
+	const uint64_t submissionGeneration = m_FrameInterpolationPendingGeneration;
+	bool outputReady = false;
+	bool repeated = false;
+	if (!m_FrameInterpolation.SubmitInputFrame(
+			static_cast<double>(sourceTime) / static_cast<double>(UNITS),
+			static_cast<double>(requestedMidpoint) / static_cast<double>(UNITS),
+			outputReady, repeated)) {
+		CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
+		if (submissionGeneration == m_FrameInterpolationGeneration.load()) {
+			m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
+		}
+		return false;
+	}
+
+	CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
+	if (submissionGeneration != m_FrameInterpolationGeneration.load()) {
+		return false;
+	}
+	m_bFrameInterpolationPrepared = false;
+	m_bFrameInterpolationOutputReady = outputReady && (!repeated || m_bFrameInterpolationFallback);
+	m_bFrameInterpolationRepeated = repeated;
+	m_rtFrameInterpolationPrepared = INVALID_TIME;
+	m_rtFrameInterpolationMidpoint = requestedMidpoint;
+	m_rtFrameInterpolationLastInput = sourceTime;
+	m_strFrameInterpolationStatus = std::format(L"{}; pipelined source presentation",
+		m_FrameInterpolation.GetStatus());
+	if (m_bFrameInterpolationOutputReady) {
+		midpointTime = requestedMidpoint;
+	}
+	return true;
+#else
+	UNREFERENCED_PARAMETER(sourceTime);
+	UNREFERENCED_PARAMETER(requestedMidpoint);
 	return false;
 #endif
 }

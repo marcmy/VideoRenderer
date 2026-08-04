@@ -182,11 +182,18 @@ public:
 
 	virtual HRESULT ProcessSample(IMediaSample* pSample) = 0;
 	virtual bool PrepareFrameInterpolation(IMediaSample* pSample, REFERENCE_TIME& sourceTime,
-		REFERENCE_TIME& midpointTime, UINT& sourceSurface) {
+		REFERENCE_TIME& requestedMidpoint, UINT& sourceSurface) {
 		UNREFERENCED_PARAMETER(pSample);
 		UNREFERENCED_PARAMETER(sourceTime);
-		UNREFERENCED_PARAMETER(midpointTime);
+		UNREFERENCED_PARAMETER(requestedMidpoint);
 		UNREFERENCED_PARAMETER(sourceSurface);
+		return false;
+	}
+	virtual bool SubmitFrameInterpolation(REFERENCE_TIME sourceTime, REFERENCE_TIME requestedMidpoint,
+		REFERENCE_TIME& midpointTime) {
+		UNREFERENCED_PARAMETER(sourceTime);
+		UNREFERENCED_PARAMETER(requestedMidpoint);
+		UNREFERENCED_PARAMETER(midpointTime);
 		return false;
 	}
 	virtual HRESULT RenderFrameInterpolation(const REFERENCE_TIME frameStartTime) {

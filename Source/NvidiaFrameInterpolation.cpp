@@ -14,6 +14,7 @@
 #include <chrono>
 #include <filesystem>
 #include <format>
+#include <mutex>
 #include <vector>
 
 namespace {
@@ -196,6 +197,8 @@ struct CNvidiaFrameInterpolation::Impl
 		uint64_t key = 0;
 	};
 
+	std::recursive_mutex apiMutex;
+	std::unique_lock<std::recursive_mutex> inputTransaction;
 	HMODULE hCudaRuntime = nullptr;
 	HMODULE hRuntime = nullptr;
 	PFN_NvOFFRUCCreate Create = nullptr;
@@ -464,6 +467,7 @@ CNvidiaFrameInterpolation::CNvidiaFrameInterpolation()
 CNvidiaFrameInterpolation::~CNvidiaFrameInterpolation()
 {
 #ifdef _WIN64
+	std::lock_guard<std::recursive_mutex> lock(m_impl->apiMutex);
 	m_impl->ResetAll();
 #endif
 }
@@ -471,6 +475,7 @@ CNvidiaFrameInterpolation::~CNvidiaFrameInterpolation()
 bool CNvidiaFrameInterpolation::Initialize(ID3D11Device* device, UINT width, UINT height)
 {
 #ifdef _WIN64
+	std::lock_guard<std::recursive_mutex> lock(m_impl->apiMutex);
 	return m_impl->Initialize(device, width, height);
 #else
 	UNREFERENCED_PARAMETER(device);
@@ -483,6 +488,7 @@ bool CNvidiaFrameInterpolation::Initialize(ID3D11Device* device, UINT width, UIN
 void CNvidiaFrameInterpolation::Reset()
 {
 #ifdef _WIN64
+	std::lock_guard<std::recursive_mutex> lock(m_impl->apiMutex);
 	m_impl->ResetResources();
 	m_impl->status = m_impl->hRuntime ? L"Runtime loaded" : L"Disabled";
 #endif
@@ -491,12 +497,18 @@ void CNvidiaFrameInterpolation::Reset()
 bool CNvidiaFrameInterpolation::BeginInputFrame(ID3D11Texture2D** texture)
 {
 #ifdef _WIN64
+	if (m_impl->inputTransaction.owns_lock()) {
+		return false;
+	}
+	m_impl->inputTransaction = std::unique_lock<std::recursive_mutex>(m_impl->apiMutex);
 	if (!texture || !m_impl->handle || m_impl->inputLocked) {
+		m_impl->inputTransaction.unlock();
 		return false;
 	}
 	m_impl->writeIndex = m_impl->warmedUp ? (m_impl->currentIndex ^ 1u) : 0u;
 	auto& input = m_impl->inputs[m_impl->writeIndex];
 	if (!m_impl->Acquire(input, m_impl->inputLocked)) {
+		m_impl->inputTransaction.unlock();
 		return false;
 	}
 	*texture = input.texture;
@@ -513,6 +525,9 @@ void CNvidiaFrameInterpolation::CancelInputFrame()
 	if (m_impl->inputLocked) {
 		m_impl->Release(m_impl->inputs[m_impl->writeIndex], m_impl->inputLocked);
 	}
+	if (m_impl->inputTransaction.owns_lock()) {
+		m_impl->inputTransaction.unlock();
+	}
 #endif
 }
 
@@ -522,7 +537,13 @@ bool CNvidiaFrameInterpolation::SubmitInputFrame(double inputTimestamp, double o
 	outputReady = false;
 	repeated = false;
 #ifdef _WIN64
-	if (!m_impl->handle || !m_impl->inputLocked) {
+	auto EndTransaction = [this]() {
+		if (m_impl->inputTransaction.owns_lock()) {
+			m_impl->inputTransaction.unlock();
+		}
+	};
+	if (!m_impl->inputTransaction.owns_lock() || !m_impl->handle || !m_impl->inputLocked) {
+		EndTransaction();
 		return false;
 	}
 
@@ -548,6 +569,7 @@ bool CNvidiaFrameInterpolation::SubmitInputFrame(double inputTimestamp, double o
 		std::chrono::steady_clock::now() - started).count();
 	if (code != NvOFFRUC_SUCCESS) {
 		m_impl->SetError(L"NvOFFRUCProcess", code);
+		EndTransaction();
 		return false;
 	}
 
@@ -557,6 +579,7 @@ bool CNvidiaFrameInterpolation::SubmitInputFrame(double inputTimestamp, double o
 	m_impl->status = repeated
 		? std::format(L"Active, repeated frame ({:.2f} ms)", m_impl->processTimeMs)
 		: std::format(L"Active ({:.2f} ms)", m_impl->processTimeMs);
+	EndTransaction();
 	return true;
 #else
 	UNREFERENCED_PARAMETER(inputTimestamp);

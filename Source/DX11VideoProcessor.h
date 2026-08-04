@@ -231,6 +231,8 @@ private:
 	};
 	static constexpr UINT FrameInterpolationSurfaceCount = 4;
 	std::array<FrameInterpolationPresentationSurface, FrameInterpolationSurfaceCount> m_FrameInterpolationPresentationSurfaces;
+	std::atomic_uint64_t m_FrameInterpolationGeneration = 0;
+	uint64_t m_FrameInterpolationPendingGeneration = 0;
 	std::wstring m_strFrameInterpolationStatus = L"Disabled";
 	CNvidiaFrameInterpolation m_FrameInterpolation;
 
@@ -361,7 +363,9 @@ public:
 
 	HRESULT ProcessSample(IMediaSample* pSample) override;
 	bool PrepareFrameInterpolation(IMediaSample* pSample, REFERENCE_TIME& sourceTime,
-		REFERENCE_TIME& midpointTime, UINT& sourceSurface) override;
+		REFERENCE_TIME& requestedMidpoint, UINT& sourceSurface) override;
+	bool SubmitFrameInterpolation(REFERENCE_TIME sourceTime, REFERENCE_TIME requestedMidpoint,
+		REFERENCE_TIME& midpointTime) override;
 	HRESULT RenderFrameInterpolation(const REFERENCE_TIME frameStartTime) override;
 	HRESULT RenderFrameInterpolationSource(UINT sourceSurface, const REFERENCE_TIME frameStartTime) override;
 	void ReleaseFrameInterpolationSource(UINT sourceSurface) override;
