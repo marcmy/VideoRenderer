@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 
 [CmdletBinding()]
 param(
@@ -88,21 +88,22 @@ function Publish-EnvironmentChange {
         return
     }
 
-    if (-not ('MpcVrMaxine.NativeMethods' -as [type])) {
-        Add-Type -TypeDefinition @'
+    try {
+        if (-not ('MpcVrMaxine.NativeMethods' -as [type])) {
+            Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 
 namespace MpcVrMaxine
 {
-    internal static class NativeMethods
+    public static class NativeMethods
     {
-        internal const int HWND_BROADCAST = 0xffff;
-        internal const int WM_SETTINGCHANGE = 0x001A;
-        internal const int SMTO_ABORTIFHUNG = 0x0002;
+        public const int HWND_BROADCAST = 0xffff;
+        public const int WM_SETTINGCHANGE = 0x001A;
+        public const int SMTO_ABORTIFHUNG = 0x0002;
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        internal static extern IntPtr SendMessageTimeout(
+        public static extern IntPtr SendMessageTimeout(
             IntPtr hWnd,
             int Msg,
             IntPtr wParam,
@@ -113,17 +114,22 @@ namespace MpcVrMaxine
     }
 }
 '@
-    }
+        }
 
-    $result = [IntPtr]::Zero
-    [void][MpcVrMaxine.NativeMethods]::SendMessageTimeout(
-        [IntPtr][MpcVrMaxine.NativeMethods]::HWND_BROADCAST,
-        [MpcVrMaxine.NativeMethods]::WM_SETTINGCHANGE,
-        [IntPtr]::Zero,
-        'Environment',
-        [MpcVrMaxine.NativeMethods]::SMTO_ABORTIFHUNG,
-        5000,
-        [ref]$result)
+        $result = [IntPtr]::Zero
+        [void][MpcVrMaxine.NativeMethods]::SendMessageTimeout(
+            [IntPtr][MpcVrMaxine.NativeMethods]::HWND_BROADCAST,
+            [MpcVrMaxine.NativeMethods]::WM_SETTINGCHANGE,
+            [IntPtr]::Zero,
+            'Environment',
+            [MpcVrMaxine.NativeMethods]::SMTO_ABORTIFHUNG,
+            5000,
+            [ref]$result)
+    }
+    catch {
+        Write-Warning "The user environment variable was updated, but Windows did not accept the live refresh notification: $($_.Exception.Message)"
+        Write-Warning 'Restarting MPC-HC after a Windows sign-out, restart, or Explorer restart will still apply it.'
+    }
 }
 
 if ($env:OS -ne 'Windows_NT') {
@@ -145,6 +151,12 @@ if (-not [IO.Path]::IsPathRooted($InstallRoot)) {
 if ($ValidateOnly) {
     if ($requiredFiles.Count -ne (@($requiredFiles | Select-Object -Unique)).Count) {
         throw 'The required runtime file list contains duplicates.'
+    }
+    if (-not $SkipEnvironmentUpdate) {
+        Publish-EnvironmentChange
+        if (-not ('MpcVrMaxine.NativeMethods' -as [type])) {
+            throw 'The environment notification helper could not be loaded.'
+        }
     }
     Write-Host 'Maxine runtime installer validation passed.' -ForegroundColor Green
     Complete-Run -ExitCode 0

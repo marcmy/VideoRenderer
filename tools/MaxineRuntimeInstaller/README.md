@@ -34,7 +34,7 @@ The first release candidate intentionally contains only the five files MPC-VR re
 - `nvngx_vsr.dll`
 - `nvVFXVideoSuperRes.dll`
 
-This keeps the unpacked candidate around 46 MiB instead of carrying hundreds of MiB of optional TensorRT and NPP libraries. The slim candidate must be runtime-tested across Standard and High Bitrate VSR, all quality levels, denoise, deblur, oversampling, window resizing, and a fresh MPC-HC restart before it is published.
+This keeps the unpacked runtime around 46 MiB instead of carrying hundreds of MiB of optional TensorRT and NPP libraries. The five-file bundle was runtime-tested in MPC-HC with Maxine active, including the new output-oversampling path, and worked without the excluded libraries.
 
 The installer still copies every file present in the verified bundle. If testing proves that a specific optional dependency is required, it can be added without redesigning the installer.
 
