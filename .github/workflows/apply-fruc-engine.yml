@@ -25,13 +25,17 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Decode and apply source patch
+      - name: Verify, decode, and apply source patch
         shell: bash
         run: |
-          base64 --decode .github/fruc-engine.patch.gz.b64 | gzip --decompress > "$RUNNER_TEMP/fruc-engine.patch"
+          cat .github/fruc-engine.patch.part-* | tr -d '\r\n' > "$RUNNER_TEMP/fruc-engine.patch.gz.b64"
+          echo "65f22defa766bb53fe93a84e5934b26482778763242c404a75cd1e54bd5b6022  $RUNNER_TEMP/fruc-engine.patch.gz.b64" | sha256sum --check --strict
+          base64 --decode "$RUNNER_TEMP/fruc-engine.patch.gz.b64" > "$RUNNER_TEMP/fruc-engine.patch.gz"
+          gzip --decompress --stdout "$RUNNER_TEMP/fruc-engine.patch.gz" > "$RUNNER_TEMP/fruc-engine.patch"
+          echo "db564a19dca9ecfd23b99718787145e4e7e3b4ea719e61a340bad4bcc8edecaf  $RUNNER_TEMP/fruc-engine.patch" | sha256sum --check --strict
           git apply --check "$RUNNER_TEMP/fruc-engine.patch"
           git apply "$RUNNER_TEMP/fruc-engine.patch"
-          rm -f .github/fruc-engine.patch.gz.b64 .github/workflows/apply-fruc-engine.yml
+          rm -f .github/fruc-engine.patch.part-* .github/workflows/apply-fruc-engine.yml
 
       - name: Commit engine source
         shell: bash
