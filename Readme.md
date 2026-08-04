@@ -1,6 +1,30 @@
-﻿# MPC Video Renderer
+# MPC Video Renderer
 
 MPC Video Renderer is a free and open-source video renderer for DirectShow. The renderer can potentially work with any DirectShow player, but full support is available only in the MPC-BE. Recommended MPC-BE 1.8.9.106 or newer.
+
+## Custom NVIDIA Maxine build
+
+This fork includes NVIDIA Maxine Video Super Resolution support and a one-click setup package for K-Lite Codec Pack users.
+
+### Quick setup with K-Lite
+
+1. Install [K-Lite Codec Pack](https://codecguide.com/download_kl.htm) with MPC-HC and MPC Video Renderer.
+2. Download **`MPCVR-Maxine-Setup.zip`** from the [latest release](https://github.com/marcmy/VideoRenderer/releases/latest).
+3. Extract the ZIP completely.
+4. Close MPC-HC.
+5. Run **`Install-MPCVR-Maxine.cmd`** and approve the administrator prompt.
+6. Reopen MPC-HC and enable NVIDIA Maxine in the MPC Video Renderer settings.
+7. While a video is playing, press **Ctrl+J** to confirm that Maxine is active and that the runtime path is shown.
+
+The setup package installs the custom renderer, the required five-file Maxine runtime, and the `NV_VIDEO_EFFECTS_PATH` user variable. It also creates a **Restore MPC-VR Maxine** desktop shortcut.
+
+K-Lite updates may replace the custom renderer. When that happens, close MPC-HC and run the **Restore MPC-VR Maxine** shortcut to download and reinstall the latest custom build.
+
+### Manual or portable installation
+
+Advanced users can download **`MpcVideoRenderer-Maxine.zip`** from the same release page and install the renderer files manually. The one-click setup ZIP is recommended for normal K-Lite installations.
+
+`SHA256SUMS.txt` contains the SHA-256 hashes for both public ZIP files.
 
 ## Key features
 
@@ -35,7 +59,13 @@ MPC Video Renderer's code is licensed under [GPL v3].
 
 ## Download
 
-[Releases](https://github.com/Aleksoid1978/VideoRenderer/releases)
+### This fork
+
+[Latest NVIDIA Maxine release](https://github.com/marcmy/VideoRenderer/releases/latest)
+
+### Upstream project
+
+[Official releases](https://github.com/Aleksoid1978/VideoRenderer/releases)
 
 [Nightly builds](https://github.com/Aleksoid1978/VideoRenderer/wiki/Nightly-builds)
 
