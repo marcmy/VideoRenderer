@@ -55,30 +55,66 @@ jobs:
             tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 -ValidateOnly -NoPause
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Test local runtime installation with Windows PowerShell 5.1
+      - name: Export slim runtime candidate with Windows PowerShell 5.1
         shell: powershell
         run: |
           $testRoot = Join-Path $env:RUNNER_TEMP 'maxine-runtime-test'
-          $packageRoot = Join-Path $testRoot 'package\MPCVR-Maxine-Runtime\nvvfx\libs'
-          $archive = Join-Path $testRoot 'MPCVR-Maxine-Runtime.zip'
-          $checksum = "$archive.sha256"
-          $installRoot = Join-Path $testRoot 'installed'
-          New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
+          $sourceRoot = Join-Path $testRoot 'source'
+          $outputRoot = Join-Path $testRoot 'exported'
+          New-Item -ItemType Directory -Path $sourceRoot -Force | Out-Null
 
-          foreach ($file in @(
+          $required = @(
             'NVCVImage.dll',
             'NVVideoEffects.dll',
             'nvngxruntime.dll',
             'nvngx_vsr.dll',
-            'nvVFXVideoSuperRes.dll',
-            'nppc64_12.dll'
-          )) {
-            Set-Content -LiteralPath (Join-Path $packageRoot $file) -Value "mock $file" -Encoding ASCII
+            'nvVFXVideoSuperRes.dll'
+          )
+          foreach ($file in $required) {
+            Set-Content -LiteralPath (Join-Path $sourceRoot $file) -Value "mock $file" -Encoding ASCII
+          }
+          foreach ($file in @('nvinfer_10.dll', 'nppif64_12.dll', 'nvinfer_plugin_10.dll')) {
+            Set-Content -LiteralPath (Join-Path $sourceRoot $file) -Value "optional $file" -Encoding ASCII
+          }
+          Set-Content -LiteralPath (Join-Path $sourceRoot 'LICENSE.txt') -Value 'mock license' -Encoding ASCII
+
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
+            tools/MaxineRuntimeInstaller/Export-MPCVRMaxineRuntime.ps1 `
+            -SourcePath $sourceRoot `
+            -OutputDirectory $outputRoot `
+            -NoPause
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $archive = Join-Path $outputRoot 'MPCVR-Maxine-Runtime.zip'
+          $checksum = Join-Path $outputRoot 'MPCVR-Maxine-Runtime.zip.sha256'
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) { throw 'Exporter did not create the archive.' }
+          if (-not (Test-Path -LiteralPath $checksum -PathType Leaf)) { throw 'Exporter did not create the checksum.' }
+
+          $inspectRoot = Join-Path $testRoot 'inspect'
+          Expand-Archive -LiteralPath $archive -DestinationPath $inspectRoot -Force
+          $runtime = Join-Path $inspectRoot 'MPCVR-Maxine-Runtime\nvvfx\libs'
+          foreach ($file in $required + @('LICENSE.txt')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $runtime $file) -PathType Leaf)) {
+              throw "Slim bundle is missing $file"
+            }
+          }
+          foreach ($file in @('nvinfer_10.dll', 'nppif64_12.dll', 'nvinfer_plugin_10.dll')) {
+            if (Test-Path -LiteralPath (Join-Path $runtime $file) -PathType Leaf) {
+              throw "Slim bundle unexpectedly contains $file"
+            }
           }
 
-          Compress-Archive -LiteralPath (Join-Path $testRoot 'package\MPCVR-Maxine-Runtime') -DestinationPath $archive
-          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  MPCVR-Maxine-Runtime.zip" | Set-Content -LiteralPath $checksum -Encoding ASCII
+          $manifest = Get-Content -LiteralPath (Join-Path $inspectRoot 'MPCVR-Maxine-Runtime\runtime-manifest.json') -Raw | ConvertFrom-Json
+          if ($manifest.Profile -ne 'CoreFiveFiles') { throw "Unexpected export profile: $($manifest.Profile)" }
+          if ($manifest.Files.Count -ne 6) { throw "Unexpected packaged file count: $($manifest.Files.Count)" }
+          if ($manifest.ExcludedFiles.Count -ne 3) { throw "Unexpected excluded file count: $($manifest.ExcludedFiles.Count)" }
+
+      - name: Install exported slim candidate with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $testRoot = Join-Path $env:RUNNER_TEMP 'maxine-runtime-test'
+          $archive = Join-Path $testRoot 'exported\MPCVR-Maxine-Runtime.zip'
+          $installRoot = Join-Path $testRoot 'installed'
 
           powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
             tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 `
@@ -95,9 +131,9 @@ jobs:
             'nvngxruntime.dll',
             'nvngx_vsr.dll',
             'nvVFXVideoSuperRes.dll',
-            'nppc64_12.dll'
+            'LICENSE.txt'
           )) {
             if (-not (Test-Path -LiteralPath (Join-Path $runtime $file) -PathType Leaf)) {
-              throw "Installed runtime is missing $file"
+              throw "Installed slim runtime is missing $file"
             }
           }
