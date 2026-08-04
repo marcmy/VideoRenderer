@@ -26,7 +26,7 @@ No system-wide PATH modification is required.
 
 ## Core runtime files
 
-The first release candidate intentionally contains only the five files MPC-VR requires before attempting to load VideoSuperRes:
+The tested runtime bundle intentionally contains only the five files MPC-VR requires before attempting to load VideoSuperRes:
 
 - `NVCVImage.dll`
 - `NVVideoEffects.dll`
