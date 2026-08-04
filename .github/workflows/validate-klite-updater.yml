@@ -1,0 +1,71 @@
+name: Validate K-Lite updater
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'tools/KLiteMaxineUpdater/**'
+      - '.github/workflows/validate-klite-updater.yml'
+  push:
+    branches:
+      - master
+    paths:
+      - 'tools/KLiteMaxineUpdater/**'
+      - '.github/workflows/validate-klite-updater.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Validate with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $files = @(
+              'tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1',
+              'tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1'
+          )
+          foreach ($file in $files) {
+              $tokens = $null
+              $errors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile(
+                  (Resolve-Path $file), [ref]$tokens, [ref]$errors)
+              if ($errors.Count) {
+                  $errors | Format-List -Force
+                  throw "Windows PowerShell parser rejected $file"
+              }
+          }
+
+          & .\tools\KLiteMaxineUpdater\Update-KLiteMPCVR.ps1 -ValidateOnly -NoPause
+          if ($LASTEXITCODE -ne 0) {
+              throw "Windows PowerShell validation returned $LASTEXITCODE"
+          }
+
+      - name: Validate with PowerShell 7
+        shell: pwsh
+        run: |
+          $files = @(
+              'tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1',
+              'tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1'
+          )
+          foreach ($file in $files) {
+              $tokens = $null
+              $errors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile(
+                  (Resolve-Path $file), [ref]$tokens, [ref]$errors)
+              if ($errors.Count) {
+                  $errors | Format-List -Force
+                  throw "PowerShell 7 parser rejected $file"
+              }
+          }
+
+          & .\tools\KLiteMaxineUpdater\Update-KLiteMPCVR.ps1 -ValidateOnly -NoPause
+          if ($LASTEXITCODE -ne 0) {
+              throw "PowerShell 7 validation returned $LASTEXITCODE"
+          }

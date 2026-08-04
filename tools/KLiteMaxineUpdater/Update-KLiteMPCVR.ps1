@@ -1,4 +1,4 @@
-#requires -Version 7.0
+#requires -Version 5.1
 
 [CmdletBinding()]
 param(
@@ -18,9 +18,32 @@ $targets = [ordered]@{
     'MpcVideoRenderer64.ax' = 'C:\Program Files (x86)\K-Lite Codec Pack\MPC-HC64\MPCVR\MpcVideoRenderer64.ax'
 }
 
+function Test-IsWindowsPlatform {
+    $isWindowsVariable = Get-Variable -Name IsWindows -ErrorAction SilentlyContinue
+    if ($null -ne $isWindowsVariable) {
+        return [bool]$isWindowsVariable.Value
+    }
+
+    return $env:OS -eq 'Windows_NT'
+}
+
+function Get-PowerShellExecutable {
+    $pwsh = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+    if ($null -ne $pwsh) {
+        return $pwsh.Source
+    }
+
+    $windowsPowerShell = Get-Command powershell.exe -ErrorAction SilentlyContinue
+    if ($null -ne $windowsPowerShell) {
+        return $windowsPowerShell.Source
+    }
+
+    throw 'Neither PowerShell 7 (pwsh.exe) nor Windows PowerShell (powershell.exe) was found.'
+}
+
 function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    $principal = New-Object -TypeName Security.Principal.WindowsPrincipal -ArgumentList $identity
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
@@ -49,7 +72,7 @@ function Complete-Run {
     exit $ExitCode
 }
 
-if (-not $IsWindows) {
+if (-not (Test-IsWindowsPlatform)) {
     Write-Host 'This updater only supports Windows.' -ForegroundColor Red
     Complete-Run -ExitCode 1
 }
@@ -57,30 +80,37 @@ if (-not $IsWindows) {
 if ($ValidateOnly) {
     foreach ($destination in $targets.Values) {
         $directory = Get-TargetDirectory -TargetPath $destination
-        if (-not [IO.Path]::IsPathFullyQualified($directory)) {
+        if (-not [IO.Path]::IsPathRooted($directory)) {
             throw "Target directory is not fully qualified: $directory"
         }
     }
 
-    Write-Host 'K-Lite updater validation passed.' -ForegroundColor Green
+    [void](Get-PowerShellExecutable)
+    Write-Host "K-Lite updater validation passed under PowerShell $($PSVersionTable.PSVersion)." -ForegroundColor Green
     Complete-Run -ExitCode 0
 }
 
 if (-not (Test-IsAdministrator)) {
-    $pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
+    $powerShellExecutable = Get-PowerShellExecutable
     $argumentList = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $PSCommandPath
     if ($NoPause) {
         $argumentList += ' -NoPause'
     }
 
     try {
-        $process = Start-Process -FilePath $pwsh -ArgumentList $argumentList -Verb RunAs -Wait -PassThru
+        $process = Start-Process -FilePath $powerShellExecutable -ArgumentList $argumentList -Verb RunAs -Wait -PassThru
         exit $process.ExitCode
     }
     catch {
         Write-Host "Administrator elevation was cancelled or failed: $($_.Exception.Message)" -ForegroundColor Red
         Complete-Run -ExitCode 1
     }
+}
+
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    # GitHub requires TLS 1.2. Windows PowerShell can otherwise inherit an older default.
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 }
 
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("MPCVR-Maxine-Updater-{0}" -f [guid]::NewGuid())
@@ -106,12 +136,35 @@ try {
 
     Write-Host 'Downloading the latest custom Maxine build...'
     try {
-        Invoke-WebRequest -Uri "$releaseBaseUrl/$assetName" -OutFile $archivePath
-        Invoke-WebRequest -Uri "$releaseBaseUrl/$checksumName" -OutFile $checksumPath
+        $archiveRequest = @{
+            Uri = "$releaseBaseUrl/$assetName"
+            OutFile = $archivePath
+        }
+        $checksumRequest = @{
+            Uri = "$releaseBaseUrl/$checksumName"
+            OutFile = $checksumPath
+        }
+        if ($PSVersionTable.PSEdition -eq 'Desktop') {
+            $archiveRequest.UseBasicParsing = $true
+            $checksumRequest.UseBasicParsing = $true
+        }
+
+        Invoke-WebRequest @archiveRequest
+        Invoke-WebRequest @checksumRequest
     }
     catch {
-        if ($_.Exception.Response.StatusCode -eq [Net.HttpStatusCode]::NotFound) {
-            throw 'No published Maxine build is available yet. Merge the updater fix and wait for the master release workflow to finish.'
+        $statusCode = $null
+        if ($null -ne $_.Exception.Response) {
+            try {
+                $statusCode = [int]$_.Exception.Response.StatusCode
+            }
+            catch {
+                $statusCode = $null
+            }
+        }
+
+        if ($statusCode -eq 404) {
+            throw 'No published Maxine build is available yet. Wait for the master release workflow to finish.'
         }
         throw
     }
