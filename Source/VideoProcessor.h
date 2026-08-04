@@ -181,14 +181,25 @@ public:
 	virtual BOOL GetAlignmentSize(const CMediaType& mt, SIZE& Size) = 0;
 
 	virtual HRESULT ProcessSample(IMediaSample* pSample) = 0;
-	virtual bool PrepareFrameInterpolation(IMediaSample* pSample, REFERENCE_TIME& midpointTime) {
+	virtual bool PrepareFrameInterpolation(IMediaSample* pSample, REFERENCE_TIME& sourceTime,
+		REFERENCE_TIME& midpointTime, UINT& sourceSurface) {
 		UNREFERENCED_PARAMETER(pSample);
+		UNREFERENCED_PARAMETER(sourceTime);
 		UNREFERENCED_PARAMETER(midpointTime);
+		UNREFERENCED_PARAMETER(sourceSurface);
 		return false;
 	}
 	virtual HRESULT RenderFrameInterpolation(const REFERENCE_TIME frameStartTime) {
 		UNREFERENCED_PARAMETER(frameStartTime);
 		return E_NOTIMPL;
+	}
+	virtual HRESULT RenderFrameInterpolationSource(UINT sourceSurface, const REFERENCE_TIME frameStartTime) {
+		UNREFERENCED_PARAMETER(sourceSurface);
+		UNREFERENCED_PARAMETER(frameStartTime);
+		return E_NOTIMPL;
+	}
+	virtual void ReleaseFrameInterpolationSource(UINT sourceSurface) {
+		UNREFERENCED_PARAMETER(sourceSurface);
 	}
 	virtual HRESULT Render(int field, const REFERENCE_TIME frameStartTime) = 0;
 	virtual HRESULT FillBlack() = 0;

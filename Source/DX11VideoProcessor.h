@@ -35,6 +35,7 @@
 #include "VideoProcessor.h"
 #include "SubPic/DX11SubPic.h"
 
+#include <array>
 #include <atomic>
 
 #define TEST_SHADER 0
@@ -224,6 +225,12 @@ private:
 	REFERENCE_TIME m_rtFrameInterpolationLastInput = INVALID_TIME;
 	ID3D11Texture2D* m_pFrameInterpolationTexture = nullptr;
 	ID3D11ShaderResourceView* m_pFrameInterpolationView = nullptr;
+	struct FrameInterpolationPresentationSurface {
+		Tex2D_t texture;
+		bool inUse = false;
+	};
+	static constexpr UINT FrameInterpolationSurfaceCount = 4;
+	std::array<FrameInterpolationPresentationSurface, FrameInterpolationSurfaceCount> m_FrameInterpolationPresentationSurfaces;
 	std::wstring m_strFrameInterpolationStatus = L"Disabled";
 	CNvidiaFrameInterpolation m_FrameInterpolation;
 
@@ -353,8 +360,11 @@ public:
 	BOOL GetAlignmentSize(const CMediaType& mt, SIZE& Size) override;
 
 	HRESULT ProcessSample(IMediaSample* pSample) override;
-	bool PrepareFrameInterpolation(IMediaSample* pSample, REFERENCE_TIME& midpointTime) override;
+	bool PrepareFrameInterpolation(IMediaSample* pSample, REFERENCE_TIME& sourceTime,
+		REFERENCE_TIME& midpointTime, UINT& sourceSurface) override;
 	HRESULT RenderFrameInterpolation(const REFERENCE_TIME frameStartTime) override;
+	HRESULT RenderFrameInterpolationSource(UINT sourceSurface, const REFERENCE_TIME frameStartTime) override;
+	void ReleaseFrameInterpolationSource(UINT sourceSurface) override;
 	HRESULT CopySample(IMediaSample* pSample);
 	// Render: 1 - render first fied or progressive frame, 2 - render second fied, 0 or other - forced repeat of render.
 	HRESULT Render(int field, const REFERENCE_TIME frameStartTime) override;
