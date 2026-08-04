@@ -2,6 +2,8 @@
 
 [CmdletBinding()]
 param(
+    [string]$PackageArchive,
+    [string]$ChecksumFile,
     [switch]$NoPause,
     [switch]$ValidateOnly
 )
@@ -11,7 +13,8 @@ $ProgressPreference = 'SilentlyContinue'
 
 $releaseBaseUrl = 'https://github.com/marcmy/VideoRenderer/releases/latest/download'
 $assetName = 'MpcVideoRenderer-Maxine.zip'
-$checksumName = "$assetName.sha256"
+$checksumListName = 'SHA256SUMS.txt'
+$legacyChecksumName = "$assetName.sha256"
 
 $targets = [ordered]@{
     'MpcVideoRenderer.ax' = 'C:\Program Files (x86)\K-Lite Codec Pack\Filters\MPCVR\MpcVideoRenderer.ax'
@@ -60,6 +63,39 @@ function Get-TargetDirectory {
     return $directory
 }
 
+function Quote-ProcessArgument {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Value
+    )
+
+    return '"{0}"' -f $Value.Replace('"', '\"')
+}
+
+function Get-ExpectedHash {
+    param(
+        [Parameter(Mandatory)]
+        [string]$ChecksumPath,
+        [Parameter(Mandatory)]
+        [string]$FileName
+    )
+
+    $text = Get-Content -LiteralPath $ChecksumPath -Raw
+    foreach ($line in ($text -split "`r?`n")) {
+        $match = [regex]::Match($line, '^\s*([a-fA-F0-9]{64})\s+\*?(.+?)\s*$')
+        if ($match.Success -and $match.Groups[2].Value -ieq $FileName) {
+            return $match.Groups[1].Value.ToLowerInvariant()
+        }
+    }
+
+    $singleHash = [regex]::Match($text, '(?i)\b[a-f0-9]{64}\b')
+    if ($singleHash.Success) {
+        return $singleHash.Value.ToLowerInvariant()
+    }
+
+    throw "No valid SHA-256 entry for $FileName was found in $ChecksumPath."
+}
+
 function Complete-Run {
     param(
         [int]$ExitCode
@@ -77,6 +113,11 @@ if (-not (Test-IsWindowsPlatform)) {
     Complete-Run -ExitCode 1
 }
 
+if ([string]::IsNullOrWhiteSpace($PackageArchive) -xor [string]::IsNullOrWhiteSpace($ChecksumFile)) {
+    Write-Host 'PackageArchive and ChecksumFile must be supplied together.' -ForegroundColor Red
+    Complete-Run -ExitCode 1
+}
+
 if ($ValidateOnly) {
     foreach ($destination in $targets.Values) {
         $directory = Get-TargetDirectory -TargetPath $destination
@@ -86,13 +127,27 @@ if ($ValidateOnly) {
     }
 
     [void](Get-PowerShellExecutable)
+    if (-not [string]::IsNullOrWhiteSpace($PackageArchive)) {
+        $resolvedArchive = (Resolve-Path -LiteralPath $PackageArchive).Path
+        $resolvedChecksum = (Resolve-Path -LiteralPath $ChecksumFile).Path
+        [void](Get-ExpectedHash -ChecksumPath $resolvedChecksum -FileName ([IO.Path]::GetFileName($resolvedArchive)))
+    }
+
     Write-Host "K-Lite updater validation passed under PowerShell $($PSVersionTable.PSVersion)." -ForegroundColor Green
     Complete-Run -ExitCode 0
 }
 
 if (-not (Test-IsAdministrator)) {
     $powerShellExecutable = Get-PowerShellExecutable
-    $argumentList = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $PSCommandPath
+    $argumentList = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File {0}' -f (Quote-ProcessArgument -Value $PSCommandPath)
+
+    if (-not [string]::IsNullOrWhiteSpace($PackageArchive)) {
+        $resolvedArchive = (Resolve-Path -LiteralPath $PackageArchive).Path
+        $resolvedChecksum = (Resolve-Path -LiteralPath $ChecksumFile).Path
+        $argumentList += ' -PackageArchive {0} -ChecksumFile {1}' -f `
+            (Quote-ProcessArgument -Value $resolvedArchive), `
+            (Quote-ProcessArgument -Value $resolvedChecksum)
+    }
     if ($NoPause) {
         $argumentList += ' -NoPause'
     }
@@ -108,14 +163,13 @@ if (-not (Test-IsAdministrator)) {
 }
 
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
-    # GitHub requires TLS 1.2. Windows PowerShell can otherwise inherit an older default.
     [Net.ServicePointManager]::SecurityProtocol =
         [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 }
 
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("MPCVR-Maxine-Updater-{0}" -f [guid]::NewGuid())
 $archivePath = Join-Path $tempRoot $assetName
-$checksumPath = Join-Path $tempRoot $checksumName
+$checksumPath = Join-Path $tempRoot $checksumListName
 $extractPath = Join-Path $tempRoot 'extracted'
 $exitCode = 0
 
@@ -134,49 +188,51 @@ try {
 
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
-    Write-Host 'Downloading the latest custom Maxine build...'
-    try {
+    if (-not [string]::IsNullOrWhiteSpace($PackageArchive)) {
+        $resolvedArchive = (Resolve-Path -LiteralPath $PackageArchive).Path
+        $resolvedChecksum = (Resolve-Path -LiteralPath $ChecksumFile).Path
+        Copy-Item -LiteralPath $resolvedArchive -Destination $archivePath -Force
+        Copy-Item -LiteralPath $resolvedChecksum -Destination $checksumPath -Force
+        Write-Host 'Using the renderer package included with MPCVR Maxine Setup...'
+    }
+    else {
+        Write-Host 'Downloading the latest custom Maxine build...'
         $archiveRequest = @{
             Uri = "$releaseBaseUrl/$assetName"
             OutFile = $archivePath
         }
-        $checksumRequest = @{
-            Uri = "$releaseBaseUrl/$checksumName"
-            OutFile = $checksumPath
-        }
         if ($PSVersionTable.PSEdition -eq 'Desktop') {
             $archiveRequest.UseBasicParsing = $true
-            $checksumRequest.UseBasicParsing = $true
         }
-
         Invoke-WebRequest @archiveRequest
-        Invoke-WebRequest @checksumRequest
-    }
-    catch {
-        $statusCode = $null
-        if ($null -ne $_.Exception.Response) {
-            try {
-                $statusCode = [int]$_.Exception.Response.StatusCode
+
+        try {
+            $checksumRequest = @{
+                Uri = "$releaseBaseUrl/$checksumListName"
+                OutFile = $checksumPath
             }
-            catch {
-                $statusCode = $null
+            if ($PSVersionTable.PSEdition -eq 'Desktop') {
+                $checksumRequest.UseBasicParsing = $true
             }
+            Invoke-WebRequest @checksumRequest
         }
-
-        if ($statusCode -eq 404) {
-            throw 'No published Maxine build is available yet. Wait for the master release workflow to finish.'
+        catch {
+            Write-Host 'The combined checksum list was unavailable; trying the legacy checksum asset.' -ForegroundColor Yellow
+            $legacyRequest = @{
+                Uri = "$releaseBaseUrl/$legacyChecksumName"
+                OutFile = $checksumPath
+            }
+            if ($PSVersionTable.PSEdition -eq 'Desktop') {
+                $legacyRequest.UseBasicParsing = $true
+            }
+            Invoke-WebRequest @legacyRequest
         }
-        throw
     }
 
-    $expectedHash = ((Get-Content -LiteralPath $checksumPath -Raw) -split '\s+')[0].Trim().ToLowerInvariant()
-    if ($expectedHash -notmatch '^[a-f0-9]{64}$') {
-        throw 'The published SHA-256 file is malformed.'
-    }
-
+    $expectedHash = Get-ExpectedHash -ChecksumPath $checksumPath -FileName $assetName
     $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actualHash -ne $expectedHash) {
-        throw "SHA-256 verification failed. Expected $expectedHash but downloaded $actualHash."
+        throw "SHA-256 verification failed. Expected $expectedHash but found $actualHash."
     }
 
     Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath -Force
@@ -186,7 +242,7 @@ try {
         $destination = $targets[$fileName]
 
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
-            throw "The downloaded package does not contain $fileName."
+            throw "The renderer package does not contain $fileName."
         }
 
         Write-Host "Installing $fileName..."

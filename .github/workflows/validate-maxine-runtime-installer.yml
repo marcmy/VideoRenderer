@@ -1,14 +1,18 @@
-name: Validate Maxine runtime installer
+name: Validate Maxine setup
 
 on:
   push:
     paths:
       - 'tools/MaxineRuntimeInstaller/**'
+      - 'tools/KLiteMaxineUpdater/**'
+      - 'tools/MaxineSetup/**'
       - '.github/workflows/validate-maxine-runtime-installer.yml'
       - '.github/workflows/main.yml'
   pull_request:
     paths:
       - 'tools/MaxineRuntimeInstaller/**'
+      - 'tools/KLiteMaxineUpdater/**'
+      - 'tools/MaxineSetup/**'
       - '.github/workflows/validate-maxine-runtime-installer.yml'
       - '.github/workflows/main.yml'
   workflow_dispatch:
@@ -29,7 +33,10 @@ jobs:
         run: |
           $scripts = @(
             'tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1',
-            'tools/MaxineRuntimeInstaller/Export-MPCVRMaxineRuntime.ps1'
+            'tools/MaxineRuntimeInstaller/Export-MPCVRMaxineRuntime.ps1',
+            'tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1',
+            'tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1',
+            'tools/MaxineSetup/Install-MPCVR-Maxine.ps1'
           )
           foreach ($script in $scripts) {
             $tokens = $null
@@ -44,7 +51,7 @@ jobs:
             }
           }
 
-      - name: Run built-in validation with both PowerShell hosts
+      - name: Run built-in runtime validation with both PowerShell hosts
         shell: powershell
         run: |
           powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
@@ -137,3 +144,44 @@ jobs:
               throw "Installed slim runtime is missing $file"
             }
           }
+
+      - name: Validate assembled one-click setup with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $testRoot = Join-Path $env:RUNNER_TEMP 'maxine-runtime-test'
+          $setupRoot = Join-Path $testRoot 'setup'
+          $payloadRoot = Join-Path $setupRoot 'payload'
+          $rendererSource = Join-Path $testRoot 'renderer-source'
+          New-Item -ItemType Directory -Path $payloadRoot -Force | Out-Null
+          New-Item -ItemType Directory -Path $rendererSource -Force | Out-Null
+
+          Copy-Item tools/MaxineSetup/Install-MPCVR-Maxine.ps1 $setupRoot
+          Copy-Item tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 $payloadRoot
+          Copy-Item tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1 $payloadRoot
+          Copy-Item tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1 $payloadRoot
+          Copy-Item (Join-Path $testRoot 'exported\MPCVR-Maxine-Runtime.zip') $payloadRoot
+          Copy-Item (Join-Path $testRoot 'exported\MPCVR-Maxine-Runtime.zip.sha256') $payloadRoot
+
+          Set-Content -LiteralPath (Join-Path $rendererSource 'MpcVideoRenderer.ax') -Value 'mock x86 renderer' -Encoding ASCII
+          Set-Content -LiteralPath (Join-Path $rendererSource 'MpcVideoRenderer64.ax') -Value 'mock x64 renderer' -Encoding ASCII
+          $rendererArchive = Join-Path $payloadRoot 'MpcVideoRenderer-Maxine.zip'
+          Compress-Archive -Path (Join-Path $rendererSource '*') -DestinationPath $rendererArchive
+
+          Push-Location $payloadRoot
+          try {
+            $rendererHash = (Get-FileHash -LiteralPath 'MpcVideoRenderer-Maxine.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
+            $runtimeHash = (Get-FileHash -LiteralPath 'MPCVR-Maxine-Runtime.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
+            @(
+              "$rendererHash  MpcVideoRenderer-Maxine.zip",
+              "$runtimeHash  MPCVR-Maxine-Runtime.zip"
+            ) | Set-Content -LiteralPath 'PAYLOAD-SHA256SUMS.txt' -Encoding ASCII
+          }
+          finally {
+            Pop-Location
+          }
+
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
+            (Join-Path $setupRoot 'Install-MPCVR-Maxine.ps1') `
+            -ValidateOnly `
+            -NoPause
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
