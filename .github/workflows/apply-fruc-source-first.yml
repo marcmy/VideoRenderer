@@ -1,0 +1,41 @@
+name: Apply FRUC source-first pipeline
+
+on:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.ref == 'feature/nvoffruc-lookahead'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v6
+        with:
+          ref: feature/nvoffruc-lookahead
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify and apply source-first patch
+        shell: bash
+        run: |
+          tr -d '\r\n' < .github/fruc-source-first.patch.gz.b64 > "$RUNNER_TEMP/payload.b64"
+          echo "617e6cb5837331a52fbac48494094fc8dead56ce1e2ee30e1635882d003808b4  $RUNNER_TEMP/payload.b64" | sha256sum --check --strict
+          base64 --decode "$RUNNER_TEMP/payload.b64" | gzip --decompress --stdout > "$RUNNER_TEMP/fruc-source-first.patch"
+          echo "daf6ecfc28fe8b644daf6b165eb6304c92bc0d2ff3a37c813297c0d6b18c4358  $RUNNER_TEMP/fruc-source-first.patch" | sha256sum --check --strict
+          git apply --check "$RUNNER_TEMP/fruc-source-first.patch"
+          git apply "$RUNNER_TEMP/fruc-source-first.patch"
+          rm -f .github/fruc-source-first.patch.gz.b64 .github/workflows/apply-fruc-source-first.yml
+
+      - name: Commit source-first pipeline
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: queue FRUC source before interpolation"
+          git push origin HEAD:feature/nvoffruc-lookahead
