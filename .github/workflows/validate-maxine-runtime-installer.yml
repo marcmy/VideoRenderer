@@ -1,0 +1,103 @@
+name: Validate Maxine runtime installer
+
+on:
+  push:
+    paths:
+      - 'tools/MaxineRuntimeInstaller/**'
+      - '.github/workflows/validate-maxine-runtime-installer.yml'
+      - '.github/workflows/main.yml'
+  pull_request:
+    paths:
+      - 'tools/MaxineRuntimeInstaller/**'
+      - '.github/workflows/validate-maxine-runtime-installer.yml'
+      - '.github/workflows/main.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Parse scripts with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $scripts = @(
+            'tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1',
+            'tools/MaxineRuntimeInstaller/Export-MPCVRMaxineRuntime.ps1'
+          )
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path -LiteralPath $script),
+              [ref]$tokens,
+              [ref]$errors)
+            if ($errors.Count) {
+              $errors | Format-List | Out-String | Write-Error
+              throw "Windows PowerShell could not parse $script"
+            }
+          }
+
+      - name: Run built-in validation with both PowerShell hosts
+        shell: powershell
+        run: |
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
+            tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 -ValidateOnly -NoPause
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          pwsh.exe -NoLogo -NoProfile -File `
+            tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 -ValidateOnly -NoPause
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Test local runtime installation with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $testRoot = Join-Path $env:RUNNER_TEMP 'maxine-runtime-test'
+          $packageRoot = Join-Path $testRoot 'package\MPCVR-Maxine-Runtime\nvvfx\libs'
+          $archive = Join-Path $testRoot 'MPCVR-Maxine-Runtime.zip'
+          $checksum = "$archive.sha256"
+          $installRoot = Join-Path $testRoot 'installed'
+          New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
+
+          foreach ($file in @(
+            'NVCVImage.dll',
+            'NVVideoEffects.dll',
+            'nvngxruntime.dll',
+            'nvngx_vsr.dll',
+            'nvVFXVideoSuperRes.dll',
+            'nppc64_12.dll'
+          )) {
+            Set-Content -LiteralPath (Join-Path $packageRoot $file) -Value "mock $file" -Encoding ASCII
+          }
+
+          Compress-Archive -LiteralPath (Join-Path $testRoot 'package\MPCVR-Maxine-Runtime') -DestinationPath $archive
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  MPCVR-Maxine-Runtime.zip" | Set-Content -LiteralPath $checksum -Encoding ASCII
+
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
+            tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 `
+            -RuntimeArchive $archive `
+            -InstallRoot $installRoot `
+            -SkipEnvironmentUpdate `
+            -NoPause
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $runtime = Join-Path $installRoot 'nvvfx\libs'
+          foreach ($file in @(
+            'NVCVImage.dll',
+            'NVVideoEffects.dll',
+            'nvngxruntime.dll',
+            'nvngx_vsr.dll',
+            'nvVFXVideoSuperRes.dll',
+            'nppc64_12.dll'
+          )) {
+            if (-not (Test-Path -LiteralPath (Join-Path $runtime $file) -PathType Leaf)) {
+              throw "Installed runtime is missing $file"
+            }
+          }
