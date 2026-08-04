@@ -1,0 +1,37 @@
+name: Temporary FRUC source export
+
+on:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: temp/fruc-lookahead-export
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Package source tree
+        shell: bash
+        run: |
+          git archive --format=zip --output=VideoRenderer-fruc-source.zip HEAD
+          rm -rf _submodules
+          mkdir -p _submodules
+          git submodule foreach --recursive 'mkdir -p "$toplevel/_submodules/$sm_path" && git archive --format=tar HEAD | tar -x -C "$toplevel/_submodules/$sm_path"'
+          zip -qr VideoRenderer-fruc-source.zip _submodules
+
+      - name: Upload source artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: VideoRenderer-fruc-source
+          path: VideoRenderer-fruc-source.zip
+          compression-level: 0
+          retention-days: 1
