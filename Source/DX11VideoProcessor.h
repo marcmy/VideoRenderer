@@ -29,6 +29,7 @@
 #include "DX11Helper.h"
 #include "D3D11VP.h"
 #include "NvidiaMaxineVSR.h"
+#include "NvidiaFrameInterpolation.h"
 #include "D3DUtil/D3D11Font.h"
 #include "D3DUtil/D3D11Geometry.h"
 #include "VideoProcessor.h"
@@ -210,6 +211,22 @@ private:
 	CNvidiaMaxineVSR m_MaxineDenoise;
 	CNvidiaMaxineVSR m_MaxineDeblur;
 
+	int m_iFrameInterpolationMode = FRUC_MODE_Disabled;
+	int m_iFrameInterpolationSourceLimit = FRUC_SOURCE_LIMIT_1080p;
+	int m_iFrameInterpolationMaxOutput = FRUC_MAX_OUTPUT_60;
+	int m_iFrameInterpolationGPU = FRUC_GPU_Auto;
+	bool m_bFrameInterpolationFallback = true;
+	bool m_bFrameInterpolationPrepared = false;
+	bool m_bFrameInterpolationOutputReady = false;
+	bool m_bFrameInterpolationRepeated = false;
+	REFERENCE_TIME m_rtFrameInterpolationPrepared = INVALID_TIME;
+	REFERENCE_TIME m_rtFrameInterpolationMidpoint = INVALID_TIME;
+	REFERENCE_TIME m_rtFrameInterpolationLastInput = INVALID_TIME;
+	ID3D11Texture2D* m_pFrameInterpolationTexture = nullptr;
+	ID3D11ShaderResourceView* m_pFrameInterpolationView = nullptr;
+	std::wstring m_strFrameInterpolationStatus = L"Disabled";
+	CNvidiaFrameInterpolation m_FrameInterpolation;
+
 	bool m_bVPRTXVideoHDR = false;
 	bool m_bVPUseRTXVideoHDR = false;
 
@@ -336,6 +353,8 @@ public:
 	BOOL GetAlignmentSize(const CMediaType& mt, SIZE& Size) override;
 
 	HRESULT ProcessSample(IMediaSample* pSample) override;
+	bool PrepareFrameInterpolation(IMediaSample* pSample, REFERENCE_TIME& midpointTime) override;
+	HRESULT RenderFrameInterpolation(const REFERENCE_TIME frameStartTime) override;
 	HRESULT CopySample(IMediaSample* pSample);
 	// Render: 1 - render first fied or progressive frame, 2 - render second fied, 0 or other - forced repeat of render.
 	HRESULT Render(int field, const REFERENCE_TIME frameStartTime) override;
@@ -369,6 +388,9 @@ public:
 	void SwitchFullScreen(bool set) override;
 
 private:
+	bool IsFrameInterpolationEligible(REFERENCE_TIME frameDuration);
+	HRESULT RenderPreparedFrame(const bool interpolated, const REFERENCE_TIME frameStartTime);
+	void ResetFrameInterpolation();
 	bool GetMaxineVSRTargetSize(const CRect& dstRect, CSize& targetSize, bool& upscaleNeeded);
 	unsigned ResolveMaxineUpscaleMode() const;
 	void UpdateTexures();
