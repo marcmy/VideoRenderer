@@ -4,13 +4,18 @@ on:
   push:
     paths:
       - '.github/workflows/apply-frame-interpolation-dialog.yml'
+  pull_request:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/apply-frame-interpolation-dialog.yml'
 
 permissions:
   contents: write
 
 jobs:
   apply:
-    if: ${{ !contains(github.event.head_commit.message, '[skip fruc dialog]') }}
+    if: ${{ !contains(github.event.head_commit.message || '', '[skip fruc dialog]') }}
     runs-on: ubuntu-latest
 
     steps:
@@ -32,13 +37,8 @@ jobs:
               text = text.replace(old, new, count)
               p.write_text(text, encoding='utf-8-sig')
 
-          # Resource IDs
-          replace('Source/resource.h',
-              '#define IDD_MAXINESETTINGS              106\n',
-              '#define IDD_MAXINESETTINGS              106\n#define IDD_FRAMEINTERPOLATION           107\n')
-          replace('Source/resource.h',
-              '#define IDC_STATIC_MAXINE_OVERSAMPLE    1091\n',
-              '''#define IDC_STATIC_MAXINE_OVERSAMPLE    1091
+          replace('Source/resource.h', '#define IDD_MAXINESETTINGS              106\n', '#define IDD_MAXINESETTINGS              106\n#define IDD_FRAMEINTERPOLATION           107\n')
+          replace('Source/resource.h', '#define IDC_STATIC_MAXINE_OVERSAMPLE    1091\n', '''#define IDC_STATIC_MAXINE_OVERSAMPLE    1091
 #define IDC_BUTTON_FRAMEINTERPOLATION    1092
 #define IDC_FRUC_MODE                    1093
 #define IDC_FRUC_SOURCE_LIMIT            1094
@@ -47,18 +47,10 @@ jobs:
 #define IDC_FRUC_FALLBACK                1097
 #define IDC_BUTTON_FRUC_DEFAULTS         1098
 ''')
-          replace('Source/resource.h',
-              '#define _APS_NEXT_RESOURCE_VALUE        107\n',
-              '#define _APS_NEXT_RESOURCE_VALUE        108\n')
-          replace('Source/resource.h',
-              '#define _APS_NEXT_CONTROL_VALUE         1092\n',
-              '#define _APS_NEXT_CONTROL_VALUE         1099\n')
+          replace('Source/resource.h', '#define _APS_NEXT_RESOURCE_VALUE        107\n', '#define _APS_NEXT_RESOURCE_VALUE        108\n')
+          replace('Source/resource.h', '#define _APS_NEXT_CONTROL_VALUE         1092\n', '#define _APS_NEXT_CONTROL_VALUE         1099\n')
 
-          # Main property page and dedicated dialog
-          replace('Source/MpcVideoRenderer.rc',
-              '    PUSHBUTTON      "NVIDIA Maxine settings...",IDC_BUTTON_MAXINE,10,132,149,16\n',
-              '    PUSHBUTTON      "Maxine settings...",IDC_BUTTON_MAXINE,10,132,72,16\n    PUSHBUTTON      "Frame interpolation...",IDC_BUTTON_FRAMEINTERPOLATION,87,132,78,16\n')
-
+          replace('Source/MpcVideoRenderer.rc', '    PUSHBUTTON      "NVIDIA Maxine settings...",IDC_BUTTON_MAXINE,10,132,149,16\n', '    PUSHBUTTON      "Maxine settings...",IDC_BUTTON_MAXINE,10,132,72,16\n    PUSHBUTTON      "Frame interpolation...",IDC_BUTTON_FRAMEINTERPOLATION,87,132,78,16\n')
           fruc_dialog = r'''
 IDD_FRAMEINTERPOLATION DIALOGEX 0, 0, 304, 190
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
@@ -85,14 +77,9 @@ BEGIN
 END
 
 '''
-          replace('Source/MpcVideoRenderer.rc',
-              'IDD_INFOPROPPAGE DIALOGEX 0, 0, 318, 153\n',
-              fruc_dialog + 'IDD_INFOPROPPAGE DIALOGEX 0, 0, 318, 153\n')
-          replace('Source/MpcVideoRenderer.rc',
-              'IDD_INFOPROPPAGE AFX_DIALOG_LAYOUT\nBEGIN\n    0\nEND\n\nIDD_MAXINESETTINGS AFX_DIALOG_LAYOUT',
-              'IDD_INFOPROPPAGE AFX_DIALOG_LAYOUT\nBEGIN\n    0\nEND\n\nIDD_FRAMEINTERPOLATION AFX_DIALOG_LAYOUT\nBEGIN\n    0\nEND\n\nIDD_MAXINESETTINGS AFX_DIALOG_LAYOUT')
+          replace('Source/MpcVideoRenderer.rc', 'IDD_INFOPROPPAGE DIALOGEX 0, 0, 318, 153\n', fruc_dialog + 'IDD_INFOPROPPAGE DIALOGEX 0, 0, 318, 153\n')
+          replace('Source/MpcVideoRenderer.rc', 'IDD_INFOPROPPAGE AFX_DIALOG_LAYOUT\nBEGIN\n    0\nEND\n\nIDD_MAXINESETTINGS AFX_DIALOG_LAYOUT', 'IDD_INFOPROPPAGE AFX_DIALOG_LAYOUT\nBEGIN\n    0\nEND\n\nIDD_FRAMEINTERPOLATION AFX_DIALOG_LAYOUT\nBEGIN\n    0\nEND\n\nIDD_MAXINESETTINGS AFX_DIALOG_LAYOUT')
 
-          # Settings model
           fruc_enums = r'''
 enum :int {
 	FRUC_MODE_Disabled = 0,
@@ -117,12 +104,8 @@ enum :int {
 constexpr inline int FRUC_GPU_Auto = -1;
 
 '''
-          replace('Source/IVideoRenderer.h',
-              'constexpr inline int MAXINE_AUTO_BITRATE_MAX = 1000;\n\n',
-              'constexpr inline int MAXINE_AUTO_BITRATE_MAX = 1000;\n\n' + fruc_enums)
-          replace('Source/IVideoRenderer.h',
-              '\tint iMaxineAutoBitrate;\n\n\tSettings_t() {',
-              '''\tint iMaxineAutoBitrate;
+          replace('Source/IVideoRenderer.h', 'constexpr inline int MAXINE_AUTO_BITRATE_MAX = 1000;\n\n', 'constexpr inline int MAXINE_AUTO_BITRATE_MAX = 1000;\n\n' + fruc_enums)
+          replace('Source/IVideoRenderer.h', '\tint iMaxineAutoBitrate;\n\n\tSettings_t() {', '''\tint iMaxineAutoBitrate;
 \tint iFrameInterpolationMode;
 \tint iFrameInterpolationSourceLimit;
 \tint iFrameInterpolationMaxOutput;
@@ -130,22 +113,15 @@ constexpr inline int FRUC_GPU_Auto = -1;
 \tbool bFrameInterpolationFallback;
 
 \tSettings_t() {''')
-          replace('Source/IVideoRenderer.h',
-              '\t\tiMaxineAutoBitrate              = MAXINE_AUTO_BITRATE_DEF;\n',
-              '''\t\tiMaxineAutoBitrate              = MAXINE_AUTO_BITRATE_DEF;
+          replace('Source/IVideoRenderer.h', '\t\tiMaxineAutoBitrate              = MAXINE_AUTO_BITRATE_DEF;\n', '''\t\tiMaxineAutoBitrate              = MAXINE_AUTO_BITRATE_DEF;
 \t\tiFrameInterpolationMode         = FRUC_MODE_Disabled;
 \t\tiFrameInterpolationSourceLimit  = FRUC_SOURCE_LIMIT_1080p;
 \t\tiFrameInterpolationMaxOutput    = FRUC_MAX_OUTPUT_60;
 \t\tiFrameInterpolationGPU          = FRUC_GPU_Auto;
 \t\tbFrameInterpolationFallback     = true;
 ''')
+          replace('Source/PropPage.h', '\tbool ShowMaxineSettings();\n', '\tbool ShowMaxineSettings();\n\tbool ShowFrameInterpolationSettings();\n')
 
-          # Property page declaration
-          replace('Source/PropPage.h',
-              '\tbool ShowMaxineSettings();\n',
-              '\tbool ShowMaxineSettings();\n\tbool ShowFrameInterpolationSettings();\n')
-
-          # Dialog implementation
           fruc_code = r'''
 void CopyFrameInterpolationSettings(Settings_t& dst, const Settings_t& src)
 {
@@ -179,33 +155,16 @@ void SetFrameInterpolationDialogControls(HWND hwnd, const Settings_t& settings)
 	ComboBox_SelectByItemData(hwnd, IDC_FRUC_SOURCE_LIMIT, settings.iFrameInterpolationSourceLimit);
 	ComboBox_SelectByItemData(hwnd, IDC_FRUC_MAX_OUTPUT, settings.iFrameInterpolationMaxOutput);
 	ComboBox_SelectByItemData(hwnd, IDC_FRUC_GPU, settings.iFrameInterpolationGPU);
-	CheckDlgButton(hwnd, IDC_FRUC_FALLBACK,
-		settings.bFrameInterpolationFallback ? BST_CHECKED : BST_UNCHECKED);
+	CheckDlgButton(hwnd, IDC_FRUC_FALLBACK, settings.bFrameInterpolationFallback ? BST_CHECKED : BST_UNCHECKED);
 	EnableFrameInterpolationDialogControls(hwnd);
 }
 
 void InitializeFrameInterpolationDialog(HWND hwnd, const Settings_t& settings)
 {
-	PopulateMaxineCombo(hwnd, IDC_FRUC_MODE, {
-		{L"Disabled", FRUC_MODE_Disabled},
-		{L"Double source frame rate", FRUC_MODE_Double},
-	});
-	PopulateMaxineCombo(hwnd, IDC_FRUC_SOURCE_LIMIT, {
-		{L"720p or lower", FRUC_SOURCE_LIMIT_720p},
-		{L"1080p or lower", FRUC_SOURCE_LIMIT_1080p},
-		{L"1440p or lower", FRUC_SOURCE_LIMIT_1440p},
-		{L"2160p or lower", FRUC_SOURCE_LIMIT_2160p},
-	});
-	PopulateMaxineCombo(hwnd, IDC_FRUC_MAX_OUTPUT, {
-		{L"60 fps", FRUC_MAX_OUTPUT_60},
-		{L"120 fps", FRUC_MAX_OUTPUT_120},
-		{L"240 fps", FRUC_MAX_OUTPUT_240},
-	});
-	PopulateMaxineCombo(hwnd, IDC_FRUC_GPU, {
-		{L"Auto", FRUC_GPU_Auto},
-		{L"GPU 0", 0}, {L"GPU 1", 1}, {L"GPU 2", 2}, {L"GPU 3", 3},
-		{L"GPU 4", 4}, {L"GPU 5", 5}, {L"GPU 6", 6}, {L"GPU 7", 7},
-	});
+	PopulateMaxineCombo(hwnd, IDC_FRUC_MODE, {{L"Disabled", FRUC_MODE_Disabled}, {L"Double source frame rate", FRUC_MODE_Double}});
+	PopulateMaxineCombo(hwnd, IDC_FRUC_SOURCE_LIMIT, {{L"720p or lower", FRUC_SOURCE_LIMIT_720p}, {L"1080p or lower", FRUC_SOURCE_LIMIT_1080p}, {L"1440p or lower", FRUC_SOURCE_LIMIT_1440p}, {L"2160p or lower", FRUC_SOURCE_LIMIT_2160p}});
+	PopulateMaxineCombo(hwnd, IDC_FRUC_MAX_OUTPUT, {{L"60 fps", FRUC_MAX_OUTPUT_60}, {L"120 fps", FRUC_MAX_OUTPUT_120}, {L"240 fps", FRUC_MAX_OUTPUT_240}});
+	PopulateMaxineCombo(hwnd, IDC_FRUC_GPU, {{L"Auto", FRUC_GPU_Auto}, {L"GPU 0", 0}, {L"GPU 1", 1}, {L"GPU 2", 2}, {L"GPU 3", 3}, {L"GPU 4", 4}, {L"GPU 5", 5}, {L"GPU 6", 6}, {L"GPU 7", 7}});
 	SetFrameInterpolationDialogControls(hwnd, settings);
 }
 
@@ -221,7 +180,6 @@ void ReadFrameInterpolationDialog(HWND hwnd, Settings_t& settings)
 INT_PTR CALLBACK FrameInterpolationSettingsDlgProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	auto* settings = reinterpret_cast<Settings_t*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-
 	switch (message) {
 	case WM_INITDIALOG:
 		settings = reinterpret_cast<Settings_t*>(lParam);
@@ -231,26 +189,15 @@ INT_PTR CALLBACK FrameInterpolationSettingsDlgProc(HWND hwnd, UINT message, WPAR
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
 		case IDC_FRUC_MODE:
-			if (HIWORD(wParam) == CBN_SELCHANGE) {
-				EnableFrameInterpolationDialogControls(hwnd);
-				return TRUE;
-			}
+			if (HIWORD(wParam) == CBN_SELCHANGE) { EnableFrameInterpolationDialogControls(hwnd); return TRUE; }
 			break;
 		case IDC_BUTTON_FRUC_DEFAULTS:
-			if (HIWORD(wParam) == BN_CLICKED) {
-				Settings_t defaults;
-				CopyFrameInterpolationSettings(*settings, defaults);
-				SetFrameInterpolationDialogControls(hwnd, *settings);
-				return TRUE;
-			}
+			if (HIWORD(wParam) == BN_CLICKED) { Settings_t defaults; CopyFrameInterpolationSettings(*settings, defaults); SetFrameInterpolationDialogControls(hwnd, *settings); return TRUE; }
 			break;
 		case IDOK:
-			ReadFrameInterpolationDialog(hwnd, *settings);
-			EndDialog(hwnd, IDOK);
-			return TRUE;
+			ReadFrameInterpolationDialog(hwnd, *settings); EndDialog(hwnd, IDOK); return TRUE;
 		case IDCANCEL:
-			EndDialog(hwnd, IDCANCEL);
-			return TRUE;
+			EndDialog(hwnd, IDCANCEL); return TRUE;
 		}
 		break;
 	}
@@ -258,68 +205,43 @@ INT_PTR CALLBACK FrameInterpolationSettingsDlgProc(HWND hwnd, UINT message, WPAR
 }
 
 '''
-          replace('Source/PropPage.cpp',
-              'void CopyMaxineSettings(Settings_t& dst, const Settings_t& src)\n',
-              fruc_code + 'void CopyMaxineSettings(Settings_t& dst, const Settings_t& src)\n')
-
+          replace('Source/PropPage.cpp', 'void CopyMaxineSettings(Settings_t& dst, const Settings_t& src)\n', fruc_code + 'void CopyMaxineSettings(Settings_t& dst, const Settings_t& src)\n')
           show_method = r'''
 bool CVRMainPPage::ShowFrameInterpolationSettings()
 {
 	Settings_t candidate = m_SetsPP;
-	const INT_PTR result = DialogBoxParamW(g_hInst, MAKEINTRESOURCEW(IDD_FRAMEINTERPOLATION),
-		m_hWnd, FrameInterpolationSettingsDlgProc, reinterpret_cast<LPARAM>(&candidate));
+	const INT_PTR result = DialogBoxParamW(g_hInst, MAKEINTRESOURCEW(IDD_FRAMEINTERPOLATION), m_hWnd, FrameInterpolationSettingsDlgProc, reinterpret_cast<LPARAM>(&candidate));
 	if (result == -1) {
-		MessageBoxW(L"The NVIDIA frame interpolation settings window could not be opened.",
-			L"MPC Video Renderer", MB_OK | MB_ICONERROR);
+		MessageBoxW(L"The NVIDIA frame interpolation settings window could not be opened.", L"MPC Video Renderer", MB_OK | MB_ICONERROR);
 		return false;
 	}
-	if (result != IDOK || FrameInterpolationSettingsEqual(candidate, m_SetsPP)) {
-		return false;
-	}
+	if (result != IDOK || FrameInterpolationSettingsEqual(candidate, m_SetsPP)) { return false; }
 	CopyFrameInterpolationSettings(m_SetsPP, candidate);
 	return true;
 }
 
 '''
-          replace('Source/PropPage.cpp',
-              'HRESULT CVRMainPPage::OnConnect(IUnknown *pUnk)\n',
-              show_method + 'HRESULT CVRMainPPage::OnConnect(IUnknown *pUnk)\n')
-          replace('Source/PropPage.cpp',
-              '\t\tGetDlgItem(IDC_BUTTON_MAXINE).EnableWindow(bEnable);\n',
-              '\t\tGetDlgItem(IDC_BUTTON_MAXINE).EnableWindow(bEnable);\n\t\tGetDlgItem(IDC_BUTTON_FRAMEINTERPOLATION).EnableWindow(bEnable);\n')
-          replace('Source/PropPage.cpp',
-              '\t\tGetDlgItem(IDC_BUTTON_MAXINE).EnableWindow(FALSE);\n\t\tGetDlgItem(IDC_CHECK19).EnableWindow(FALSE);\n',
-              '\t\tGetDlgItem(IDC_BUTTON_MAXINE).EnableWindow(FALSE);\n\t\tGetDlgItem(IDC_BUTTON_FRAMEINTERPOLATION).EnableWindow(FALSE);\n\t\tGetDlgItem(IDC_CHECK19).EnableWindow(FALSE);\n', 1)
-          replace('Source/PropPage.cpp',
-              '\tGetDlgItem(IDC_BUTTON_MAXINE).EnableWindow(FALSE);\n\tGetDlgItem(IDC_CHECK19).EnableWindow(FALSE);\n#endif\n',
-              '\tGetDlgItem(IDC_BUTTON_MAXINE).EnableWindow(FALSE);\n\tGetDlgItem(IDC_BUTTON_FRAMEINTERPOLATION).EnableWindow(FALSE);\n\tGetDlgItem(IDC_CHECK19).EnableWindow(FALSE);\n#endif\n')
-          replace('Source/PropPage.cpp',
-              '''\t\t\tif (nID == IDC_BUTTON_MAXINE) {
+          replace('Source/PropPage.cpp', 'HRESULT CVRMainPPage::OnConnect(IUnknown *pUnk)\n', show_method + 'HRESULT CVRMainPPage::OnConnect(IUnknown *pUnk)\n')
+          replace('Source/PropPage.cpp', '\t\tGetDlgItem(IDC_BUTTON_MAXINE).EnableWindow(bEnable);\n', '\t\tGetDlgItem(IDC_BUTTON_MAXINE).EnableWindow(bEnable);\n\t\tGetDlgItem(IDC_BUTTON_FRAMEINTERPOLATION).EnableWindow(bEnable);\n')
+          replace('Source/PropPage.cpp', '\t\tGetDlgItem(IDC_BUTTON_MAXINE).EnableWindow(FALSE);\n\t\tGetDlgItem(IDC_CHECK19).EnableWindow(FALSE);\n', '\t\tGetDlgItem(IDC_BUTTON_MAXINE).EnableWindow(FALSE);\n\t\tGetDlgItem(IDC_BUTTON_FRAMEINTERPOLATION).EnableWindow(FALSE);\n\t\tGetDlgItem(IDC_CHECK19).EnableWindow(FALSE);\n', 1)
+          replace('Source/PropPage.cpp', '\tGetDlgItem(IDC_BUTTON_MAXINE).EnableWindow(FALSE);\n\tGetDlgItem(IDC_CHECK19).EnableWindow(FALSE);\n#endif\n', '\tGetDlgItem(IDC_BUTTON_MAXINE).EnableWindow(FALSE);\n\tGetDlgItem(IDC_BUTTON_FRAMEINTERPOLATION).EnableWindow(FALSE);\n\tGetDlgItem(IDC_CHECK19).EnableWindow(FALSE);\n#endif\n')
+          replace('Source/PropPage.cpp', '''\t\t\tif (nID == IDC_BUTTON_MAXINE) {
 \t\t\t\tif (ShowMaxineSettings()) {
 \t\t\t\t\tSetDirty();
 \t\t\t\t}
 \t\t\t\treturn (LRESULT)1;
 \t\t\t}
-''',
-              '''\t\t\tif (nID == IDC_BUTTON_MAXINE) {
-\t\t\t\tif (ShowMaxineSettings()) {
-\t\t\t\t\tSetDirty();
-\t\t\t\t}
+''', '''\t\t\tif (nID == IDC_BUTTON_MAXINE) {
+\t\t\t\tif (ShowMaxineSettings()) { SetDirty(); }
 \t\t\t\treturn (LRESULT)1;
 \t\t\t}
-
-\t\t\tif (nID == IDC_BUTTON_FRAMEINTERPOLATION) {
-\t\t\t\tif (ShowFrameInterpolationSettings()) {
-\t\t\t\t\tSetDirty();
-\t\t\t\t}
+\n\t\t\tif (nID == IDC_BUTTON_FRAMEINTERPOLATION) {
+\t\t\t\tif (ShowFrameInterpolationSettings()) { SetDirty(); }
 \t\t\t\treturn (LRESULT)1;
 \t\t\t}
 ''')
 
-          # Registry persistence
-          replace('Source/VideoRenderer.cpp',
-              '#define OPT_MaxineAutoBitrate               L"MaxineAutoBitrateMbps"\n',
-              '''#define OPT_MaxineAutoBitrate               L"MaxineAutoBitrateMbps"
+          replace('Source/VideoRenderer.cpp', '#define OPT_MaxineAutoBitrate               L"MaxineAutoBitrateMbps"\n', '''#define OPT_MaxineAutoBitrate               L"MaxineAutoBitrateMbps"
 #define OPT_FRUCMode                        L"FrameInterpolationMode"
 #define OPT_FRUCSourceLimit                 L"FrameInterpolationSourceLimit"
 #define OPT_FRUCMaxOutput                   L"FrameInterpolationMaxOutput"
@@ -327,33 +249,13 @@ bool CVRMainPPage::ShowFrameInterpolationSettings()
 #define OPT_FRUCFallback                    L"FrameInterpolationFallback"
 ''')
           read_block = r'''
-		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCMode, dw)) {
-			m_Sets.iFrameInterpolationMode = discard<int>(dw, FRUC_MODE_Disabled, 0, FRUC_MODE_COUNT - 1);
-		}
-		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCSourceLimit, dw)) {
-			m_Sets.iFrameInterpolationSourceLimit = discard<int>(dw, FRUC_SOURCE_LIMIT_1080p,
-				0, FRUC_SOURCE_LIMIT_COUNT - 1);
-		}
-		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCMaxOutput, dw)) {
-			if (dw == FRUC_MAX_OUTPUT_60 || dw == FRUC_MAX_OUTPUT_120 || dw == FRUC_MAX_OUTPUT_240) {
-				m_Sets.iFrameInterpolationMaxOutput = static_cast<int>(dw);
-			}
-		}
-		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCGPU, dw)) {
-			if (dw == MAXDWORD) {
-				m_Sets.iFrameInterpolationGPU = FRUC_GPU_Auto;
-			}
-			else if (dw <= 7) {
-				m_Sets.iFrameInterpolationGPU = static_cast<int>(dw);
-			}
-		}
-		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCFallback, dw)) {
-			m_Sets.bFrameInterpolationFallback = !!dw;
-		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCMode, dw)) { m_Sets.iFrameInterpolationMode = discard<int>(dw, FRUC_MODE_Disabled, 0, FRUC_MODE_COUNT - 1); }
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCSourceLimit, dw)) { m_Sets.iFrameInterpolationSourceLimit = discard<int>(dw, FRUC_SOURCE_LIMIT_1080p, 0, FRUC_SOURCE_LIMIT_COUNT - 1); }
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCMaxOutput, dw) && (dw == FRUC_MAX_OUTPUT_60 || dw == FRUC_MAX_OUTPUT_120 || dw == FRUC_MAX_OUTPUT_240)) { m_Sets.iFrameInterpolationMaxOutput = static_cast<int>(dw); }
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCGPU, dw)) { if (dw == MAXDWORD) m_Sets.iFrameInterpolationGPU = FRUC_GPU_Auto; else if (dw <= 7) m_Sets.iFrameInterpolationGPU = static_cast<int>(dw); }
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCFallback, dw)) { m_Sets.bFrameInterpolationFallback = !!dw; }
 '''
-          replace('Source/VideoRenderer.cpp',
-              '\t\tif (!hasMaxineOperation && ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoSuperResolution, dw)) {\n',
-              read_block + '\n\t\tif (!hasMaxineOperation && ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoSuperResolution, dw)) {\n')
+          replace('Source/VideoRenderer.cpp', '\t\tif (!hasMaxineOperation && ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoSuperResolution, dw)) {\n', read_block + '\n\t\tif (!hasMaxineOperation && ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoSuperResolution, dw)) {\n')
           save_block = r'''
 		key.SetDWORDValue(OPT_FRUCMode,                        m_Sets.iFrameInterpolationMode);
 		key.SetDWORDValue(OPT_FRUCSourceLimit,                 m_Sets.iFrameInterpolationSourceLimit);
@@ -361,19 +263,16 @@ bool CVRMainPPage::ShowFrameInterpolationSettings()
 		key.SetDWORDValue(OPT_FRUCGPU,                         static_cast<DWORD>(m_Sets.iFrameInterpolationGPU));
 		key.SetDWORDValue(OPT_FRUCFallback,                    m_Sets.bFrameInterpolationFallback);
 '''
-          replace('Source/VideoRenderer.cpp',
-              '\t\tkey.SetDWORDValue(OPT_MaxineAutoBitrate,               m_Sets.iMaxineAutoBitrate);\n',
-              '\t\tkey.SetDWORDValue(OPT_MaxineAutoBitrate,               m_Sets.iMaxineAutoBitrate);\n' + save_block)
+          replace('Source/VideoRenderer.cpp', '\t\tkey.SetDWORDValue(OPT_MaxineAutoBitrate,               m_Sets.iMaxineAutoBitrate);\n', '\t\tkey.SetDWORDValue(OPT_MaxineAutoBitrate,               m_Sets.iMaxineAutoBitrate);\n' + save_block)
 
-          # Design note for the draft implementation.
           Path('docs').mkdir(exist_ok=True)
-          Path('docs/NvidiaFrameInterpolation.md').write_text(r'''# NVIDIA frame interpolation
+          Path('docs/NvidiaFrameInterpolation.md').write_text('''# NVIDIA frame interpolation
 
-This branch introduces a dedicated frame-interpolation settings dialog and persistent configuration for a future NvFRUC-backed playback path.
+This draft introduces a dedicated frame-interpolation settings dialog and persistent configuration for a future NvFRUC-backed playback path.
 
-The first engine milestone is intentionally limited to exact 2x conversion: one generated midpoint frame between two consecutive source frames. The implementation must buffer one future frame, preserve audio/video timestamps, reset cleanly on seek and media-type changes, and fall back to an original frame when interpolation quality is insufficient.
+The first engine milestone is exact 2x conversion: one generated midpoint frame between consecutive source frames. It must buffer one future frame, preserve timestamps, reset cleanly on seeks and media-type changes, and fall back to an original frame when interpolation quality is insufficient.
 
-The NVIDIA Optical Flow SDK and NvFRUC runtime are governed by NVIDIA's SDK license. Do not commit or publish NVIDIA headers, sample source, import libraries, or runtime binaries until their redistribution terms have been reviewed for compatibility with this GPL repository. The renderer integration should remain optional and load the external runtime dynamically.
+The NVIDIA Optical Flow SDK and NvFRUC runtime are governed by NVIDIA's SDK license. Do not commit or publish NVIDIA headers, sample source, import libraries, or runtime binaries until redistribution terms have been reviewed for compatibility with this GPL repository. The renderer integration should remain optional and dynamically load the external runtime.
 ''', encoding='utf-8')
 
       - name: Commit changes
