@@ -2,12 +2,22 @@
 setlocal
 
 where pwsh.exe >nul 2>&1
-if errorlevel 1 (
-    echo PowerShell 7 ^(pwsh.exe^) was not found.
-    echo Install PowerShell 7 and run this installer again.
-    pause
-    exit /b 1
+if not errorlevel 1 (
+    pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-KLiteMPCVRUpdater.ps1"
+    set "EXITCODE=%ERRORLEVEL%"
+    goto :done
 )
 
-pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-KLiteMPCVRUpdater.ps1"
-if errorlevel 1 pause
+where powershell.exe >nul 2>&1
+if not errorlevel 1 (
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-KLiteMPCVRUpdater.ps1"
+    set "EXITCODE=%ERRORLEVEL%"
+    goto :done
+)
+
+echo Neither PowerShell 7 ^(pwsh.exe^) nor Windows PowerShell ^(powershell.exe^) was found.
+set "EXITCODE=1"
+
+:done
+if not "%EXITCODE%"=="0" pause
+exit /b %EXITCODE%
