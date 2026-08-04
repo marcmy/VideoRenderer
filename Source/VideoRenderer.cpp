@@ -1,4 +1,4 @@
-/*
+﻿/*
  * (C) 2018-2026 see Authors.txt
  *
  * This file is part of MPC-BE.
@@ -59,6 +59,11 @@
 #define OPT_MaxinePipeline                  L"MaxinePipeline"
 #define OPT_MaxineGPU                       L"MaxineGPU"
 #define OPT_MaxineAutoBitrate               L"MaxineAutoBitrateMbps"
+#define OPT_FRUCMode                        L"FrameInterpolationMode"
+#define OPT_FRUCSourceLimit                 L"FrameInterpolationSourceLimit"
+#define OPT_FRUCMaxOutput                   L"FrameInterpolationMaxOutput"
+#define OPT_FRUCGPU                         L"FrameInterpolationGPU"
+#define OPT_FRUCFallback                    L"FrameInterpolationFallback"
 #define OPT_VPRTXVideoHDR                  L"VPRTXVideoHDR"
 #define OPT_ChromaUpsampling               L"ChromaUpsampling"
 #define OPT_Upscaling                      L"Upscaling"
@@ -274,6 +279,13 @@ CMpcVideoRenderer::CMpcVideoRenderer(LPUNKNOWN pUnk, HRESULT* phr)
 			m_Sets.iMaxineAutoBitrate = discard<int>(dw, MAXINE_AUTO_BITRATE_DEF,
 				MAXINE_AUTO_BITRATE_MIN, MAXINE_AUTO_BITRATE_MAX);
 		}
+
+
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCMode, dw)) { m_Sets.iFrameInterpolationMode = discard<int>(dw, FRUC_MODE_Disabled, 0, FRUC_MODE_COUNT - 1); }
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCSourceLimit, dw)) { m_Sets.iFrameInterpolationSourceLimit = discard<int>(dw, FRUC_SOURCE_LIMIT_1080p, 0, FRUC_SOURCE_LIMIT_COUNT - 1); }
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCMaxOutput, dw) && (dw == FRUC_MAX_OUTPUT_60 || dw == FRUC_MAX_OUTPUT_120 || dw == FRUC_MAX_OUTPUT_240)) { m_Sets.iFrameInterpolationMaxOutput = static_cast<int>(dw); }
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCGPU, dw)) { if (dw == MAXDWORD) m_Sets.iFrameInterpolationGPU = FRUC_GPU_Auto; else if (dw <= 7) m_Sets.iFrameInterpolationGPU = static_cast<int>(dw); }
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCFallback, dw)) { m_Sets.bFrameInterpolationFallback = !!dw; }
 
 		if (!hasMaxineOperation && ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoSuperResolution, dw)) {
 			// Migrate the original Off/Low/Medium/High/Ultra selector.
@@ -1375,6 +1387,12 @@ STDMETHODIMP CMpcVideoRenderer::SaveSettings()
 		key.SetDWORDValue(OPT_MaxinePipeline,                  m_Sets.iMaxinePipeline);
 		key.SetDWORDValue(OPT_MaxineGPU,                       static_cast<DWORD>(m_Sets.iMaxineGPU));
 		key.SetDWORDValue(OPT_MaxineAutoBitrate,               m_Sets.iMaxineAutoBitrate);
+
+		key.SetDWORDValue(OPT_FRUCMode,                        m_Sets.iFrameInterpolationMode);
+		key.SetDWORDValue(OPT_FRUCSourceLimit,                 m_Sets.iFrameInterpolationSourceLimit);
+		key.SetDWORDValue(OPT_FRUCMaxOutput,                   m_Sets.iFrameInterpolationMaxOutput);
+		key.SetDWORDValue(OPT_FRUCGPU,                         static_cast<DWORD>(m_Sets.iFrameInterpolationGPU));
+		key.SetDWORDValue(OPT_FRUCFallback,                    m_Sets.bFrameInterpolationFallback);
 		key.SetDWORDValue(OPT_VPRTXVideoHDR,                   m_Sets.bVPRTXVideoHDR);
 #endif
 		key.SetDWORDValue(OPT_ChromaUpsampling,    m_Sets.iChromaScaling);

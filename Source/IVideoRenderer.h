@@ -1,4 +1,4 @@
-/*
+﻿/*
  * (C) 2018-2026 see Authors.txt
  *
  * This file is part of MPC-BE.
@@ -107,6 +107,29 @@ constexpr inline int MAXINE_AUTO_BITRATE_DEF = 20;
 constexpr inline int MAXINE_AUTO_BITRATE_MIN = 1;
 constexpr inline int MAXINE_AUTO_BITRATE_MAX = 1000;
 
+
+enum :int {
+	FRUC_MODE_Disabled = 0,
+	FRUC_MODE_Double,
+	FRUC_MODE_COUNT
+};
+
+enum :int {
+	FRUC_SOURCE_LIMIT_720p = 0,
+	FRUC_SOURCE_LIMIT_1080p,
+	FRUC_SOURCE_LIMIT_1440p,
+	FRUC_SOURCE_LIMIT_2160p,
+	FRUC_SOURCE_LIMIT_COUNT
+};
+
+enum :int {
+	FRUC_MAX_OUTPUT_60 = 60,
+	FRUC_MAX_OUTPUT_120 = 120,
+	FRUC_MAX_OUTPUT_240 = 240,
+};
+
+constexpr inline int FRUC_GPU_Auto = -1;
+
 enum :int {
 	CHROMA_Nearest = 0,
 	CHROMA_Bilinear,
@@ -206,6 +229,11 @@ struct Settings_t {
 	int iMaxinePipeline;
 	int iMaxineGPU;
 	int iMaxineAutoBitrate;
+	int iFrameInterpolationMode;
+	int iFrameInterpolationSourceLimit;
+	int iFrameInterpolationMaxOutput;
+	int iFrameInterpolationGPU;
+	bool bFrameInterpolationFallback;
 
 	Settings_t() {
 		SetDefault();
@@ -267,6 +295,11 @@ struct Settings_t {
 		iMaxinePipeline                 = MAXINE_PIPELINE_UpscaleDenoiseDeblur;
 		iMaxineGPU                      = MAXINE_GPU_Auto;
 		iMaxineAutoBitrate              = MAXINE_AUTO_BITRATE_DEF;
+		iFrameInterpolationMode         = FRUC_MODE_Disabled;
+		iFrameInterpolationSourceLimit  = FRUC_SOURCE_LIMIT_1080p;
+		iFrameInterpolationMaxOutput    = FRUC_MAX_OUTPUT_60;
+		iFrameInterpolationGPU          = FRUC_GPU_Auto;
+		bFrameInterpolationFallback     = true;
 	}
 };
 
