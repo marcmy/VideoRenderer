@@ -190,3 +190,45 @@ jobs:
             --title "MPC Video Renderer Maxine build ${GITHUB_RUN_NUMBER}" \
             --notes "$notes" \
             --latest
+
+  apply-frame-interpolation-dialog:
+    name: Apply frame interpolation dialog
+    if: github.event_name == 'pull_request' && github.head_ref == 'feature/nvidia-frame-interpolation'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v6
+        with:
+          ref: feature/nvidia-frame-interpolation
+          fetch-depth: 0
+
+      - name: Execute embedded source patch
+        shell: python
+        run: |
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/apply-frame-interpolation-dialog.yml').read_text(encoding='utf-8')
+          start_marker = '      - name: Add dedicated frame interpolation settings dialog\n'
+          end_marker = '      - name: Commit changes\n'
+          start = workflow.index(start_marker)
+          run_start = workflow.index('        run: |\n', start) + len('        run: |\n')
+          end = workflow.index(end_marker, run_start)
+          lines = workflow[run_start:end].splitlines()
+          script = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines)
+          exec(compile(script, '<embedded-frame-interpolation-patch>', 'exec'))
+
+      - name: Commit source changes and remove temporary workflow plumbing
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin master
+          git checkout origin/master -- .github/workflows/main.yml
+          git rm .github/workflows/apply-frame-interpolation-dialog.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Source docs .github/workflows/main.yml
+          git commit -m 'feat: add frame interpolation settings dialog'
+          git push origin HEAD:feature/nvidia-frame-interpolation
