@@ -1,0 +1,126 @@
+name: Finalize Maxine runtime installer
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-runtime-installer-final.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: ${{ !contains(github.event.head_commit.message, '[skip runtime finalizer]') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v6
+        with:
+          ref: feature/maxine-runtime-installer
+          fetch-depth: 0
+
+      - name: Apply tested production fixes
+        shell: python
+        run: |
+          from pathlib import Path
+
+          installer_path = Path('tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1')
+          text = installer_path.read_text(encoding='utf-8-sig')
+
+          start = text.index('function Publish-EnvironmentChange {')
+          end = text.index("\n\nif ($env:OS -ne 'Windows_NT')", start)
+          replacement = r'''function Publish-EnvironmentChange {
+              if ($SkipEnvironmentUpdate) {
+                  return
+              }
+
+              try {
+                  if (-not ('MpcVrMaxine.NativeMethods' -as [type])) {
+                      Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+
+          namespace MpcVrMaxine
+          {
+              public static class NativeMethods
+              {
+                  public const int HWND_BROADCAST = 0xffff;
+                  public const int WM_SETTINGCHANGE = 0x001A;
+                  public const int SMTO_ABORTIFHUNG = 0x0002;
+
+                  [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+                  public static extern IntPtr SendMessageTimeout(
+                      IntPtr hWnd,
+                      int Msg,
+                      IntPtr wParam,
+                      string lParam,
+                      int fuFlags,
+                      int uTimeout,
+                      out IntPtr lpdwResult);
+              }
+          }
+          '@
+                  }
+
+                  $result = [IntPtr]::Zero
+                  [void][MpcVrMaxine.NativeMethods]::SendMessageTimeout(
+                      [IntPtr][MpcVrMaxine.NativeMethods]::HWND_BROADCAST,
+                      [MpcVrMaxine.NativeMethods]::WM_SETTINGCHANGE,
+                      [IntPtr]::Zero,
+                      'Environment',
+                      [MpcVrMaxine.NativeMethods]::SMTO_ABORTIFHUNG,
+                      5000,
+                      [ref]$result)
+              }
+              catch {
+                  Write-Warning "The user environment variable was updated, but Windows did not accept the live refresh notification: $($_.Exception.Message)"
+                  Write-Warning 'Restarting MPC-HC after a Windows sign-out, restart, or Explorer restart will still apply it.'
+              }
+          }'''
+          text = text[:start] + replacement + text[end:]
+
+          validation_needle = """    if ($requiredFiles.Count -ne (@($requiredFiles | Select-Object -Unique)).Count) {
+                  throw 'The required runtime file list contains duplicates.'
+              }
+              Write-Host 'Maxine runtime installer validation passed.' -ForegroundColor Green
+          """
+          validation_replacement = """    if ($requiredFiles.Count -ne (@($requiredFiles | Select-Object -Unique)).Count) {
+                  throw 'The required runtime file list contains duplicates.'
+              }
+              if (-not $SkipEnvironmentUpdate) {
+                  Publish-EnvironmentChange
+                  if (-not ('MpcVrMaxine.NativeMethods' -as [type])) {
+                      throw 'The environment notification helper could not be loaded.'
+                  }
+              }
+              Write-Host 'Maxine runtime installer validation passed.' -ForegroundColor Green
+          """
+          if validation_needle not in text:
+              raise SystemExit('Could not locate the ValidateOnly block.')
+          text = text.replace(validation_needle, validation_replacement, 1)
+          installer_path.write_text(text, encoding='utf-8-sig')
+
+          readme_path = Path('tools/MaxineRuntimeInstaller/README.md')
+          readme = readme_path.read_text(encoding='utf-8')
+          old = ('This keeps the unpacked candidate around 46 MiB instead of carrying hundreds of MiB of optional '
+                 'TensorRT and NPP libraries. The slim candidate must be runtime-tested across Standard and High '
+                 'Bitrate VSR, all quality levels, denoise, deblur, oversampling, window resizing, and a fresh '
+                 'MPC-HC restart before it is published.')
+          new = ('This keeps the unpacked runtime around 46 MiB instead of carrying hundreds of MiB of optional '
+                 'TensorRT and NPP libraries. The five-file bundle was runtime-tested in MPC-HC with Maxine active, '
+                 'including the new output-oversampling path, and worked without the excluded libraries.')
+          if old not in readme:
+              raise SystemExit('Could not locate the runtime-test README paragraph.')
+          readme_path.write_text(readme.replace(old, new, 1), encoding='utf-8')
+
+      - name: Commit final installer fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/apply-runtime-installer-final.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 tools/MaxineRuntimeInstaller/README.md
+          git commit -m 'fix: harden Maxine environment update [skip runtime finalizer]'
+          git push origin HEAD:feature/maxine-runtime-installer
