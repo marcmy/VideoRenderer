@@ -65,6 +65,8 @@ jobs:
 
       - name: Prepare release assets
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           package="$(find release -maxdepth 1 -type f -name 'MpcVideoRenderer*.zip' -print -quit)"
@@ -82,10 +84,43 @@ jobs:
               Update-KLiteMPCVR.ps1 \
               README.md
           )
+          (
+            cd tools/MaxineRuntimeInstaller
+            zip -j ../../release/MaxineRuntimeInstaller-Setup.zip \
+              Install-MPCVRMaxineRuntime.cmd \
+              Install-MPCVRMaxineRuntime.ps1 \
+              README.md
+          )
 
           cd release
           sha256sum MpcVideoRenderer-Maxine.zip > MpcVideoRenderer-Maxine.zip.sha256
           sha256sum KLiteMaxineUpdater-Setup.zip > KLiteMaxineUpdater-Setup.zip.sha256
+          sha256sum MaxineRuntimeInstaller-Setup.zip > MaxineRuntimeInstaller-Setup.zip.sha256
+
+          # The runtime bundle is large and independent of renderer source. Once a
+          # verified bundle has been uploaded to the latest release, carry it
+          # forward into every subsequent immutable release.
+          mkdir -p runtime-carry
+          if gh release download \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern 'MPCVR-Maxine-Runtime.zip' \
+              --pattern 'MPCVR-Maxine-Runtime.zip.sha256' \
+              --dir runtime-carry; then
+            if [[ -f runtime-carry/MPCVR-Maxine-Runtime.zip \
+                  && -f runtime-carry/MPCVR-Maxine-Runtime.zip.sha256 ]]; then
+              expected="$(awk '{print tolower($1); exit}' runtime-carry/MPCVR-Maxine-Runtime.zip.sha256)"
+              actual="$(sha256sum runtime-carry/MPCVR-Maxine-Runtime.zip | awk '{print tolower($1)}')"
+              if [[ "$expected" =~ ^[a-f0-9]{64}$ && "$actual" == "$expected" ]]; then
+                cp runtime-carry/MPCVR-Maxine-Runtime.zip .
+                cp runtime-carry/MPCVR-Maxine-Runtime.zip.sha256 .
+                echo "Carried forward the verified Maxine runtime bundle."
+              else
+                echo "The previous Maxine runtime checksum did not verify; not carrying it forward." >&2
+              fi
+            fi
+          else
+            echo "No previously published Maxine runtime bundle was found."
+          fi
 
       - name: Publish immutable release
         shell: bash
@@ -95,13 +130,26 @@ jobs:
           set -euo pipefail
           short_sha="${GITHUB_SHA:0:8}"
           tag="maxine-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}-${short_sha}"
-          notes="Custom Maxine build from master commit ${GITHUB_SHA}. This release was produced by workflow run ${GITHUB_RUN_NUMBER}, attempt ${GITHUB_RUN_ATTEMPT}."
+          notes="Custom Maxine build from master commit ${GITHUB_SHA}. This release was produced by workflow run ${GITHUB_RUN_NUMBER}, attempt ${GITHUB_RUN_ATTEMPT}. The K-Lite updater and Windows PowerShell-compatible Maxine runtime installer are included."
+
+          assets=(
+            release/MpcVideoRenderer-Maxine.zip
+            release/MpcVideoRenderer-Maxine.zip.sha256
+            release/KLiteMaxineUpdater-Setup.zip
+            release/KLiteMaxineUpdater-Setup.zip.sha256
+            release/MaxineRuntimeInstaller-Setup.zip
+            release/MaxineRuntimeInstaller-Setup.zip.sha256
+          )
+          if [[ -f release/MPCVR-Maxine-Runtime.zip \
+                && -f release/MPCVR-Maxine-Runtime.zip.sha256 ]]; then
+            assets+=(
+              release/MPCVR-Maxine-Runtime.zip
+              release/MPCVR-Maxine-Runtime.zip.sha256
+            )
+          fi
 
           gh release create "$tag" \
-            release/MpcVideoRenderer-Maxine.zip \
-            release/MpcVideoRenderer-Maxine.zip.sha256 \
-            release/KLiteMaxineUpdater-Setup.zip \
-            release/KLiteMaxineUpdater-Setup.zip.sha256 \
+            "${assets[@]}" \
             --target "$GITHUB_SHA" \
             --title "MPC Video Renderer Maxine build ${GITHUB_RUN_NUMBER}" \
             --notes "$notes" \
