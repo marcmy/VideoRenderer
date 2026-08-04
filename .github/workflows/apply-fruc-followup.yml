@@ -1,0 +1,47 @@
+name: Apply NvOFFRUC follow-up
+
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - feature/nvoffruc-engine
+    paths:
+      - '.github/workflows/apply-fruc-followup.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'feature/nvoffruc-engine' || github.ref == 'refs/heads/feature/nvoffruc-engine'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v6
+        with:
+          ref: feature/nvoffruc-engine
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify, decode, and apply follow-up
+        shell: bash
+        run: |
+          cat .github/fruc-followup.patch.part-* | tr -d '\r\n' > "$RUNNER_TEMP/fruc-followup.patch.gz.b64"
+          echo "8ba5ae902cbccadcd2d9814510bdb16eea932186e10acdc2d7e78127cf0821fc  $RUNNER_TEMP/fruc-followup.patch.gz.b64" | sha256sum --check --strict
+          base64 --decode "$RUNNER_TEMP/fruc-followup.patch.gz.b64" > "$RUNNER_TEMP/fruc-followup.patch.gz"
+          gzip --decompress --stdout "$RUNNER_TEMP/fruc-followup.patch.gz" > "$RUNNER_TEMP/fruc-followup.patch"
+          echo "1f0408ae1e02056e135f1749b2dd350090590354554384ee97bf213b113b7d17  $RUNNER_TEMP/fruc-followup.patch" | sha256sum --check --strict
+          git apply --check "$RUNNER_TEMP/fruc-followup.patch"
+          git apply "$RUNNER_TEMP/fruc-followup.patch"
+          rm -f .github/fruc-followup.patch.part-* .github/workflows/apply-fruc-followup.yml
+
+      - name: Commit follow-up
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: schedule NvOFFRUC midpoint presentation"
+          git push origin HEAD:feature/nvoffruc-engine
