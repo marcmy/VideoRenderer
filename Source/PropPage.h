@@ -22,6 +22,13 @@
 
 #include "IVideoRenderer.h"
 
+namespace {
+void PopulateMaxineCombo(
+	HWND hwnd,
+	int id,
+	std::initializer_list<std::pair<LPCWSTR, LONG_PTR>> items);
+}
+
 // CVRMainPPage
 
 class __declspec(uuid("DA46D181-07D6-441D-B314-019AEB10148A"))
