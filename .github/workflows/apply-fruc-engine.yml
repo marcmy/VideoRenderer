@@ -6,17 +6,22 @@ on:
       - feature/nvoffruc-engine
     paths:
       - '.github/workflows/apply-fruc-engine.yml'
+  pull_request:
+    branches:
+      - master
 
 permissions:
   contents: write
 
 jobs:
   apply:
+    if: github.head_ref == 'feature/nvoffruc-engine' || github.ref == 'refs/heads/feature/nvoffruc-engine'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
         uses: actions/checkout@v6
         with:
+          ref: feature/nvoffruc-engine
           fetch-depth: 0
           submodules: recursive
 
