@@ -131,6 +131,7 @@ private:
 	CSize m_videoSize, m_videoAspectRatio;
 
 	HRESULT Init(const bool bCreateWindow);
+	HRESULT WaitForStreamTime(REFERENCE_TIME streamTime);
 
 	std::atomic_bool m_bDisplayModeChanging = false;
 

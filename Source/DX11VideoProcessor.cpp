@@ -5113,7 +5113,7 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 	}
 
 	std::wstring str;
-	str.reserve(700);
+	str.reserve(900);
 	str.assign(m_strStatsHeader);
 	str.append(m_strStatsDispInfo);
 	str += std::format(L"\nGraph. Adapter: {}", m_strAdapterDescription);
@@ -5200,6 +5200,14 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 	}
 	else if (m_iMaxineOperation != MAXINE_OPERATION_Disabled) {
 		str += std::format(L"\nMaxine       : not used ({})", m_strMaxineVSRStatus);
+	}
+
+	if (m_iFrameInterpolationMode != FRUC_MODE_Disabled) {
+		str += std::format(L"\nFrame interp : {}", m_strFrameInterpolationStatus);
+		const auto& runtimeInfo = m_FrameInterpolation.GetRuntimeInfo();
+		if (!runtimeInfo.empty()) {
+			str += std::format(L"\nFRUC runtime : {}", runtimeInfo);
+		}
 	}
 
 	if (m_strCorrection || m_pPostScaleShaders.size() || m_bDitherUsed) {

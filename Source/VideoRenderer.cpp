@@ -603,6 +603,33 @@ HRESULT CMpcVideoRenderer::DoRenderSample(IMediaSample* pSample)
 	return hr;
 }
 
+HRESULT CMpcVideoRenderer::WaitForStreamTime(const REFERENCE_TIME streamTime)
+{
+	CancelNotification();
+
+	if (!m_pClock) {
+		return S_OK;
+	}
+
+	CRefTime currentTime;
+	HRESULT hr = m_pClock->GetTime((REFERENCE_TIME*)&currentTime);
+	if (FAILED(hr)) {
+		return hr;
+	}
+	if (m_tStart + streamTime <= currentTime) {
+		return S_OK;
+	}
+
+	m_RenderEvent.Reset();
+	hr = m_pClock->AdviseTime(
+		(REFERENCE_TIME)m_tStart, streamTime,
+		(HEVENT)(HANDLE)m_RenderEvent, &m_dwAdvise);
+	if (FAILED(hr)) {
+		return hr;
+	}
+	return WaitForRenderTime();
+}
+
 HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 {
 	// override CBaseRenderer::Receive() for the implementation of the search during the pause
@@ -649,21 +676,34 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 	}
 
 	REFERENCE_TIME interpolationTime = INVALID_TIME;
+	REFERENCE_TIME currentFrameTime = INVALID_TIME;
 	bool interpolationReady = false;
 	if (m_State == State_Running && m_VideoProcessor->Type() == VP_DX11) {
+		REFERENCE_TIME sampleEnd = INVALID_TIME;
+		if (FAILED(m_pMediaSample->GetTime(&currentFrameTime, &sampleEnd))) {
+			currentFrameTime = m_FrameStats.GeTimestamp();
+		}
 		CAutoLock cRendererLock(&m_RendererLock);
 		interpolationReady = m_VideoProcessor->PrepareFrameInterpolation(m_pMediaSample, interpolationTime);
 	}
+
 	if (interpolationReady && m_State == State_Running) {
-		CAutoLock cRendererLock(&m_RendererLock);
-		m_VideoProcessor->RenderFrameInterpolation(interpolationTime);
+		// PrepareReceive() scheduled the source frame. Replace that one-shot
+		// notification with a midpoint notification, present the generated
+		// frame, then schedule the original source frame again.
+		hr = WaitForStreamTime(interpolationTime);
+		if (SUCCEEDED(hr) && m_State == State_Running) {
+			CAutoLock cRendererLock(&m_RendererLock);
+			m_VideoProcessor->RenderFrameInterpolation(interpolationTime);
+		}
+		if (SUCCEEDED(hr) && m_State == State_Running) {
+			hr = WaitForStreamTime(currentFrameTime);
+		}
 	}
-
-	// Having set an advise link with the clock we sit and wait. We may be
-	// awoken by the clock firing or by a state change. The rendering call
-	// will lock the critical section and check we can still render the data
-
-	hr = WaitForRenderTime();
+	else {
+		// Keep the original notification installed by PrepareReceive().
+		hr = WaitForRenderTime();
+	}
 	if (FAILED(hr)) {
 		m_bInReceive = FALSE;
 		return NOERROR;
