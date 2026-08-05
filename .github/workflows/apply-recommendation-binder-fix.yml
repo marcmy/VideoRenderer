@@ -1,0 +1,35 @@
+name: Apply recommendation binder fix
+
+on:
+  push:
+    branches: [feature/one-click-installer-calibration]
+    paths:
+      - '.github/apply-recommendation-binder-fix.py'
+      - '.github/workflows/apply-recommendation-binder-fix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feature/one-click-installer-calibration
+          fetch-depth: 0
+      - name: Apply verified binder fix
+        run: python .github/apply-recommendation-binder-fix.py
+      - name: Commit fix and remove staging files
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/apply-recommendation-binder-fix.py
+          rm -f .github/workflows/apply-recommendation-binder-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'fix: allow empty recommendation candidate list'
+          git push origin HEAD:feature/one-click-installer-calibration
