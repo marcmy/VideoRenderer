@@ -437,6 +437,7 @@ HRESULT CMpcVideoRenderer::BeginFlush()
 	DLog(L"CMpcVideoRenderer::BeginFlush()");
 
 	m_bFlushing = true;
+	UpdateFrameInterpolationTimingSnapshot(false);
 	ResetFrameInterpolationPresenterQueue();
 	return __super::BeginFlush();
 }
@@ -450,6 +451,9 @@ HRESULT CMpcVideoRenderer::EndFlush()
 	HRESULT hr = __super::EndFlush();
 
 	m_bFlushing = false;
+	if (SUCCEEDED(hr) && m_filterState == State_Running) {
+		UpdateFrameInterpolationTimingSnapshot(true);
+	}
 
 	return hr;
 }
@@ -644,28 +648,32 @@ bool CMpcVideoRenderer::QueueFrameInterpolationSource(const UINT sourceSurface, 
 		return false;
 	}
 
+	const uint64_t generation = m_FrameInterpolationPresenterGeneration.load();
+	if (!m_bFrameInterpolationAcceptingSources.load()) {
+		return false;
+	}
+
 	CComPtr<IReferenceClock> clock;
 	REFERENCE_TIME graphStart = 0;
-	const uint64_t generation = m_FrameInterpolationPresenterGeneration.load();
 	{
-		// Snapshot all graph-timing state on the receive thread. The presenter
-		// must never take m_InterfaceLock: DirectShow seek/flush already enters
-		// the renderer with m_InterfaceLock and m_RendererLock held. Capture the
-		// generation before taking the lock so a sample that was blocked by a
-		// flush cannot be queued into the new segment afterward.
-		CAutoLock cVideoLock(&m_InterfaceLock);
-		if (m_State != State_Running || m_bFlushing
+		// Never take m_InterfaceLock here. DirectShow stop/seek may own it
+		// while waiting for m_bInReceive to clear, which deadlocks if Receive()
+		// tries to acquire the same lock before it can return. Run/EndFlush
+		// publish a dedicated clock snapshot instead.
+		std::lock_guard<std::mutex> timingLock(m_FrameInterpolationTimingMutex);
+		if (!m_bFrameInterpolationAcceptingSources.load()
 				|| generation != m_FrameInterpolationPresenterGeneration.load()) {
 			return false;
 		}
-		clock = m_pClock;
-		graphStart = static_cast<REFERENCE_TIME>(m_tStart);
+		clock = m_FrameInterpolationClock;
+		graphStart = m_rtFrameInterpolationGraphStart;
 	}
 
 	bool queued = false;
 	{
 		std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
 		if (!m_bStopFrameInterpolationPresenter.load()
+				&& m_bFrameInterpolationAcceptingSources.load()
 				&& generation == m_FrameInterpolationPresenterGeneration.load()) {
 			m_FrameInterpolationPresenterQueue.push_back({
 				sourceSurface,
@@ -682,6 +690,24 @@ bool CMpcVideoRenderer::QueueFrameInterpolationSource(const UINT sourceSurface, 
 		m_FrameInterpolationPresenterWake.Set();
 	}
 	return queued;
+}
+
+void CMpcVideoRenderer::UpdateFrameInterpolationTimingSnapshot(const bool acceptingSources)
+{
+	// Publish disabled first so QueueFrameInterpolationSource cannot observe a
+	// partially replaced clock/start-time pair. Active queued frames own their
+	// own IReferenceClock reference and are invalidated separately by generation.
+	m_bFrameInterpolationAcceptingSources.store(false);
+	std::lock_guard<std::mutex> timingLock(m_FrameInterpolationTimingMutex);
+	if (acceptingSources) {
+		m_FrameInterpolationClock = m_pClock;
+		m_rtFrameInterpolationGraphStart = static_cast<REFERENCE_TIME>(m_tStart);
+		m_bFrameInterpolationAcceptingSources.store(true);
+	}
+	else {
+		m_FrameInterpolationClock.Release();
+		m_rtFrameInterpolationGraphStart = 0;
+	}
 }
 
 void CMpcVideoRenderer::ResetFrameInterpolationPresenterQueue()
@@ -1077,7 +1103,11 @@ STDMETHODIMP CMpcVideoRenderer::Run(REFERENCE_TIME rtStart)
 	CAutoLock cVideoLock(&m_InterfaceLock);
 	m_filterState = State_Running;
 
-	return CBaseVideoRenderer2::Run(rtStart);
+	const HRESULT hr = CBaseVideoRenderer2::Run(rtStart);
+	if (SUCCEEDED(hr)) {
+		UpdateFrameInterpolationTimingSnapshot(true);
+	}
+	return hr;
 }
 
 STDMETHODIMP CMpcVideoRenderer::Pause()
@@ -1085,6 +1115,7 @@ STDMETHODIMP CMpcVideoRenderer::Pause()
 	DLog(L"CMpcVideoRenderer::Pause()");
 
 	m_filterState = State_Paused;
+	UpdateFrameInterpolationTimingSnapshot(false);
 	ResetFrameInterpolationPresenterQueue();
 
 	return CBaseVideoRenderer2::Pause();
@@ -1096,6 +1127,7 @@ STDMETHODIMP CMpcVideoRenderer::Stop()
 
 	m_filterState = State_Stopped;
 	m_bValidBuffer = false;
+	UpdateFrameInterpolationTimingSnapshot(false);
 	ResetFrameInterpolationPresenterQueue();
 
 	{

@@ -150,9 +150,18 @@ private:
 	std::atomic_bool m_bStopFrameInterpolationPresenter = false;
 	std::atomic<uint64_t> m_FrameInterpolationPresenterGeneration = 0;
 
+	// DirectShow may hold m_InterfaceLock while waiting for Receive() to exit.
+	// Keep a separate reference-clock snapshot so the streaming thread never
+	// needs that lock while m_bInReceive is true.
+	std::mutex m_FrameInterpolationTimingMutex;
+	CComPtr<IReferenceClock> m_FrameInterpolationClock;
+	REFERENCE_TIME m_rtFrameInterpolationGraphStart = 0;
+	std::atomic_bool m_bFrameInterpolationAcceptingSources = false;
+
 	void FrameInterpolationPresenter();
 	bool WaitForFrameInterpolationTime(const FrameInterpolationPresentation& frame);
 	bool QueueFrameInterpolationSource(UINT sourceSurface, REFERENCE_TIME streamTime);
+	void UpdateFrameInterpolationTimingSnapshot(bool acceptingSources);
 	void ResetFrameInterpolationPresenterQueue();
 	void StopFrameInterpolationPresenter();
 
