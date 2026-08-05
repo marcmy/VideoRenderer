@@ -24,7 +24,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          .\tools\UnifiedSetup\Apply-GuiFirstRunFix.ps1
+          .\tools\UnifiedSetup\Apply-GuiFirstRunFixBootstrap.ps1
 
       - name: Validate GUI under Windows PowerShell 5.1
         shell: powershell
@@ -46,6 +46,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git rm tools/UnifiedSetup/Apply-GuiFirstRunFix.ps1
+          git rm tools/UnifiedSetup/Apply-GuiFirstRunFixBootstrap.ps1
           git rm .github/workflows/apply-gui-first-run-fix.yml
           git add \
             tools/UnifiedSetup/Start-MpcvrUnifiedSetup.ps1 \
