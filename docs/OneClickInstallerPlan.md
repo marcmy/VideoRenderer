@@ -128,6 +128,38 @@ Automatic decision rule:
 
 The decision must be based on the active processing path, not simply on whether the Maxine setting is enabled.
 
+## First real-machine GUI findings
+
+The first packaged GUI launch exposed three issues that the original form-only validation did not exercise:
+
+1. The inventory provider emits GPU VRAM as `MemoryMiB`, while the GUI attempted to read a nonexistent `AdapterRamGB` property under strict mode.
+2. Display objects use `ScreenWidth` and `ScreenHeight`, while the GUI expected `Width`, `Height`, and `RefreshHz`.
+3. `Get-MpcvrProfiles` forwarded a null optional root to `Get-MpcvrProfileRoot`, overriding the default parameter and raising `A profile root is required.` during form startup.
+4. Non-ASCII ellipsis and arrow characters were corrupted in the packaged PowerShell/WinForms text path.
+
+Corrections:
+
+- inventory status formatting now uses a schema-tolerant optional-property reader
+- VRAM is calculated from `MemoryMiB`
+- display size uses `ScreenWidth` and `ScreenHeight`
+- absent optional inventory properties display safe fallback text instead of terminating refresh
+- the profile module resolves a null or empty root to `%LOCALAPPDATA%\MPCVR Unified Setup\profiles`
+- profile refresh handles errors inside the event callback rather than surfacing an unhandled WinForms exception
+- UI labels use ASCII `Browse...`, `30 -> 60`, and `60 -> 120`
+- GUI validation now constructs and formats a realistic synthetic inventory and resolves/lists the default profile root under both Windows PowerShell 5.1 and PowerShell 7
+
+Corrected package workflow run `31026773394` passed renderer build and unified setup packaging. Artifact `8939006031` has GitHub digest `sha256:6090b9b79b6bbf1c3b70eec66ff27f7b54bd153488d8c9a3885f43a3cfbe46cd`.
+
+The downloaded public ZIP was independently checked:
+
+- 58 files
+- `AdapterRamGB` absent from the GUI
+- schema-tolerant formatter and `MemoryMiB` handling present
+- default profile-root fallback present
+- mojibake absent; ASCII labels present
+- embedded checksum matches
+- public ZIP SHA-256: `91e23e9d9f5dff5d849ed012a0a2be69f0f9ea6005389201c573d3728a66fa22`
+
 ## Calibration principles
 
 - GPU detection provides only an initial estimate; measured local performance is authoritative.
@@ -138,30 +170,6 @@ The decision must be based on the active processing path, not simply on whether 
 - Retain a hardware capability table for sensible first-run defaults, but refine it with real measurements from the current machine.
 - Calibrate flow-resolution boost settings independently for 30 -> 60 and 60 -> 120 workloads.
 - Never assume a dedicated FRUC boost is useful when active Maxine VSR already provides the requested working resolution.
-
-## Validation status
-
-The assisted acquisition implementation is validated under Windows PowerShell 5.1 and PowerShell 7 for:
-
-- compatible SDK ZIP recognition
-- rejection of incompatible ZIPs
-- automatic cache/Downloads reuse without opening the browser
-- cache creation and revalidation
-- rejection of tampered runtime DLLs
-- explicit Advanced override for unverified runtime experimentation
-- official NVIDIA URL format
-- installer syntax and parameter contracts
-- timezone-safe download timestamp filtering
-
-Unified package workflow run `30995920905` built the renderer and assembled the setup successfully. Artifact `8926172380` has GitHub digest `sha256:c50b4dfc6cc646585c7b5568eea5b7e9053cdba0269208e8fa768b61d655d363`.
-
-The downloaded public ZIP was independently extracted and verified:
-
-- 51 files
-- renderer payload checksum passed
-- Maxine runtime payload checksum passed
-- assisted acquisition module present
-- public ZIP SHA-256: `df22878844f12bb60278e6bb5a4810746d899ca8f15c71702bf187af1ba72c99`
 
 ## Remaining runtime gate
 
