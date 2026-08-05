@@ -9,7 +9,7 @@ They do **not** require or load:
 - an Optical Flow SDK installation
 - an NVIDIA Developer Program account
 
-Both tools load `nvofapi64.dll` from the Windows system directory.
+All three tools load `nvofapi64.dll` from the Windows system directory.
 
 ## `NativeNvofProbe.exe`
 
@@ -31,15 +31,7 @@ RESULT: PASS
 
 ## `NativeNvofFlowTest.exe`
 
-Executes the next milestone rather than only querying capabilities. It:
-
-1. Creates a textured 640x360 D3D11 frame.
-2. Creates a second frame translated 16 pixels horizontally.
-3. Initializes NVOF for a 4x4 output-vector grid.
-4. Registers both input textures and an `R16G16_SINT` output texture.
-5. Calls `nvOFExecute`.
-6. Reads the S10.5 motion vectors back and checks that the central field is predominantly horizontal with approximately the expected magnitude.
-7. Writes `NativeNvofFlow.bmp`, a color-coded visualization of the returned flow field.
+Executes one forward optical-flow pass for a synthetic +16 pixel horizontal translation. It reads the S10.5 vectors back, validates their magnitude and direction consistency, and writes `NativeNvofFlow.bmp`.
 
 A successful result ends with:
 
@@ -48,17 +40,42 @@ nvOFExecute: submitted
 FLOW RESULT: PASS
 ```
 
-The signed X direction may be positive or negative depending on the API's frame ordering. The validation therefore checks magnitude and direction consistency rather than requiring one sign.
+## `NativeNvofMidpointTest.exe`
+
+Tests the first complete frame-synthesis stage:
+
+1. Creates frame A and frame B, where B is A translated +16 pixels horizontally.
+2. Requests forward and backward flow in one `nvOFExecute` call.
+3. Verifies that B to A is approximately -16 pixels and A to B is approximately +16 pixels.
+4. Upsamples the 4x4 flow fields and backward-warps both source images to `t = 0.5`.
+5. Blends the two warped samples.
+6. Compares the result against the exact +8 pixel midpoint ground truth.
+
+The baseline warp is deliberately performed on the CPU after reading back the hardware vectors. This isolates and validates the flow direction, midpoint math, and error thresholds before the same operation is moved into an MPCVR D3D11 shader.
+
+It writes:
+
+- `NativeNvofMidpoint.bmp`
+- `NativeNvofMidpointExpected.bmp`
+- `NativeNvofMidpointDiff.bmp` (errors amplified 8x)
+
+A successful result ends with:
+
+```text
+nvOFExecute: forward/backward submitted
+MIDPOINT RESULT: PASS
+```
 
 ## Running
 
 1. Download the `Native-NVOF-Probe` artifact from PR #25's **Native NVOF Probe** workflow.
 2. Extract it.
-3. Run both executables from PowerShell or Command Prompt:
+3. Run the tests from PowerShell or Command Prompt:
 
 ```powershell
 .\NativeNvofProbe.exe
 .\NativeNvofFlowTest.exe
+.\NativeNvofMidpointTest.exe
 ```
 
-4. Copy the complete console output from `NativeNvofFlowTest.exe`. Keep `NativeNvofFlow.bmp` if the test fails or the vector field looks inconsistent.
+4. Copy the complete console output from `NativeNvofMidpointTest.exe`. Keep the three midpoint bitmaps if it fails or the difference image contains visible structure.
