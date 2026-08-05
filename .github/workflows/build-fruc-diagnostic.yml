@@ -1,0 +1,96 @@
+name: Build FRUC diagnostic bundle
+
+on:
+  push:
+    branches: [diag/nvoffruc-seek-freeze-fc40]
+
+permissions:
+  contents: read
+
+jobs:
+  build-diagnostic:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: diag/nvoffruc-seek-freeze-fc40
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Build renderer with symbols
+        shell: cmd
+        run: build_mpcvr.cmd NoWait
+
+      - name: Assemble diagnostic bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundle = Join-Path $PWD 'FRUC-Diagnostic-Bundle'
+          New-Item -ItemType Directory -Force -Path $bundle | Out-Null
+
+          $package = Get-ChildItem -Path '_bin' -Filter 'MpcVideoRenderer*.zip' -File |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $package) { throw 'Renderer package ZIP was not produced.' }
+          Copy-Item $package.FullName (Join-Path $bundle $package.Name)
+
+          Get-ChildItem -Path '_bin' -Recurse -File |
+            Where-Object { $_.Extension -in '.ax', '.pdb' } |
+            Copy-Item -Destination $bundle
+
+          @'
+          MPC Video Renderer NvOFFRUC seek-freeze diagnostic build
+
+          This build preserves the fc40e60 playback pipeline and adds trace logging only.
+
+          Log file:
+            %LOCALAPPDATA%\MPCVR\NvOFFRUC-Diagnostic.log
+
+          Reproduce the freeze, leave MPC-HC frozen, then run Capture-Frozen-MPC-HC.ps1
+          from PowerShell. If the script cannot create the dump, use Task Manager:
+            Details > mpc-hc64.exe > right-click > Create memory dump file
+
+          Keep the log and dump together. The PDB files in this bundle match this exact build.
+          '@ | Set-Content -Path (Join-Path $bundle 'README-DIAGNOSTIC.txt') -Encoding utf8
+
+          @'
+          @echo off
+          del /q "%LOCALAPPDATA%\MPCVR\NvOFFRUC-Diagnostic.log" 2>nul
+          echo Cleared: %LOCALAPPDATA%\MPCVR\NvOFFRUC-Diagnostic.log
+          pause
+          '@ | Set-Content -Path (Join-Path $bundle 'Clear-Diagnostic-Log.cmd') -Encoding ascii
+
+          @'
+          $ErrorActionPreference = 'Stop'
+          $process = Get-Process -Name 'mpc-hc64','mpc-hc' -ErrorAction SilentlyContinue |
+            Sort-Object StartTime -Descending | Select-Object -First 1
+          if (-not $process) { throw 'MPC-HC is not running.' }
+
+          $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+          $desktop = [Environment]::GetFolderPath('Desktop')
+          $folder = Join-Path $desktop "MPCVR-FRUC-Hang-$stamp"
+          New-Item -ItemType Directory -Force -Path $folder | Out-Null
+          $dump = Join-Path $folder 'mpc-hc-hang.dmp'
+          $log = Join-Path $env:LOCALAPPDATA 'MPCVR\NvOFFRUC-Diagnostic.log'
+
+          $arguments = "$env:WINDIR\System32\comsvcs.dll, MiniDump $($process.Id) `"$dump`" full"
+          $capture = Start-Process -FilePath "$env:WINDIR\System32\rundll32.exe" -ArgumentList $arguments -Wait -PassThru
+          if ($capture.ExitCode -ne 0 -or -not (Test-Path $dump)) {
+            throw "Dump capture failed with exit code $($capture.ExitCode). Use Task Manager > Details > mpc-hc64.exe > Create memory dump file instead."
+          }
+          if (Test-Path $log) { Copy-Item $log (Join-Path $folder 'NvOFFRUC-Diagnostic.log') }
+
+          $zip = "$folder.zip"
+          Compress-Archive -Path (Join-Path $folder '*') -DestinationPath $zip -Force
+          Write-Host "Created $zip"
+          '@ | Set-Content -Path (Join-Path $bundle 'Capture-Frozen-MPC-HC.ps1') -Encoding utf8
+
+          Compress-Archive -Path (Join-Path $bundle '*') -DestinationPath 'MPCVR-FRUC-Diagnostic.zip' -Force
+
+      - name: Upload diagnostic bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: MPCVR-FRUC-Diagnostic
+          path: MPCVR-FRUC-Diagnostic.zip
+          compression-level: 0
+          retention-days: 7
