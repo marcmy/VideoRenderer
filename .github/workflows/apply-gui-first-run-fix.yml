@@ -1,0 +1,54 @@
+name: Apply unified setup first-run GUI fixes
+
+on:
+  push:
+    branches:
+      - feature/one-click-installer-calibration
+    paths:
+      - '.github/workflows/apply-gui-first-run-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v6
+        with:
+          ref: feature/one-click-installer-calibration
+          fetch-depth: 0
+
+      - name: Apply first-run GUI patch
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\tools\UnifiedSetup\Apply-GuiFirstRunFix.ps1
+
+      - name: Validate GUI under Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+            -File .\tools\UnifiedSetup\Start-MpcvrUnifiedSetup.ps1 -ValidateOnly
+
+      - name: Validate GUI under PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\tools\UnifiedSetup\Start-MpcvrUnifiedSetup.ps1 -ValidateOnly
+
+      - name: Commit fixes and remove staging files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm tools/UnifiedSetup/Apply-GuiFirstRunFix.ps1
+          git rm .github/workflows/apply-gui-first-run-fix.yml
+          git add \
+            tools/UnifiedSetup/Start-MpcvrUnifiedSetup.ps1 \
+            tools/UnifiedSetup/MpcvrSetup.Profiles.psm1
+          git commit -m 'fix: harden unified setup first-run GUI'
+          git push origin HEAD:feature/one-click-installer-calibration
