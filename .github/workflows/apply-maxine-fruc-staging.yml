@@ -1,0 +1,36 @@
+name: Apply Maxine FRUC interop isolation
+
+on:
+  push:
+    branches: [feature/maxine-fruc-combined]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feature/maxine-fruc-combined
+          fetch-depth: 0
+      - name: Reconstruct and apply verified patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d .github/maxine-fruc-staging.patch.gz.b64 | gzip -d > /tmp/maxine-fruc-staging.patch
+          echo '6fd7596c6e0a6b24d47c525d45ebfb892a0afd2004d0a5ac7d7a55fa806203e4  /tmp/maxine-fruc-staging.patch' | sha256sum -c -
+          git apply --check /tmp/maxine-fruc-staging.patch
+          git apply /tmp/maxine-fruc-staging.patch
+          rm -f .github/maxine-fruc-staging.patch.gz.b64
+          rm -f .github/workflows/apply-maxine-fruc-staging.yml
+      - name: Commit fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'perf: isolate Maxine from NvOFFRUC shared input'
+          git push origin HEAD:feature/maxine-fruc-combined
