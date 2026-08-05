@@ -1,0 +1,58 @@
+name: Apply assisted NVIDIA SDK acquisition
+
+on:
+  push:
+    branches:
+      - feature/one-click-installer-calibration
+    paths:
+      - '.github/workflows/apply-assisted-nvidia-sdk-acquisition.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v6
+        with:
+          ref: feature/one-click-installer-calibration
+          fetch-depth: 0
+
+      - name: Apply integration patch
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\tools\nvoffruc\Apply-AssistedAcquisitionPatch.ps1
+
+      - name: Validate PowerShell syntax
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $paths = @(
+            '.\tools\nvoffruc\MpcvrNvOffruc.Acquisition.psm1',
+            '.\tools\nvoffruc\Install-NvOFFRUCRuntime.ps1',
+            '.\tools\UnifiedSetup\Install-MpcvrUnified.ps1'
+          )
+          foreach ($path in $paths) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              throw (($errors | ForEach-Object { $_.Message }) -join [Environment]::NewLine)
+            }
+          }
+
+      - name: Commit applied files and remove staging workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm tools/nvoffruc/Apply-AssistedAcquisitionPatch.ps1
+          git rm .github/workflows/apply-assisted-nvidia-sdk-acquisition.yml
+          git add tools/nvoffruc/Install-NvOFFRUCRuntime.ps1 tools/UnifiedSetup/Install-MpcvrUnified.ps1
+          git commit -m 'feat: acquire official NvOFFRUC SDK during setup'
+          git push origin HEAD:feature/one-click-installer-calibration
