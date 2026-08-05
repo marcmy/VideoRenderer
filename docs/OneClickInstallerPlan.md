@@ -26,6 +26,7 @@ Ship the completed renderer stack in a form that non-technical MPC-HC users can 
 8. Offer one-click verification that reports Maxine, FRUC, runtime, and rendered-frame-rate status.
 9. Provide one-click rollback, uninstall, and diagnostic export.
 10. Publish checksums for every release artifact.
+11. If combined Maxine + interpolation is unsupported or too slow on a system, show a clear confirmation dialog offering to disable the other feature instead of silently degrading playback.
 
 ## Runtime gate
 
