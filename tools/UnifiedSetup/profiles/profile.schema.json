@@ -1,0 +1,147 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/marcmy/VideoRenderer/tools/UnifiedSetup/profiles/profile.schema.json",
+  "title": "MPCVR Unified Setup Profile",
+  "type": "object",
+  "required": [
+    "profileVersion",
+    "name",
+    "mode",
+    "locked",
+    "conditions",
+    "maxine",
+    "frameInterpolation",
+    "fallback"
+  ],
+  "properties": {
+    "profileVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["automatic", "guided", "advanced"]
+    },
+    "locked": {
+      "type": "boolean",
+      "description": "A locked profile may not be overwritten by automatic calibration without explicit confirmation."
+    },
+    "machineFingerprint": {
+      "type": "object",
+      "properties": {
+        "gpuName": { "type": ["string", "null"] },
+        "gpuPnpDeviceId": { "type": ["string", "null"] },
+        "driverVersion": { "type": ["string", "null"] },
+        "displayWidth": { "type": ["integer", "null"], "minimum": 0 },
+        "displayHeight": { "type": ["integer", "null"], "minimum": 0 },
+        "displayRefreshHz": { "type": ["number", "null"], "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "conditions": {
+      "type": "object",
+      "required": ["sourceFrameRateClass"],
+      "properties": {
+        "sourceFrameRateClass": {
+          "type": "string",
+          "enum": ["up-to-30", "over-30-to-60", "custom"]
+        },
+        "sourceWidthMax": { "type": ["integer", "null"], "minimum": 1 },
+        "sourceHeightMax": { "type": ["integer", "null"], "minimum": 1 },
+        "outputWidth": { "type": ["integer", "null"], "minimum": 1 },
+        "outputHeight": { "type": ["integer", "null"], "minimum": 1 },
+        "targetOutputFps": { "type": ["number", "null"], "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "maxine": {
+      "type": "object",
+      "required": ["enabled", "quality", "scaleLimit", "denoise", "deblur", "gpuSelection"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "operation": {
+          "type": "string",
+          "enum": ["upscale", "denoise", "deblur", "combined"]
+        },
+        "quality": {
+          "type": "string",
+          "enum": ["low", "medium", "high", "custom"]
+        },
+        "scaleLimit": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 4
+        },
+        "oversampling": { "type": "boolean" },
+        "denoise": { "type": "boolean" },
+        "deblur": { "type": "boolean" },
+        "gpuSelection": {
+          "oneOf": [
+            { "type": "string", "const": "auto" },
+            { "type": "integer", "minimum": 0 }
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "frameInterpolation": {
+      "type": "object",
+      "required": ["enabled", "sourceResolutionLimit", "maxOutputFps"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "sourceResolutionLimit": {
+          "type": "string",
+          "enum": ["720p", "1080p", "1440p", "2160p", "custom"]
+        },
+        "maxOutputFps": {
+          "type": "number",
+          "minimum": 1
+        },
+        "runtimePath": {
+          "type": ["string", "null"]
+        }
+      },
+      "additionalProperties": true
+    },
+    "fallback": {
+      "type": "object",
+      "required": ["strategy", "showWarning"],
+      "properties": {
+        "strategy": {
+          "type": "string",
+          "enum": [
+            "reduce-maxine-quality",
+            "reduce-maxine-scale",
+            "disable-maxine",
+            "disable-interpolation",
+            "ask-user",
+            "none"
+          ]
+        },
+        "showWarning": { "type": "boolean" },
+        "allowOverride": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "calibration": {
+      "type": "object",
+      "properties": {
+        "capturedAtUtc": { "type": ["string", "null"], "format": "date-time" },
+        "durationSeconds": { "type": ["number", "null"], "minimum": 0 },
+        "maxineMilliseconds": { "type": ["number", "null"], "minimum": 0 },
+        "frameInterpolationMilliseconds": { "type": ["number", "null"], "minimum": 0 },
+        "totalMilliseconds": { "type": ["number", "null"], "minimum": 0 },
+        "timingHeadroomMilliseconds": { "type": ["number", "null"] },
+        "droppedFrames": { "type": ["integer", "null"], "minimum": 0 },
+        "failedFrames": { "type": ["integer", "null"], "minimum": 0 },
+        "pacingStable": { "type": ["boolean", "null"] }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}
