@@ -1,0 +1,46 @@
+name: Validate renderer recommendations
+
+on:
+  push:
+    paths:
+      - 'tools/UnifiedSetup/MpcvrSetup.RendererSettings.psm1'
+      - 'tools/UnifiedSetup/MpcvrSetup.Recommendations.psm1'
+      - 'tools/UnifiedSetup/Set-MpcvrRendererProfile.ps1'
+      - 'tools/UnifiedSetup/New-MpcvrRecommendation.ps1'
+      - 'tools/UnifiedSetup/Apply-MpcvrProfile.cmd'
+      - 'tools/UnifiedSetup/Recommend-Mpcvr.cmd'
+      - 'tools/UnifiedSetup/Test-MpcvrRendererRecommendations.ps1'
+      - '.github/workflows/renderer-recommendation-validation.yml'
+  pull_request:
+    paths:
+      - 'tools/UnifiedSetup/MpcvrSetup.RendererSettings.psm1'
+      - 'tools/UnifiedSetup/MpcvrSetup.Recommendations.psm1'
+      - 'tools/UnifiedSetup/Set-MpcvrRendererProfile.ps1'
+      - 'tools/UnifiedSetup/New-MpcvrRecommendation.ps1'
+      - 'tools/UnifiedSetup/Apply-MpcvrProfile.cmd'
+      - 'tools/UnifiedSetup/Recommend-Mpcvr.cmd'
+      - 'tools/UnifiedSetup/Test-MpcvrRendererRecommendations.ps1'
+      - '.github/workflows/renderer-recommendation-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+            -File .\tools\UnifiedSetup\Test-MpcvrRendererRecommendations.ps1
+
+      - name: Validate with PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\tools\UnifiedSetup\Test-MpcvrRendererRecommendations.ps1
