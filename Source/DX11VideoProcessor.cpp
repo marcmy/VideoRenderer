@@ -805,6 +805,7 @@ void CDX11VideoProcessor::ReleaseVP()
 	m_TexMaxineVSR.Release();
 	m_TexMaxineDenoise.Release();
 	m_TexMaxineDeblur.Release();
+	m_TexFrameInterpolationInput.Release();
 	m_TexSrcVideo.Release();
 	m_TexConvertOutput.Release();
 	m_TexResize.Release();
@@ -2364,6 +2365,7 @@ void CDX11VideoProcessor::ResetFrameInterpolation()
 	m_rtFrameInterpolationLastInput = INVALID_TIME;
 	m_pFrameInterpolationTexture = nullptr;
 	m_pFrameInterpolationView = nullptr;
+	m_TexFrameInterpolationInput.Release();
 	for (auto& surface : m_FrameInterpolationPresentationSurfaces) {
 		if (!surface.inUse) {
 			surface.texture.Release();
@@ -2426,27 +2428,30 @@ bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFER
 		return false;
 	}
 
-	ID3D11Texture2D* inputTexture = nullptr;
-	if (!m_FrameInterpolation.BeginInputFrame(&inputTexture)) {
-		m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
-		return false;
-	}
-
-	CComPtr<ID3D11RenderTargetView> renderTargetView;
-	hr = m_pDevice->CreateRenderTargetView(inputTexture, nullptr, &renderTargetView);
+	// Render the complete source pipeline, including Maxine, into a normal
+	// D3D11 texture before acquiring NvOFFRUC's shared keyed-mutex input.
+	// Holding the FRUC input transaction open while Maxine maps/unmaps its own
+	// D3D11 resources can force the two independent CUDA interop stacks into
+	// pathological device-wide serialization (observed as roughly 1 fps).
+	hr = m_TexFrameInterpolationInput.CheckCreate(m_pDevice,
+		DXGI_FORMAT_R8G8B8A8_UNORM, outputWidth, outputHeight,
+		Tex2D_DefaultShaderRTarget);
 	if (SUCCEEDED(hr)) {
-		const FLOAT clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-		m_pDeviceContext->ClearRenderTargetView(renderTargetView, clearColor);
-		hr = Process(inputTexture, m_srcRect, m_videoRect, false);
+		CComPtr<ID3D11RenderTargetView> stagingRenderTargetView;
+		hr = m_pDevice->CreateRenderTargetView(
+			m_TexFrameInterpolationInput.pTexture, nullptr, &stagingRenderTargetView);
+		if (SUCCEEDED(hr)) {
+			const FLOAT clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+			m_pDeviceContext->ClearRenderTargetView(stagingRenderTargetView, clearColor);
+			hr = Process(m_TexFrameInterpolationInput.pTexture,
+				m_srcRect, m_videoRect, false);
+		}
 	}
 	if (FAILED(hr)) {
-		m_FrameInterpolation.CancelInputFrame();
 		m_strFrameInterpolationStatus = L"Could not render the processed frame for interpolation";
 		return false;
 	}
 
-	D3D11_TEXTURE2D_DESC inputDesc = {};
-	inputTexture->GetDesc(&inputDesc);
 	UINT freeSurface = UINT_MAX;
 	for (UINT i = 0; i < FrameInterpolationSurfaceCount; ++i) {
 		if (!m_FrameInterpolationPresentationSurfaces[i].inUse) {
@@ -2454,27 +2459,36 @@ bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFER
 			break;
 		}
 	}
-
-	HRESULT copyHr = E_OUTOFMEMORY;
-	if (freeSurface != UINT_MAX) {
-		auto& surface = m_FrameInterpolationPresentationSurfaces[freeSurface];
-		copyHr = surface.texture.CheckCreate(m_pDevice, inputDesc.Format,
-			inputDesc.Width, inputDesc.Height, Tex2D_DefaultShader);
-		if (SUCCEEDED(copyHr)) {
-			m_pDeviceContext->CopyResource(surface.texture.pTexture, inputTexture);
-			m_pDeviceContext->Flush();
-			surface.inUse = true;
-			sourceSurface = freeSurface;
-		}
-	}
-
-	if (FAILED(copyHr)) {
-		m_FrameInterpolation.CancelInputFrame();
-		m_strFrameInterpolationStatus = freeSurface == UINT_MAX
-			? L"Frame-interpolation presentation queue is full"
-			: L"Could not preserve the source frame for asynchronous presentation";
+	if (freeSurface == UINT_MAX) {
+		m_strFrameInterpolationStatus = L"Frame-interpolation presentation queue is full";
 		return false;
 	}
+
+	auto& surface = m_FrameInterpolationPresentationSurfaces[freeSurface];
+	HRESULT copyHr = surface.texture.CheckCreate(m_pDevice,
+		m_TexFrameInterpolationInput.desc.Format,
+		m_TexFrameInterpolationInput.desc.Width,
+		m_TexFrameInterpolationInput.desc.Height, Tex2D_DefaultShader);
+	if (FAILED(copyHr)) {
+		m_strFrameInterpolationStatus = L"Could not preserve the source frame for asynchronous presentation";
+		return false;
+	}
+
+	ID3D11Texture2D* inputTexture = nullptr;
+	if (!m_FrameInterpolation.BeginInputFrame(&inputTexture)) {
+		m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
+		return false;
+	}
+
+	// Keep the keyed-mutex transaction as short as possible: only the two
+	// device-local copies and a flush needed to publish the source to FRUC and
+	// the asynchronous presenter. Maxine has already completely finished.
+	m_pDeviceContext->CopyResource(inputTexture, m_TexFrameInterpolationInput.pTexture);
+	m_pDeviceContext->CopyResource(surface.texture.pTexture,
+		m_TexFrameInterpolationInput.pTexture);
+	m_pDeviceContext->Flush();
+	surface.inUse = true;
+	sourceSurface = freeSurface;
 
 	requestedMidpoint = m_rtFrameInterpolationLastInput == INVALID_TIME
 		? rtStart - frameDuration / 2

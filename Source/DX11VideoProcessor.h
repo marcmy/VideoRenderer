@@ -76,6 +76,10 @@ private:
 	Tex2D_t m_TexMaxineVSR;
 	Tex2D_t m_TexMaxineDenoise;
 	Tex2D_t m_TexMaxineDeblur;
+	// Regular D3D11 staging target for the fully processed source frame.
+	// Maxine must finish before the NvOFFRUC keyed-mutex input transaction
+	// begins, otherwise the two CUDA/D3D11 interop stacks can serialize.
+	Tex2D_t m_TexFrameInterpolationInput;
 	Tex2D_t m_TexResize;        // for intermediate result of two-pass resize
 	CTex2DRing m_TexsPostScale;
 	Tex2D_t m_TexDither;
