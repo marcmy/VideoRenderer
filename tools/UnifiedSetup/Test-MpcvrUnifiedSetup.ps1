@@ -13,6 +13,7 @@ $schemaPath = Join-Path $PSScriptRoot 'profiles\profile.schema.json'
 $installerPath = Join-Path $PSScriptRoot 'Install-MpcvrUnified.ps1'
 $restorePath = Join-Path $PSScriptRoot 'Restore-MpcvrUnifiedBackup.ps1'
 $profileManagerPath = Join-Path $PSScriptRoot 'Manage-MpcvrProfiles.ps1'
+$telemetryReaderPath = Join-Path $PSScriptRoot 'Get-MpcvrRendererTelemetry.ps1'
 $frucInstallerPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'nvoffruc\Install-NvOFFRUCRuntime.ps1'
 
 $requiredFiles = @(
@@ -23,6 +24,7 @@ $requiredFiles = @(
     $installerPath,
     $restorePath,
     $profileManagerPath,
+    $telemetryReaderPath,
     $frucInstallerPath
 )
 foreach ($path in $requiredFiles) {
@@ -56,7 +58,7 @@ foreach ($commandName in $requiredCommands) {
 
 foreach ($scriptPath in @(
     $commonModule, $transactionModule, $profilesModule, $installerPath,
-    $restorePath, $profileManagerPath, $frucInstallerPath
+    $restorePath, $profileManagerPath, $telemetryReaderPath, $frucInstallerPath
 )) {
     [void](Test-MpcvrPowerShellScriptSyntax -ScriptPath $scriptPath)
 }
@@ -237,7 +239,12 @@ try {
         throw 'Profile-manager duplication did not create an unlocked editable copy.'
     }
 
-    # Entry-point validation.
+    # Entry-point and shared-memory reader validation.
+    Invoke-MpcvrPowerShellScript `
+        -Name 'Validating renderer telemetry reader...' `
+        -ScriptPath $telemetryReaderPath `
+        -Arguments @('-ValidateOnly') `
+        -NoNewWindow
     Invoke-MpcvrPowerShellScript `
         -Name 'Validating unified installer entry point...' `
         -ScriptPath $installerPath `
@@ -258,4 +265,4 @@ finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-Write-Host 'Unified setup inventory, transaction, rollback, and profile lifecycle validation passed.' -ForegroundColor Green
+Write-Host 'Unified setup inventory, transaction, rollback, profiles, and telemetry validation passed.' -ForegroundColor Green
