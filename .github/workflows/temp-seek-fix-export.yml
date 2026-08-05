@@ -1,0 +1,38 @@
+name: Temporary seek-fix source export
+
+on:
+  pull_request:
+    branches:
+      - master
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    if: github.head_ref == 'fix/nvoffruc-seek-freeze'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: fix/nvoffruc-seek-freeze
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Package source tree
+        run: |
+          git archive --format=zip --output=VideoRenderer-seek-fix-source.zip HEAD
+          rm -rf _submodules
+          mkdir -p _submodules
+          git submodule foreach --recursive 'mkdir -p "$toplevel/_submodules/$sm_path" && git archive --format=tar HEAD | tar -x -C "$toplevel/_submodules/$sm_path"'
+          zip -qr VideoRenderer-seek-fix-source.zip _submodules
+
+      - name: Upload source artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: VideoRenderer-seek-fix-source
+          path: VideoRenderer-seek-fix-source.zip
+          compression-level: 0
+          retention-days: 1
