@@ -9,7 +9,7 @@ They do **not** require or load:
 - an Optical Flow SDK installation
 - an NVIDIA Developer Program account
 
-All four tools load `nvofapi64.dll` from the Windows system directory.
+All five tools load `nvofapi64.dll` from the Windows system directory.
 
 ## `NativeNvofProbe.exe`
 
@@ -83,7 +83,39 @@ D3D11 compute midpoint: dispatched with GPU-resident flow
 GPU MIDPOINT RESULT: PASS
 ```
 
-This is the closest standalone probe to the eventual MPCVR render path: decoded D3D11 textures, NVOF output textures, a compute-shader interpolation pass, and one synthesized D3D11 output texture.
+This is the closest simple standalone probe to the eventual MPCVR render path: decoded D3D11 textures, NVOF output textures, a compute-shader interpolation pass, and one synthesized D3D11 output texture.
+
+## `NativeNvofOcclusionTest.exe`
+
+Introduces the first layered-motion scene rather than translating the whole frame. A textured foreground rectangle moves +24 pixels horizontally and +12 pixels vertically over a different static textured background. The exact midpoint contains the object at +12/+6.
+
+The test reports separate statistics for:
+
+- foreground-object flow in both directions
+- static-background flow in both directions
+- stable-background synthesis error
+- moving-object interior synthesis error
+- occlusion and motion-boundary error
+- forward/backward flow consistency
+
+Boundary error is intentionally diagnostic. The current shader is still the naïve two-warp blend, so nonzero error where the object covers or reveals background is expected. The executable passes when NVOF separates the moving object from the stationary background and synthesis remains accurate away from those boundaries.
+
+It writes:
+
+- `NativeNvofOcclusionMidpoint.bmp`
+- `NativeNvofOcclusionExpected.bmp`
+- `NativeNvofOcclusionDiff.bmp` (errors amplified 8x)
+- `NativeNvofOcclusionRegions.bmp`
+- `NativeNvofOcclusionConsistency.bmp`
+
+A successful diagnostic ends with:
+
+```text
+D3D11 compute midpoint: layered scene dispatched
+OCCLUSION DIAGNOSTIC: PASS
+```
+
+The measured boundary and consistency behavior is the input for the next stage: confidence weighting, occlusion selection, disocclusion filling, and motion-edge-aware flow upsampling.
 
 ## Running
 
@@ -96,6 +128,7 @@ This is the closest standalone probe to the eventual MPCVR render path: decoded 
 .\NativeNvofFlowTest.exe
 .\NativeNvofMidpointTest.exe
 .\NativeNvofGpuMidpointTest.exe
+.\NativeNvofOcclusionTest.exe
 ```
 
-4. Copy the complete console output from `NativeNvofGpuMidpointTest.exe`. Keep the three GPU midpoint bitmaps if it fails or the difference image contains visible structure.
+4. Copy the complete console output from `NativeNvofOcclusionTest.exe`. Keep its five generated bitmaps; the difference and consistency maps are especially useful even when the diagnostic passes.
