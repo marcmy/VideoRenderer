@@ -98,6 +98,7 @@ function Get-MpcvrLowerScale {
 function Add-MpcvrRecommendationCandidate {
     param(
         [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
         [System.Collections.Generic.List[object]]$Candidates,
         [Parameter(Mandatory)]
         [string]$Id,
