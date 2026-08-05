@@ -98,8 +98,7 @@ function Get-MpcvrLowerScale {
 function Add-MpcvrRecommendationCandidate {
     param(
         [Parameter(Mandatory)]
-        [AllowEmptyCollection()]
-        [System.Collections.Generic.List[object]]$Candidates,
+        [ref]$Candidates,
         [Parameter(Mandatory)]
         [string]$Id,
         [Parameter(Mandatory)]
@@ -112,17 +111,17 @@ function Add-MpcvrRecommendationCandidate {
         [string]$Impact = 'Unknown until recalibrated'
     )
 
-    if (@($Candidates | Where-Object { $_.Id -eq $Id }).Count -gt 0) {
+    if (@($Candidates.Value | Where-Object { $_.Id -eq $Id }).Count -gt 0) {
         return
     }
-    $Candidates.Add([pscustomobject]@{
+    $Candidates.Value = @($Candidates.Value) + [pscustomobject]@{
         Id = $Id
         Title = $Title
         Reason = $Reason
         RequiresCalibration = $RequiresCalibration
         Impact = $Impact
         Settings = [pscustomobject](Copy-MpcvrSettingsDictionary -Settings $Settings)
-    })
+    }
 }
 
 function New-MpcvrProfileFromRecommendation {
@@ -232,12 +231,12 @@ function Get-MpcvrCalibrationRecommendation {
 
     $baseSettings = ConvertTo-MpcvrSettingsDictionary -SettingsObject $CurrentSettings.Settings
     Set-MpcvrMeasuredSettings -Settings $baseSettings -Calibration $Calibration
-    $candidates = New-Object 'System.Collections.Generic.List[object]'
+    $candidates = @()
     $verdict = [string]$Calibration.Verdict
 
     if ($verdict -eq 'Stable') {
         Add-MpcvrRecommendationCandidate `
-            -Candidates $candidates `
+            -Candidates ([ref]$candidates) `
             -Id 'keep-measured' `
             -Title 'Keep the measured settings' `
             -Reason 'The measured workload met pacing, error, and timing-headroom requirements.' `
@@ -336,7 +335,7 @@ function Get-MpcvrCalibrationRecommendation {
         if ($reductionCandidates.Contains($id)) {
             $candidate = $reductionCandidates[$id]
             Add-MpcvrRecommendationCandidate `
-                -Candidates $candidates `
+                -Candidates ([ref]$candidates) `
                 -Id $id `
                 -Title $candidate.Title `
                 -Reason $candidate.Reason `
@@ -348,7 +347,7 @@ function Get-MpcvrCalibrationRecommendation {
 
     if ($candidates.Count -eq 0) {
         Add-MpcvrRecommendationCandidate `
-            -Candidates $candidates `
+            -Candidates ([ref]$candidates) `
             -Id 'no-automatic-change' `
             -Title 'No safe automatic reduction is available' `
             -Reason 'The current report does not expose an enabled stage that can be reduced automatically.' `
@@ -361,16 +360,16 @@ function Get-MpcvrCalibrationRecommendation {
     if ($verdict -eq 'Unstable' -and $candidates.Count -gt 1) {
         if ($Priority -eq 'Smoothness') {
             $match = @($candidates | Where-Object { $_.Id -eq 'disable-maxine' } | Select-Object -First 1)
-            if ($match.Count -gt 0) { $recommendedIndex = [array]::IndexOf([object[]]$candidates.ToArray(), $match[0]) }
+            if ($match.Count -gt 0) { $recommendedIndex = [array]::IndexOf([object[]]$candidates, $match[0]) }
         }
         elseif ($Priority -eq 'Quality') {
             $match = @($candidates | Where-Object { $_.Id -eq 'disable-interpolation' } | Select-Object -First 1)
-            if ($match.Count -gt 0) { $recommendedIndex = [array]::IndexOf([object[]]$candidates.ToArray(), $match[0]) }
+            if ($match.Count -gt 0) { $recommendedIndex = [array]::IndexOf([object[]]$candidates, $match[0]) }
         }
         else {
             $preferred = if ([double]$Calibration.Timing.MaxineMillisecondsP95 -ge [double]$Calibration.Timing.FrameInterpolationMillisecondsP95) { 'disable-maxine' } else { 'disable-interpolation' }
             $match = @($candidates | Where-Object { $_.Id -eq $preferred } | Select-Object -First 1)
-            if ($match.Count -gt 0) { $recommendedIndex = [array]::IndexOf([object[]]$candidates.ToArray(), $match[0]) }
+            if ($match.Count -gt 0) { $recommendedIndex = [array]::IndexOf([object[]]$candidates, $match[0]) }
         }
     }
 
