@@ -46,9 +46,8 @@ jobs:
           Log file:
             %LOCALAPPDATA%\MPCVR\NvOFFRUC-Diagnostic.log
 
-          Reproduce the freeze, leave MPC-HC frozen, then run Capture-Frozen-MPC-HC.ps1
-          from PowerShell. If the script cannot create the dump, use Task Manager:
-            Details > mpc-hc64.exe > right-click > Create memory dump file
+          Reproduce the freeze, leave MPC-HC frozen, then run Capture-Frozen-MPC-HC.cmd.
+          It launches the corrected PowerShell collector with administrator rights.
 
           Keep the log and dump together. The PDB files in this bundle match this exact build.
           '@ | Set-Content -Path (Join-Path $bundle 'README-DIAGNOSTIC.txt') -Encoding utf8
@@ -70,20 +69,40 @@ jobs:
           $desktop = [Environment]::GetFolderPath('Desktop')
           $folder = Join-Path $desktop "MPCVR-FRUC-Hang-$stamp"
           New-Item -ItemType Directory -Force -Path $folder | Out-Null
+
+          # comsvcs MiniDump is fragile when the destination contains spaces or
+          # when rundll32 receives the DLL and entry point as one quoted string.
+          # Capture to a simple TEMP path and pass each argument separately.
+          $tempDump = Join-Path $env:TEMP "mpc-hc-fruc-$($process.Id)-$stamp.dmp"
           $dump = Join-Path $folder 'mpc-hc-hang.dmp'
           $log = Join-Path $env:LOCALAPPDATA 'MPCVR\NvOFFRUC-Diagnostic.log'
+          $rundll32 = Join-Path $env:WINDIR 'System32\rundll32.exe'
+          $comsvcs = Join-Path $env:WINDIR 'System32\comsvcs.dll'
 
-          $arguments = "$env:WINDIR\System32\comsvcs.dll, MiniDump $($process.Id) `"$dump`" full"
-          $capture = Start-Process -FilePath "$env:WINDIR\System32\rundll32.exe" -ArgumentList $arguments -Wait -PassThru
-          if ($capture.ExitCode -ne 0 -or -not (Test-Path $dump)) {
-            throw "Dump capture failed with exit code $($capture.ExitCode). Use Task Manager > Details > mpc-hc64.exe > Create memory dump file instead."
+          Remove-Item $tempDump -Force -ErrorAction SilentlyContinue
+          & $rundll32 "$comsvcs,MiniDump" $process.Id $tempDump full
+          $exitCode = $LASTEXITCODE
+
+          if ($exitCode -ne 0 -or -not (Test-Path $tempDump)) {
+            throw "Dump capture failed with exit code $exitCode. Try running this collector as Administrator or use Task Manager > Details > mpc-hc64.exe > Create memory dump file."
           }
-          if (Test-Path $log) { Copy-Item $log (Join-Path $folder 'NvOFFRUC-Diagnostic.log') }
+
+          Move-Item $tempDump $dump -Force
+          if (Test-Path $log) {
+            Copy-Item $log (Join-Path $folder 'NvOFFRUC-Diagnostic.log')
+          }
 
           $zip = "$folder.zip"
           Compress-Archive -Path (Join-Path $folder '*') -DestinationPath $zip -Force
           Write-Host "Created $zip"
           '@ | Set-Content -Path (Join-Path $bundle 'Capture-Frozen-MPC-HC.ps1') -Encoding utf8
+
+          @'
+          @echo off
+          set "SCRIPT=%~dp0Capture-Frozen-MPC-HC.ps1"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',('""' + '%SCRIPT%' + '""')"
+          pause
+          '@ | Set-Content -Path (Join-Path $bundle 'Capture-Frozen-MPC-HC.cmd') -Encoding ascii
 
           Compress-Archive -Path (Join-Path $bundle '*') -DestinationPath 'MPCVR-FRUC-Diagnostic.zip' -Force
 
