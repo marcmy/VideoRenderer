@@ -107,12 +107,124 @@ function New-Button {
     return $control
 }
 
+function Get-MpcvrOptionalProperty {
+    param(
+        [object]$InputObject,
+        [Parameter(Mandatory)][string]$Name,
+        $DefaultValue = $null
+    )
+
+    if ($null -eq $InputObject) {
+        return $DefaultValue
+    }
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) {
+        return $DefaultValue
+    }
+    return $property.Value
+}
+
+function ConvertTo-MpcvrSystemStatusLines {
+    param(
+        [Parameter(Mandatory)]
+        [object]$Profile
+    )
+
+    $lines = @()
+    foreach ($gpu in @(Get-MpcvrOptionalProperty -InputObject $Profile -Name 'Gpus' -DefaultValue @())) {
+        $name = [string](Get-MpcvrOptionalProperty -InputObject $gpu -Name 'Name' -DefaultValue 'Unknown NVIDIA GPU')
+        $driver = [string](Get-MpcvrOptionalProperty -InputObject $gpu -Name 'DriverVersion' -DefaultValue 'unknown')
+        $memoryMiB = [double](Get-MpcvrOptionalProperty -InputObject $gpu -Name 'MemoryMiB' -DefaultValue 0)
+        $vram = if ($memoryMiB -gt 0) { '{0:N1} GB' -f ($memoryMiB / 1024.0) } else { 'unknown VRAM' }
+        $width = [int](Get-MpcvrOptionalProperty -InputObject $gpu -Name 'CurrentWidth' -DefaultValue 0)
+        $height = [int](Get-MpcvrOptionalProperty -InputObject $gpu -Name 'CurrentHeight' -DefaultValue 0)
+        $refresh = [int](Get-MpcvrOptionalProperty -InputObject $gpu -Name 'CurrentRefreshHz' -DefaultValue 0)
+        $output = if ($width -gt 0 -and $height -gt 0) {
+            if ($refresh -gt 0) { "$width`x$height @ $refresh Hz" } else { "$width`x$height" }
+        }
+        else {
+            'output unknown'
+        }
+        $lines += "GPU: $name | driver $driver | $vram | $output"
+    }
+
+    foreach ($display in @(Get-MpcvrOptionalProperty -InputObject $Profile -Name 'Displays' -DefaultValue @())) {
+        $name = [string](Get-MpcvrOptionalProperty -InputObject $display -Name 'Name' -DefaultValue 'Unknown display')
+        $width = [int](Get-MpcvrOptionalProperty -InputObject $display -Name 'ScreenWidth' -DefaultValue 0)
+        $height = [int](Get-MpcvrOptionalProperty -InputObject $display -Name 'ScreenHeight' -DefaultValue 0)
+        $status = [string](Get-MpcvrOptionalProperty -InputObject $display -Name 'Status' -DefaultValue 'unknown')
+        $size = if ($width -gt 0 -and $height -gt 0) { "$width`x$height" } else { 'size unknown' }
+        $lines += "Display: $name | $size | status $status"
+    }
+
+    $runtimes = Get-MpcvrOptionalProperty -InputObject $Profile -Name 'Runtimes'
+    $maxine = Get-MpcvrOptionalProperty -InputObject $runtimes -Name 'Maxine'
+    $fruc = Get-MpcvrOptionalProperty -InputObject $runtimes -Name 'NvOFFRUC'
+    $lines += 'Maxine: {0} | {1}' -f `
+        [bool](Get-MpcvrOptionalProperty -InputObject $maxine -Name 'Installed' -DefaultValue $false), `
+        [string](Get-MpcvrOptionalProperty -InputObject $maxine -Name 'Path' -DefaultValue '')
+    $lines += 'NvOFFRUC: {0} | {1}' -f `
+        [bool](Get-MpcvrOptionalProperty -InputObject $fruc -Name 'Installed' -DefaultValue $false), `
+        [string](Get-MpcvrOptionalProperty -InputObject $fruc -Name 'Path' -DefaultValue '')
+
+    foreach ($player in @(Get-MpcvrOptionalProperty -InputObject $Profile -Name 'Players' -DefaultValue @())) {
+        $lines += '{0}: folder={1}, renderer={2}, version={3}' -f `
+            [string](Get-MpcvrOptionalProperty -InputObject $player -Name 'Name' -DefaultValue 'Player'), `
+            [bool](Get-MpcvrOptionalProperty -InputObject $player -Name 'DirectoryExists' -DefaultValue $false), `
+            [bool](Get-MpcvrOptionalProperty -InputObject $player -Name 'RendererExists' -DefaultValue $false), `
+            [string](Get-MpcvrOptionalProperty -InputObject $player -Name 'RendererVersion' -DefaultValue '')
+    }
+
+    if ($lines.Count -eq 0) {
+        $lines += 'No supported NVIDIA GPU, display, runtime, or player information was detected.'
+    }
+    return $lines
+}
+
 if ($ValidateOnly) {
     $testForm = New-Object System.Windows.Forms.Form
     $testForm.Text = 'MPCVR Unified Setup Validation'
     $testForm.Controls.Add((New-Label -Text 'Validation' -X 10 -Y 10))
     $testForm.Dispose()
     [void](Get-PowerShellExecutable)
+
+    $synthetic = [pscustomobject]@{
+        Gpus = @([pscustomobject]@{
+            Name = 'Synthetic GPU'
+            DriverVersion = '1.2.3'
+            MemoryMiB = 8192
+            CurrentWidth = 1920
+            CurrentHeight = 1080
+            CurrentRefreshHz = 240
+        })
+        Displays = @([pscustomobject]@{
+            Name = 'Synthetic Display'
+            ScreenWidth = 1920
+            ScreenHeight = 1080
+            Status = 'OK'
+        })
+        Runtimes = [pscustomobject]@{
+            Maxine = [pscustomobject]@{ Installed = $true; Path = 'C:\Maxine' }
+            NvOFFRUC = [pscustomobject]@{ Installed = $true; Path = 'C:\NvOFFRUC' }
+        }
+        Players = @([pscustomobject]@{
+            Name = 'Synthetic MPC-HC'
+            DirectoryExists = $true
+            RendererExists = $true
+            RendererVersion = '1.0.0'
+        })
+    }
+    $statusLines = @(ConvertTo-MpcvrSystemStatusLines -Profile $synthetic)
+    if ($statusLines.Count -lt 5 -or $statusLines[0] -notmatch '8\.0 GB') {
+        throw 'GUI inventory formatting validation failed.'
+    }
+
+    $defaultProfileRoot = Get-MpcvrProfileRoot
+    if ([string]::IsNullOrWhiteSpace($defaultProfileRoot)) {
+        throw 'Default profile-root resolution failed.'
+    }
+    [void]@(Get-MpcvrProfiles -ProfileRoot $defaultProfileRoot)
+
     Write-Host 'MPCVR Unified Setup GUI validation passed.' -ForegroundColor Green
     exit 0
 }
@@ -206,7 +318,7 @@ $installOnlyButton = New-Button -Text 'Install / update only' -X 212 -Y 122 -Wid
 $automaticTab.Controls.Add($installOnlyButton)
 $autoTuneOnlyButton = New-Button -Text 'Auto-tune only' -X 396 -Y 122 -Width 150 -Height 42
 $automaticTab.Controls.Add($autoTuneOnlyButton)
-$automaticNote = New-Label -Text 'Use a representative 30 fps video to build a 30â†’60 profile and a representative 60 fps video to build a separate 60â†’120 profile.' -X 18 -Y 184 -Width 860 -Height 42
+$automaticNote = New-Label -Text 'Use a representative 30 fps video to build a 30 -> 60 profile and a representative 60 fps video to build a separate 60 -> 120 profile.' -X 18 -Y 184 -Width 860 -Height 42
 $automaticNote.ForeColor = [System.Drawing.Color]::DimGray
 $automaticTab.Controls.Add($automaticNote)
 
@@ -270,20 +382,7 @@ function Set-Activity {
 function Refresh-SystemStatus {
     try {
         $profile = Get-MpcvrSystemProfile
-        $lines = @()
-        foreach ($gpu in @($profile.Gpus)) {
-            $vram = if ($null -ne $gpu.AdapterRamGB) { '{0:N1} GB' -f [double]$gpu.AdapterRamGB } else { 'unknown VRAM' }
-            $lines += "GPU: $($gpu.Name) | driver $($gpu.DriverVersion) | $vram | $($gpu.CurrentWidth)x$($gpu.CurrentHeight) @ $($gpu.CurrentRefreshHz) Hz"
-        }
-        foreach ($display in @($profile.Displays)) {
-            $lines += "Display: $($display.Name) | $($display.Width)x$($display.Height) @ $($display.RefreshHz) Hz"
-        }
-        $lines += "Maxine: $($profile.Runtimes.Maxine.Installed) | $($profile.Runtimes.Maxine.Path)"
-        $lines += "NvOFFRUC: $($profile.Runtimes.NvOFFRUC.Installed) | $($profile.Runtimes.NvOFFRUC.Path)"
-        foreach ($player in @($profile.Players)) {
-            $lines += "$($player.Name): folder=$($player.DirectoryExists), renderer=$($player.RendererExists), version=$($player.RendererVersion)"
-        }
-        $statusText.Lines = $lines
+        $statusText.Lines = @(ConvertTo-MpcvrSystemStatusLines -Profile $profile)
         Set-Activity -Text 'System status refreshed.' -Color ([System.Drawing.Color]::DarkGreen)
     }
     catch {
@@ -293,14 +392,20 @@ function Refresh-SystemStatus {
 }
 
 function Refresh-Profiles {
-    $profileCombo.Items.Clear()
-    foreach ($stored in @(Get-MpcvrProfiles)) {
-        if ($stored.Valid) {
-            [void]$profileCombo.Items.Add($stored.Name)
+    try {
+        $profileCombo.Items.Clear()
+        $root = Get-MpcvrProfileRoot
+        foreach ($stored in @(Get-MpcvrProfiles -ProfileRoot $root)) {
+            if ($stored.Valid) {
+                [void]$profileCombo.Items.Add($stored.Name)
+            }
+        }
+        if ($profileCombo.Items.Count -gt 0) {
+            $profileCombo.SelectedIndex = 0
         }
     }
-    if ($profileCombo.Items.Count -gt 0) {
-        $profileCombo.SelectedIndex = 0
+    catch {
+        Set-Activity -Text "Profile refresh failed: $($_.Exception.Message)" -Color ([System.Drawing.Color]::DarkRed)
     }
 }
 
@@ -471,5 +576,8 @@ $form.Add_Shown({
 
 [void]$form.ShowDialog()
 $form.Dispose()
+
+
+
 
 

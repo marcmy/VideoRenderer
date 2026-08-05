@@ -1,15 +1,15 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
 function Get-MpcvrProfileRoot {
     param(
-        [string]$ProfileRoot = (Join-Path $env:LOCALAPPDATA 'MPCVR Unified Setup\profiles')
+        [string]$ProfileRoot
     )
 
     if ([string]::IsNullOrWhiteSpace($ProfileRoot)) {
-        throw 'A profile root is required.'
+        $ProfileRoot = Join-Path $env:LOCALAPPDATA 'MPCVR Unified Setup\profiles'
     }
     return [IO.Path]::GetFullPath($ProfileRoot)
 }
@@ -498,3 +498,4 @@ Export-ModuleMember -Function @(
     'Import-MpcvrProfile',
     'Restore-MpcvrFactoryProfiles'
 )
+
