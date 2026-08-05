@@ -1,0 +1,27 @@
+name: Export current FRUC source
+
+on:
+  push:
+    branches: [diag/export-1c8484a-source]
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: diag/export-1c8484a-source
+          fetch-depth: 0
+          submodules: false
+      - name: Package exact source
+        shell: bash
+        run: git archive --format=zip --output=VideoRenderer-1c8484a-source.zip HEAD
+      - uses: actions/upload-artifact@v7
+        with:
+          name: VideoRenderer-1c8484a-source
+          path: VideoRenderer-1c8484a-source.zip
+          compression-level: 0
+          retention-days: 1
