@@ -1,0 +1,36 @@
+name: Apply CUDA context isolation
+
+on:
+  push:
+    branches: [feature/maxine-fruc-combined]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feature/maxine-fruc-combined
+          fetch-depth: 0
+      - name: Reconstruct and apply verified patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d .github/nvoffruc-cuda-context-isolation.patch.gz.b64 | gzip -d > /tmp/nvoffruc-cuda-context-isolation.patch
+          echo 'd44917752af0ff6bb4937f6d1ccc3ba1d577e2c7470a58d8e89ec7b64fff3abd  /tmp/nvoffruc-cuda-context-isolation.patch' | sha256sum -c -
+          git apply --check /tmp/nvoffruc-cuda-context-isolation.patch
+          git apply /tmp/nvoffruc-cuda-context-isolation.patch
+          rm -f .github/nvoffruc-cuda-context-isolation.patch.gz.b64
+          rm -f .github/workflows/apply-cuda-context-isolation.yml
+      - name: Commit fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: isolate NvOFFRUC CUDA context from Maxine'
+          git push origin HEAD:feature/maxine-fruc-combined
