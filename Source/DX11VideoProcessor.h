@@ -366,6 +366,7 @@ public:
 		REFERENCE_TIME& requestedMidpoint, UINT& sourceSurface) override;
 	bool SubmitFrameInterpolation(REFERENCE_TIME sourceTime, REFERENCE_TIME requestedMidpoint,
 		REFERENCE_TIME& midpointTime) override;
+	void CancelFrameInterpolationSubmission() override;
 	HRESULT RenderFrameInterpolation(const REFERENCE_TIME frameStartTime) override;
 	HRESULT RenderFrameInterpolationSource(UINT sourceSurface, const REFERENCE_TIME frameStartTime) override;
 	void ReleaseFrameInterpolationSource(UINT sourceSurface) override;

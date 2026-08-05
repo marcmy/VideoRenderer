@@ -2487,6 +2487,15 @@ bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFER
 #endif
 }
 
+void CDX11VideoProcessor::CancelFrameInterpolationSubmission()
+{
+	// CRendererInputPin::BeginFlush holds m_RendererLock while the base
+	// renderer waits for Receive() to return. Invalidate any in-flight FRUC
+	// submission without touching the synchronous NVIDIA API so Receive() can
+	// discard its result before attempting to reacquire that lock.
+	m_FrameInterpolationGeneration.fetch_add(1, std::memory_order_acq_rel);
+}
+
 bool CDX11VideoProcessor::SubmitFrameInterpolation(const REFERENCE_TIME sourceTime,
 	const REFERENCE_TIME requestedMidpoint, REFERENCE_TIME& midpointTime)
 {
@@ -2499,15 +2508,26 @@ bool CDX11VideoProcessor::SubmitFrameInterpolation(const REFERENCE_TIME sourceTi
 			static_cast<double>(sourceTime) / static_cast<double>(UNITS),
 			static_cast<double>(requestedMidpoint) / static_cast<double>(UNITS),
 			outputReady, repeated)) {
+		if (submissionGeneration != m_FrameInterpolationGeneration.load(std::memory_order_acquire)) {
+			return false;
+		}
+
 		CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
-		if (submissionGeneration == m_FrameInterpolationGeneration.load()) {
+		if (submissionGeneration == m_FrameInterpolationGeneration.load(std::memory_order_acquire)) {
 			m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
 		}
 		return false;
 	}
 
+	// BeginFlush invalidates the generation while holding m_RendererLock.
+	// Check before acquiring that lock, otherwise the flush thread waits for
+	// Receive() while Receive() waits for the flush thread's renderer lock.
+	if (submissionGeneration != m_FrameInterpolationGeneration.load(std::memory_order_acquire)) {
+		return false;
+	}
+
 	CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
-	if (submissionGeneration != m_FrameInterpolationGeneration.load()) {
+	if (submissionGeneration != m_FrameInterpolationGeneration.load(std::memory_order_acquire)) {
 		return false;
 	}
 	m_bFrameInterpolationPrepared = false;

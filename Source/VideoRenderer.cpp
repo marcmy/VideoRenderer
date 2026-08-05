@@ -437,6 +437,9 @@ HRESULT CMpcVideoRenderer::BeginFlush()
 	DLog(L"CMpcVideoRenderer::BeginFlush()");
 
 	m_bFlushing = true;
+	if (m_VideoProcessor) {
+		m_VideoProcessor->CancelFrameInterpolationSubmission();
+	}
 	ResetFrameInterpolationPresenterQueue();
 	return __super::BeginFlush();
 }
