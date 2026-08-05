@@ -644,14 +644,35 @@ bool CMpcVideoRenderer::QueueFrameInterpolationSource(const UINT sourceSurface, 
 		return false;
 	}
 
+	CComPtr<IReferenceClock> clock;
+	REFERENCE_TIME graphStart = 0;
+	const uint64_t generation = m_FrameInterpolationPresenterGeneration.load();
+	{
+		// Snapshot all graph-timing state on the receive thread. The presenter
+		// must never take m_InterfaceLock: DirectShow seek/flush already enters
+		// the renderer with m_InterfaceLock and m_RendererLock held. Capture the
+		// generation before taking the lock so a sample that was blocked by a
+		// flush cannot be queued into the new segment afterward.
+		CAutoLock cVideoLock(&m_InterfaceLock);
+		if (m_State != State_Running || m_bFlushing
+				|| generation != m_FrameInterpolationPresenterGeneration.load()) {
+			return false;
+		}
+		clock = m_pClock;
+		graphStart = static_cast<REFERENCE_TIME>(m_tStart);
+	}
+
 	bool queued = false;
 	{
 		std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
-		if (!m_bStopFrameInterpolationPresenter.load()) {
+		if (!m_bStopFrameInterpolationPresenter.load()
+				&& generation == m_FrameInterpolationPresenterGeneration.load()) {
 			m_FrameInterpolationPresenterQueue.push_back({
 				sourceSurface,
 				streamTime,
-				m_FrameInterpolationPresenterGeneration.load()
+				graphStart,
+				clock,
+				generation
 			});
 			queued = true;
 		}
@@ -709,58 +730,59 @@ void CMpcVideoRenderer::StopFrameInterpolationPresenter()
 
 bool CMpcVideoRenderer::WaitForFrameInterpolationTime(const FrameInterpolationPresentation& frame)
 {
+	if (!frame.clock) {
+		return true;
+	}
+
+	// Avoid IReferenceClock::AdviseTime/Unadvise on the presenter thread.
+	// Unadvise can overlap DirectShow's flush/seek transition and wedge the
+	// graph. A private timer remains immediately cancellable by queue reset.
+	const HANDLE timer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+	if (!timer) {
+		return false;
+	}
+
+	bool due = false;
 	for (;;) {
 		if (m_bStopFrameInterpolationPresenter.load()
 				|| frame.generation != m_FrameInterpolationPresenterGeneration.load()) {
-			return false;
-		}
-
-		CComPtr<IReferenceClock> clock;
-		REFERENCE_TIME graphStart = 0;
-		{
-			CAutoLock cVideoLock(&m_InterfaceLock);
-			if (m_State != State_Running) {
-				return false;
-			}
-			clock = m_pClock;
-			graphStart = (REFERENCE_TIME)m_tStart;
-		}
-		if (!clock) {
-			return true;
+			break;
 		}
 
 		REFERENCE_TIME currentTime = 0;
-		HRESULT hr = clock->GetTime(&currentTime);
-		if (FAILED(hr)) {
-			return false;
-		}
-		if (graphStart + frame.streamTime <= currentTime) {
-			return true;
+		if (FAILED(frame.clock->GetTime(&currentTime))) {
+			break;
 		}
 
-		CAMEvent clockEvent(FALSE);
-		DWORD_PTR adviseCookie = 0;
-		hr = clock->AdviseTime(graphStart, frame.streamTime,
-			(HEVENT)(HANDLE)clockEvent, &adviseCookie);
-		if (FAILED(hr)) {
-			return false;
+		const REFERENCE_TIME remaining = frame.graphStart + frame.streamTime - currentTime;
+		if (remaining <= 0) {
+			due = true;
+			break;
+		}
+
+		LARGE_INTEGER relativeDueTime = {};
+		relativeDueTime.QuadPart = -remaining;
+		if (!SetWaitableTimer(timer, &relativeDueTime, 0, nullptr, nullptr, FALSE)) {
+			break;
 		}
 
 		HANDLE waitObjects[] = {
 			(HANDLE)m_FrameInterpolationPresenterWake,
-			(HANDLE)clockEvent,
+			timer,
 		};
 		const DWORD waitResult = WaitForMultipleObjects(2, waitObjects, FALSE, INFINITE);
+		CancelWaitableTimer(timer);
 		if (waitResult == WAIT_OBJECT_0) {
-			clock->Unadvise(adviseCookie);
 			continue;
 		}
-		if (waitResult == WAIT_OBJECT_0 + 1) {
-			return true;
+		if (waitResult != WAIT_OBJECT_0 + 1) {
+			break;
 		}
-		clock->Unadvise(adviseCookie);
-		return false;
+		// Re-read the graph clock after the timer fires to tolerate drift.
 	}
+
+	CloseHandle(timer);
+	return due;
 }
 
 void CMpcVideoRenderer::FrameInterpolationPresenter()
@@ -786,27 +808,24 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 
 		const bool due = WaitForFrameInterpolationTime(frame);
 		bool rendered = false;
-		if (due
-				&& !m_bStopFrameInterpolationPresenter.load()
-				&& frame.generation == m_FrameInterpolationPresenterGeneration.load()) {
-			CAutoLock cVideoLock(&m_InterfaceLock);
-			if (m_State == State_Running
-					&& frame.generation == m_FrameInterpolationPresenterGeneration.load()) {
-				CAutoLock cRendererLock(&m_RendererLock);
-				if (frame.generation == m_FrameInterpolationPresenterGeneration.load()) {
-					const HRESULT hr = m_VideoProcessor->RenderFrameInterpolationSource(
-						frame.sourceSurface, frame.streamTime);
-					rendered = hr == S_OK;
-					if (rendered) {
-						m_bValidBuffer = true;
-					}
+		{
+			// Only serialize with D3D11 work. Never acquire m_InterfaceLock on
+			// the presenter thread; seek/flush already owns that lock.
+			CAutoLock cRendererLock(&m_RendererLock);
+			if (due
+					&& !m_bStopFrameInterpolationPresenter.load()
+					&& frame.generation == m_FrameInterpolationPresenterGeneration.load()
+					&& m_VideoProcessor) {
+				const HRESULT hr = m_VideoProcessor->RenderFrameInterpolationSource(
+					frame.sourceSurface, frame.streamTime);
+				rendered = hr == S_OK;
+				if (rendered) {
+					m_bValidBuffer = true;
 				}
 			}
-		}
-
-		{
-			CAutoLock cRendererLock(&m_RendererLock);
-			m_VideoProcessor->ReleaseFrameInterpolationSource(frame.sourceSurface);
+			if (m_VideoProcessor) {
+				m_VideoProcessor->ReleaseFrameInterpolationSource(frame.sourceSurface);
+			}
 		}
 
 		if (!rendered && due && !m_bStopFrameInterpolationPresenter.load()) {

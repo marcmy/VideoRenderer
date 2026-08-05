@@ -139,6 +139,8 @@ private:
 	struct FrameInterpolationPresentation {
 		UINT sourceSurface = UINT_MAX;
 		REFERENCE_TIME streamTime = INVALID_TIME;
+		REFERENCE_TIME graphStart = 0;
+		CComPtr<IReferenceClock> clock;
 		uint64_t generation = 0;
 	};
 	std::mutex m_FrameInterpolationPresenterMutex;
