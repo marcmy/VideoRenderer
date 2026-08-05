@@ -2354,6 +2354,7 @@ bool CDX11VideoProcessor::IsFrameInterpolationEligible(const REFERENCE_TIME fram
 
 void CDX11VideoProcessor::ResetFrameInterpolation()
 {
+	m_FrameInterpolationGeneration.fetch_add(1);
 	m_FrameInterpolation.Reset();
 	m_bFrameInterpolationPrepared = false;
 	m_bFrameInterpolationOutputReady = false;
@@ -2363,15 +2364,23 @@ void CDX11VideoProcessor::ResetFrameInterpolation()
 	m_rtFrameInterpolationLastInput = INVALID_TIME;
 	m_pFrameInterpolationTexture = nullptr;
 	m_pFrameInterpolationView = nullptr;
+	for (auto& surface : m_FrameInterpolationPresentationSurfaces) {
+		if (!surface.inUse) {
+			surface.texture.Release();
+		}
+	}
 	m_strFrameInterpolationStatus = m_iFrameInterpolationMode == FRUC_MODE_Disabled
 		? L"Disabled" : L"Waiting for frames";
 }
 
-bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFERENCE_TIME& midpointTime)
+bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFERENCE_TIME& sourceTime,
+	REFERENCE_TIME& requestedMidpoint, UINT& sourceSurface)
 {
-	midpointTime = INVALID_TIME;
+	sourceTime = INVALID_TIME;
+	requestedMidpoint = INVALID_TIME;
+	sourceSurface = UINT_MAX;
 #ifdef _WIN64
-	if (!pSample || !m_pDevice || !m_pDeviceContext || !m_pDXGISwapChain1) {
+	if (!pSample) {
 		return false;
 	}
 
@@ -2379,7 +2388,17 @@ bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFER
 	if (FAILED(pSample->GetTime(&rtStart, &rtEnd))) {
 		rtStart = m_pFilter->m_FrameStats.GeTimestamp();
 	}
+	sourceTime = rtStart;
 	const REFERENCE_TIME frameDuration = m_pFilter->m_FrameStats.GetAverageFrameDuration();
+
+	// All D3D11 immediate-context work stays serialized with presentation.
+	// NvOFFRUC itself is submitted separately after the source frame has been
+	// queued, so the presenter can display that source while CUDA is working.
+	CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
+
+	if (!m_pDevice || !m_pDeviceContext || !m_pDXGISwapChain1) {
+		return false;
+	}
 	if (!IsFrameInterpolationEligible(frameDuration)) {
 		if (m_bFrameInterpolationPrepared || m_rtFrameInterpolationLastInput != INVALID_TIME) {
 			ResetFrameInterpolation();
@@ -2400,6 +2419,7 @@ bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFER
 		return false;
 	}
 
+	m_rtStart = rtStart;
 	HRESULT hr = CopySample(pSample);
 	if (FAILED(hr)) {
 		m_strFrameInterpolationStatus = L"Could not prepare the source frame";
@@ -2424,35 +2444,89 @@ bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFER
 		m_strFrameInterpolationStatus = L"Could not render the processed frame for interpolation";
 		return false;
 	}
-	m_pDeviceContext->Flush();
 
-	const REFERENCE_TIME requestedMidpoint = m_rtFrameInterpolationLastInput == INVALID_TIME
-		? rtStart - frameDuration / 2
-		: m_rtFrameInterpolationLastInput + (rtStart - m_rtFrameInterpolationLastInput) / 2;
-	bool outputReady = false;
-	bool repeated = false;
-	if (!m_FrameInterpolation.SubmitInputFrame(
-			static_cast<double>(rtStart) / static_cast<double>(UNITS),
-			static_cast<double>(requestedMidpoint) / static_cast<double>(UNITS),
-			outputReady, repeated)) {
-		m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
+	D3D11_TEXTURE2D_DESC inputDesc = {};
+	inputTexture->GetDesc(&inputDesc);
+	UINT freeSurface = UINT_MAX;
+	for (UINT i = 0; i < FrameInterpolationSurfaceCount; ++i) {
+		if (!m_FrameInterpolationPresentationSurfaces[i].inUse) {
+			freeSurface = i;
+			break;
+		}
+	}
+
+	HRESULT copyHr = E_OUTOFMEMORY;
+	if (freeSurface != UINT_MAX) {
+		auto& surface = m_FrameInterpolationPresentationSurfaces[freeSurface];
+		copyHr = surface.texture.CheckCreate(m_pDevice, inputDesc.Format,
+			inputDesc.Width, inputDesc.Height, Tex2D_DefaultShader);
+		if (SUCCEEDED(copyHr)) {
+			m_pDeviceContext->CopyResource(surface.texture.pTexture, inputTexture);
+			m_pDeviceContext->Flush();
+			surface.inUse = true;
+			sourceSurface = freeSurface;
+		}
+	}
+
+	if (FAILED(copyHr)) {
+		m_FrameInterpolation.CancelInputFrame();
+		m_strFrameInterpolationStatus = freeSurface == UINT_MAX
+			? L"Frame-interpolation presentation queue is full"
+			: L"Could not preserve the source frame for asynchronous presentation";
 		return false;
 	}
 
-	m_bFrameInterpolationPrepared = true;
+	requestedMidpoint = m_rtFrameInterpolationLastInput == INVALID_TIME
+		? rtStart - frameDuration / 2
+		: m_rtFrameInterpolationLastInput + (rtStart - m_rtFrameInterpolationLastInput) / 2;
+	m_FrameInterpolationPendingGeneration = m_FrameInterpolationGeneration.load();
+	return true;
+#else
+	UNREFERENCED_PARAMETER(pSample);
+	return false;
+#endif
+}
+
+bool CDX11VideoProcessor::SubmitFrameInterpolation(const REFERENCE_TIME sourceTime,
+	const REFERENCE_TIME requestedMidpoint, REFERENCE_TIME& midpointTime)
+{
+	midpointTime = INVALID_TIME;
+#ifdef _WIN64
+	const uint64_t submissionGeneration = m_FrameInterpolationPendingGeneration;
+	bool outputReady = false;
+	bool repeated = false;
+	if (!m_FrameInterpolation.SubmitInputFrame(
+			static_cast<double>(sourceTime) / static_cast<double>(UNITS),
+			static_cast<double>(requestedMidpoint) / static_cast<double>(UNITS),
+			outputReady, repeated)) {
+		CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
+		if (submissionGeneration == m_FrameInterpolationGeneration.load()) {
+			m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
+		}
+		return false;
+	}
+
+	CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
+	if (submissionGeneration != m_FrameInterpolationGeneration.load()) {
+		return false;
+	}
+	m_bFrameInterpolationPrepared = false;
 	m_bFrameInterpolationOutputReady = outputReady && (!repeated || m_bFrameInterpolationFallback);
 	m_bFrameInterpolationRepeated = repeated;
-	m_rtFrameInterpolationPrepared = rtStart;
+	m_rtFrameInterpolationPrepared = INVALID_TIME;
 	m_rtFrameInterpolationMidpoint = requestedMidpoint;
-	m_rtFrameInterpolationLastInput = rtStart;
-	m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
-
+	m_rtFrameInterpolationLastInput = sourceTime;
+	m_strFrameInterpolationStatus = std::format(L"{}; pipelined source presentation",
+		m_FrameInterpolation.GetStatus());
 	if (m_bFrameInterpolationOutputReady) {
 		midpointTime = requestedMidpoint;
-		return true;
 	}
-#endif
+	return true;
+#else
+	UNREFERENCED_PARAMETER(sourceTime);
+	UNREFERENCED_PARAMETER(requestedMidpoint);
 	return false;
+#endif
 }
 
 HRESULT CDX11VideoProcessor::RenderPreparedFrame(const bool interpolated, const REFERENCE_TIME frameStartTime)
@@ -2499,6 +2573,46 @@ HRESULT CDX11VideoProcessor::RenderFrameInterpolation(const REFERENCE_TIME frame
 	}
 	m_bFrameInterpolationOutputReady = false;
 	return hr;
+}
+
+
+HRESULT CDX11VideoProcessor::RenderFrameInterpolationSource(UINT sourceSurface, const REFERENCE_TIME frameStartTime)
+{
+#ifdef _WIN64
+	if (sourceSurface >= FrameInterpolationSurfaceCount) {
+		return E_INVALIDARG;
+	}
+	auto& surface = m_FrameInterpolationPresentationSurfaces[sourceSurface];
+	if (!surface.inUse || !surface.texture.pTexture || !surface.texture.pShaderResource) {
+		return S_FALSE;
+	}
+
+	m_pFrameInterpolationTexture = surface.texture.pTexture;
+	m_pFrameInterpolationView = surface.texture.pShaderResource;
+	m_rtStart = frameStartTime;
+	const HRESULT hr = Render(1, frameStartTime);
+	m_pFrameInterpolationTexture = nullptr;
+	m_pFrameInterpolationView = nullptr;
+	if (SUCCEEDED(hr)) {
+		m_pFilter->m_DrawStats.Add(GetPreciseTick());
+	}
+	return hr;
+#else
+	UNREFERENCED_PARAMETER(sourceSurface);
+	UNREFERENCED_PARAMETER(frameStartTime);
+	return E_NOTIMPL;
+#endif
+}
+
+void CDX11VideoProcessor::ReleaseFrameInterpolationSource(UINT sourceSurface)
+{
+#ifdef _WIN64
+	if (sourceSurface < FrameInterpolationSurfaceCount) {
+		m_FrameInterpolationPresentationSurfaces[sourceSurface].inUse = false;
+	}
+#else
+	UNREFERENCED_PARAMETER(sourceSurface);
+#endif
 }
 
 HRESULT CDX11VideoProcessor::ProcessSample(IMediaSample* pSample)

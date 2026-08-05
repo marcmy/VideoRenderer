@@ -393,6 +393,10 @@ CMpcVideoRenderer::CMpcVideoRenderer(LPUNKNOWN pUnk, HRESULT* phr)
 
 	*phr = hr;
 
+	if (SUCCEEDED(hr)) {
+		m_FrameInterpolationPresenterThread = std::thread(&CMpcVideoRenderer::FrameInterpolationPresenter, this);
+	}
+
 	return;
 }
 
@@ -400,6 +404,7 @@ CMpcVideoRenderer::~CMpcVideoRenderer()
 {
 	DLog(L"CMpcVideoRenderer::~CMpcVideoRenderer()");
 
+	StopFrameInterpolationPresenter();
 	UnregisterClassW(g_szClassName, g_hInst);
 
 	if (m_hWndParentMain) {
@@ -423,6 +428,7 @@ void CMpcVideoRenderer::NewSegment(REFERENCE_TIME startTime)
 {
 	DLog(L"CMpcVideoRenderer::NewSegment()");
 
+	ResetFrameInterpolationPresenterQueue();
 	m_rtStartTime = startTime;
 }
 
@@ -431,6 +437,7 @@ HRESULT CMpcVideoRenderer::BeginFlush()
 	DLog(L"CMpcVideoRenderer::BeginFlush()");
 
 	m_bFlushing = true;
+	ResetFrameInterpolationPresenterQueue();
 	return __super::BeginFlush();
 }
 
@@ -630,6 +637,184 @@ HRESULT CMpcVideoRenderer::WaitForStreamTime(const REFERENCE_TIME streamTime)
 	return WaitForRenderTime();
 }
 
+
+bool CMpcVideoRenderer::QueueFrameInterpolationSource(const UINT sourceSurface, const REFERENCE_TIME streamTime)
+{
+	if (sourceSurface == UINT_MAX || streamTime == INVALID_TIME) {
+		return false;
+	}
+
+	bool queued = false;
+	{
+		std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
+		if (!m_bStopFrameInterpolationPresenter.load()) {
+			m_FrameInterpolationPresenterQueue.push_back({
+				sourceSurface,
+				streamTime,
+				m_FrameInterpolationPresenterGeneration.load()
+			});
+			queued = true;
+		}
+	}
+
+	if (queued) {
+		m_FrameInterpolationPresenterWake.Set();
+	}
+	return queued;
+}
+
+void CMpcVideoRenderer::ResetFrameInterpolationPresenterQueue()
+{
+	m_FrameInterpolationPresenterGeneration.fetch_add(1);
+
+	std::deque<FrameInterpolationPresentation> staleFrames;
+	{
+		std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
+		staleFrames.swap(m_FrameInterpolationPresenterQueue);
+	}
+	m_FrameInterpolationPresenterWake.Set();
+
+	if (m_VideoProcessor && !staleFrames.empty()) {
+		CAutoLock cRendererLock(&m_RendererLock);
+		for (const auto& frame : staleFrames) {
+			m_VideoProcessor->ReleaseFrameInterpolationSource(frame.sourceSurface);
+		}
+	}
+}
+
+void CMpcVideoRenderer::StopFrameInterpolationPresenter()
+{
+	if (m_bStopFrameInterpolationPresenter.exchange(true)) {
+		return;
+	}
+
+	m_FrameInterpolationPresenterGeneration.fetch_add(1);
+	m_FrameInterpolationPresenterWake.Set();
+	if (m_FrameInterpolationPresenterThread.joinable()) {
+		m_FrameInterpolationPresenterThread.join();
+	}
+
+	std::deque<FrameInterpolationPresentation> staleFrames;
+	{
+		std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
+		staleFrames.swap(m_FrameInterpolationPresenterQueue);
+	}
+	if (m_VideoProcessor && !staleFrames.empty()) {
+		CAutoLock cRendererLock(&m_RendererLock);
+		for (const auto& frame : staleFrames) {
+			m_VideoProcessor->ReleaseFrameInterpolationSource(frame.sourceSurface);
+		}
+	}
+}
+
+bool CMpcVideoRenderer::WaitForFrameInterpolationTime(const FrameInterpolationPresentation& frame)
+{
+	for (;;) {
+		if (m_bStopFrameInterpolationPresenter.load()
+				|| frame.generation != m_FrameInterpolationPresenterGeneration.load()) {
+			return false;
+		}
+
+		CComPtr<IReferenceClock> clock;
+		REFERENCE_TIME graphStart = 0;
+		{
+			CAutoLock cVideoLock(&m_InterfaceLock);
+			if (m_State != State_Running) {
+				return false;
+			}
+			clock = m_pClock;
+			graphStart = (REFERENCE_TIME)m_tStart;
+		}
+		if (!clock) {
+			return true;
+		}
+
+		REFERENCE_TIME currentTime = 0;
+		HRESULT hr = clock->GetTime(&currentTime);
+		if (FAILED(hr)) {
+			return false;
+		}
+		if (graphStart + frame.streamTime <= currentTime) {
+			return true;
+		}
+
+		CAMEvent clockEvent(FALSE);
+		DWORD_PTR adviseCookie = 0;
+		hr = clock->AdviseTime(graphStart, frame.streamTime,
+			(HEVENT)(HANDLE)clockEvent, &adviseCookie);
+		if (FAILED(hr)) {
+			return false;
+		}
+
+		HANDLE waitObjects[] = {
+			(HANDLE)m_FrameInterpolationPresenterWake,
+			(HANDLE)clockEvent,
+		};
+		const DWORD waitResult = WaitForMultipleObjects(2, waitObjects, FALSE, INFINITE);
+		if (waitResult == WAIT_OBJECT_0) {
+			clock->Unadvise(adviseCookie);
+			continue;
+		}
+		if (waitResult == WAIT_OBJECT_0 + 1) {
+			return true;
+		}
+		clock->Unadvise(adviseCookie);
+		return false;
+	}
+}
+
+void CMpcVideoRenderer::FrameInterpolationPresenter()
+{
+	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+
+	while (!m_bStopFrameInterpolationPresenter.load()) {
+		FrameInterpolationPresentation frame;
+		bool haveFrame = false;
+		{
+			std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
+			if (!m_FrameInterpolationPresenterQueue.empty()) {
+				frame = m_FrameInterpolationPresenterQueue.front();
+				m_FrameInterpolationPresenterQueue.pop_front();
+				haveFrame = true;
+			}
+		}
+
+		if (!haveFrame) {
+			m_FrameInterpolationPresenterWake.Wait();
+			continue;
+		}
+
+		const bool due = WaitForFrameInterpolationTime(frame);
+		bool rendered = false;
+		if (due
+				&& !m_bStopFrameInterpolationPresenter.load()
+				&& frame.generation == m_FrameInterpolationPresenterGeneration.load()) {
+			CAutoLock cVideoLock(&m_InterfaceLock);
+			if (m_State == State_Running
+					&& frame.generation == m_FrameInterpolationPresenterGeneration.load()) {
+				CAutoLock cRendererLock(&m_RendererLock);
+				if (frame.generation == m_FrameInterpolationPresenterGeneration.load()) {
+					const HRESULT hr = m_VideoProcessor->RenderFrameInterpolationSource(
+						frame.sourceSurface, frame.streamTime);
+					rendered = hr == S_OK;
+					if (rendered) {
+						m_bValidBuffer = true;
+					}
+				}
+			}
+		}
+
+		{
+			CAutoLock cRendererLock(&m_RendererLock);
+			m_VideoProcessor->ReleaseFrameInterpolationSource(frame.sourceSurface);
+		}
+
+		if (!rendered && due && !m_bStopFrameInterpolationPresenter.load()) {
+			DLog(L"Frame-interpolation source presentation was skipped");
+		}
+	}
+}
+
 HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 {
 	// override CBaseRenderer::Receive() for the implementation of the search during the pause
@@ -676,36 +861,65 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 	}
 
 	REFERENCE_TIME interpolationTime = INVALID_TIME;
+	REFERENCE_TIME requestedMidpoint = INVALID_TIME;
 	REFERENCE_TIME currentFrameTime = INVALID_TIME;
-	bool interpolationReady = false;
+	UINT sourceSurface = UINT_MAX;
+	bool frameInterpolationPrepared = false;
 	if (m_State == State_Running && m_VideoProcessor->Type() == VP_DX11) {
-		REFERENCE_TIME sampleEnd = INVALID_TIME;
-		if (FAILED(m_pMediaSample->GetTime(&currentFrameTime, &sampleEnd))) {
-			currentFrameTime = m_FrameStats.GeTimestamp();
-		}
-		CAutoLock cRendererLock(&m_RendererLock);
-		interpolationReady = m_VideoProcessor->PrepareFrameInterpolation(m_pMediaSample, interpolationTime);
+		frameInterpolationPrepared = m_VideoProcessor->PrepareFrameInterpolation(
+			m_pMediaSample, currentFrameTime, requestedMidpoint, sourceSurface);
 	}
 
-	if (interpolationReady && m_State == State_Running) {
-		// PrepareReceive() scheduled the source frame. Replace that one-shot
-		// notification with a midpoint notification, present the generated
-		// frame, then schedule the original source frame again.
-		hr = WaitForStreamTime(interpolationTime);
-		if (SUCCEEDED(hr) && m_State == State_Running) {
+	if (frameInterpolationPrepared) {
+		// Queue the preserved source before entering NvOFFRUC. The presenter can
+		// now hit the source timestamp while the receive thread performs the
+		// synchronous optical-flow/CUDA work for the following midpoint.
+		CancelNotification();
+		const bool sourceQueued = QueueFrameInterpolationSource(sourceSurface, currentFrameTime);
+		const bool interpolationSubmitted = m_VideoProcessor->SubmitFrameInterpolation(
+			currentFrameTime, requestedMidpoint, interpolationTime);
+		if (!sourceQueued) {
 			CAutoLock cRendererLock(&m_RendererLock);
-			m_VideoProcessor->RenderFrameInterpolation(interpolationTime);
+			m_VideoProcessor->ReleaseFrameInterpolationSource(sourceSurface);
 		}
-		if (SUCCEEDED(hr) && m_State == State_Running) {
-			hr = WaitForStreamTime(currentFrameTime);
+
+		if (interpolationSubmitted
+				&& interpolationTime != INVALID_TIME
+				&& m_State == State_Running) {
+			hr = WaitForStreamTime(interpolationTime);
+			if (SUCCEEDED(hr) && m_State == State_Running) {
+				CAutoLock cRendererLock(&m_RendererLock);
+				const HRESULT renderHr = m_VideoProcessor->RenderFrameInterpolation(interpolationTime);
+				if (renderHr == S_OK) {
+					m_bValidBuffer = true;
+				}
+			}
+		}
+		else {
+			hr = S_OK; // first frame warms up, or FRUC failed and source-only fallback remains queued
 		}
 	}
 	else {
 		// Keep the original notification installed by PrepareReceive().
 		hr = WaitForRenderTime();
 	}
-	if (FAILED(hr)) {
+	if (FAILED(hr) && !frameInterpolationPrepared) {
 		m_bInReceive = FALSE;
+		return NOERROR;
+	}
+
+	if (frameInterpolationPrepared) {
+		m_bInReceive = FALSE;
+
+		CAutoLock cVideoLock(&m_InterfaceLock);
+		if (m_State == State_Stopped) {
+			return NOERROR;
+		}
+
+		CAutoLock cRendererLock(&m_RendererLock);
+		ClearPendingSample();
+		SendEndOfStream();
+		CancelNotification();
 		return NOERROR;
 	}
 
@@ -760,6 +974,9 @@ void CMpcVideoRenderer::OnDisplayModeChange(const bool bReset/* = false*/)
 		return;
 	}
 
+	if (bReset) {
+		ResetFrameInterpolationPresenterQueue();
+	}
 	m_bDisplayModeChanging = true;
 
 	if (bReset && !m_VideoProcessor->IsInit()) {
@@ -777,6 +994,7 @@ void CMpcVideoRenderer::OnWindowMove()
 	if (GetActive()) {
 		const HMONITOR hMon = MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST);
 		if (hMon != m_hMon) {
+			ResetFrameInterpolationPresenterQueue();
 			if (m_Sets.bReinitByDisplay) {
 				CAutoLock cRendererLock(&m_RendererLock);
 
@@ -848,6 +1066,7 @@ STDMETHODIMP CMpcVideoRenderer::Pause()
 	DLog(L"CMpcVideoRenderer::Pause()");
 
 	m_filterState = State_Paused;
+	ResetFrameInterpolationPresenterQueue();
 
 	return CBaseVideoRenderer2::Pause();
 }
@@ -858,6 +1077,7 @@ STDMETHODIMP CMpcVideoRenderer::Stop()
 
 	m_filterState = State_Stopped;
 	m_bValidBuffer = false;
+	ResetFrameInterpolationPresenterQueue();
 
 	{
 		CAutoLock cRendererLock(&m_RendererLock);
@@ -1395,6 +1615,16 @@ STDMETHODIMP_(void) CMpcVideoRenderer::GetSettings(Settings_t& setings)
 
 STDMETHODIMP_(void) CMpcVideoRenderer::SetSettings(const Settings_t& setings)
 {
+	const bool frameInterpolationChanged =
+		setings.iFrameInterpolationMode != m_Sets.iFrameInterpolationMode
+		|| setings.iFrameInterpolationSourceLimit != m_Sets.iFrameInterpolationSourceLimit
+		|| setings.iFrameInterpolationMaxOutput != m_Sets.iFrameInterpolationMaxOutput
+		|| setings.iFrameInterpolationGPU != m_Sets.iFrameInterpolationGPU
+		|| setings.bFrameInterpolationFallback != m_Sets.bFrameInterpolationFallback;
+	if (frameInterpolationChanged) {
+		ResetFrameInterpolationPresenterQueue();
+	}
+
 	CAutoLock cRendererLock(&m_RendererLock);
 
 	m_Sets = setings;
