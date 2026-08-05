@@ -33,6 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Validate inventory formatting, default profile-root resolution, and form loading.
       - name: Validate with Windows PowerShell 5.1
         shell: powershell
         run: |
