@@ -887,35 +887,46 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 	REFERENCE_TIME currentFrameTime = INVALID_TIME;
 	UINT sourceSurface = UINT_MAX;
 	bool frameInterpolationPrepared = false;
+	bool sourceQueued = false;
+	bool renderInterpolation = false;
+
 	if (m_State == State_Running && m_VideoProcessor->Type() == VP_DX11) {
-		frameInterpolationPrepared = m_VideoProcessor->PrepareFrameInterpolation(
-			m_pMediaSample, currentFrameTime, requestedMidpoint, sourceSurface);
+		// DirectShow's BeginFlush holds m_InterfaceLock and m_RendererLock while
+		// waiting for m_bInReceive to clear. Temporarily advertise that Receive
+		// is inactive before entering either graph lock, then revalidate state
+		// under m_InterfaceLock and mark it active again. This is the same safe
+		// transition used by CBaseRenderer::Receive().
+		m_bInReceive = FALSE;
+		{
+			CAutoLock cVideoLock(&m_InterfaceLock);
+			if (m_State != State_Running || m_bFlushing) {
+				return NOERROR;
+			}
+
+			m_bInReceive = TRUE;
+			frameInterpolationPrepared = m_VideoProcessor->PrepareFrameInterpolation(
+				m_pMediaSample, currentFrameTime, requestedMidpoint, sourceSurface);
+			if (frameInterpolationPrepared) {
+				// Preserve and queue the source while the interface lock prevents a
+				// flush from splitting preparation from its presentation metadata.
+				CancelNotification();
+				sourceQueued = QueueFrameInterpolationSource(sourceSurface, currentFrameTime);
+			}
+		}
 	}
 
 	if (frameInterpolationPrepared) {
-		// Queue the preserved source before entering NvOFFRUC. The presenter can
-		// now hit the source timestamp while the receive thread performs the
-		// synchronous optical-flow/CUDA work for the following midpoint.
-		CancelNotification();
-		const bool sourceQueued = QueueFrameInterpolationSource(sourceSurface, currentFrameTime);
+		// NvOFFRUC remains synchronous, but this phase intentionally owns no
+		// DirectShow graph locks. BeginFlush can invalidate the generation and
+		// wait until we mark Receive inactive below without forming a lock cycle.
 		const bool interpolationSubmitted = m_VideoProcessor->SubmitFrameInterpolation(
 			currentFrameTime, requestedMidpoint, interpolationTime);
-		if (!sourceQueued) {
-			CAutoLock cRendererLock(&m_RendererLock);
-			m_VideoProcessor->ReleaseFrameInterpolationSource(sourceSurface);
-		}
 
 		if (interpolationSubmitted
 				&& interpolationTime != INVALID_TIME
 				&& m_State == State_Running) {
 			hr = WaitForStreamTime(interpolationTime);
-			if (SUCCEEDED(hr) && m_State == State_Running) {
-				CAutoLock cRendererLock(&m_RendererLock);
-				const HRESULT renderHr = m_VideoProcessor->RenderFrameInterpolation(interpolationTime);
-				if (renderHr == S_OK) {
-					m_bValidBuffer = true;
-				}
-			}
+			renderInterpolation = SUCCEEDED(hr);
 		}
 		else {
 			hr = S_OK; // first frame warms up, or FRUC failed and source-only fallback remains queued
@@ -931,14 +942,28 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 	}
 
 	if (frameInterpolationPrepared) {
+		// Never enter either graph lock while DirectShow considers Receive active.
+		// A concurrent flush can now finish its wait, release the locks, and leave
+		// this final phase to discard stale work under the normal lock order.
 		m_bInReceive = FALSE;
 
 		CAutoLock cVideoLock(&m_InterfaceLock);
+		CAutoLock cRendererLock(&m_RendererLock);
+		if (!sourceQueued && sourceSurface != UINT_MAX && m_VideoProcessor) {
+			m_VideoProcessor->ReleaseFrameInterpolationSource(sourceSurface);
+		}
+
 		if (m_State == State_Stopped) {
 			return NOERROR;
 		}
 
-		CAutoLock cRendererLock(&m_RendererLock);
+		if (renderInterpolation && m_State == State_Running && !m_bFlushing && m_VideoProcessor) {
+			const HRESULT renderHr = m_VideoProcessor->RenderFrameInterpolation(interpolationTime);
+			if (renderHr == S_OK) {
+				m_bValidBuffer = true;
+			}
+		}
+
 		ClearPendingSample();
 		SendEndOfStream();
 		CancelNotification();
