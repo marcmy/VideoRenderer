@@ -1,1 +1,1 @@
-Trigger CI for the dump-proven NvOFFRUC seek-deadlock fix at e8474fa.
+Trigger CI for the DirectShow receive-lifecycle fix at 7cfe7aa.
