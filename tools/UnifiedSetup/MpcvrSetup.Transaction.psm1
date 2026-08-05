@@ -89,6 +89,20 @@ function Test-MpcvrSafeStatePath {
     return $fullPath
 }
 
+function Test-MpcvrPathIsEqualOrChild {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+        [Parameter(Mandatory)]
+        [string]$ParentPath
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $fullParent = [IO.Path]::GetFullPath($ParentPath).TrimEnd('\')
+    return $fullPath -ieq $fullParent -or
+        $fullPath.StartsWith($fullParent + '\', [StringComparison]::OrdinalIgnoreCase)
+}
+
 function Get-MpcvrSnapshotItemsFromProfile {
     param(
         [Parameter(Mandatory)]
@@ -97,11 +111,24 @@ function Get-MpcvrSnapshotItemsFromProfile {
 
     $items = New-Object 'System.Collections.Generic.List[object]'
     $seen = @{}
+    $maxineDefaultRoot = Join-Path $env:LOCALAPPDATA 'MPCVR Maxine Runtime'
+    $frucDefaultRoot = Join-Path $env:LOCALAPPDATA 'MPCVR NvOFFRUC Runtime'
+    $maxineActive = [string]$Profile.Runtimes.Maxine.Path
+    $frucActive = [string]$Profile.Runtimes.NvOFFRUC.Path
 
     $candidates = @(
-        [pscustomobject]@{ Name = 'Maxine runtime'; Kind = 'Directory'; Path = [string]$Profile.Runtimes.Maxine.Path },
-        [pscustomobject]@{ Name = 'NvOFFRUC runtime'; Kind = 'Directory'; Path = [string]$Profile.Runtimes.NvOFFRUC.Path }
+        [pscustomobject]@{ Name = 'Maxine installer destination'; Kind = 'Directory'; Path = $maxineDefaultRoot },
+        [pscustomobject]@{ Name = 'NvOFFRUC installer destination'; Kind = 'Directory'; Path = $frucDefaultRoot }
     )
+
+    if (-not [string]::IsNullOrWhiteSpace($maxineActive) -and
+        -not (Test-MpcvrPathIsEqualOrChild -Path $maxineActive -ParentPath $maxineDefaultRoot)) {
+        $candidates += [pscustomobject]@{ Name = 'Active Maxine runtime'; Kind = 'Directory'; Path = $maxineActive }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($frucActive) -and
+        -not (Test-MpcvrPathIsEqualOrChild -Path $frucActive -ParentPath $frucDefaultRoot)) {
+        $candidates += [pscustomobject]@{ Name = 'Active NvOFFRUC runtime'; Kind = 'Directory'; Path = $frucActive }
+    }
 
     foreach ($player in @($Profile.Players)) {
         $candidates += [pscustomobject]@{
@@ -319,7 +346,7 @@ function Test-MpcvrPowerShellScriptSyntax {
     [void][System.Management.Automation.Language.Parser]::ParseFile($resolved, [ref]$tokens, [ref]$errors)
     if (@($errors).Count -gt 0) {
         $messages = @($errors | ForEach-Object { $_.Message }) -join '; '
-        throw "PowerShell syntax validation failed for $resolved: $messages"
+        throw "PowerShell syntax validation failed for ${resolved}: $messages"
     }
     return $true
 }
