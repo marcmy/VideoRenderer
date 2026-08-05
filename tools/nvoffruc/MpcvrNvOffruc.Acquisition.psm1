@@ -1,4 +1,4 @@
-﻿#requires -Version 5.1
+#requires -Version 5.1
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -90,6 +90,16 @@ function Find-MpcvrOpticalFlowSdkArchive {
         $SearchDirectories = @(Get-MpcvrDownloadsDirectory)
     }
 
+    $notOlderThanUtc = if ($NotOlderThan -eq [datetime]::MinValue) {
+        [datetime]::MinValue
+    }
+    elseif ($NotOlderThan.Kind -eq [DateTimeKind]::Utc) {
+        $NotOlderThan
+    }
+    else {
+        $NotOlderThan.ToUniversalTime()
+    }
+
     $candidates = @()
     foreach ($directory in @($SearchDirectories | Select-Object -Unique)) {
         if ([string]::IsNullOrWhiteSpace($directory) -or
@@ -98,7 +108,7 @@ function Find-MpcvrOpticalFlowSdkArchive {
         }
         $candidates += @(Get-ChildItem -LiteralPath $directory -File -Filter '*.zip' -ErrorAction SilentlyContinue |
             Where-Object {
-                $_.LastWriteTimeUtc -ge $NotOlderThan.ToUniversalTime() -and
+                $_.LastWriteTimeUtc -ge $notOlderThanUtc -and
                 $_.Name -match '(?i)(optical[ _-]*flow|nvof)'
             })
     }
@@ -287,5 +297,3 @@ Export-ModuleMember -Function @(
     'Resolve-MpcvrOpticalFlowSdkPackage',
     'Test-MpcvrNvOffrucRuntimeHashes'
 )
-
-
