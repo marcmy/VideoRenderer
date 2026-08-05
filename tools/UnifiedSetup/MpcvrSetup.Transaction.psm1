@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 
 function Test-MpcvrAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    $principal = New-Object Security.Principal.WindowsPrincipal -ArgumentList $identity
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
@@ -95,8 +95,8 @@ function Get-MpcvrSnapshotItemsFromProfile {
         [object]$Profile
     )
 
-    $items = New-Object System.Collections.Generic.List[object]
-    $seen = New-Object System.Collections.Generic.HashSet[string]([StringComparer]::OrdinalIgnoreCase)
+    $items = New-Object 'System.Collections.Generic.List[object]'
+    $seen = @{}
 
     $candidates = @(
         [pscustomobject]@{ Name = 'Maxine runtime'; Kind = 'Directory'; Path = [string]$Profile.Runtimes.Maxine.Path },
@@ -116,7 +116,8 @@ function Get-MpcvrSnapshotItemsFromProfile {
             continue
         }
         $fullPath = Test-MpcvrSafeStatePath -Path $candidate.Path
-        if ($seen.Add($fullPath)) {
+        if (-not $seen.ContainsKey($fullPath)) {
+            $seen[$fullPath] = $true
             $items.Add([pscustomobject]@{
                 Name = $candidate.Name
                 Kind = $candidate.Kind
@@ -153,7 +154,7 @@ function New-MpcvrSetupSnapshot {
         }
     }
 
-    $manifestItems = New-Object System.Collections.Generic.List[object]
+    $manifestItems = New-Object 'System.Collections.Generic.List[object]'
     $index = 0
     foreach ($item in @($Items)) {
         $path = Test-MpcvrSafeStatePath -Path ([string]$item.Path)
@@ -256,7 +257,9 @@ function Restore-MpcvrSetupSnapshot {
         throw "Unsupported snapshot schema version: $($manifest.SchemaVersion)"
     }
 
-    foreach ($item in @($manifest.Items) | Select-Object -Reverse) {
+    $restoreItems = @($manifest.Items)
+    [array]::Reverse($restoreItems)
+    foreach ($item in $restoreItems) {
         $path = Test-MpcvrSafeStatePath -Path ([string]$item.OriginalPath)
         if ([bool]$item.Existed) {
             if ([string]::IsNullOrWhiteSpace([string]$item.BackupRelativePath)) {
@@ -269,7 +272,12 @@ function Restore-MpcvrSetupSnapshot {
 
             Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
             New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($path)) -Force | Out-Null
-            Copy-Item -LiteralPath $backupPath -Destination $path -Recurse -Force
+            if ([string]$item.Kind -eq 'File') {
+                Copy-Item -LiteralPath $backupPath -Destination $path -Force
+            }
+            else {
+                Copy-Item -LiteralPath $backupPath -Destination $path -Recurse -Force
+            }
 
             if ([string]$item.Kind -eq 'File' -and -not [string]::IsNullOrWhiteSpace([string]$item.Sha256)) {
                 $actualHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
