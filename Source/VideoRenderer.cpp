@@ -24,6 +24,7 @@
 #include <evr.h> // for MR_VIDEO_ACCELERATION_SERVICE, because the <mfapi.h> does not contain it
 #include <Mferror.h>
 #include "Helper.h"
+#include "FrucTrace.h"
 #include "PropPage.h"
 #include "VideoRendererInputPin.h"
 #include "../Include/Version.h"
@@ -394,6 +395,7 @@ CMpcVideoRenderer::CMpcVideoRenderer(LPUNKNOWN pUnk, HRESULT* phr)
 	*phr = hr;
 
 	if (SUCCEEDED(hr)) {
+		FRUC_TRACE("SESSION renderer-created build=fc40e60-diag state=%d", static_cast<int>(m_State));
 		m_FrameInterpolationPresenterThread = std::thread(&CMpcVideoRenderer::FrameInterpolationPresenter, this);
 	}
 
@@ -427,34 +429,51 @@ CMpcVideoRenderer::~CMpcVideoRenderer()
 void CMpcVideoRenderer::NewSegment(REFERENCE_TIME startTime)
 {
 	DLog(L"CMpcVideoRenderer::NewSegment()");
+	FRUC_TRACE("SEGMENT NewSegment enter start=%lld generation=%llu", startTime,
+		static_cast<unsigned long long>(m_FrameInterpolationPresenterGeneration.load()));
 
 	ResetFrameInterpolationPresenterQueue();
 	m_rtStartTime = startTime;
+	FRUC_TRACE("SEGMENT NewSegment exit start=%lld generation=%llu", startTime,
+		static_cast<unsigned long long>(m_FrameInterpolationPresenterGeneration.load()));
 }
 
 HRESULT CMpcVideoRenderer::BeginFlush()
 {
 	DLog(L"CMpcVideoRenderer::BeginFlush()");
+	FRUC_TRACE("FLUSH BeginFlush enter inReceive=%d state=%d generation=%llu", m_bInReceive,
+		static_cast<int>(m_State),
+		static_cast<unsigned long long>(m_FrameInterpolationPresenterGeneration.load()));
 
 	m_bFlushing = true;
 	UpdateFrameInterpolationTimingSnapshot(false);
+	FRUC_TRACE("FLUSH BeginFlush before queue reset");
 	ResetFrameInterpolationPresenterQueue();
-	return __super::BeginFlush();
+	FRUC_TRACE("FLUSH BeginFlush before super");
+	const HRESULT hr = __super::BeginFlush();
+	FRUC_TRACE("FLUSH BeginFlush exit hr=0x%08lx", static_cast<unsigned long>(hr));
+	return hr;
 }
 
 HRESULT CMpcVideoRenderer::EndFlush()
 {
 	DLog(L"CMpcVideoRenderer::EndFlush()");
+	FRUC_TRACE("FLUSH EndFlush enter inReceive=%d state=%d", m_bInReceive, static_cast<int>(m_State));
 
+	FRUC_TRACE("FLUSH EndFlush before VideoProcessor::Flush");
 	m_VideoProcessor->Flush();
+	FRUC_TRACE("FLUSH EndFlush after VideoProcessor::Flush");
 
+	FRUC_TRACE("FLUSH EndFlush before super");
 	HRESULT hr = __super::EndFlush();
+	FRUC_TRACE("FLUSH EndFlush after super hr=0x%08lx", static_cast<unsigned long>(hr));
 
 	m_bFlushing = false;
 	if (SUCCEEDED(hr) && m_filterState == State_Running) {
 		UpdateFrameInterpolationTimingSnapshot(true);
 	}
 
+	FRUC_TRACE("FLUSH EndFlush exit accepting=%d", m_bFrameInterpolationAcceptingSources.load());
 	return hr;
 }
 
@@ -644,7 +663,11 @@ HRESULT CMpcVideoRenderer::WaitForStreamTime(const REFERENCE_TIME streamTime)
 
 bool CMpcVideoRenderer::QueueFrameInterpolationSource(const UINT sourceSurface, const REFERENCE_TIME streamTime)
 {
+	FRUC_TRACE("QUEUE source request surface=%u time=%lld accepting=%d generation=%llu", sourceSurface,
+		streamTime, m_bFrameInterpolationAcceptingSources.load(),
+		static_cast<unsigned long long>(m_FrameInterpolationPresenterGeneration.load()));
 	if (sourceSurface == UINT_MAX || streamTime == INVALID_TIME) {
+		FRUC_TRACE("QUEUE source rejected invalid surface/time");
 		return false;
 	}
 
@@ -687,7 +710,13 @@ bool CMpcVideoRenderer::QueueFrameInterpolationSource(const UINT sourceSurface, 
 	}
 
 	if (queued) {
+		FRUC_TRACE("QUEUE source queued surface=%u time=%lld generation=%llu", sourceSurface, streamTime,
+			static_cast<unsigned long long>(generation));
 		m_FrameInterpolationPresenterWake.Set();
+	}
+	else {
+		FRUC_TRACE("QUEUE source rejected surface=%u generation=%llu", sourceSurface,
+			static_cast<unsigned long long>(generation));
 	}
 	return queued;
 }
@@ -712,21 +741,29 @@ void CMpcVideoRenderer::UpdateFrameInterpolationTimingSnapshot(const bool accept
 
 void CMpcVideoRenderer::ResetFrameInterpolationPresenterQueue()
 {
-	m_FrameInterpolationPresenterGeneration.fetch_add(1);
+	const uint64_t oldGeneration = m_FrameInterpolationPresenterGeneration.fetch_add(1);
+	FRUC_TRACE("QUEUE reset enter generation=%llu->%llu", static_cast<unsigned long long>(oldGeneration),
+		static_cast<unsigned long long>(oldGeneration + 1));
 
 	std::deque<FrameInterpolationPresentation> staleFrames;
 	{
 		std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
 		staleFrames.swap(m_FrameInterpolationPresenterQueue);
 	}
+	FRUC_TRACE("QUEUE reset drained count=%zu", staleFrames.size());
 	m_FrameInterpolationPresenterWake.Set();
 
 	if (m_VideoProcessor && !staleFrames.empty()) {
+		FRUC_TRACE("QUEUE reset before renderer lock count=%zu", staleFrames.size());
 		CAutoLock cRendererLock(&m_RendererLock);
+		FRUC_TRACE("QUEUE reset acquired renderer lock count=%zu", staleFrames.size());
 		for (const auto& frame : staleFrames) {
+			FRUC_TRACE("QUEUE reset release surface=%u frameGeneration=%llu", frame.sourceSurface,
+				static_cast<unsigned long long>(frame.generation));
 			m_VideoProcessor->ReleaseFrameInterpolationSource(frame.sourceSurface);
 		}
 	}
+	FRUC_TRACE("QUEUE reset exit");
 }
 
 void CMpcVideoRenderer::StopFrameInterpolationPresenter()
@@ -814,6 +851,7 @@ bool CMpcVideoRenderer::WaitForFrameInterpolationTime(const FrameInterpolationPr
 void CMpcVideoRenderer::FrameInterpolationPresenter()
 {
 	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+	FRUC_TRACE("PRESENTER thread start");
 
 	while (!m_bStopFrameInterpolationPresenter.load()) {
 		FrameInterpolationPresentation frame;
@@ -832,25 +870,37 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 			continue;
 		}
 
+		FRUC_TRACE("PRESENTER popped surface=%u time=%lld generation=%llu", frame.sourceSurface,
+			frame.streamTime, static_cast<unsigned long long>(frame.generation));
+		FRUC_TRACE("PRESENTER wait begin surface=%u", frame.sourceSurface);
 		const bool due = WaitForFrameInterpolationTime(frame);
+		FRUC_TRACE("PRESENTER wait end surface=%u due=%d currentGeneration=%llu", frame.sourceSurface, due,
+			static_cast<unsigned long long>(m_FrameInterpolationPresenterGeneration.load()));
 		bool rendered = false;
 		{
+			FRUC_TRACE("PRESENTER before renderer lock surface=%u", frame.sourceSurface);
 			// Only serialize with D3D11 work. Never acquire m_InterfaceLock on
 			// the presenter thread; seek/flush already owns that lock.
 			CAutoLock cRendererLock(&m_RendererLock);
+			FRUC_TRACE("PRESENTER acquired renderer lock surface=%u", frame.sourceSurface);
 			if (due
 					&& !m_bStopFrameInterpolationPresenter.load()
 					&& frame.generation == m_FrameInterpolationPresenterGeneration.load()
 					&& m_VideoProcessor) {
+				FRUC_TRACE("PRESENTER render begin surface=%u", frame.sourceSurface);
 				const HRESULT hr = m_VideoProcessor->RenderFrameInterpolationSource(
 					frame.sourceSurface, frame.streamTime);
+				FRUC_TRACE("PRESENTER render end surface=%u hr=0x%08lx", frame.sourceSurface,
+					static_cast<unsigned long>(hr));
 				rendered = hr == S_OK;
 				if (rendered) {
 					m_bValidBuffer = true;
 				}
 			}
 			if (m_VideoProcessor) {
+				FRUC_TRACE("PRESENTER release begin surface=%u", frame.sourceSurface);
 				m_VideoProcessor->ReleaseFrameInterpolationSource(frame.sourceSurface);
+				FRUC_TRACE("PRESENTER release end surface=%u", frame.sourceSurface);
 			}
 		}
 
@@ -863,6 +913,7 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 {
 	// override CBaseRenderer::Receive() for the implementation of the search during the pause
+	FRUC_TRACE("RECEIVE enter flushing=%d state=%d", m_bFlushing, static_cast<int>(m_State));
 
 	if (m_bFlushing) {
 		DLog(L"CMpcVideoRenderer::Receive() - flushing, skip sample");
@@ -874,6 +925,7 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 	// It may return VFW_E_SAMPLE_REJECTED code to say don't bother
 
 	HRESULT hr = PrepareReceive(pSample);
+	FRUC_TRACE("RECEIVE PrepareReceive end hr=0x%08lx inReceive=%d", static_cast<unsigned long>(hr), m_bInReceive);
 	ASSERT(m_bInReceive == SUCCEEDED(hr));
 	if (FAILED(hr)) {
 		if (hr == VFW_E_SAMPLE_REJECTED) {
@@ -911,8 +963,11 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 	UINT sourceSurface = UINT_MAX;
 	bool frameInterpolationPrepared = false;
 	if (m_State == State_Running && m_VideoProcessor->Type() == VP_DX11) {
+		FRUC_TRACE("RECEIVE prepare interpolation begin");
 		frameInterpolationPrepared = m_VideoProcessor->PrepareFrameInterpolation(
 			m_pMediaSample, currentFrameTime, requestedMidpoint, sourceSurface);
+		FRUC_TRACE("RECEIVE prepare interpolation end prepared=%d sourceTime=%lld midpoint=%lld surface=%u",
+			frameInterpolationPrepared, currentFrameTime, requestedMidpoint, sourceSurface);
 	}
 
 	if (frameInterpolationPrepared) {
@@ -921,8 +976,11 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 		// synchronous optical-flow/CUDA work for the following midpoint.
 		CancelNotification();
 		const bool sourceQueued = QueueFrameInterpolationSource(sourceSurface, currentFrameTime);
+		FRUC_TRACE("RECEIVE submit interpolation begin sourceQueued=%d surface=%u", sourceQueued, sourceSurface);
 		const bool interpolationSubmitted = m_VideoProcessor->SubmitFrameInterpolation(
 			currentFrameTime, requestedMidpoint, interpolationTime);
+		FRUC_TRACE("RECEIVE submit interpolation end submitted=%d outputTime=%lld", interpolationSubmitted,
+			interpolationTime);
 		if (!sourceQueued) {
 			CAutoLock cRendererLock(&m_RendererLock);
 			m_VideoProcessor->ReleaseFrameInterpolationSource(sourceSurface);
@@ -931,10 +989,16 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 		if (interpolationSubmitted
 				&& interpolationTime != INVALID_TIME
 				&& m_State == State_Running) {
+			FRUC_TRACE("RECEIVE midpoint wait begin time=%lld", interpolationTime);
 			hr = WaitForStreamTime(interpolationTime);
+			FRUC_TRACE("RECEIVE midpoint wait end hr=0x%08lx state=%d", static_cast<unsigned long>(hr),
+				static_cast<int>(m_State));
 			if (SUCCEEDED(hr) && m_State == State_Running) {
+				FRUC_TRACE("RECEIVE midpoint before renderer lock");
 				CAutoLock cRendererLock(&m_RendererLock);
+				FRUC_TRACE("RECEIVE midpoint render begin");
 				const HRESULT renderHr = m_VideoProcessor->RenderFrameInterpolation(interpolationTime);
+				FRUC_TRACE("RECEIVE midpoint render end hr=0x%08lx", static_cast<unsigned long>(renderHr));
 				if (renderHr == S_OK) {
 					m_bValidBuffer = true;
 				}
@@ -954,17 +1018,23 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 	}
 
 	if (frameInterpolationPrepared) {
+		FRUC_TRACE("RECEIVE FRUC cleanup begin inReceive=%d", m_bInReceive);
 		m_bInReceive = FALSE;
+		FRUC_TRACE("RECEIVE FRUC cleanup before interface lock");
 
 		CAutoLock cVideoLock(&m_InterfaceLock);
+		FRUC_TRACE("RECEIVE FRUC cleanup acquired interface lock state=%d", static_cast<int>(m_State));
 		if (m_State == State_Stopped) {
 			return NOERROR;
 		}
 
+		FRUC_TRACE("RECEIVE FRUC cleanup before renderer lock");
 		CAutoLock cRendererLock(&m_RendererLock);
+		FRUC_TRACE("RECEIVE FRUC cleanup acquired renderer lock");
 		ClearPendingSample();
 		SendEndOfStream();
 		CancelNotification();
+		FRUC_TRACE("RECEIVE FRUC cleanup exit");
 		return NOERROR;
 	}
 

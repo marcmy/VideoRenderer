@@ -27,6 +27,7 @@
 #include <array>
 #include <cmath>
 #include "Helper.h"
+#include "FrucTrace.h"
 #include "Times.h"
 #include "resource.h"
 #include "VideoRenderer.h"
@@ -2354,8 +2355,16 @@ bool CDX11VideoProcessor::IsFrameInterpolationEligible(const REFERENCE_TIME fram
 
 void CDX11VideoProcessor::ResetFrameInterpolation()
 {
-	m_FrameInterpolationGeneration.fetch_add(1);
+	const uint64_t oldGeneration = m_FrameInterpolationGeneration.fetch_add(1);
+	FRUC_TRACE("DX11 reset enter generation=%llu->%llu surfaces=%d%d%d%d",
+		static_cast<unsigned long long>(oldGeneration), static_cast<unsigned long long>(oldGeneration + 1),
+		m_FrameInterpolationPresentationSurfaces[0].inUse,
+		m_FrameInterpolationPresentationSurfaces[1].inUse,
+		m_FrameInterpolationPresentationSurfaces[2].inUse,
+		m_FrameInterpolationPresentationSurfaces[3].inUse);
+	FRUC_TRACE("DX11 reset before NvOFFRUC Reset");
 	m_FrameInterpolation.Reset();
+	FRUC_TRACE("DX11 reset after NvOFFRUC Reset");
 	m_bFrameInterpolationPrepared = false;
 	m_bFrameInterpolationOutputReady = false;
 	m_bFrameInterpolationRepeated = false;
@@ -2371,6 +2380,11 @@ void CDX11VideoProcessor::ResetFrameInterpolation()
 	}
 	m_strFrameInterpolationStatus = m_iFrameInterpolationMode == FRUC_MODE_Disabled
 		? L"Disabled" : L"Waiting for frames";
+	FRUC_TRACE("DX11 reset exit surfaces=%d%d%d%d",
+		m_FrameInterpolationPresentationSurfaces[0].inUse,
+		m_FrameInterpolationPresentationSurfaces[1].inUse,
+		m_FrameInterpolationPresentationSurfaces[2].inUse,
+		m_FrameInterpolationPresentationSurfaces[3].inUse);
 }
 
 bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFERENCE_TIME& sourceTime,
@@ -2427,10 +2441,13 @@ bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFER
 	}
 
 	ID3D11Texture2D* inputTexture = nullptr;
+	FRUC_TRACE("DX11 BeginInputFrame begin sourceTime=%lld", rtStart);
 	if (!m_FrameInterpolation.BeginInputFrame(&inputTexture)) {
+		FRUC_TRACE("DX11 BeginInputFrame failed");
 		m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
 		return false;
 	}
+	FRUC_TRACE("DX11 BeginInputFrame success texture=%p", inputTexture);
 
 	CComPtr<ID3D11RenderTargetView> renderTargetView;
 	hr = m_pDevice->CreateRenderTargetView(inputTexture, nullptr, &renderTargetView);
@@ -2448,6 +2465,10 @@ bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFER
 	D3D11_TEXTURE2D_DESC inputDesc = {};
 	inputTexture->GetDesc(&inputDesc);
 	UINT freeSurface = UINT_MAX;
+	FRUC_TRACE("DX11 surface scan states=%d%d%d%d", m_FrameInterpolationPresentationSurfaces[0].inUse,
+		m_FrameInterpolationPresentationSurfaces[1].inUse,
+		m_FrameInterpolationPresentationSurfaces[2].inUse,
+		m_FrameInterpolationPresentationSurfaces[3].inUse);
 	for (UINT i = 0; i < FrameInterpolationSurfaceCount; ++i) {
 		if (!m_FrameInterpolationPresentationSurfaces[i].inUse) {
 			freeSurface = i;
@@ -2465,6 +2486,7 @@ bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFER
 			m_pDeviceContext->Flush();
 			surface.inUse = true;
 			sourceSurface = freeSurface;
+			FRUC_TRACE("DX11 surface reserved surface=%u", freeSurface);
 		}
 	}
 
@@ -2493,12 +2515,16 @@ bool CDX11VideoProcessor::SubmitFrameInterpolation(const REFERENCE_TIME sourceTi
 	midpointTime = INVALID_TIME;
 #ifdef _WIN64
 	const uint64_t submissionGeneration = m_FrameInterpolationPendingGeneration;
+	FRUC_TRACE("DX11 submit begin source=%lld midpoint=%lld generation=%llu", sourceTime, requestedMidpoint,
+		static_cast<unsigned long long>(submissionGeneration));
 	bool outputReady = false;
 	bool repeated = false;
+	FRUC_TRACE("DX11 submit before NvOFFRUC SubmitInputFrame");
 	if (!m_FrameInterpolation.SubmitInputFrame(
 			static_cast<double>(sourceTime) / static_cast<double>(UNITS),
 			static_cast<double>(requestedMidpoint) / static_cast<double>(UNITS),
 			outputReady, repeated)) {
+		FRUC_TRACE("DX11 submit NvOFFRUC failed before renderer lock");
 		CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
 		if (submissionGeneration == m_FrameInterpolationGeneration.load()) {
 			m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
@@ -2506,8 +2532,12 @@ bool CDX11VideoProcessor::SubmitFrameInterpolation(const REFERENCE_TIME sourceTi
 		return false;
 	}
 
+	FRUC_TRACE("DX11 submit NvOFFRUC success ready=%d repeated=%d before renderer lock", outputReady, repeated);
 	CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
+	FRUC_TRACE("DX11 submit acquired renderer lock currentGeneration=%llu",
+		static_cast<unsigned long long>(m_FrameInterpolationGeneration.load()));
 	if (submissionGeneration != m_FrameInterpolationGeneration.load()) {
+		FRUC_TRACE("DX11 submit stale generation");
 		return false;
 	}
 	m_bFrameInterpolationPrepared = false;
@@ -2521,6 +2551,7 @@ bool CDX11VideoProcessor::SubmitFrameInterpolation(const REFERENCE_TIME sourceTi
 	if (m_bFrameInterpolationOutputReady) {
 		midpointTime = requestedMidpoint;
 	}
+	FRUC_TRACE("DX11 submit exit ready=%d midpointTime=%lld", m_bFrameInterpolationOutputReady, midpointTime);
 	return true;
 #else
 	UNREFERENCED_PARAMETER(sourceTime);
@@ -2608,6 +2639,8 @@ void CDX11VideoProcessor::ReleaseFrameInterpolationSource(UINT sourceSurface)
 {
 #ifdef _WIN64
 	if (sourceSurface < FrameInterpolationSurfaceCount) {
+		FRUC_TRACE("DX11 surface release surface=%u wasInUse=%d", sourceSurface,
+			m_FrameInterpolationPresentationSurfaces[sourceSurface].inUse);
 		m_FrameInterpolationPresentationSurfaces[sourceSurface].inUse = false;
 	}
 #else

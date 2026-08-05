@@ -9,6 +9,7 @@
 #include "stdafx.h"
 #include "NvidiaFrameInterpolation.h"
 #include "Helper.h"
+#include "FrucTrace.h"
 
 #include <array>
 #include <chrono>
@@ -253,29 +254,42 @@ struct CNvidiaFrameInterpolation::Impl
 
 	void ResetResources()
 	{
+		FRUC_TRACE("NVAPI ResetResources enter handle=%p inputLocked=%d currentLocked=%d outputLocked=%d keys in0=%llu in1=%llu out=%llu",
+			handle, inputLocked, currentLocked, outputLocked,
+			static_cast<unsigned long long>(inputs[0].key), static_cast<unsigned long long>(inputs[1].key),
+			static_cast<unsigned long long>(output.key));
 		if (inputLocked) {
+			FRUC_TRACE("NVAPI ResetResources release input index=%u key=%llu", writeIndex,
+				static_cast<unsigned long long>(inputs[writeIndex].key));
 			inputs[writeIndex].mutex->ReleaseSync(inputs[writeIndex].key);
 			inputLocked = false;
 		}
 		if (currentLocked) {
+			FRUC_TRACE("NVAPI ResetResources release current index=%u key=%llu", currentIndex,
+				static_cast<unsigned long long>(inputs[currentIndex].key));
 			inputs[currentIndex].mutex->ReleaseSync(inputs[currentIndex].key);
 			currentLocked = false;
 		}
 		if (outputLocked) {
+			FRUC_TRACE("NVAPI ResetResources release output key=%llu", static_cast<unsigned long long>(output.key));
 			output.mutex->ReleaseSync(output.key);
 			outputLocked = false;
 		}
 
 		if (handle && UnregisterResource) {
+			FRUC_TRACE("NVAPI UnregisterResource begin handle=%p", handle);
 			NvOFFRUCUnregisterResourceParam params = {};
 			params.pArrResource[0] = output.texture;
 			params.pArrResource[1] = inputs[0].texture;
 			params.pArrResource[2] = inputs[1].texture;
 			params.uiCount = 3;
-			UnregisterResource(handle, &params);
+			const NvOFFRUCStatus unregisterCode = UnregisterResource(handle, &params);
+			FRUC_TRACE("NVAPI UnregisterResource end code=%d", static_cast<int>(unregisterCode));
 		}
 		if (handle && Destroy) {
-			Destroy(handle);
+			FRUC_TRACE("NVAPI Destroy begin handle=%p", handle);
+			const NvOFFRUCStatus destroyCode = Destroy(handle);
+			FRUC_TRACE("NVAPI Destroy end code=%d", static_cast<int>(destroyCode));
 		}
 		handle = nullptr;
 		inputs = {};
@@ -285,6 +299,7 @@ struct CNvidiaFrameInterpolation::Impl
 		writeIndex = currentIndex = 0;
 		warmedUp = false;
 		processTimeMs = 0.0;
+		FRUC_TRACE("NVAPI ResetResources exit");
 	}
 
 	void ResetAll()
@@ -430,10 +445,15 @@ struct CNvidiaFrameInterpolation::Impl
 
 	bool Acquire(SharedTexture& resource, bool& lockFlag)
 	{
+		FRUC_TRACE("NVAPI keyed Acquire begin resource=%p key=%llu alreadyLocked=%d", resource.texture.p,
+			static_cast<unsigned long long>(resource.key), lockFlag);
 		if (!resource.mutex || lockFlag) {
+			FRUC_TRACE("NVAPI keyed Acquire rejected resource=%p", resource.texture.p);
 			return false;
 		}
 		const HRESULT hr = resource.mutex->AcquireSync(resource.key, 2000);
+		FRUC_TRACE("NVAPI keyed Acquire end resource=%p key=%llu hr=0x%08lx", resource.texture.p,
+			static_cast<unsigned long long>(resource.key), static_cast<unsigned long>(hr));
 		if (hr != S_OK) {
 			status = std::format(L"Keyed-mutex acquire failed ({})", HR2Str(hr));
 			return false;
@@ -446,7 +466,11 @@ struct CNvidiaFrameInterpolation::Impl
 	void Release(SharedTexture& resource, bool& lockFlag)
 	{
 		if (resource.mutex && lockFlag) {
+			FRUC_TRACE("NVAPI keyed Release begin resource=%p key=%llu", resource.texture.p,
+				static_cast<unsigned long long>(resource.key));
 			const HRESULT hr = resource.mutex->ReleaseSync(resource.key);
+			FRUC_TRACE("NVAPI keyed Release end resource=%p key=%llu hr=0x%08lx", resource.texture.p,
+				static_cast<unsigned long long>(resource.key), static_cast<unsigned long>(hr));
 			if (FAILED(hr)) {
 				status = std::format(L"Keyed-mutex release failed ({})", HR2Str(hr));
 			}
@@ -488,8 +512,11 @@ bool CNvidiaFrameInterpolation::Initialize(ID3D11Device* device, UINT width, UIN
 void CNvidiaFrameInterpolation::Reset()
 {
 #ifdef _WIN64
+	FRUC_TRACE("NVAPI Reset before apiMutex");
 	std::lock_guard<std::recursive_mutex> lock(m_impl->apiMutex);
+	FRUC_TRACE("NVAPI Reset acquired apiMutex");
 	m_impl->ResetResources();
+	FRUC_TRACE("NVAPI Reset after ResetResources");
 	m_impl->status = m_impl->hRuntime ? L"Runtime loaded" : L"Disabled";
 #endif
 }
@@ -497,10 +524,13 @@ void CNvidiaFrameInterpolation::Reset()
 bool CNvidiaFrameInterpolation::BeginInputFrame(ID3D11Texture2D** texture)
 {
 #ifdef _WIN64
+	FRUC_TRACE("NVAPI BeginInputFrame enter ownsTransaction=%d", m_impl->inputTransaction.owns_lock());
 	if (m_impl->inputTransaction.owns_lock()) {
 		return false;
 	}
+	FRUC_TRACE("NVAPI BeginInputFrame before apiMutex");
 	m_impl->inputTransaction = std::unique_lock<std::recursive_mutex>(m_impl->apiMutex);
+	FRUC_TRACE("NVAPI BeginInputFrame acquired apiMutex handle=%p", m_impl->handle);
 	if (!texture || !m_impl->handle || m_impl->inputLocked) {
 		m_impl->inputTransaction.unlock();
 		return false;
@@ -512,6 +542,8 @@ bool CNvidiaFrameInterpolation::BeginInputFrame(ID3D11Texture2D** texture)
 		return false;
 	}
 	*texture = input.texture;
+	FRUC_TRACE("NVAPI BeginInputFrame success index=%u texture=%p key=%llu", m_impl->writeIndex,
+		input.texture.p, static_cast<unsigned long long>(input.key));
 	return true;
 #else
 	UNREFERENCED_PARAMETER(texture);
@@ -522,12 +554,15 @@ bool CNvidiaFrameInterpolation::BeginInputFrame(ID3D11Texture2D** texture)
 void CNvidiaFrameInterpolation::CancelInputFrame()
 {
 #ifdef _WIN64
+	FRUC_TRACE("NVAPI CancelInputFrame enter inputLocked=%d ownsTransaction=%d", m_impl->inputLocked,
+		m_impl->inputTransaction.owns_lock());
 	if (m_impl->inputLocked) {
 		m_impl->Release(m_impl->inputs[m_impl->writeIndex], m_impl->inputLocked);
 	}
 	if (m_impl->inputTransaction.owns_lock()) {
 		m_impl->inputTransaction.unlock();
 	}
+	FRUC_TRACE("NVAPI CancelInputFrame exit");
 #endif
 }
 
@@ -537,9 +572,13 @@ bool CNvidiaFrameInterpolation::SubmitInputFrame(double inputTimestamp, double o
 	outputReady = false;
 	repeated = false;
 #ifdef _WIN64
+	FRUC_TRACE("NVAPI SubmitInputFrame enter inputTs=%.6f outputTs=%.6f ownsTransaction=%d handle=%p inputLocked=%d",
+		inputTimestamp, outputTimestamp, m_impl->inputTransaction.owns_lock(), m_impl->handle, m_impl->inputLocked);
 	auto EndTransaction = [this]() {
 		if (m_impl->inputTransaction.owns_lock()) {
+			FRUC_TRACE("NVAPI SubmitInputFrame transaction unlock begin");
 			m_impl->inputTransaction.unlock();
+			FRUC_TRACE("NVAPI SubmitInputFrame transaction unlock end");
 		}
 	};
 	if (!m_impl->inputTransaction.owns_lock() || !m_impl->handle || !m_impl->inputLocked) {
@@ -564,7 +603,11 @@ bool CNvidiaFrameInterpolation::SubmitInputFrame(double inputTimestamp, double o
 	outParams.uSyncSignal.MutexReleaseKey.uiKeyForInterpolateRelease = ++m_impl->output.key;
 
 	const auto started = std::chrono::steady_clock::now();
+	FRUC_TRACE("NVAPI NvOFFRUCProcess begin handle=%p inputIndex=%u inputKey=%llu outputKey=%llu", m_impl->handle,
+		m_impl->writeIndex, static_cast<unsigned long long>(input.key),
+		static_cast<unsigned long long>(m_impl->output.key));
 	const NvOFFRUCStatus code = m_impl->Process(m_impl->handle, &inParams, &outParams);
+	FRUC_TRACE("NVAPI NvOFFRUCProcess end code=%d repeated=%d", static_cast<int>(code), repeated);
 	m_impl->processTimeMs = std::chrono::duration<double, std::milli>(
 		std::chrono::steady_clock::now() - started).count();
 	if (code != NvOFFRUC_SUCCESS) {
@@ -580,6 +623,8 @@ bool CNvidiaFrameInterpolation::SubmitInputFrame(double inputTimestamp, double o
 		? std::format(L"Active, repeated frame ({:.2f} ms)", m_impl->processTimeMs)
 		: std::format(L"Active ({:.2f} ms)", m_impl->processTimeMs);
 	EndTransaction();
+	FRUC_TRACE("NVAPI SubmitInputFrame exit ready=%d repeated=%d timeMs=%.3f", outputReady, repeated,
+		m_impl->processTimeMs);
 	return true;
 #else
 	UNREFERENCED_PARAMETER(inputTimestamp);
