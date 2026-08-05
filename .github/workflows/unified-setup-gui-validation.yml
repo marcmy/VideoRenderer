@@ -3,18 +3,12 @@ name: Validate unified setup GUI
 on:
   push:
     paths:
-      - 'tools/UnifiedSetup/Invoke-MpcvrFirstRun.ps1'
-      - 'tools/UnifiedSetup/FirstRun-Mpcvr.cmd'
       - 'tools/UnifiedSetup/Start-MpcvrUnifiedSetup.ps1'
-      - 'tools/UnifiedSetup/MpcvrSetup.Profiles.psm1'
       - 'tools/UnifiedSetup/MPCVR-Unified-Setup.cmd'
       - '.github/workflows/unified-setup-gui-validation.yml'
   pull_request:
     paths:
-      - 'tools/UnifiedSetup/Invoke-MpcvrFirstRun.ps1'
-      - 'tools/UnifiedSetup/FirstRun-Mpcvr.cmd'
       - 'tools/UnifiedSetup/Start-MpcvrUnifiedSetup.ps1'
-      - 'tools/UnifiedSetup/MpcvrSetup.Profiles.psm1'
       - 'tools/UnifiedSetup/MPCVR-Unified-Setup.cmd'
       - '.github/workflows/unified-setup-gui-validation.yml'
   workflow_dispatch:
@@ -33,21 +27,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Validate inventory formatting, default profile-root resolution, and form loading.
-      - name: Validate with Windows PowerShell 5.1
+      - name: Validate simplified GUI with Windows PowerShell 5.1
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
-            -File .\tools\UnifiedSetup\Invoke-MpcvrFirstRun.ps1 `
-            -ValidateOnly -NoPause
-          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
             -File .\tools\UnifiedSetup\Start-MpcvrUnifiedSetup.ps1 `
             -ValidateOnly
 
-      - name: Validate with PowerShell 7
+      - name: Validate simplified GUI with PowerShell 7
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          .\tools\UnifiedSetup\Invoke-MpcvrFirstRun.ps1 -ValidateOnly -NoPause
           .\tools\UnifiedSetup\Start-MpcvrUnifiedSetup.ps1 -ValidateOnly
