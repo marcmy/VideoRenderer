@@ -1,0 +1,44 @@
+name: Apply NvOFFRUC seek-freeze fix
+
+on:
+  pull_request:
+    branches:
+      - master
+    types: [opened, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'fix/nvoffruc-seek-freeze'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v6
+        with:
+          ref: fix/nvoffruc-seek-freeze
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify and apply fix
+        shell: bash
+        run: |
+          tr -d '\r\n' < .github/seek-freeze.patch.b64 > "$RUNNER_TEMP/seek-freeze.patch.b64"
+          echo "b5dc4b995ade571531272dae58947c0331c958d9ba631ceed3cd2d9c9762a5c2  $RUNNER_TEMP/seek-freeze.patch.b64" | sha256sum --check --strict
+          base64 --decode "$RUNNER_TEMP/seek-freeze.patch.b64" > "$RUNNER_TEMP/seek-freeze.patch"
+          echo "9ae495a8e640d47b414ac0e163586e19aaee1407e1b1549de810e4254db348f5  $RUNNER_TEMP/seek-freeze.patch" | sha256sum --check --strict
+          git apply --check "$RUNNER_TEMP/seek-freeze.patch"
+          git apply "$RUNNER_TEMP/seek-freeze.patch"
+          rm -f .github/seek-freeze.patch.b64
+          rm -f .github/workflows/apply-seek-freeze-fix.yml
+          rm -f .github/workflows/temp-seek-fix-export.yml
+
+      - name: Commit fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: avoid NvOFFRUC presenter deadlock during seeks"
+          git push origin HEAD:fix/nvoffruc-seek-freeze
