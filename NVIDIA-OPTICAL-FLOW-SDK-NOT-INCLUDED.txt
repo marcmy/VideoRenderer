@@ -1,0 +1,7 @@
+NVIDIA Optical Flow SDK is not redistributed in this package.
+
+When NvOFFRUC is not already installed, MPCVR Unified Setup opens NVIDIA's official secured Optical Flow SDK 5.0.7 download page. Sign in to the free NVIDIA Developer Program and choose Accept & Download. Setup watches the Windows Downloads folder, recognizes the completed compatible SDK ZIP, validates and caches it, extracts only NvOFFRUC.dll and cudart64_110.dll, and continues automatically.
+
+You do not need to browse for the ZIP unless the browser saves it outside the configured Windows Downloads folder or the automatic wait expires.
+
+Manual selection remains available for offline installation and Advanced use.
