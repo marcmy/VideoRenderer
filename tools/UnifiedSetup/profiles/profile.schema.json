@@ -103,6 +103,15 @@
         },
         "runtimePath": {
           "type": ["string", "null"]
+        },
+        "flowResolutionBoost": {
+          "type": "string",
+          "enum": ["off", "automatic", "1.33x", "1.5x", "2x"],
+          "description": "Optional enlargement of the FRUC working surface before interpolation. Automatic mode suppresses the dedicated boost when active Maxine VSR already provides an equal-or-larger working scale."
+        },
+        "allowRedundantFlowBoostWithMaxineVsr": {
+          "type": "boolean",
+          "description": "Advanced override that permits a dedicated FRUC working-surface boost even when active Maxine VSR already provides an equal-or-larger scale."
         }
       },
       "additionalProperties": true
