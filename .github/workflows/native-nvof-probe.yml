@@ -70,6 +70,14 @@ jobs:
             /link d3d11.lib dxgi.lib
           if errorlevel 1 exit /b 1
 
+          cl /nologo /std:c++20 /permissive- /Zc:__cplusplus /EHsc /W4 /WX /O2 /DUNICODE /D_UNICODE ^
+            /Itools\native-nvof-probe ^
+            /Fo:build\native-nvof-probe\NativeNvofGpuMidpointTest.obj ^
+            /Fe:build\native-nvof-probe\NativeNvofGpuMidpointTest.exe ^
+            tools\native-nvof-probe\NativeNvofGpuMidpointTest.cpp ^
+            /link d3d11.lib dxgi.lib d3dcompiler.lib
+          if errorlevel 1 exit /b 1
+
           copy /y tools\native-nvof-probe\README.md build\native-nvof-probe\README.md >nul
 
       - name: Upload probes
