@@ -1,1 +1,1 @@
-Trigger x86/x64 CI for NvOFFRUC CUDA-context isolation at 8e8d3e1a433e857256fba1e2fb26db7fa52b9ed9.
+Final x86/x64 CI after successful 4K 60->120 combined Maxine + NvOFFRUC seek stress on 2026-08-05.
