@@ -109,7 +109,7 @@ function Get-MpcvrSnapshotItemsFromProfile {
         [object]$Profile
     )
 
-    $items = New-Object 'System.Collections.Generic.List[object]'
+    $items = @()
     $seen = @{}
     $maxineDefaultRoot = Join-Path $env:LOCALAPPDATA 'MPCVR Maxine Runtime'
     $frucDefaultRoot = Join-Path $env:LOCALAPPDATA 'MPCVR NvOFFRUC Runtime'
@@ -145,15 +145,15 @@ function Get-MpcvrSnapshotItemsFromProfile {
         $fullPath = Test-MpcvrSafeStatePath -Path $candidate.Path
         if (-not $seen.ContainsKey($fullPath)) {
             $seen[$fullPath] = $true
-            $items.Add([pscustomobject]@{
+            $items += [pscustomobject]@{
                 Name = $candidate.Name
                 Kind = $candidate.Kind
                 Path = $fullPath
-            })
+            }
         }
     }
 
-    return @($items)
+    return $items
 }
 
 function New-MpcvrSetupSnapshot {
@@ -181,7 +181,7 @@ function New-MpcvrSetupSnapshot {
         }
     }
 
-    $manifestItems = New-Object 'System.Collections.Generic.List[object]'
+    $manifestItems = @()
     $index = 0
     foreach ($item in @($Items)) {
         $path = Test-MpcvrSafeStatePath -Path ([string]$item.Path)
@@ -212,14 +212,14 @@ function New-MpcvrSetupSnapshot {
             }
         }
 
-        $manifestItems.Add([pscustomobject]@{
+        $manifestItems += [pscustomobject]@{
             Name = [string]$item.Name
             Kind = $kind
             OriginalPath = $path
             Existed = [bool]$exists
             BackupRelativePath = $relativeBackup
             Sha256 = $hash
-        })
+        }
         $index++
     }
 
@@ -232,7 +232,7 @@ function New-MpcvrSetupSnapshot {
             NV_VIDEO_EFFECTS_PATH = $EnvironmentValues['NV_VIDEO_EFFECTS_PATH']
             NV_OFFRUC_PATH = $EnvironmentValues['NV_OFFRUC_PATH']
         }
-        Items = @($manifestItems)
+        Items = $manifestItems
     }
 
     $manifestPath = Join-Path $root 'manifest.json'
