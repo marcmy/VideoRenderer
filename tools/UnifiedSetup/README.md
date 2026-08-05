@@ -1,4 +1,4 @@
-# MPCVR Unified Setup
+﻿# MPCVR Unified Setup
 
 This directory contains the shared foundation for the one-click MPC Video Renderer + NVIDIA Maxine + NvOFFRUC installer.
 
@@ -65,11 +65,12 @@ The renderer updater installs only the x86 and/or x64 K-Lite targets that actual
 Close MPC-HC, then run:
 
 ```powershell
-.\tools\UnifiedSetup\Install-MpcvrUnified.cmd `
-  -NvOffrucSdkPath "C:\Path\To\Optical_Flow_SDK_5.0.7.zip"
+.\tools\UnifiedSetup\Install-MpcvrUnified.cmd
 ```
 
-When renderer and Maxine payloads are not embedded, their existing installers can obtain the latest published files. NvOFFRUC still requires the official NVIDIA Optical Flow SDK archive unless a complete runtime is already installed.
+Renderer and the verified slim Maxine runtime are embedded in the unified release package. When NvOFFRUC is not already installed and no SDK path is supplied, setup opens NVIDIA's official secured Optical Flow SDK download page. The user signs in and accepts NVIDIA's license in the browser; setup watches the Windows Downloads folder, recognizes the completed compatible ZIP, validates and caches it, extracts only the required runtime files, and continues automatically.
+
+Manual `-NvOffrucSdkPath` selection remains available as an offline or Advanced fallback. `-DisableOfficialDownload` skips the browser-assisted path. `-OfficialDownloadWaitMinutes` changes the default 15-minute detection window.
 
 Optional component switches are available for controlled testing:
 
@@ -234,3 +235,4 @@ The Windows CI suites cover:
 2. Automatic, Guided, and fully unlocked Advanced graphical interfaces.
 3. Per-content/profile selection rules rather than one manually selected global renderer profile.
 4. Final release packaging, diagnostics export, update, uninstall, and retention/cleanup policy for rollback snapshots.
+

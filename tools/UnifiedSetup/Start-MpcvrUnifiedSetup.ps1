@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 
 [CmdletBinding()]
 param(
@@ -160,20 +160,23 @@ $inputsGroup.Location = New-Object System.Drawing.Point(18, 274)
 $inputsGroup.Size = New-Object System.Drawing.Size(944, 112)
 $form.Controls.Add($inputsGroup)
 
-$inputsGroup.Controls.Add((New-Label -Text 'Optical Flow SDK ZIP' -X 14 -Y 27 -Width 145))
+$inputsGroup.Controls.Add((New-Label -Text 'Optical Flow SDK (optional)' -X 14 -Y 27 -Width 175))
 $sdkText = New-Object System.Windows.Forms.TextBox
-$sdkText.Location = New-Object System.Drawing.Point(164, 24)
-$sdkText.Size = New-Object System.Drawing.Size(675, 24)
+$sdkText.Location = New-Object System.Drawing.Point(194, 24)
+$sdkText.Size = New-Object System.Drawing.Size(645, 24)
 $inputsGroup.Controls.Add($sdkText)
-$sdkBrowse = New-Button -Text 'Browse…' -X 850 -Y 21 -Width 78 -Height 28
+$sdkBrowse = New-Button -Text 'Browseâ€¦' -X 850 -Y 21 -Width 78 -Height 28
 $inputsGroup.Controls.Add($sdkBrowse)
+$sdkToolTip = New-Object System.Windows.Forms.ToolTip
+$sdkToolTip.SetToolTip($sdkText, 'Leave blank. Setup will open NVIDIA''s official login/download page, detect the completed SDK ZIP, validate it, and continue automatically.')
+$sdkToolTip.SetToolTip($sdkBrowse, 'Optional manual fallback for an SDK ZIP you already downloaded.')
 
 $inputsGroup.Controls.Add((New-Label -Text 'Calibration video' -X 14 -Y 67 -Width 145))
 $mediaText = New-Object System.Windows.Forms.TextBox
 $mediaText.Location = New-Object System.Drawing.Point(164, 64)
 $mediaText.Size = New-Object System.Drawing.Size(675, 24)
 $inputsGroup.Controls.Add($mediaText)
-$mediaBrowse = New-Button -Text 'Browse…' -X 850 -Y 61 -Width 78 -Height 28
+$mediaBrowse = New-Button -Text 'Browseâ€¦' -X 850 -Y 61 -Width 78 -Height 28
 $inputsGroup.Controls.Add($mediaBrowse)
 
 $tabs = New-Object System.Windows.Forms.TabControl
@@ -184,7 +187,7 @@ $form.Controls.Add($tabs)
 $automaticTab = New-Object System.Windows.Forms.TabPage
 $automaticTab.Text = 'Automatic'
 $tabs.TabPages.Add($automaticTab)
-$automaticDescription = New-Label -Text 'Install or update all components, then test ranked settings until one passes. Original settings are restored when no candidate passes.' -X 18 -Y 20 -Width 870 -Height 42
+$automaticDescription = New-Label -Text 'Install or update all components, acquiring the Optical Flow SDK through NVIDIA''s official page when needed, then test ranked settings until one passes. Original settings are restored when no candidate passes.' -X 18 -Y 20 -Width 870 -Height 52
 $automaticTab.Controls.Add($automaticDescription)
 $automaticTab.Controls.Add((New-Label -Text 'Profile name (optional)' -X 18 -Y 78 -Width 155))
 $automaticProfileName = New-Object System.Windows.Forms.TextBox
@@ -203,7 +206,7 @@ $installOnlyButton = New-Button -Text 'Install / update only' -X 212 -Y 122 -Wid
 $automaticTab.Controls.Add($installOnlyButton)
 $autoTuneOnlyButton = New-Button -Text 'Auto-tune only' -X 396 -Y 122 -Width 150 -Height 42
 $automaticTab.Controls.Add($autoTuneOnlyButton)
-$automaticNote = New-Label -Text 'Use a representative 30 fps video to build a 30→60 profile and a representative 60 fps video to build a separate 60→120 profile.' -X 18 -Y 184 -Width 860 -Height 42
+$automaticNote = New-Label -Text 'Use a representative 30 fps video to build a 30â†’60 profile and a representative 60 fps video to build a separate 60â†’120 profile.' -X 18 -Y 184 -Width 860 -Height 42
 $automaticNote.ForeColor = [System.Drawing.Color]::DimGray
 $automaticTab.Controls.Add($automaticNote)
 
@@ -468,3 +471,5 @@ $form.Add_Shown({
 
 [void]$form.ShowDialog()
 $form.Dispose()
+
+

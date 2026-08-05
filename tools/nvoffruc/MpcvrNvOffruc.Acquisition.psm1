@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -57,14 +57,14 @@ function Test-MpcvrOpticalFlowSdkArchive {
         $archive = [IO.Compression.ZipFile]::OpenRead([IO.Path]::GetFullPath($Path))
         try {
             $entryNames = @($archive.Entries | ForEach-Object {
-                $_.FullName.Replace('\\', '/').TrimStart('/')
+                (([string]$_.FullName) -replace '\\', '/').TrimStart('/')
             })
             $requiredSuffixes = @(
                 'NvOFFRUC/NvOFFRUCSample/bin/win64/NvOFFRUC.dll',
                 'NvOFFRUC/NvOFFRUCSample/bin/win64/cudart64_110.dll'
             )
             foreach ($suffix in $requiredSuffixes) {
-                if (@($entryNames | Where-Object { $_.EndsWith($suffix, [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) {
+                if (@($entryNames | Where-Object { $_ -like "*$suffix" }).Count -eq 0) {
                     return $false
                 }
             }
@@ -287,3 +287,5 @@ Export-ModuleMember -Function @(
     'Resolve-MpcvrOpticalFlowSdkPackage',
     'Test-MpcvrNvOffrucRuntimeHashes'
 )
+
+
