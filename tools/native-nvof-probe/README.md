@@ -9,7 +9,7 @@ They do **not** require or load:
 - an Optical Flow SDK installation
 - an NVIDIA Developer Program account
 
-All three tools load `nvofapi64.dll` from the Windows system directory.
+All four tools load `nvofapi64.dll` from the Windows system directory.
 
 ## `NativeNvofProbe.exe`
 
@@ -51,7 +51,7 @@ Tests the first complete frame-synthesis stage:
 5. Blends the two warped samples.
 6. Compares the result against the exact +8 pixel midpoint ground truth.
 
-The baseline warp is deliberately performed on the CPU after reading back the hardware vectors. This isolates and validates the flow direction, midpoint math, and error thresholds before the same operation is moved into an MPCVR D3D11 shader.
+The baseline warp is deliberately performed on the CPU after reading back the hardware vectors. This isolates and validates the flow direction, midpoint math, and error thresholds before moving the same operation to the GPU.
 
 It writes:
 
@@ -66,6 +66,25 @@ nvOFExecute: forward/backward submitted
 MIDPOINT RESULT: PASS
 ```
 
+## `NativeNvofGpuMidpointTest.exe`
+
+Runs the same +16 to +8 midpoint test through a D3D11 compute shader. The NVOF forward and backward `R16G16_SINT` textures remain GPU-resident through flow upsampling, backward warping, and frame blending. They are read back only after synthesis for diagnostic statistics.
+
+It writes:
+
+- `NativeNvofGpuMidpoint.bmp`
+- `NativeNvofGpuMidpointExpected.bmp`
+- `NativeNvofGpuMidpointDiff.bmp` (errors amplified 8x)
+
+A successful result ends with:
+
+```text
+D3D11 compute midpoint: dispatched with GPU-resident flow
+GPU MIDPOINT RESULT: PASS
+```
+
+This is the closest standalone probe to the eventual MPCVR render path: decoded D3D11 textures, NVOF output textures, a compute-shader interpolation pass, and one synthesized D3D11 output texture.
+
 ## Running
 
 1. Download the `Native-NVOF-Probe` artifact from PR #25's **Native NVOF Probe** workflow.
@@ -76,6 +95,7 @@ MIDPOINT RESULT: PASS
 .\NativeNvofProbe.exe
 .\NativeNvofFlowTest.exe
 .\NativeNvofMidpointTest.exe
+.\NativeNvofGpuMidpointTest.exe
 ```
 
-4. Copy the complete console output from `NativeNvofMidpointTest.exe`. Keep the three midpoint bitmaps if it fails or the difference image contains visible structure.
+4. Copy the complete console output from `NativeNvofGpuMidpointTest.exe`. Keep the three GPU midpoint bitmaps if it fails or the difference image contains visible structure.
