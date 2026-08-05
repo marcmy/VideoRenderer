@@ -1,0 +1,63 @@
+name: Validate NvOFFRUC SDK acquisition
+
+on:
+  push:
+    paths:
+      - 'tools/nvoffruc/MpcvrNvOffruc.Acquisition.psm1'
+      - 'tools/nvoffruc/Install-NvOFFRUCRuntime.ps1'
+      - 'tools/nvoffruc/Test-MpcvrNvOffrucAcquisition.ps1'
+      - 'tools/UnifiedSetup/Install-MpcvrUnified.ps1'
+      - '.github/workflows/nvoffruc-acquisition-validation.yml'
+  pull_request:
+    paths:
+      - 'tools/nvoffruc/MpcvrNvOffruc.Acquisition.psm1'
+      - 'tools/nvoffruc/Install-NvOFFRUCRuntime.ps1'
+      - 'tools/nvoffruc/Test-MpcvrNvOffrucAcquisition.ps1'
+      - 'tools/UnifiedSetup/Install-MpcvrUnified.ps1'
+      - '.github/workflows/nvoffruc-acquisition-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+            -File .\tools\nvoffruc\Test-MpcvrNvOffrucAcquisition.ps1
+
+      - name: Validate with PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\tools\nvoffruc\Test-MpcvrNvOffrucAcquisition.ps1
+
+      - name: Validate installer syntax and contracts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scripts = @(
+            '.\tools\nvoffruc\Install-NvOFFRUCRuntime.ps1',
+            '.\tools\UnifiedSetup\Install-MpcvrUnified.ps1'
+          )
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script), [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              throw (($errors | ForEach-Object { $_.Message }) -join [Environment]::NewLine)
+            }
+          }
+
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+            -File .\tools\nvoffruc\Install-NvOFFRUCRuntime.ps1 `
+            -ValidateOnly -DisableOfficialDownload -NoPause
