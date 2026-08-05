@@ -1,191 +1,100 @@
 # One-click MPCVR + Maxine + NvOFFRUC installer plan
 
-## Goal
+## Product goal
 
-Ship the completed renderer stack in a form that non-technical MPC-HC users can install, verify, update, roll back, and remove without manually registering filters, extracting NVIDIA DLLs, editing environment variables, locating codec-pack folders, or hunting through download directories.
+The normal user experience is deliberately simple:
 
-The default experience should be automatic and safe, while advanced users retain full control over every renderer option.
+```text
+Install MPC Video Renderer + NVIDIA Maxine + Frame Interpolation
+[ Install / Update ]
+```
 
-## Required components
+The installer detects the machine, acquires the permitted runtime dependencies, installs all three components transactionally, verifies the result, and keeps a rollback point. Users should not need to understand SDK ZIP layouts, profiles, calibration classes, renderer registry values, or separate setup modes.
 
-- MPC Video Renderer custom x64/x86 binaries
-- NVIDIA Maxine runtime setup
-- NVIDIA NvOFFRUC runtime setup
-- GPU-aware, locally calibrated presets for Maxine-only, interpolation-only, and combined operation
-- automatic MPC-HC and K-Lite path detection
-- filter registration and previous-version backup
-- rollback and full uninstall
-- profile export/import and restore-defaults support
+## Default flow
 
-## Installer behavior
+1. Detect Windows architecture, NVIDIA GPU, driver, VRAM, display, and supported K-Lite/MPC-HC targets.
+2. Show a short system/component status summary.
+3. Present one primary **Install / Update** action.
+4. Snapshot current renderer files, runtime directories, and environment variables.
+5. Install/update the correct MPC Video Renderer binaries.
+6. Install/verify the embedded slim Maxine runtime.
+7. Preserve an existing working NvOFFRUC runtime or assist with NVIDIA's official SDK acquisition when missing.
+8. Verify all installed components.
+9. Restore the previous state automatically on failure.
+10. Retain the successful pre-install snapshot for one-click rollback.
 
-1. Detect Windows architecture, NVIDIA GPU model, GPU architecture, VRAM, driver, supported RTX/NVOFA capabilities, display resolution, and refresh rate.
-2. Detect installed MPC-HC/K-Lite locations and existing MPCVR registration.
-3. Install the correct renderer binaries and preserve the previous version.
-4. Detect existing Maxine and NvOFFRUC runtimes.
-5. Prefer an existing verified runtime, then an embedded runtime where redistribution is permitted.
-6. Bundle the verified slim Maxine runtime with the application package.
-7. When NvOFFRUC is missing, open NVIDIA's official secured Optical Flow SDK download URL. The user signs in and accepts NVIDIA's license in the browser; setup watches the configured Windows Downloads folder, detects the completed compatible ZIP, validates its structure and pinned runtime hashes, caches it locally, extracts only the required runtime DLLs, and continues automatically.
-8. Require manual SDK/archive selection only as a final fallback when the browser saves outside the configured Downloads folder, automatic detection times out, or the user explicitly disables assisted acquisition.
-9. Never bypass NVIDIA authentication, license acceptance, or technical download restrictions.
-10. Configure runtime locations without requiring manual environment-variable editing.
-11. Choose a conservative starting preset from detected hardware capabilities.
-12. Run a short local calibration for representative 30 -> 60 and 60 -> 120 workloads rather than relying only on a hardcoded GPU model table.
-13. Measure Maxine time, NvOFFRUC time, total processing time, dropped/failed frames, pacing stability, and available timing headroom.
-14. Store separate recommendations by source resolution, source frame rate, output resolution, and display refresh rate.
-15. Offer one-click verification that reports Maxine, FRUC, runtime, target frame rate, measured frame rate, and timing-headroom status.
-16. Provide one-click rollback, uninstall, and diagnostic export.
-17. Publish checksums for every release artifact.
-18. If combined Maxine + interpolation is unsupported or too slow on a system, show a clear confirmation dialog offering to reduce quality, reduce scale, disable Maxine, or disable interpolation instead of silently degrading playback.
-19. Re-run calibration after a GPU, driver, display, renderer, Maxine-runtime, or NvOFFRUC-runtime change.
-20. On GPUs that may benefit from a higher-resolution FRUC working surface, support an optional flow-resolution boost. Automatic mode must suppress this dedicated boost whenever active Maxine VSR already produces an equal-or-larger working resolution. Merely enabling Maxine is not sufficient: denoise/deblur-only operation or inactive VSR must not suppress the boost.
+No profile name, calibration video, recommendation priority, or mode selection appears on the main screen.
 
-## Runtime acquisition policy
+## Runtime acquisition
 
 ### Maxine
 
-The release package includes the verified slim five-DLL Maxine runtime. Setup verifies the embedded archive and installed files before activation.
+Bundle the verified slim Maxine runtime in the release package and verify its files before activation.
 
 ### NvOFFRUC
 
-The full NVIDIA Optical Flow SDK is not mirrored in the GitHub release. NVIDIA requires Developer Program authentication and explicit SDK-license acceptance for the official download.
+Do not mirror the full Optical Flow SDK. NVIDIA requires Developer Program authentication and explicit license acceptance.
 
-Default assisted flow:
+Assisted flow:
 
-1. Reuse a complete installed NvOFFRUC runtime when present.
-2. Reuse a previously validated SDK ZIP from the local setup cache or Windows Downloads folder.
-3. Otherwise open NVIDIA's official secured SDK 5.0.7 URL in the default browser.
-4. Watch the Windows Downloads known folder for a newly completed compatible ZIP.
-5. Validate the archive structure.
-6. Extract the x64 `NvOFFRUC.dll` and `cudart64_110.dll` into staging.
-7. Verify both runtime files against pinned SHA-256 hashes.
-8. Cache the validated SDK ZIP under `%LOCALAPPDATA%\MPCVR Unified Setup\downloads` for repair/reinstallation.
-9. Install transactionally and restore the prior runtime automatically on failure.
+1. Preserve an installed working runtime.
+2. Reuse a compatible cached or Downloads SDK ZIP when available.
+3. Otherwise open NVIDIA's official secured SDK page.
+4. Let the user sign in and accept NVIDIA's license.
+5. Watch the Windows Downloads known folder for the completed ZIP.
+6. Validate archive structure and pinned runtime hashes.
+7. Extract only the required runtime DLLs.
+8. Cache the validated SDK locally.
+9. Continue setup automatically.
 
-Advanced controls:
+Manual ZIP selection is only an offline, timeout, nonstandard-download-location, or advanced fallback.
 
-- provide an SDK ZIP or extracted SDK directory explicitly
-- disable browser-assisted acquisition
-- change the automatic wait duration
-- deliberately allow unverified runtime files for experimentation, with a prominent warning
+## Advanced access
 
-## Configuration modes
+Advanced controls remain available without cluttering normal setup.
 
-### Automatic
+The installer-specific **Advanced...** dialog may expose:
 
-- Detect hardware and display capabilities.
-- Run local calibration.
-- Apply safe recommendations automatically.
-- Adjust recommendations separately for 30 fps and 60 fps sources.
-- Prefer stable pacing and timing headroom over the highest possible quality setting.
-- Treat active Maxine VSR enlargement as the FRUC working-resolution boost when it already meets or exceeds the requested scale, avoiding duplicate upscale work.
+- existing SDK ZIP path
+- download wait duration
+- component skip switches
+- telemetry
+- rollback
+- setup-tools folder
 
-### Guided
+Renderer playback settings remain available through MPC Video Renderer's native property pages.
 
-- Expose simple Quality, Performance, and Balanced choices.
-- Explain the expected effect of each choice.
-- Warn when the selected combination is unlikely to meet its target output frame rate.
-- Allow the user to continue despite the warning.
-- Explain when the dedicated FRUC flow-resolution boost is redundant because Maxine VSR is already enlarging the frame.
+Calibration, recommendation, profile, and registry-application tools remain packaged for technical users and future automatic tuning, but are not presented as competing installation paths.
 
-### Advanced
+## Automatic tuning direction
 
-Expose the complete renderer configuration without artificial restrictions, including:
+Automatic calibration remains useful after the installation experience is stable, but it should be a background or post-install feature rather than a prerequisite for installation.
 
-- Maxine operation, quality, mode, scale, oversampling, denoise, deblur, pipeline order, and GPU selection
-- NvOFFRUC enable state, source-resolution limit, output-frame-rate limit, runtime path, and failure behavior
-- FRUC flow-resolution boost: Off, Automatic, 1.33x, 1.5x, or 2x
-- whether to permit a dedicated FRUC boost even when active Maxine VSR already provides an equal-or-larger working resolution
-- combined Maxine + NvOFFRUC operation
-- renderer scaling, presentation, synchronization, color, HDR, and processing options
-- diagnostic overlays and detailed timing information
-- benchmark duration, required timing headroom, and recommendation thresholds
-- automatic fallback behavior and whether warnings should be shown
+Principles:
 
-Advanced users must be able to:
+- detected GPU provides only a starting estimate
+- measured local performance is authoritative
+- keep 30 -> 60 and 60 -> 120 measurements separate
+- preserve manually locked advanced settings
+- never silently reduce quality or disable a feature without a clear explanation
+- avoid a dedicated FRUC flow-resolution boost when active Maxine VSR already provides equal-or-greater enlargement
+- allow advanced users to override every recommendation
 
-- ignore automatic recommendations
-- force any supported combination
-- disable automatic adjustment
-- save named per-machine and per-content profiles
-- export and import profiles
-- duplicate and edit generated presets
-- restore automatic recommendations or factory defaults at any time
+## Runtime gate
 
-Automatic calibration must never overwrite a manually locked advanced profile without explicit confirmation.
+Before release, validate:
 
-## Flow-resolution boost policy
-
-The dedicated FRUC boost exists to enlarge the optical-flow working surface before interpolation. It is not automatically combined with Maxine VSR when Maxine already supplies the same or greater enlargement.
-
-Automatic decision rule:
-
-1. Determine whether Maxine VSR is active for the current frame and calculate its actual output scale.
-2. Determine the calibrated FRUC working-scale request.
-3. If active Maxine VSR scale is greater than or equal to the requested FRUC scale, use the Maxine output directly and disable the dedicated boost.
-4. If Maxine is inactive, denoise/deblur-only, or upscales less than the requested FRUC scale, the dedicated boost may supply only the missing working resolution when calibration shows adequate headroom.
-5. Advanced mode may force redundant operation for experimentation, but it must display the expected extra pixel cost and require explicit confirmation.
-
-The decision must be based on the active processing path, not simply on whether the Maxine setting is enabled.
-
-## First real-machine GUI findings
-
-The first packaged GUI launch exposed three issues that the original form-only validation did not exercise:
-
-1. The inventory provider emits GPU VRAM as `MemoryMiB`, while the GUI attempted to read a nonexistent `AdapterRamGB` property under strict mode.
-2. Display objects use `ScreenWidth` and `ScreenHeight`, while the GUI expected `Width`, `Height`, and `RefreshHz`.
-3. `Get-MpcvrProfiles` forwarded a null optional root to `Get-MpcvrProfileRoot`, overriding the default parameter and raising `A profile root is required.` during form startup.
-4. Non-ASCII ellipsis and arrow characters were corrupted in the packaged PowerShell/WinForms text path.
-
-Corrections:
-
-- inventory status formatting now uses a schema-tolerant optional-property reader
-- VRAM is calculated from `MemoryMiB`
-- display size uses `ScreenWidth` and `ScreenHeight`
-- absent optional inventory properties display safe fallback text instead of terminating refresh
-- the profile module resolves a null or empty root to `%LOCALAPPDATA%\MPCVR Unified Setup\profiles`
-- profile refresh handles errors inside the event callback rather than surfacing an unhandled WinForms exception
-- UI labels use ASCII `Browse...`, `30 -> 60`, and `60 -> 120`
-- GUI validation now constructs and formats a realistic synthetic inventory and resolves/lists the default profile root under both Windows PowerShell 5.1 and PowerShell 7
-
-Corrected package workflow run `31026773394` passed renderer build and unified setup packaging. Artifact `8939006031` has GitHub digest `sha256:6090b9b79b6bbf1c3b70eec66ff27f7b54bd153488d8c9a3885f43a3cfbe46cd`.
-
-The downloaded public ZIP was independently checked:
-
-- 58 files
-- `AdapterRamGB` absent from the GUI
-- schema-tolerant formatter and `MemoryMiB` handling present
-- default profile-root fallback present
-- mojibake absent; ASCII labels present
-- embedded checksum matches
-- public ZIP SHA-256: `91e23e9d9f5dff5d849ed012a0a2be69f0f9ea6005389201c573d3728a66fa22`
-
-## Calibration principles
-
-- GPU detection provides only an initial estimate; measured local performance is authoritative.
-- Do not assume that every GPU with the same model performs identically.
-- Account for driver version, clock behavior, thermals, power limits, background GPU load, output resolution, refresh rate, and source format.
-- Require configurable timing headroom instead of accepting a preset that merely reaches the target in an ideal short test.
-- Keep 30 -> 60 and 60 -> 120 recommendations separate.
-- Retain a hardware capability table for sensible first-run defaults, but refine it with real measurements from the current machine.
-- Calibrate flow-resolution boost settings independently for 30 -> 60 and 60 -> 120 workloads.
-- Never assume a dedicated FRUC boost is useful when active Maxine VSR already provides the requested working resolution.
-
-## Remaining runtime gate
-
-Do not finalize distribution until all of these pass:
-
+- fresh install over supported K-Lite/MPC-HC layouts
+- update over an existing custom renderer
 - Maxine-only playback
 - NvOFFRUC-only 30 -> 60 and 60 -> 120 playback
 - combined Maxine -> NvOFFRUC playback
-- repeated seeks and seek-bar dragging
-- pause/resume and pause -> seek -> resume
-- file switching, stop, and player shutdown
-- fallback behavior on unsupported sources and hardware
-- automatic calibration and recommendation generation
-- guided-mode warnings and user overrides
-- advanced-mode persistence, profile export/import, and restore-defaults behavior
-- fresh assisted NVIDIA SDK acquisition from the official browser flow
-- cached SDK reuse without another browser download
+- repeated seeking, pause/resume, file switching, stop, and shutdown
+- fresh browser-assisted NVIDIA SDK acquisition
+- cached SDK reuse
 - timeout/manual-picker fallback
-- rejection of incompatible or tampered SDK/runtime files
+- transactional failure rollback
+- manual rollback
+- simple main GUI on Windows PowerShell 5.1 and PowerShell 7
+- no profile/calibration/setup-mode decisions required for normal installation
