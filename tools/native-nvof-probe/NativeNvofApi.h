@@ -38,6 +38,9 @@
 namespace nvof {
 
 constexpr uint32_t ApiVersion50 = 0x50;
+// Compatibility name retained so the existing probe source requests the
+// current ABI without mixing this diagnostic fix with unrelated source edits.
+constexpr uint32_t ApiVersion20 = ApiVersion50;
 
 enum Status : int {
     Success = 0,
@@ -151,9 +154,9 @@ struct InitParams {
     PrivateDataHandle privateData;
     StereoDisparityRange disparityRange;
     Bool enableRoi;
-    PredictionDirection predictionDirection;
-    Bool enableGlobalFlow;
-    BufferFormat inputBufferFormat;
+    PredictionDirection predictionDirection = PredictionForward;
+    Bool enableGlobalFlow = False;
+    BufferFormat inputBufferFormat = BufferFormatAbgr8;
 };
 
 struct RoiRect {
