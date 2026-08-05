@@ -1,23 +1,25 @@
 /*
- * Minimal NVIDIA Optical Flow D3D11 ABI declarations.
+ * Minimal NVIDIA Optical Flow 5.0 D3D11 ABI declarations.
  *
- * Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ * Copyright (c) 2018-2023 NVIDIA Corporation
  *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- * 3. Neither the name of the copyright holder nor the names of its contributors
- *    may be used to endorse or promote products derived from this software
- *    without specific prior written permission.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED. IN NO EVENT SHALL THE
- * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DAMAGES ARISING FROM USE.
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  *
  * This file intentionally contains only the public ABI surface required by the
  * standalone driver-only probe. No proprietary SDK binary is included.
@@ -35,7 +37,7 @@
 
 namespace nvof {
 
-constexpr uint32_t ApiVersion20 = 0x20;
+constexpr uint32_t ApiVersion50 = 0x50;
 
 enum Status : int {
     Success = 0,
@@ -68,6 +70,7 @@ enum Caps : int {
     HeightMax,
     SupportRoi,
     SupportRoiMaxCount,
+    SupportStereo,
 };
 
 enum PerfLevel : int {
@@ -104,12 +107,29 @@ enum BufferUsage : int {
     BufferUsageOutput,
     BufferUsageHint,
     BufferUsageCost,
+    BufferUsageGlobalFlow,
+};
+
+enum BufferFormat : int {
+    BufferFormatUndefined = 0,
+    BufferFormatGrayscale8,
+    BufferFormatNv12,
+    BufferFormatAbgr8,
+    BufferFormatShort,
+    BufferFormatShort2,
+    BufferFormatUint,
+    BufferFormatUint8,
 };
 
 enum StereoDisparityRange : int {
     StereoRangeUndefined = 0,
     StereoRange128 = 128,
     StereoRange256 = 256,
+};
+
+enum PredictionDirection : int {
+    PredictionForward = 0,
+    PredictionBoth = 2,
 };
 
 struct HandleStorage;
@@ -131,6 +151,9 @@ struct InitParams {
     PrivateDataHandle privateData;
     StereoDisparityRange disparityRange;
     Bool enableRoi;
+    PredictionDirection predictionDirection;
+    Bool enableGlobalFlow;
+    BufferFormat inputBufferFormat;
 };
 
 struct RoiRect {
@@ -156,6 +179,9 @@ struct ExecuteOutputParams {
     GpuBufferHandle outputBuffer;
     GpuBufferHandle outputCostBuffer;
     PrivateDataHandle privateData;
+    GpuBufferHandle backwardOutputBuffer;
+    GpuBufferHandle backwardOutputCostBuffer;
+    GpuBufferHandle globalFlowBuffer;
 };
 
 struct FlowVector {
@@ -163,9 +189,9 @@ struct FlowVector {
     int16_t y;
 };
 
-static_assert(sizeof(InitParams) == 48);
+static_assert(sizeof(InitParams) == 64);
 static_assert(sizeof(ExecuteInputParams) == 56);
-static_assert(sizeof(ExecuteOutputParams) == 24);
+static_assert(sizeof(ExecuteOutputParams) == 48);
 static_assert(sizeof(FlowVector) == 4);
 
 using GetMaxSupportedApiVersionFn = Status (WINAPI*)(uint32_t* version);
