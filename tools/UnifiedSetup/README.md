@@ -1,4 +1,4 @@
-﻿# MPCVR Unified Setup
+# MPCVR Unified Setup
 
 This directory contains the shared foundation for the one-click MPC Video Renderer + NVIDIA Maxine + NvOFFRUC installer.
 
@@ -70,7 +70,7 @@ Close MPC-HC, then run:
 
 Renderer and the verified slim Maxine runtime are embedded in the unified release package. When NvOFFRUC is not already installed and no SDK path is supplied, setup opens NVIDIA's official secured Optical Flow SDK download page. The user signs in and accepts NVIDIA's license in the browser; setup watches the Windows Downloads folder, recognizes the completed compatible ZIP, validates and caches it, extracts only the required runtime files, and continues automatically.
 
-Manual `-NvOffrucSdkPath` selection remains available as an offline or Advanced fallback. `-DisableOfficialDownload` skips the browser-assisted path. `-OfficialDownloadWaitMinutes` changes the default 15-minute detection window.
+Manual `-NvOffrucSdkPath` selection remains available as an offline or Advanced fallback. `-DisableOfficialDownload` skips the browser-assisted path. `-OfficialDownloadWaitMinutes` changes the default 15-minute detection window. `-AllowUnverifiedRuntimeFiles` is an Advanced-only testing escape hatch and emits warnings.
 
 Optional component switches are available for controlled testing:
 
@@ -80,7 +80,21 @@ Optional component switches are available for controlled testing:
 -SkipNvOffruc
 ```
 
-`-Mode Automatic`, `-Mode Guided`, and `-Mode Advanced` are recorded in the transaction. The current command-line tools can now create and apply calibrated profiles; the final friendly UI and automatic multi-candidate calibration loop remain separate work.
+`-Mode Automatic`, `-Mode Guided`, and `-Mode Advanced` are recorded in the transaction and used by the calibration/profile tools.
+
+## First-run GUI hardening
+
+The first packaged run exposed assumptions that the original form-only validation did not execute. The GUI now:
+
+- reads GPU VRAM from the inventory's `MemoryMiB` property
+- reads display size from `ScreenWidth` and `ScreenHeight`
+- treats optional inventory properties as optional under strict mode
+- shows safe fallback text instead of aborting status refresh
+- resolves an omitted profile root to `%LOCALAPPDATA%\MPCVR Unified Setup\profiles`
+- catches profile-list refresh errors inside the WinForms callback
+- uses ASCII `Browse...`, `30 -> 60`, and `60 -> 120` labels to avoid PowerShell/WinForms encoding corruption
+
+`Start-MpcvrUnifiedSetup.ps1 -ValidateOnly` now creates and formats a realistic synthetic inventory and resolves/lists the default profile root under both Windows PowerShell 5.1 and PowerShell 7.
 
 ## Rollback
 
@@ -227,12 +241,13 @@ The Windows CI suites cover:
 - renderer settings dry-run/apply/verify/backup/restore against a disposable registry key
 - preservation of unknown registry values
 - synthetic Stable, Marginal, and Unstable recommendations for Balanced, Smoothness, and Quality priorities
+- assisted NvOFFRUC SDK ZIP recognition, cache reuse, tamper rejection, and installer contracts
+- first-run inventory formatting and default profile-root resolution
 - x86/x64 renderer compilation and security scanning
 
 ## Remaining major slices
 
-1. An automatic candidate loop that applies a recommendation, launches/reuses a controlled test workload, recalibrates, and stops only on a passing result or a user-defined limit.
-2. Automatic, Guided, and fully unlocked Advanced graphical interfaces.
-3. Per-content/profile selection rules rather than one manually selected global renderer profile.
-4. Final release packaging, diagnostics export, update, uninstall, and retention/cleanup policy for rollback snapshots.
-
+1. Complete real-machine Automatic and Guided calibration runs on representative 30 fps and 60 fps sources.
+2. Implement and calibrate the optional FRUC flow-resolution boost.
+3. Add per-content/profile selection rules rather than one manually selected global renderer profile.
+4. Finish diagnostics export, uninstall, and retention/cleanup policy for rollback snapshots.
