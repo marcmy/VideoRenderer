@@ -23,7 +23,7 @@ The default experience should be automatic and safe, while advanced users retain
 2. Detect installed MPC-HC/K-Lite locations and existing MPCVR registration.
 3. Install the correct renderer binaries and preserve the previous version.
 4. Detect existing Maxine and NvOFFRUC runtimes.
-5. Where NVIDIA licensing prevents bundling runtime files, accept the official installer/SDK archive from the user and perform extraction and configuration automatically.
+5. Prefer an existing verified runtime, then an embedded runtime where redistribution is permitted, then an unattended official NVIDIA download with checksum/signature validation. Require manual SDK/archive selection only as a final fallback when NVIDIA blocks unattended acquisition or changes the endpoint.
 6. Configure runtime locations without requiring manual environment-variable editing.
 7. Choose a conservative starting preset from detected hardware capabilities.
 8. Run a short local calibration for representative 30 -> 60 and 60 -> 120 workloads rather than relying only on a hardcoded GPU model table.
@@ -34,6 +34,7 @@ The default experience should be automatic and safe, while advanced users retain
 13. Publish checksums for every release artifact.
 14. If combined Maxine + interpolation is unsupported or too slow on a system, show a clear confirmation dialog offering to reduce quality, reduce scale, disable Maxine, or disable interpolation instead of silently degrading playback.
 15. Re-run calibration after a GPU, driver, display, renderer, Maxine-runtime, or NvOFFRUC-runtime change.
+16. On GPUs that may benefit from a higher-resolution FRUC working surface, support an optional flow-resolution boost. Automatic mode must suppress this dedicated boost whenever active Maxine VSR already produces an equal-or-larger working resolution. Merely enabling Maxine is not sufficient: denoise/deblur-only operation or inactive VSR must not suppress the boost.
 
 ## Configuration modes
 
@@ -44,6 +45,7 @@ The default experience should be automatic and safe, while advanced users retain
 - Apply safe recommendations automatically.
 - Adjust recommendations separately for 30 fps and 60 fps sources.
 - Prefer stable pacing and timing headroom over the highest possible quality setting.
+- Treat active Maxine VSR enlargement as the FRUC working-resolution boost when it already meets or exceeds the requested scale, avoiding duplicate upscale work.
 
 ### Guided
 
@@ -51,6 +53,7 @@ The default experience should be automatic and safe, while advanced users retain
 - Explain the expected effect of each choice.
 - Warn when the selected combination is unlikely to meet its target output frame rate.
 - Allow the user to continue despite the warning.
+- Explain when the dedicated FRUC flow-resolution boost is redundant because Maxine VSR is already enlarging the frame.
 
 ### Advanced
 
@@ -58,6 +61,8 @@ Expose the complete renderer configuration without artificial restrictions, incl
 
 - Maxine operation, quality, mode, scale, oversampling, denoise, deblur, pipeline order, and GPU selection
 - NvOFFRUC enable state, source-resolution limit, output-frame-rate limit, runtime path, and failure behavior
+- FRUC flow-resolution boost: Off, Automatic, 1.33x, 1.5x, or 2x
+- whether to permit a dedicated FRUC boost even when active Maxine VSR already provides an equal-or-larger working resolution
 - combined Maxine + NvOFFRUC operation
 - renderer scaling, presentation, synchronization, color, HDR, and processing options
 - diagnostic overlays and detailed timing information
@@ -76,6 +81,20 @@ Advanced users must be able to:
 
 Automatic calibration must never overwrite a manually locked advanced profile without explicit confirmation.
 
+## Flow-resolution boost policy
+
+The dedicated FRUC boost exists to enlarge the optical-flow working surface before interpolation. It is not automatically combined with Maxine VSR when Maxine already supplies the same or greater enlargement.
+
+Automatic decision rule:
+
+1. Determine whether Maxine VSR is active for the current frame and calculate its actual output scale.
+2. Determine the calibrated FRUC working-scale request.
+3. If active Maxine VSR scale is greater than or equal to the requested FRUC scale, use the Maxine output directly and disable the dedicated boost.
+4. If Maxine is inactive, denoise/deblur-only, or upscales less than the requested FRUC scale, the dedicated boost may supply only the missing working resolution when calibration shows adequate headroom.
+5. Advanced mode may force redundant operation for experimentation, but it must display the expected extra pixel cost and require explicit confirmation.
+
+The decision must be based on the active processing path, not simply on whether the Maxine setting is enabled.
+
 ## Calibration principles
 
 - GPU detection provides only an initial estimate; measured local performance is authoritative.
@@ -84,6 +103,8 @@ Automatic calibration must never overwrite a manually locked advanced profile wi
 - Require configurable timing headroom instead of accepting a preset that merely reaches the target in an ideal short test.
 - Keep 30 -> 60 and 60 -> 120 recommendations separate.
 - Retain a hardware capability table for sensible first-run defaults, but refine it with real measurements from the current machine.
+- Calibrate flow-resolution boost settings independently for 30 -> 60 and 60 -> 120 workloads.
+- Never assume a dedicated FRUC boost is useful when active Maxine VSR already provides the requested working resolution.
 
 ## Runtime gate
 
@@ -99,3 +120,6 @@ Do not finalize distribution until all of these pass:
 - automatic calibration and recommendation generation
 - guided-mode warnings and user overrides
 - advanced-mode persistence, profile export/import, and restore-defaults behavior
+- flow-resolution boost Off/Automatic/fixed-scale behavior
+- automatic suppression when active Maxine VSR already satisfies the requested FRUC working scale
+- Advanced forced-concurrent behavior and warning
