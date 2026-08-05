@@ -15,7 +15,7 @@ $restorePath = Join-Path $PSScriptRoot 'Restore-MpcvrUnifiedBackup.ps1'
 $profileManagerPath = Join-Path $PSScriptRoot 'Manage-MpcvrProfiles.ps1'
 $frucInstallerPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'nvoffruc\Install-NvOFFRUCRuntime.ps1'
 
-foreach ($path in @(
+$requiredFiles = @(
     $commonModule,
     $transactionModule,
     $profilesModule,
@@ -24,7 +24,8 @@ foreach ($path in @(
     $restorePath,
     $profileManagerPath,
     $frucInstallerPath
-)) {
+)
+foreach ($path in $requiredFiles) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Missing unified setup file: $path"
     }
@@ -35,35 +36,18 @@ Import-Module -Name $transactionModule -Force
 Import-Module -Name $profilesModule -Force
 
 $requiredCommands = @(
-    'Get-MpcvrGpuProfile',
-    'Get-MpcvrDisplayProfile',
-    'Get-MpcvrRuntimeStatus',
-    'Get-MpcvrPlayerTargets',
-    'Get-MpcvrSystemProfile',
-    'Save-MpcvrSystemProfile',
-    'Test-MpcvrAdministrator',
-    'Get-MpcvrPowerShellExecutable',
-    'ConvertTo-MpcvrCommandLineArgument',
-    'Invoke-MpcvrPowerShellScript',
-    'Get-MpcvrSnapshotItemsFromProfile',
-    'New-MpcvrSetupSnapshot',
-    'Restore-MpcvrSetupSnapshot',
-    'Test-MpcvrPowerShellScriptSyntax',
-    'Get-MpcvrProfileRoot',
-    'Get-MpcvrProfilePath',
-    'New-MpcvrProfile',
-    'Test-MpcvrProfile',
-    'Read-MpcvrProfile',
-    'Save-MpcvrProfile',
-    'Get-MpcvrProfiles',
-    'Find-MpcvrProfile',
-    'Set-MpcvrProfileLock',
-    'Remove-MpcvrProfile',
-    'Export-MpcvrProfile',
-    'Import-MpcvrProfile',
+    'Get-MpcvrGpuProfile', 'Get-MpcvrDisplayProfile', 'Get-MpcvrRuntimeStatus',
+    'Get-MpcvrPlayerTargets', 'Get-MpcvrSystemProfile', 'Save-MpcvrSystemProfile',
+    'Test-MpcvrAdministrator', 'Get-MpcvrPowerShellExecutable',
+    'ConvertTo-MpcvrCommandLineArgument', 'Invoke-MpcvrPowerShellScript',
+    'Get-MpcvrSnapshotItemsFromProfile', 'New-MpcvrSetupSnapshot',
+    'Restore-MpcvrSetupSnapshot', 'Test-MpcvrPowerShellScriptSyntax',
+    'Get-MpcvrProfileRoot', 'Get-MpcvrProfilePath', 'New-MpcvrProfile',
+    'Test-MpcvrProfile', 'Read-MpcvrProfile', 'Save-MpcvrProfile',
+    'Get-MpcvrProfiles', 'Find-MpcvrProfile', 'Set-MpcvrProfileLock',
+    'Remove-MpcvrProfile', 'Export-MpcvrProfile', 'Import-MpcvrProfile',
     'Restore-MpcvrFactoryProfiles'
 )
-
 foreach ($commandName in $requiredCommands) {
     if (-not (Get-Command -Name $commandName -ErrorAction SilentlyContinue)) {
         throw "The unified setup modules do not export $commandName."
@@ -71,33 +55,24 @@ foreach ($commandName in $requiredCommands) {
 }
 
 foreach ($scriptPath in @(
-    $commonModule,
-    $transactionModule,
-    $profilesModule,
-    $installerPath,
-    $restorePath,
-    $profileManagerPath,
-    $frucInstallerPath
+    $commonModule, $transactionModule, $profilesModule, $installerPath,
+    $restorePath, $profileManagerPath, $frucInstallerPath
 )) {
     [void](Test-MpcvrPowerShellScriptSyntax -ScriptPath $scriptPath)
 }
 
 $schema = Get-Content -LiteralPath $schemaPath -Raw | ConvertFrom-Json
-if ($schema.title -ne 'MPCVR Unified Setup Profile') {
-    throw 'The profile schema title is missing or incorrect.'
-}
-if ($schema.properties.mode.enum.Count -ne 3) {
-    throw 'The profile schema must expose Automatic, Guided, and Advanced modes.'
-}
-if ($schema.properties.locked.type -ne 'boolean') {
-    throw 'The profile schema must preserve manually locked profiles.'
+if ($schema.title -ne 'MPCVR Unified Setup Profile' -or
+    $schema.properties.mode.enum.Count -ne 3 -or
+    $schema.properties.locked.type -ne 'boolean') {
+    throw 'The portable profile schema is incomplete.'
 }
 
-$profile = Get-MpcvrSystemProfile
-if ($profile.SchemaVersion -ne 1) {
-    throw 'Unexpected system-profile schema version.'
-}
-if ($null -eq $profile.Gpus -or $null -eq $profile.Runtimes -or $null -eq $profile.Players) {
+$systemProfile = Get-MpcvrSystemProfile
+if ($systemProfile.SchemaVersion -ne 1 -or
+    $null -eq $systemProfile.Gpus -or
+    $null -eq $systemProfile.Runtimes -or
+    $null -eq $systemProfile.Players) {
     throw 'The system profile is incomplete.'
 }
 
@@ -105,18 +80,16 @@ $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('MPCVR-UnifiedSetup-Test-' + [
 try {
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
-    $outputPath = Join-Path $tempRoot 'system-profile.json'
-    $savedPath = Save-MpcvrSystemProfile -Profile $profile -Path $outputPath
-    if (-not (Test-Path -LiteralPath $savedPath -PathType Leaf)) {
-        throw 'System-profile export did not create a file.'
-    }
-
-    $roundTrip = Get-Content -LiteralPath $savedPath -Raw | ConvertFrom-Json
+    # Inventory JSON round trip.
+    $systemProfilePath = Save-MpcvrSystemProfile `
+        -Profile $systemProfile `
+        -Path (Join-Path $tempRoot 'system-profile.json')
+    $roundTrip = Get-Content -LiteralPath $systemProfilePath -Raw | ConvertFrom-Json
     if ($roundTrip.SchemaVersion -ne 1) {
         throw 'System-profile JSON did not round-trip correctly.'
     }
 
-    # Transaction and rollback test.
+    # Disposable transaction and rollback test.
     $stateRoot = Join-Path $tempRoot 'state'
     $runtimeRoot = Join-Path $stateRoot 'runtime'
     $rendererPath = Join-Path $stateRoot 'renderer\MpcVideoRenderer64.ax'
@@ -126,15 +99,14 @@ try {
     Set-Content -LiteralPath (Join-Path $runtimeRoot 'runtime.dll') -Value 'runtime-before' -Encoding UTF8
     Set-Content -LiteralPath $rendererPath -Value 'renderer-before' -Encoding UTF8
 
-    $items = @(
-        [pscustomobject]@{ Name = 'Test runtime'; Kind = 'Directory'; Path = $runtimeRoot },
-        [pscustomobject]@{ Name = 'Test renderer'; Kind = 'File'; Path = $rendererPath },
-        [pscustomobject]@{ Name = 'New runtime'; Kind = 'Directory'; Path = $newPath }
-    )
     $snapshotRoot = Join-Path $tempRoot 'snapshot'
     [void](New-MpcvrSetupSnapshot `
         -SnapshotRoot $snapshotRoot `
-        -Items $items `
+        -Items @(
+            [pscustomobject]@{ Name = 'Test runtime'; Kind = 'Directory'; Path = $runtimeRoot },
+            [pscustomobject]@{ Name = 'Test renderer'; Kind = 'File'; Path = $rendererPath },
+            [pscustomobject]@{ Name = 'New runtime'; Kind = 'Directory'; Path = $newPath }
+        ) `
         -EnvironmentValues @{ NV_VIDEO_EFFECTS_PATH = 'test-maxine'; NV_OFFRUC_PATH = 'test-fruc' })
 
     Set-Content -LiteralPath (Join-Path $runtimeRoot 'runtime.dll') -Value 'runtime-after' -Encoding UTF8
@@ -143,33 +115,22 @@ try {
     Set-Content -LiteralPath (Join-Path $newPath 'new.dll') -Value 'new' -Encoding UTF8
 
     [void](Restore-MpcvrSetupSnapshot -SnapshotRoot $snapshotRoot -SkipEnvironmentRestore)
-
-    $runtimeText = (Get-Content -LiteralPath (Join-Path $runtimeRoot 'runtime.dll') -Raw).Trim()
-    $rendererText = (Get-Content -LiteralPath $rendererPath -Raw).Trim()
-    if ($runtimeText -ne 'runtime-before') {
-        throw 'Directory rollback did not restore the original runtime content.'
+    if ((Get-Content -LiteralPath (Join-Path $runtimeRoot 'runtime.dll') -Raw).Trim() -ne 'runtime-before' -or
+        (Get-Content -LiteralPath $rendererPath -Raw).Trim() -ne 'renderer-before' -or
+        (Test-Path -LiteralPath $newPath)) {
+        throw 'Transactional rollback did not reproduce the original filesystem state.'
     }
-    if ($rendererText -ne 'renderer-before') {
-        throw 'File rollback did not restore the original renderer content.'
-    }
-    if (Test-Path -LiteralPath $newPath) {
-        throw 'Rollback did not remove a path that was absent before the transaction.'
-    }
-
     $manifest = Get-Content -LiteralPath (Join-Path $snapshotRoot 'manifest.json') -Raw | ConvertFrom-Json
     if ($manifest.State -ne 'Restored' -or [string]::IsNullOrWhiteSpace([string]$manifest.RestoredAtUtc)) {
         throw 'Rollback did not mark the snapshot as restored.'
     }
 
-    # Profile lifecycle and lock-protection test.
+    # Profile lifecycle and lock protection.
     $profileRoot = Join-Path $tempRoot 'profiles'
     $factoryPaths = @(Restore-MpcvrFactoryProfiles -ProfileRoot $profileRoot)
-    if ($factoryPaths.Count -ne 2) {
-        throw "Expected two factory profiles but created $($factoryPaths.Count)."
-    }
-
     $storedProfiles = @(Get-MpcvrProfiles -ProfileRoot $profileRoot)
-    if ($storedProfiles.Count -ne 2 -or @($storedProfiles | Where-Object { -not $_.Valid }).Count -ne 0) {
+    if ($factoryPaths.Count -ne 2 -or $storedProfiles.Count -ne 2 -or
+        @($storedProfiles | Where-Object { -not $_.Valid }).Count -ne 0) {
         throw 'Factory profiles were not stored and validated correctly.'
     }
     foreach ($stored in $storedProfiles) {
@@ -186,11 +147,11 @@ try {
     $advanced.maxine.enabled = $true
     $advanced.maxine.quality = 'custom'
     $advanced.maxine.scaleLimit = 3.25
-    $advanced.maxine.customOption = 'preserved'
+    $advanced.maxine | Add-Member -NotePropertyName customOption -NotePropertyValue 'preserved'
     $advanced.frameInterpolation.enabled = $true
     $advanced.frameInterpolation.sourceResolutionLimit = 'custom'
     $advanced.frameInterpolation.maxOutputFps = 144.0
-    $advanced.frameInterpolation.customOption = 42
+    $advanced.frameInterpolation | Add-Member -NotePropertyName customOption -NotePropertyValue 42
     $advanced.fallback.strategy = 'none'
     $advanced.fallback.showWarning = $false
 
@@ -216,9 +177,6 @@ try {
 
     [void](Set-MpcvrProfileLock -Name 'Advanced Test Profile' -Locked $false -ProfileRoot $profileRoot)
     $unlocked = (Find-MpcvrProfile -Name 'Advanced Test Profile' -ProfileRoot $profileRoot).Profile
-    if ([bool]$unlocked.locked) {
-        throw 'Profile unlock did not persist.'
-    }
     $unlocked.maxine.scaleLimit = 2.5
     [void](Save-MpcvrProfile -Profile $unlocked -ProfileRoot $profileRoot -Force)
     [void](Set-MpcvrProfileLock -Name 'Advanced Test Profile' -Locked $true -ProfileRoot $profileRoot)
@@ -228,10 +186,6 @@ try {
         -Name 'Advanced Test Profile' `
         -Destination $exportPath `
         -ProfileRoot $profileRoot)
-    if (-not (Test-Path -LiteralPath $exportPath -PathType Leaf)) {
-        throw 'Profile export did not create the requested file.'
-    }
-
     $importedPath = Import-MpcvrProfile `
         -Source $exportPath `
         -Name 'Imported Advanced Profile' `
@@ -256,22 +210,17 @@ try {
         -ProfileRoot $profileRoot `
         -AllowLockedDelete
 
-    $factoryToProtect = 'Automatic - up to 30 fps (uncalibrated)'
-    [void](Set-MpcvrProfileLock -Name $factoryToProtect -Locked $true -ProfileRoot $profileRoot)
+    $protectedFactoryName = 'Automatic - up to 30 fps (uncalibrated)'
+    [void](Set-MpcvrProfileLock -Name $protectedFactoryName -Locked $true -ProfileRoot $profileRoot)
     [void](Restore-MpcvrFactoryProfiles -ProfileRoot $profileRoot -Force)
-    $protectedFactory = (Find-MpcvrProfile -Name $factoryToProtect -ProfileRoot $profileRoot).Profile
-    if (-not [bool]$protectedFactory.locked) {
+    if (-not [bool](Find-MpcvrProfile -Name $protectedFactoryName -ProfileRoot $profileRoot).Profile.locked) {
         throw 'Factory restore overwrote a manually locked profile.'
     }
 
     Invoke-MpcvrPowerShellScript `
         -Name 'Validating profile manager list action...' `
         -ScriptPath $profileManagerPath `
-        -Arguments @(
-            '-Action', 'List',
-            '-ProfileRoot', (ConvertTo-MpcvrCommandLineArgument -Value $profileRoot),
-            '-Json'
-        ) `
+        -Arguments @('-Action', 'List', '-ProfileRoot', (ConvertTo-MpcvrCommandLineArgument -Value $profileRoot), '-Json') `
         -NoNewWindow
     Invoke-MpcvrPowerShellScript `
         -Name 'Validating profile manager duplicate action...' `
@@ -283,11 +232,12 @@ try {
             '-ProfileRoot', (ConvertTo-MpcvrCommandLineArgument -Value $profileRoot)
         ) `
         -NoNewWindow
-    $cliDuplicate = (Find-MpcvrProfile -Name 'CLI Duplicate' -ProfileRoot $profileRoot).Profile
-    if ([bool]$cliDuplicate.locked -or $cliDuplicate.mode -ne 'advanced') {
+    $duplicate = (Find-MpcvrProfile -Name 'CLI Duplicate' -ProfileRoot $profileRoot).Profile
+    if ([bool]$duplicate.locked -or $duplicate.mode -ne 'advanced') {
         throw 'Profile-manager duplication did not create an unlocked editable copy.'
     }
 
+    # Entry-point validation.
     Invoke-MpcvrPowerShellScript `
         -Name 'Validating unified installer entry point...' `
         -ScriptPath $installerPath `
