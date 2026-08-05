@@ -22,6 +22,17 @@ constexpr wchar_t kNvofModuleName[] = L"nvofapi64.dll";
 constexpr wchar_t kNvofModuleName[] = L"nvofapi.dll";
 #endif
 
+struct ModuleGuard {
+	HMODULE module = nullptr;
+
+	~ModuleGuard()
+	{
+		if (module) {
+			FreeLibrary(module);
+		}
+	}
+};
+
 HMODULE LoadSystemModule(const wchar_t* moduleName)
 {
 	wchar_t systemDirectory[MAX_PATH] = {};
@@ -42,22 +53,19 @@ CNvidiaOpticalFlowNativeProbe::Result CNvidiaOpticalFlowNativeProbe::Probe()
 	Result result;
 	result.moduleName = kNvofModuleName;
 
-	HMODULE module = LoadSystemModule(kNvofModuleName);
-	if (!module) {
+	ModuleGuard module { LoadSystemModule(kNvofModuleName) };
+	if (!module.module) {
 		result.status = std::format(
 			L"{} is not available from the NVIDIA display driver (Win32 error {})",
 			kNvofModuleName, GetLastError());
 		return result;
 	}
 
-	const auto releaseModule = wil::scope_exit([&] {
-		FreeLibrary(module);
-	});
-
 	const auto getMaxSupportedApiVersion =
 		reinterpret_cast<PFN_NvOFGetMaxSupportedApiVersion>(
-			GetProcAddress(module, "NvOFGetMaxSupportedApiVersion"));
-	const FARPROC createD3D11 = GetProcAddress(module, "NvOFAPICreateInstanceD3D11");
+			GetProcAddress(module.module, "NvOFGetMaxSupportedApiVersion"));
+	const FARPROC createD3D11 =
+		GetProcAddress(module.module, "NvOFAPICreateInstanceD3D11");
 
 	if (!getMaxSupportedApiVersion || !createD3D11) {
 		result.status = std::format(
