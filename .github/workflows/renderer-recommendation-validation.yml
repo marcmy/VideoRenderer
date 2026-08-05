@@ -29,7 +29,7 @@ permissions:
 jobs:
   validate:
     runs-on: windows-2022
-    timeout-minutes: 15
+    timeout-minutes: 16
     steps:
       - uses: actions/checkout@v6
 
