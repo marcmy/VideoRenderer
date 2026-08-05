@@ -15,15 +15,9 @@ Normal installation is intentionally simple:
 3. Run `MPCVR-Unified-Setup.cmd`.
 4. Click **Install / Update**.
 
-Setup installs or updates:
+Setup installs or updates MPC Video Renderer, NVIDIA Maxine, and NVIDIA frame interpolation as one transaction. When NVIDIA's Optical Flow SDK is required, setup opens the official NVIDIA page and detects the completed download automatically after the user signs in and accepts NVIDIA's license.
 
-- MPC Video Renderer
-- NVIDIA Maxine runtime
-- NVIDIA frame-interpolation runtime
-
-When NVIDIA's Optical Flow SDK is required, setup opens the official NVIDIA page and detects the completed download automatically after the user signs in and accepts NVIDIA's license.
-
-Advanced installer controls, telemetry, rollback, calibration, and profile tools remain available without cluttering the normal install screen.
+Profiles, calibration, and recommendation tools remain available for technical use, but they are not part of the normal installation screen.
 
 ## Project documentation
 
