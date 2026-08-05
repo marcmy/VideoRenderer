@@ -139,7 +139,31 @@ The decision must be based on the active processing path, not simply on whether 
 - Calibrate flow-resolution boost settings independently for 30 -> 60 and 60 -> 120 workloads.
 - Never assume a dedicated FRUC boost is useful when active Maxine VSR already provides the requested working resolution.
 
-## Runtime gate
+## Validation status
+
+The assisted acquisition implementation is validated under Windows PowerShell 5.1 and PowerShell 7 for:
+
+- compatible SDK ZIP recognition
+- rejection of incompatible ZIPs
+- automatic cache/Downloads reuse without opening the browser
+- cache creation and revalidation
+- rejection of tampered runtime DLLs
+- explicit Advanced override for unverified runtime experimentation
+- official NVIDIA URL format
+- installer syntax and parameter contracts
+- timezone-safe download timestamp filtering
+
+Unified package workflow run `30995920905` built the renderer and assembled the setup successfully. Artifact `8926172380` has GitHub digest `sha256:c50b4dfc6cc646585c7b5568eea5b7e9053cdba0269208e8fa768b61d655d363`.
+
+The downloaded public ZIP was independently extracted and verified:
+
+- 51 files
+- renderer payload checksum passed
+- Maxine runtime payload checksum passed
+- assisted acquisition module present
+- public ZIP SHA-256: `df22878844f12bb60278e6bb5a4810746d899ca8f15c71702bf187af1ba72c99`
+
+## Remaining runtime gate
 
 Do not finalize distribution until all of these pass:
 
