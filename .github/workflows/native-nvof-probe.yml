@@ -1,0 +1,65 @@
+name: Native NVOF Probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/native-nvof-interpolation
+    paths:
+      - tools/native-nvof-probe/**
+      - .github/workflows/native-nvof-probe.yml
+  pull_request:
+    paths:
+      - tools/native-nvof-probe/**
+      - .github/workflows/native-nvof-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build 64-bit probe
+        shell: cmd
+        run: |
+          @echo off
+          setlocal EnableExtensions
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          if not exist "%VSWHERE%" (
+            echo Visual Studio locator was not found.
+            exit /b 1
+          )
+
+          set "VSROOT="
+          for /f "usebackq delims=" %%I in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%I"
+          if not defined VSROOT (
+            echo A Visual Studio installation with the C++ x64 tools was not found.
+            exit /b 1
+          )
+
+          call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat"
+          if errorlevel 1 exit /b 1
+
+          if not exist build\native-nvof-probe mkdir build\native-nvof-probe
+
+          cl /nologo /std:c++20 /permissive- /Zc:__cplusplus /EHsc /W4 /WX /O2 /DUNICODE /D_UNICODE ^
+            /Fo:build\native-nvof-probe\NativeNvofProbe.obj ^
+            /Fe:build\native-nvof-probe\NativeNvofProbe.exe ^
+            tools\native-nvof-probe\NativeNvofProbe.cpp ^
+            /link d3d11.lib dxgi.lib
+          if errorlevel 1 exit /b 1
+
+          copy /y tools\native-nvof-probe\README.md build\native-nvof-probe\README.md >nul
+
+      - name: Upload probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: Native-NVOF-Probe
+          path: build/native-nvof-probe
+          if-no-files-found: error
+          retention-days: 14
