@@ -1,10 +1,14 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
     [string]$SdkPath,
     [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA 'MPCVR NvOFFRUC Runtime'),
+    [ValidateRange(1, 60)]
+    [int]$OfficialDownloadWaitMinutes = 15,
+    [switch]$DisableOfficialDownload,
+    [switch]$AllowUnverifiedRuntimeFiles,
     [switch]$ValidateOnly,
     [switch]$SkipEnvironmentUpdate,
     [switch]$NoPause
@@ -13,6 +17,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 Set-StrictMode -Version 2.0
+
+$acquisitionModule = Join-Path $PSScriptRoot 'MpcvrNvOffruc.Acquisition.psm1'
+if (-not (Test-Path -LiteralPath $acquisitionModule -PathType Leaf)) {
+    throw "The NvOFFRUC acquisition module is missing: $acquisitionModule"
+}
+Import-Module -Name $acquisitionModule -Force
 
 function Complete-Run {
     param([int]$ExitCode)
@@ -135,7 +145,10 @@ try {
     }
 
     if ([string]::IsNullOrWhiteSpace($SdkPath)) {
-        $SdkPath = Select-SdkPackage
+        $SdkPath = Resolve-MpcvrOpticalFlowSdkPackage `
+            -PayloadDirectory $PSScriptRoot `
+            -WaitMinutes $OfficialDownloadWaitMinutes `
+            -DisableOfficialDownload:$DisableOfficialDownload
     }
 
     $resolved = (Resolve-Path -LiteralPath $SdkPath).Path
@@ -153,6 +166,11 @@ try {
     }
 
     $source = Get-NvOffrucSource -SearchRoot $searchRoot
+    [void](Test-MpcvrNvOffrucRuntimeHashes `
+        -NvOffrucPath $source.NvOffruc `
+        -CudaRuntimePath $source.CudaRuntime `
+        -AllowUnverifiedRuntimeFiles:$AllowUnverifiedRuntimeFiles)
+
     $staging = "$InstallRoot.staging-$([guid]::NewGuid().ToString('N'))"
     $backup = "$InstallRoot.backup"
     Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
@@ -235,3 +253,7 @@ finally {
 }
 
 Complete-Run -ExitCode $exitCode
+
+
+
+

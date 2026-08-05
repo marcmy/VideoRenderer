@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 
 [CmdletBinding()]
 param(
@@ -6,6 +6,10 @@ param(
     [string]$RendererChecksum,
     [string]$MaxineRuntimeArchive,
     [string]$NvOffrucSdkPath,
+    [ValidateRange(1, 60)]
+    [int]$OfficialDownloadWaitMinutes = 15,
+    [switch]$DisableOfficialDownload,
+    [switch]$AllowUnverifiedRuntimeFiles,
     [ValidateSet('Automatic', 'Guided', 'Advanced')]
     [string]$Mode = 'Automatic',
     [string]$DataRoot = (Join-Path $env:LOCALAPPDATA 'MPCVR Unified Setup'),
@@ -99,10 +103,19 @@ function Start-MpcvrElevatedSelf {
     Add-OptionalPathArgument -List $parts -Name '-MaxineRuntimeArchive' -Value $MaxineRuntimeArchive
     Add-OptionalPathArgument -List $parts -Name '-NvOffrucSdkPath' -Value $NvOffrucSdkPath
     Add-OptionalPathArgument -List $parts -Name '-DataRoot' -Value $DataRoot
+    $parts.Add('-OfficialDownloadWaitMinutes')
+    $parts.Add([string]$OfficialDownloadWaitMinutes)
     $parts.Add('-Mode')
     $parts.Add((ConvertTo-MpcvrCommandLineArgument -Value $Mode))
 
-    foreach ($switchName in @('SkipRenderer', 'SkipMaxine', 'SkipNvOffruc', 'NoPause')) {
+    foreach ($switchName in @(
+        'SkipRenderer',
+        'SkipMaxine',
+        'SkipNvOffruc',
+        'DisableOfficialDownload',
+        'AllowUnverifiedRuntimeFiles',
+        'NoPause'
+    )) {
         if ((Get-Variable -Name $switchName -ValueOnly)) {
             $parts.Add("-$switchName")
         }
@@ -210,11 +223,6 @@ try {
     }
 
     $profileBefore = Get-MpcvrSystemProfile
-    if (-not $SkipNvOffruc -and
-        [string]::IsNullOrWhiteSpace($NvOffrucSdkPath) -and
-        -not [bool]$profileBefore.Runtimes.NvOFFRUC.Installed) {
-        throw 'NvOFFRUC is not installed. Select Optical_Flow_SDK_5.0.7.zip or include it in the setup payload.'
-    }
 
     $DataRoot = [IO.Path]::GetFullPath($DataRoot)
     $backupRoot = Join-Path $DataRoot 'backups'
@@ -257,15 +265,30 @@ try {
     }
 
     if (-not $SkipNvOffruc) {
-        if (-not [string]::IsNullOrWhiteSpace($NvOffrucSdkPath)) {
+        $shouldInstallNvOffruc =
+            -not [string]::IsNullOrWhiteSpace($NvOffrucSdkPath) -or
+            -not [bool]$profileBefore.Runtimes.NvOFFRUC.Installed
+
+        if ($shouldInstallNvOffruc) {
+            $frucArguments = New-Object 'System.Collections.Generic.List[string]'
+            if (-not [string]::IsNullOrWhiteSpace($NvOffrucSdkPath)) {
+                $frucArguments.Add('-SdkPath')
+                $frucArguments.Add((ConvertTo-MpcvrCommandLineArgument -Value $NvOffrucSdkPath))
+            }
+            $frucArguments.Add('-OfficialDownloadWaitMinutes')
+            $frucArguments.Add([string]$OfficialDownloadWaitMinutes)
+            if ($DisableOfficialDownload) {
+                $frucArguments.Add('-DisableOfficialDownload')
+            }
+            if ($AllowUnverifiedRuntimeFiles) {
+                $frucArguments.Add('-AllowUnverifiedRuntimeFiles')
+            }
+            $frucArguments.Add('-NoPause')
+
             Invoke-MpcvrPowerShellScript `
                 -Name '2/3 Installing NVIDIA NvOFFRUC runtime...' `
                 -ScriptPath $frucInstaller `
-                -Arguments @(
-                    '-SdkPath',
-                    (ConvertTo-MpcvrCommandLineArgument -Value $NvOffrucSdkPath),
-                    '-NoPause'
-                ) `
+                -Arguments @($frucArguments) `
                 -NoNewWindow
         }
         else {
@@ -365,3 +388,8 @@ catch {
 }
 
 Complete-Run -ExitCode $exitCode
+
+
+
+
+
