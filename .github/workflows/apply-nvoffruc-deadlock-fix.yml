@@ -1,0 +1,36 @@
+name: Apply NvOFFRUC deadlock fix
+
+on:
+  push:
+    branches: [fix/nvoffruc-seek-freeze]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/nvoffruc-seek-freeze
+          fetch-depth: 0
+      - name: Reconstruct and apply verified patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d .github/nvoffruc-deadlock-fix.patch.gz.b64 | gzip -d > /tmp/nvoffruc-deadlock-fix.patch
+          echo '8dd876471581c7320a647204c692b15109df878c123b27319fd395459547769f  /tmp/nvoffruc-deadlock-fix.patch' | sha256sum -c -
+          git apply --check /tmp/nvoffruc-deadlock-fix.patch
+          git apply /tmp/nvoffruc-deadlock-fix.patch
+          rm -f .github/nvoffruc-deadlock-fix.patch.gz.b64
+          rm -f .github/workflows/apply-nvoffruc-deadlock-fix.yml
+      - name: Commit fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: break NvOFFRUC seek deadlock'
+          git push origin HEAD:fix/nvoffruc-seek-freeze
