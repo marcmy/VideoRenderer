@@ -37,6 +37,17 @@ enum NvOFFRUCStatus : int {
 	NvOFFRUC_SUCCESS = 0,
 };
 
+// NvOFFRUC 5.0.7 and the current Maxine Video Effects runtime can use
+// different CUDA contexts in the same process. D3D11/CUDA graphics-resource
+// handles are context-specific, so preserve and restore the caller's current
+// context around every NvOFFRUC API call.
+struct CUctx_st;
+using CUcontext = CUctx_st*;
+using CUresult = int;
+using PFN_cuCtxGetCurrent = CUresult (WINAPI*)(CUcontext*);
+using PFN_cuCtxSetCurrent = CUresult (WINAPI*)(CUcontext);
+constexpr CUresult CUDA_SUCCESS = 0;
+
 union NvOFFRUCSyncWait {
 	struct {
 		uint64_t uiFenceValueToWaitOn;
@@ -199,8 +210,12 @@ struct CNvidiaFrameInterpolation::Impl
 
 	std::recursive_mutex apiMutex;
 	std::unique_lock<std::recursive_mutex> inputTransaction;
+	HMODULE hCudaDriver = nullptr;
 	HMODULE hCudaRuntime = nullptr;
 	HMODULE hRuntime = nullptr;
+	PFN_cuCtxGetCurrent CtxGetCurrent = nullptr;
+	PFN_cuCtxSetCurrent CtxSetCurrent = nullptr;
+	CUcontext frucContext = nullptr;
 	PFN_NvOFFRUCCreate Create = nullptr;
 	PFN_NvOFFRUCRegisterResource RegisterResource = nullptr;
 	PFN_NvOFFRUCUnregisterResource UnregisterResource = nullptr;
@@ -232,6 +247,36 @@ struct CNvidiaFrameInterpolation::Impl
 		DLog(L"NVIDIA frame interpolation: {}", status);
 	}
 
+	bool GetCurrentContext(CUcontext& context) const
+	{
+		context = nullptr;
+		return CtxGetCurrent && CtxGetCurrent(&context) == CUDA_SUCCESS;
+	}
+
+	void RestoreContext(const CUcontext context) const
+	{
+		if (CtxSetCurrent) {
+			CtxSetCurrent(context);
+		}
+	}
+
+	bool ActivateFrucContext(CUcontext& previousContext) const
+	{
+		if (!GetCurrentContext(previousContext)) {
+			return false;
+		}
+		return !frucContext || previousContext == frucContext
+			|| (CtxSetCurrent && CtxSetCurrent(frucContext) == CUDA_SUCCESS);
+	}
+
+	void CaptureFrucContext()
+	{
+		CUcontext currentContext = nullptr;
+		if (GetCurrentContext(currentContext) && currentContext) {
+			frucContext = currentContext;
+		}
+	}
+
 	void ReleaseLibraries()
 	{
 		if (hRuntime) {
@@ -242,6 +287,13 @@ struct CNvidiaFrameInterpolation::Impl
 			FreeLibrary(hCudaRuntime);
 			hCudaRuntime = nullptr;
 		}
+		if (hCudaDriver) {
+			FreeLibrary(hCudaDriver);
+			hCudaDriver = nullptr;
+		}
+		CtxGetCurrent = nullptr;
+		CtxSetCurrent = nullptr;
+		frucContext = nullptr;
 		Create = nullptr;
 		RegisterResource = nullptr;
 		UnregisterResource = nullptr;
@@ -266,7 +318,9 @@ struct CNvidiaFrameInterpolation::Impl
 			outputLocked = false;
 		}
 
-		if (handle && UnregisterResource) {
+		CUcontext previousContext = nullptr;
+		const bool contextReady = !frucContext || ActivateFrucContext(previousContext);
+		if (contextReady && handle && UnregisterResource) {
 			NvOFFRUCUnregisterResourceParam params = {};
 			params.pArrResource[0] = output.texture;
 			params.pArrResource[1] = inputs[0].texture;
@@ -274,10 +328,14 @@ struct CNvidiaFrameInterpolation::Impl
 			params.uiCount = 3;
 			UnregisterResource(handle, &params);
 		}
-		if (handle && Destroy) {
+		if (contextReady && handle && Destroy) {
 			Destroy(handle);
 		}
+		if (contextReady && frucContext) {
+			RestoreContext(previousContext);
+		}
 		handle = nullptr;
+		frucContext = nullptr;
 		inputs = {};
 		output = {};
 		device.Release();
@@ -298,6 +356,19 @@ struct CNvidiaFrameInterpolation::Impl
 	{
 		if (hRuntime) {
 			return true;
+		}
+
+		hCudaDriver = LoadLibraryW(L"nvcuda.dll");
+		if (hCudaDriver) {
+			CtxGetCurrent = reinterpret_cast<PFN_cuCtxGetCurrent>(
+				GetProcAddress(hCudaDriver, "cuCtxGetCurrent"));
+			CtxSetCurrent = reinterpret_cast<PFN_cuCtxSetCurrent>(
+				GetProcAddress(hCudaDriver, "cuCtxSetCurrent"));
+		}
+		if (!CtxGetCurrent || !CtxSetCurrent) {
+			status = L"CUDA driver context APIs are unavailable";
+			ReleaseLibraries();
+			return false;
 		}
 
 		for (const auto& directory : GetRuntimeSearchDirectories()) {
@@ -397,6 +468,9 @@ struct CNvidiaFrameInterpolation::Impl
 			return false;
 		}
 
+		CUcontext callerContext = nullptr;
+		const bool haveCallerContext = GetCurrentContext(callerContext);
+
 		NvOFFRUCCreateParam createParams = {};
 		createParams.uiWidth = width;
 		createParams.uiHeight = height;
@@ -405,9 +479,11 @@ struct CNvidiaFrameInterpolation::Impl
 		createParams.eSurfaceFormat = ARGBSurface;
 		createParams.eCUDAResourceType = CudaResourceTypeUndefined;
 		NvOFFRUCStatus code = Create(&createParams, &handle);
+		CaptureFrucContext();
 		if (code != NvOFFRUC_SUCCESS) {
 			SetError(L"NvOFFRUCCreate", code);
 			ResetResources();
+			if (haveCallerContext) RestoreContext(callerContext);
 			return false;
 		}
 
@@ -418,13 +494,24 @@ struct CNvidiaFrameInterpolation::Impl
 		registerParams.pD3D11FenceObj = nullptr;
 		registerParams.uiCount = 3;
 		code = RegisterResource(handle, &registerParams);
+		CaptureFrucContext();
 		if (code != NvOFFRUC_SUCCESS) {
 			SetError(L"NvOFFRUCRegisterResource", code);
 			ResetResources();
+			if (haveCallerContext) RestoreContext(callerContext);
 			return false;
 		}
+		if (!frucContext) {
+			status = L"NvOFFRUC did not expose its CUDA context";
+			ResetResources();
+			if (haveCallerContext) RestoreContext(callerContext);
+			return false;
+		}
+		if (haveCallerContext) {
+			RestoreContext(callerContext);
+		}
 
-		status = std::format(L"Ready, {}x{}", width, height);
+		status = std::format(L"Ready, {}x{}; CUDA context isolated", width, height);
 		return true;
 	}
 
@@ -433,9 +520,11 @@ struct CNvidiaFrameInterpolation::Impl
 		if (!resource.mutex || lockFlag) {
 			return false;
 		}
-		const HRESULT hr = resource.mutex->AcquireSync(resource.key, 2000);
+		constexpr DWORD acquireTimeoutMs = 50;
+		const HRESULT hr = resource.mutex->AcquireSync(resource.key, acquireTimeoutMs);
 		if (hr != S_OK) {
-			status = std::format(L"Keyed-mutex acquire failed ({})", HR2Str(hr));
+			status = std::format(L"Keyed-mutex acquire failed after {} ms ({})",
+				acquireTimeoutMs, HR2Str(hr));
 			return false;
 		}
 		++resource.key;
@@ -563,10 +652,18 @@ bool CNvidiaFrameInterpolation::SubmitInputFrame(double inputTimestamp, double o
 	outParams.uSyncSignal.MutexReleaseKey.uiKeyForRenderTextureRelease = ++input.key;
 	outParams.uSyncSignal.MutexReleaseKey.uiKeyForInterpolateRelease = ++m_impl->output.key;
 
+	CUcontext callerContext = nullptr;
+	if (!m_impl->ActivateFrucContext(callerContext)) {
+		m_impl->status = L"Could not activate the NvOFFRUC CUDA context";
+		EndTransaction();
+		return false;
+	}
+
 	const auto started = std::chrono::steady_clock::now();
 	const NvOFFRUCStatus code = m_impl->Process(m_impl->handle, &inParams, &outParams);
 	m_impl->processTimeMs = std::chrono::duration<double, std::milli>(
 		std::chrono::steady_clock::now() - started).count();
+	m_impl->RestoreContext(callerContext);
 	if (code != NvOFFRUC_SUCCESS) {
 		m_impl->SetError(L"NvOFFRUCProcess", code);
 		EndTransaction();

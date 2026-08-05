@@ -693,34 +693,45 @@ bool CNvidiaMaxineVSR::Process(
 
 	bool inputMapped = false;
 	bool outputMapped = false;
+	const wchar_t* failedOperation = L"NvCVImage_MapResource(input)";
 	NvCV_Status code = m_impl->NvCVImage_MapResource(&m_impl->d3dInput, m_impl->stream);
 	if (code == NVCV_SUCCESS) {
 		inputMapped = true;
+		failedOperation = L"NvCVImage_MapResource(output)";
 		code = m_impl->NvCVImage_MapResource(&m_impl->d3dOutput, m_impl->stream);
 	}
 	if (code == NVCV_SUCCESS) {
 		outputMapped = true;
+		failedOperation = L"NvCVImage_Transfer(input)";
 		code = m_impl->NvCVImage_Transfer(&m_impl->d3dInput, &m_impl->gpuInput, 1.0f, m_impl->stream, nullptr);
 	}
 	if (code == NVCV_SUCCESS) {
+		failedOperation = L"NvVFX_Run";
 		code = m_impl->NvVFX_Run(m_impl->effect, 0);
 	}
 	if (code == NVCV_SUCCESS) {
+		failedOperation = L"NvCVImage_Transfer(output)";
 		code = m_impl->NvCVImage_Transfer(&m_impl->gpuOutput, &m_impl->d3dOutput, 1.0f, m_impl->stream, nullptr);
 	}
 
 	NvCV_Status unmapCode = NVCV_SUCCESS;
+	const wchar_t* unmapOperation = nullptr;
 	if (outputMapped) {
 		unmapCode = m_impl->NvCVImage_UnmapResource(&m_impl->d3dOutput, m_impl->stream);
+		if (unmapCode != NVCV_SUCCESS) {
+			unmapOperation = L"NvCVImage_UnmapResource(output)";
+		}
 	}
 	if (inputMapped) {
 		const NvCV_Status inputUnmapCode = m_impl->NvCVImage_UnmapResource(&m_impl->d3dInput, m_impl->stream);
-		if (unmapCode == NVCV_SUCCESS) {
+		if (unmapCode == NVCV_SUCCESS && inputUnmapCode != NVCV_SUCCESS) {
 			unmapCode = inputUnmapCode;
+			unmapOperation = L"NvCVImage_UnmapResource(input)";
 		}
 	}
-	if (code == NVCV_SUCCESS) {
+	if (code == NVCV_SUCCESS && unmapCode != NVCV_SUCCESS) {
 		code = unmapCode;
+		failedOperation = unmapOperation ? unmapOperation : L"NvCVImage_UnmapResource";
 	}
 
 	// D3D11/CUDA interop resources cannot remain registered between chained
@@ -728,7 +739,7 @@ bool CNvidiaMaxineVSR::Process(
 	m_impl->ReleaseD3DImages();
 
 	if (code != NVCV_SUCCESS) {
-		m_impl->SetError(L"Frame processing", code);
+		m_impl->SetError(failedOperation, code);
 		m_impl->ResetEffect();
 		m_impl->failed = true;
 		return Finish(false);
