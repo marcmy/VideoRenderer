@@ -8,6 +8,9 @@ function Get-MpcvrProfileRoot {
         [string]$ProfileRoot = (Join-Path $env:LOCALAPPDATA 'MPCVR Unified Setup\profiles')
     )
 
+    if ([string]::IsNullOrWhiteSpace($ProfileRoot)) {
+        throw 'A profile root is required.'
+    }
     return [IO.Path]::GetFullPath($ProfileRoot)
 }
 
@@ -40,7 +43,8 @@ function Get-MpcvrProfilePath {
     }
 
     $root = Get-MpcvrProfileRoot -ProfileRoot $ProfileRoot
-    $safeName = [regex]::Replace($Name.Trim(), '[^\p{L}\p{Nd}._ -]+', '_').Trim(' ', '.')
+    $safeName = [regex]::Replace($Name.Trim(), '[^\p{L}\p{Nd}._ -]+', '_')
+    $safeName = $safeName.Trim([char[]]@(' ', '.'))
     if ([string]::IsNullOrWhiteSpace($safeName)) {
         $safeName = 'profile'
     }
@@ -63,7 +67,17 @@ function New-MpcvrProfile {
         [switch]$Locked
     )
 
-    $targetFps = if ($SourceFrameRateClass -eq 'up-to-30') { 60.0 } elseif ($SourceFrameRateClass -eq 'over-30-to-60') { 120.0 } else { $null }
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        throw 'A profile name is required.'
+    }
+
+    $targetFps = $null
+    if ($SourceFrameRateClass -eq 'up-to-30') {
+        $targetFps = 60.0
+    }
+    elseif ($SourceFrameRateClass -eq 'over-30-to-60') {
+        $targetFps = 120.0
+    }
 
     return [pscustomobject]@{
         profileVersion = 1
@@ -128,6 +142,13 @@ function Test-MpcvrProfile {
     )
 
     $errors = @()
+    if ($null -eq $Profile) {
+        return [pscustomobject]@{
+            Valid = $false
+            Errors = @('Profile is null.')
+        }
+    }
+
     $required = @('profileVersion', 'name', 'mode', 'locked', 'conditions', 'maxine', 'frameInterpolation', 'fallback')
     $propertyNames = @($Profile.PSObject.Properties.Name)
     foreach ($propertyName in $required) {
@@ -150,48 +171,91 @@ function Test-MpcvrProfile {
             $errors += 'locked must be a boolean.'
         }
 
-        $conditionProperties = @($Profile.conditions.PSObject.Properties.Name)
-        if ($conditionProperties -notcontains 'sourceFrameRateClass' -or
-            [string]$Profile.conditions.sourceFrameRateClass -notin @('up-to-30', 'over-30-to-60', 'custom')) {
-            $errors += 'conditions.sourceFrameRateClass is invalid.'
+        if ($null -eq $Profile.conditions) {
+            $errors += 'conditions must be an object.'
         }
-
-        $maxineRequired = @('enabled', 'quality', 'scaleLimit', 'denoise', 'deblur', 'gpuSelection')
-        foreach ($propertyName in $maxineRequired) {
-            if (@($Profile.maxine.PSObject.Properties.Name) -notcontains $propertyName) {
-                $errors += "Missing Maxine property: $propertyName"
+        else {
+            $conditionProperties = @($Profile.conditions.PSObject.Properties.Name)
+            if ($conditionProperties -notcontains 'sourceFrameRateClass' -or
+                [string]$Profile.conditions.sourceFrameRateClass -notin @('up-to-30', 'over-30-to-60', 'custom')) {
+                $errors += 'conditions.sourceFrameRateClass is invalid.'
             }
         }
-        if ([string]$Profile.maxine.quality -notin @('low', 'medium', 'high', 'custom')) {
-            $errors += 'maxine.quality is invalid.'
-        }
-        $scaleLimit = [double]$Profile.maxine.scaleLimit
-        if ($scaleLimit -lt 1.0 -or $scaleLimit -gt 4.0) {
-            $errors += 'maxine.scaleLimit must be between 1 and 4.'
-        }
 
-        $frucRequired = @('enabled', 'sourceResolutionLimit', 'maxOutputFps')
-        foreach ($propertyName in $frucRequired) {
-            if (@($Profile.frameInterpolation.PSObject.Properties.Name) -notcontains $propertyName) {
-                $errors += "Missing frame-interpolation property: $propertyName"
+        if ($null -eq $Profile.maxine) {
+            $errors += 'maxine must be an object.'
+        }
+        else {
+            $maxineRequired = @('enabled', 'quality', 'scaleLimit', 'denoise', 'deblur', 'gpuSelection')
+            $maxineProperties = @($Profile.maxine.PSObject.Properties.Name)
+            foreach ($propertyName in $maxineRequired) {
+                if ($maxineProperties -notcontains $propertyName) {
+                    $errors += "Missing Maxine property: $propertyName"
+                }
+            }
+            if ($maxineProperties -contains 'quality' -and
+                [string]$Profile.maxine.quality -notin @('low', 'medium', 'high', 'custom')) {
+                $errors += 'maxine.quality is invalid.'
+            }
+            if ($maxineProperties -contains 'scaleLimit') {
+                try {
+                    $scaleLimit = [double]$Profile.maxine.scaleLimit
+                    if ($scaleLimit -lt 1.0 -or $scaleLimit -gt 4.0) {
+                        $errors += 'maxine.scaleLimit must be between 1 and 4.'
+                    }
+                }
+                catch {
+                    $errors += 'maxine.scaleLimit must be numeric.'
+                }
             }
         }
-        if ([string]$Profile.frameInterpolation.sourceResolutionLimit -notin @('720p', '1080p', '1440p', '2160p', 'custom')) {
-            $errors += 'frameInterpolation.sourceResolutionLimit is invalid.'
+
+        if ($null -eq $Profile.frameInterpolation) {
+            $errors += 'frameInterpolation must be an object.'
         }
-        if ([double]$Profile.frameInterpolation.maxOutputFps -lt 1.0) {
-            $errors += 'frameInterpolation.maxOutputFps must be at least 1.'
+        else {
+            $frucRequired = @('enabled', 'sourceResolutionLimit', 'maxOutputFps')
+            $frucProperties = @($Profile.frameInterpolation.PSObject.Properties.Name)
+            foreach ($propertyName in $frucRequired) {
+                if ($frucProperties -notcontains $propertyName) {
+                    $errors += "Missing frame-interpolation property: $propertyName"
+                }
+            }
+            if ($frucProperties -contains 'sourceResolutionLimit' -and
+                [string]$Profile.frameInterpolation.sourceResolutionLimit -notin @('720p', '1080p', '1440p', '2160p', 'custom')) {
+                $errors += 'frameInterpolation.sourceResolutionLimit is invalid.'
+            }
+            if ($frucProperties -contains 'maxOutputFps') {
+                try {
+                    if ([double]$Profile.frameInterpolation.maxOutputFps -lt 1.0) {
+                        $errors += 'frameInterpolation.maxOutputFps must be at least 1.'
+                    }
+                }
+                catch {
+                    $errors += 'frameInterpolation.maxOutputFps must be numeric.'
+                }
+            }
         }
 
-        if ([string]$Profile.fallback.strategy -notin @(
-            'reduce-maxine-quality',
-            'reduce-maxine-scale',
-            'disable-maxine',
-            'disable-interpolation',
-            'ask-user',
-            'none'
-        )) {
-            $errors += 'fallback.strategy is invalid.'
+        if ($null -eq $Profile.fallback) {
+            $errors += 'fallback must be an object.'
+        }
+        else {
+            $fallbackProperties = @($Profile.fallback.PSObject.Properties.Name)
+            if ($fallbackProperties -notcontains 'strategy' -or
+                [string]$Profile.fallback.strategy -notin @(
+                    'reduce-maxine-quality',
+                    'reduce-maxine-scale',
+                    'disable-maxine',
+                    'disable-interpolation',
+                    'ask-user',
+                    'none'
+                )) {
+                $errors += 'fallback.strategy is invalid.'
+            }
+            if ($fallbackProperties -notcontains 'showWarning') {
+                $errors += 'fallback.showWarning is required.'
+            }
         }
     }
 
@@ -358,7 +422,10 @@ function Export-MpcvrProfile {
     if ((Test-Path -LiteralPath $destinationPath) -and -not $Force) {
         throw "Export destination already exists: $destinationPath"
     }
-    New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($destinationPath)) -Force | Out-Null
+    $parent = [IO.Path]::GetDirectoryName($destinationPath)
+    if (-not [string]::IsNullOrWhiteSpace($parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
     Copy-Item -LiteralPath $found.Path -Destination $destinationPath -Force
     return $destinationPath
 }
@@ -390,10 +457,15 @@ function Restore-MpcvrFactoryProfiles {
         [switch]$Force
     )
 
-    $templates = @(
-        New-MpcvrProfile -Name 'Automatic - up to 30 fps (uncalibrated)' -Mode Automatic -SourceFrameRateClass 'up-to-30',
-        New-MpcvrProfile -Name 'Automatic - 30 to 60 fps (uncalibrated)' -Mode Automatic -SourceFrameRateClass 'over-30-to-60'
-    )
+    $templates = @()
+    $templates += New-MpcvrProfile `
+        -Name 'Automatic - up to 30 fps (uncalibrated)' `
+        -Mode Automatic `
+        -SourceFrameRateClass 'up-to-30'
+    $templates += New-MpcvrProfile `
+        -Name 'Automatic - 30 to 60 fps (uncalibrated)' `
+        -Mode Automatic `
+        -SourceFrameRateClass 'over-30-to-60'
 
     $saved = @()
     foreach ($profile in $templates) {
