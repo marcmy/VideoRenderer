@@ -196,6 +196,7 @@ public:
 		UNREFERENCED_PARAMETER(midpointTime);
 		return false;
 	}
+	virtual void CancelFrameInterpolationSubmission() {}
 	virtual HRESULT RenderFrameInterpolation(const REFERENCE_TIME frameStartTime) {
 		UNREFERENCED_PARAMETER(frameStartTime);
 		return E_NOTIMPL;

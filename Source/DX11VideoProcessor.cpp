@@ -2487,6 +2487,15 @@ bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFER
 #endif
 }
 
+void CDX11VideoProcessor::CancelFrameInterpolationSubmission()
+{
+	// CRendererInputPin::BeginFlush holds m_RendererLock while the base
+	// renderer waits for Receive() to return. Invalidate any in-flight FRUC
+	// submission without touching the synchronous NVIDIA API. The receive
+	// thread will discard the result before entering its final locked phase.
+	m_FrameInterpolationGeneration.fetch_add(1, std::memory_order_acq_rel);
+}
+
 bool CDX11VideoProcessor::SubmitFrameInterpolation(const REFERENCE_TIME sourceTime,
 	const REFERENCE_TIME requestedMidpoint, REFERENCE_TIME& midpointTime)
 {
@@ -2499,25 +2508,32 @@ bool CDX11VideoProcessor::SubmitFrameInterpolation(const REFERENCE_TIME sourceTi
 			static_cast<double>(sourceTime) / static_cast<double>(UNITS),
 			static_cast<double>(requestedMidpoint) / static_cast<double>(UNITS),
 			outputReady, repeated)) {
-		CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
-		if (submissionGeneration == m_FrameInterpolationGeneration.load()) {
-			m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
-		}
 		return false;
 	}
 
-	CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
-	if (submissionGeneration != m_FrameInterpolationGeneration.load()) {
+	// Do not acquire DirectShow's renderer lock while m_bInReceive is true.
+	// BeginFlush owns that lock while it waits for Receive() to finish, so even
+	// a generation check immediately before locking still has a check/lock race.
+	if (submissionGeneration != m_FrameInterpolationGeneration.load(std::memory_order_acquire)) {
 		return false;
 	}
+
 	m_bFrameInterpolationPrepared = false;
 	m_bFrameInterpolationOutputReady = outputReady && (!repeated || m_bFrameInterpolationFallback);
 	m_bFrameInterpolationRepeated = repeated;
 	m_rtFrameInterpolationPrepared = INVALID_TIME;
 	m_rtFrameInterpolationMidpoint = requestedMidpoint;
 	m_rtFrameInterpolationLastInput = sourceTime;
-	m_strFrameInterpolationStatus = std::format(L"{}; pipelined source presentation",
-		m_FrameInterpolation.GetStatus());
+
+	// Catch a flush that began while the result fields were being published.
+	// Reset/teardown cannot proceed until Receive clears m_bInReceive, and the
+	// final renderer-locked phase validates this generation again before use.
+	if (submissionGeneration != m_FrameInterpolationGeneration.load(std::memory_order_acquire)) {
+		m_bFrameInterpolationOutputReady = false;
+		m_rtFrameInterpolationMidpoint = INVALID_TIME;
+		return false;
+	}
+
 	if (m_bFrameInterpolationOutputReady) {
 		midpointTime = requestedMidpoint;
 	}
@@ -2564,9 +2580,18 @@ HRESULT CDX11VideoProcessor::RenderPreparedFrame(const bool interpolated, const 
 
 HRESULT CDX11VideoProcessor::RenderFrameInterpolation(const REFERENCE_TIME frameStartTime)
 {
-	if (!m_bFrameInterpolationOutputReady || frameStartTime != m_rtFrameInterpolationMidpoint) {
+	// A seek may invalidate the result after NvOFFRUC returns but before the
+	// receive thread enters its final renderer-locked phase. Never render that
+	// stale midpoint into the new segment.
+	if (m_FrameInterpolationPendingGeneration != m_FrameInterpolationGeneration.load(std::memory_order_acquire)
+			|| !m_bFrameInterpolationOutputReady
+			|| frameStartTime != m_rtFrameInterpolationMidpoint) {
+		m_bFrameInterpolationOutputReady = false;
 		return S_FALSE;
 	}
+
+	m_strFrameInterpolationStatus = std::format(L"{}; pipelined source presentation",
+		m_FrameInterpolation.GetStatus());
 	const HRESULT hr = RenderPreparedFrame(true, frameStartTime);
 	if (SUCCEEDED(hr)) {
 		m_pFilter->m_DrawStats.Add(GetPreciseTick());

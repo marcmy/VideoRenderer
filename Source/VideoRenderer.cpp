@@ -437,6 +437,9 @@ HRESULT CMpcVideoRenderer::BeginFlush()
 	DLog(L"CMpcVideoRenderer::BeginFlush()");
 
 	m_bFlushing = true;
+	if (m_VideoProcessor) {
+		m_VideoProcessor->CancelFrameInterpolationSubmission();
+	}
 	ResetFrameInterpolationPresenterQueue();
 	return __super::BeginFlush();
 }
@@ -644,14 +647,35 @@ bool CMpcVideoRenderer::QueueFrameInterpolationSource(const UINT sourceSurface, 
 		return false;
 	}
 
+	CComPtr<IReferenceClock> clock;
+	REFERENCE_TIME graphStart = 0;
+	const uint64_t generation = m_FrameInterpolationPresenterGeneration.load();
+	{
+		// Snapshot all graph-timing state on the receive thread. The presenter
+		// must never take m_InterfaceLock: DirectShow seek/flush already enters
+		// the renderer with m_InterfaceLock and m_RendererLock held. Capture the
+		// generation before taking the lock so a sample that was blocked by a
+		// flush cannot be queued into the new segment afterward.
+		CAutoLock cVideoLock(&m_InterfaceLock);
+		if (m_State != State_Running || m_bFlushing
+				|| generation != m_FrameInterpolationPresenterGeneration.load()) {
+			return false;
+		}
+		clock = m_pClock;
+		graphStart = static_cast<REFERENCE_TIME>(m_tStart);
+	}
+
 	bool queued = false;
 	{
 		std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
-		if (!m_bStopFrameInterpolationPresenter.load()) {
+		if (!m_bStopFrameInterpolationPresenter.load()
+				&& generation == m_FrameInterpolationPresenterGeneration.load()) {
 			m_FrameInterpolationPresenterQueue.push_back({
 				sourceSurface,
 				streamTime,
-				m_FrameInterpolationPresenterGeneration.load()
+				graphStart,
+				clock,
+				generation
 			});
 			queued = true;
 		}
@@ -709,58 +733,59 @@ void CMpcVideoRenderer::StopFrameInterpolationPresenter()
 
 bool CMpcVideoRenderer::WaitForFrameInterpolationTime(const FrameInterpolationPresentation& frame)
 {
+	if (!frame.clock) {
+		return true;
+	}
+
+	// Avoid IReferenceClock::AdviseTime/Unadvise on the presenter thread.
+	// Unadvise can overlap DirectShow's flush/seek transition and wedge the
+	// graph. A private timer remains immediately cancellable by queue reset.
+	const HANDLE timer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+	if (!timer) {
+		return false;
+	}
+
+	bool due = false;
 	for (;;) {
 		if (m_bStopFrameInterpolationPresenter.load()
 				|| frame.generation != m_FrameInterpolationPresenterGeneration.load()) {
-			return false;
-		}
-
-		CComPtr<IReferenceClock> clock;
-		REFERENCE_TIME graphStart = 0;
-		{
-			CAutoLock cVideoLock(&m_InterfaceLock);
-			if (m_State != State_Running) {
-				return false;
-			}
-			clock = m_pClock;
-			graphStart = (REFERENCE_TIME)m_tStart;
-		}
-		if (!clock) {
-			return true;
+			break;
 		}
 
 		REFERENCE_TIME currentTime = 0;
-		HRESULT hr = clock->GetTime(&currentTime);
-		if (FAILED(hr)) {
-			return false;
-		}
-		if (graphStart + frame.streamTime <= currentTime) {
-			return true;
+		if (FAILED(frame.clock->GetTime(&currentTime))) {
+			break;
 		}
 
-		CAMEvent clockEvent(FALSE);
-		DWORD_PTR adviseCookie = 0;
-		hr = clock->AdviseTime(graphStart, frame.streamTime,
-			(HEVENT)(HANDLE)clockEvent, &adviseCookie);
-		if (FAILED(hr)) {
-			return false;
+		const REFERENCE_TIME remaining = frame.graphStart + frame.streamTime - currentTime;
+		if (remaining <= 0) {
+			due = true;
+			break;
+		}
+
+		LARGE_INTEGER relativeDueTime = {};
+		relativeDueTime.QuadPart = -remaining;
+		if (!SetWaitableTimer(timer, &relativeDueTime, 0, nullptr, nullptr, FALSE)) {
+			break;
 		}
 
 		HANDLE waitObjects[] = {
 			(HANDLE)m_FrameInterpolationPresenterWake,
-			(HANDLE)clockEvent,
+			timer,
 		};
 		const DWORD waitResult = WaitForMultipleObjects(2, waitObjects, FALSE, INFINITE);
+		CancelWaitableTimer(timer);
 		if (waitResult == WAIT_OBJECT_0) {
-			clock->Unadvise(adviseCookie);
 			continue;
 		}
-		if (waitResult == WAIT_OBJECT_0 + 1) {
-			return true;
+		if (waitResult != WAIT_OBJECT_0 + 1) {
+			break;
 		}
-		clock->Unadvise(adviseCookie);
-		return false;
+		// Re-read the graph clock after the timer fires to tolerate drift.
 	}
+
+	CloseHandle(timer);
+	return due;
 }
 
 void CMpcVideoRenderer::FrameInterpolationPresenter()
@@ -786,27 +811,24 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 
 		const bool due = WaitForFrameInterpolationTime(frame);
 		bool rendered = false;
-		if (due
-				&& !m_bStopFrameInterpolationPresenter.load()
-				&& frame.generation == m_FrameInterpolationPresenterGeneration.load()) {
-			CAutoLock cVideoLock(&m_InterfaceLock);
-			if (m_State == State_Running
-					&& frame.generation == m_FrameInterpolationPresenterGeneration.load()) {
-				CAutoLock cRendererLock(&m_RendererLock);
-				if (frame.generation == m_FrameInterpolationPresenterGeneration.load()) {
-					const HRESULT hr = m_VideoProcessor->RenderFrameInterpolationSource(
-						frame.sourceSurface, frame.streamTime);
-					rendered = hr == S_OK;
-					if (rendered) {
-						m_bValidBuffer = true;
-					}
+		{
+			// Only serialize with D3D11 work. Never acquire m_InterfaceLock on
+			// the presenter thread; seek/flush already owns that lock.
+			CAutoLock cRendererLock(&m_RendererLock);
+			if (due
+					&& !m_bStopFrameInterpolationPresenter.load()
+					&& frame.generation == m_FrameInterpolationPresenterGeneration.load()
+					&& m_VideoProcessor) {
+				const HRESULT hr = m_VideoProcessor->RenderFrameInterpolationSource(
+					frame.sourceSurface, frame.streamTime);
+				rendered = hr == S_OK;
+				if (rendered) {
+					m_bValidBuffer = true;
 				}
 			}
-		}
-
-		{
-			CAutoLock cRendererLock(&m_RendererLock);
-			m_VideoProcessor->ReleaseFrameInterpolationSource(frame.sourceSurface);
+			if (m_VideoProcessor) {
+				m_VideoProcessor->ReleaseFrameInterpolationSource(frame.sourceSurface);
+			}
 		}
 
 		if (!rendered && due && !m_bStopFrameInterpolationPresenter.load()) {
@@ -865,35 +887,46 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 	REFERENCE_TIME currentFrameTime = INVALID_TIME;
 	UINT sourceSurface = UINT_MAX;
 	bool frameInterpolationPrepared = false;
+	bool sourceQueued = false;
+	bool renderInterpolation = false;
+
 	if (m_State == State_Running && m_VideoProcessor->Type() == VP_DX11) {
-		frameInterpolationPrepared = m_VideoProcessor->PrepareFrameInterpolation(
-			m_pMediaSample, currentFrameTime, requestedMidpoint, sourceSurface);
+		// DirectShow's BeginFlush holds m_InterfaceLock and m_RendererLock while
+		// waiting for m_bInReceive to clear. Temporarily advertise that Receive
+		// is inactive before entering either graph lock, then revalidate state
+		// under m_InterfaceLock and mark it active again. This is the same safe
+		// transition used by CBaseRenderer::Receive().
+		m_bInReceive = FALSE;
+		{
+			CAutoLock cVideoLock(&m_InterfaceLock);
+			if (m_State != State_Running || m_bFlushing) {
+				return NOERROR;
+			}
+
+			m_bInReceive = TRUE;
+			frameInterpolationPrepared = m_VideoProcessor->PrepareFrameInterpolation(
+				m_pMediaSample, currentFrameTime, requestedMidpoint, sourceSurface);
+			if (frameInterpolationPrepared) {
+				// Preserve and queue the source while the interface lock prevents a
+				// flush from splitting preparation from its presentation metadata.
+				CancelNotification();
+				sourceQueued = QueueFrameInterpolationSource(sourceSurface, currentFrameTime);
+			}
+		}
 	}
 
 	if (frameInterpolationPrepared) {
-		// Queue the preserved source before entering NvOFFRUC. The presenter can
-		// now hit the source timestamp while the receive thread performs the
-		// synchronous optical-flow/CUDA work for the following midpoint.
-		CancelNotification();
-		const bool sourceQueued = QueueFrameInterpolationSource(sourceSurface, currentFrameTime);
+		// NvOFFRUC remains synchronous, but this phase intentionally owns no
+		// DirectShow graph locks. BeginFlush can invalidate the generation and
+		// wait until we mark Receive inactive below without forming a lock cycle.
 		const bool interpolationSubmitted = m_VideoProcessor->SubmitFrameInterpolation(
 			currentFrameTime, requestedMidpoint, interpolationTime);
-		if (!sourceQueued) {
-			CAutoLock cRendererLock(&m_RendererLock);
-			m_VideoProcessor->ReleaseFrameInterpolationSource(sourceSurface);
-		}
 
 		if (interpolationSubmitted
 				&& interpolationTime != INVALID_TIME
 				&& m_State == State_Running) {
 			hr = WaitForStreamTime(interpolationTime);
-			if (SUCCEEDED(hr) && m_State == State_Running) {
-				CAutoLock cRendererLock(&m_RendererLock);
-				const HRESULT renderHr = m_VideoProcessor->RenderFrameInterpolation(interpolationTime);
-				if (renderHr == S_OK) {
-					m_bValidBuffer = true;
-				}
-			}
+			renderInterpolation = SUCCEEDED(hr);
 		}
 		else {
 			hr = S_OK; // first frame warms up, or FRUC failed and source-only fallback remains queued
@@ -909,14 +942,28 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 	}
 
 	if (frameInterpolationPrepared) {
+		// Never enter either graph lock while DirectShow considers Receive active.
+		// A concurrent flush can now finish its wait, release the locks, and leave
+		// this final phase to discard stale work under the normal lock order.
 		m_bInReceive = FALSE;
 
 		CAutoLock cVideoLock(&m_InterfaceLock);
+		CAutoLock cRendererLock(&m_RendererLock);
+		if (!sourceQueued && sourceSurface != UINT_MAX && m_VideoProcessor) {
+			m_VideoProcessor->ReleaseFrameInterpolationSource(sourceSurface);
+		}
+
 		if (m_State == State_Stopped) {
 			return NOERROR;
 		}
 
-		CAutoLock cRendererLock(&m_RendererLock);
+		if (renderInterpolation && m_State == State_Running && !m_bFlushing && m_VideoProcessor) {
+			const HRESULT renderHr = m_VideoProcessor->RenderFrameInterpolation(interpolationTime);
+			if (renderHr == S_OK) {
+				m_bValidBuffer = true;
+			}
+		}
+
 		ClearPendingSample();
 		SendEndOfStream();
 		CancelNotification();
