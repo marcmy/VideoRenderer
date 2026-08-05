@@ -277,7 +277,7 @@ $sdkText = New-Object System.Windows.Forms.TextBox
 $sdkText.Location = New-Object System.Drawing.Point(194, 24)
 $sdkText.Size = New-Object System.Drawing.Size(645, 24)
 $inputsGroup.Controls.Add($sdkText)
-$sdkBrowse = New-Button -Text 'Browseâ€¦' -X 850 -Y 21 -Width 78 -Height 28
+$sdkBrowse = New-Button -Text 'Browse...' -X 850 -Y 21 -Width 78 -Height 28
 $inputsGroup.Controls.Add($sdkBrowse)
 $sdkToolTip = New-Object System.Windows.Forms.ToolTip
 $sdkToolTip.SetToolTip($sdkText, 'Leave blank. Setup will open NVIDIA''s official login/download page, detect the completed SDK ZIP, validate it, and continue automatically.')
@@ -288,7 +288,7 @@ $mediaText = New-Object System.Windows.Forms.TextBox
 $mediaText.Location = New-Object System.Drawing.Point(164, 64)
 $mediaText.Size = New-Object System.Drawing.Size(675, 24)
 $inputsGroup.Controls.Add($mediaText)
-$mediaBrowse = New-Button -Text 'Browseâ€¦' -X 850 -Y 61 -Width 78 -Height 28
+$mediaBrowse = New-Button -Text 'Browse...' -X 850 -Y 61 -Width 78 -Height 28
 $inputsGroup.Controls.Add($mediaBrowse)
 
 $tabs = New-Object System.Windows.Forms.TabControl
