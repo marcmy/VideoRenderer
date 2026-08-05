@@ -130,6 +130,7 @@ if ($env:OS -ne 'Windows_NT') {
 $exitCode = 0
 $snapshotRoot = $null
 $rollbackAttempted = $false
+$rollbackSucceeded = $false
 try {
     foreach ($requiredPath in @($commonModule, $transactionModule, $maxineInstaller, $frucInstaller, $rendererUpdater)) {
         if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
@@ -159,11 +160,20 @@ try {
     }
 
     if ($ValidateOnly) {
-        $maxineArguments = @('-ValidateOnly', '-SkipEnvironmentUpdate', '-NoPause')
         Invoke-MpcvrPowerShellScript `
             -Name 'Validating the Maxine runtime installer...' `
             -ScriptPath $maxineInstaller `
-            -Arguments $maxineArguments `
+            -Arguments @('-ValidateOnly', '-SkipEnvironmentUpdate', '-NoPause') `
+            -NoNewWindow
+
+        $frucArguments = @('-ValidateOnly', '-NoPause')
+        if (-not [string]::IsNullOrWhiteSpace($NvOffrucSdkPath)) {
+            $frucArguments += @('-SdkPath', (ConvertTo-MpcvrCommandLineArgument -Value $NvOffrucSdkPath))
+        }
+        Invoke-MpcvrPowerShellScript `
+            -Name 'Validating the NvOFFRUC runtime installer...' `
+            -ScriptPath $frucInstaller `
+            -Arguments $frucArguments `
             -NoNewWindow
 
         $rendererArguments = New-Object 'System.Collections.Generic.List[string]'
@@ -251,7 +261,11 @@ try {
             Invoke-MpcvrPowerShellScript `
                 -Name '2/3 Installing NVIDIA NvOFFRUC runtime...' `
                 -ScriptPath $frucInstaller `
-                -Arguments @((ConvertTo-MpcvrCommandLineArgument -Value $NvOffrucSdkPath)) `
+                -Arguments @(
+                    '-SdkPath',
+                    (ConvertTo-MpcvrCommandLineArgument -Value $NvOffrucSdkPath),
+                    '-NoPause'
+                ) `
                 -NoNewWindow
         }
         else {
@@ -295,8 +309,8 @@ try {
     }
 
     [void](Save-MpcvrSystemProfile -Profile $profileAfter -Path (Join-Path $snapshotRoot 'system-after.json'))
-    $transaction.Status = 'Succeeded'
-    $transaction.CompletedAtUtc = [DateTime]::UtcNow.ToString('o')
+    $transaction['Status'] = 'Succeeded'
+    $transaction['CompletedAtUtc'] = [DateTime]::UtcNow.ToString('o')
     $transaction | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $transactionPath -Encoding UTF8
 
     New-Item -ItemType Directory -Path $DataRoot -Force | Out-Null
@@ -320,6 +334,7 @@ catch {
         try {
             Write-Host 'Restoring the pre-install renderer and runtime state...' -ForegroundColor Yellow
             [void](Restore-MpcvrSetupSnapshot -SnapshotRoot $snapshotRoot)
+            $rollbackSucceeded = $true
             Write-Host 'Automatic rollback completed.' -ForegroundColor Green
         }
         catch {
@@ -329,7 +344,15 @@ catch {
         $transactionPath = Join-Path $snapshotRoot 'transaction.json'
         if (Test-Path -LiteralPath $transactionPath -PathType Leaf) {
             $transaction = Get-Content -LiteralPath $transactionPath -Raw | ConvertFrom-Json
-            $transaction.Status = if ($rollbackAttempted) { 'FailedRolledBack' } else { 'Failed' }
+            if ($rollbackSucceeded) {
+                $transaction.Status = 'FailedRolledBack'
+            }
+            elseif ($rollbackAttempted) {
+                $transaction.Status = 'FailedRollbackFailed'
+            }
+            else {
+                $transaction.Status = 'Failed'
+            }
             $transaction.CompletedAtUtc = [DateTime]::UtcNow.ToString('o')
             $transaction.Error = $message
             $transaction | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $transactionPath -Encoding UTF8
