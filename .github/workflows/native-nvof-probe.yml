@@ -24,6 +24,50 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Prepare embedded occlusion support
+        shell: pwsh
+        run: |
+          $path = 'tools/native-nvof-probe/NativeNvofOcclusionTest.cpp'
+          $source = [IO.File]::ReadAllText($path)
+          $marker = '#define wmain NativeNvofCpuMidpointReferenceMain'
+          if (-not $source.Contains($marker)) {
+            throw 'Could not find the occlusion probe entry-point marker.'
+          }
+
+          $replacement = @'
+          #ifdef wmain
+          #define NATIVE_NVOF_OCCLUSION_EMBEDDED 1
+          #undef wmain
+          #endif
+          #define wmain NativeNvofCpuMidpointReferenceMain
+          '@
+          $replacement = $replacement -replace '(?m)^          ', ''
+          $source = $source.Replace($marker, $replacement.TrimEnd())
+
+          $mainPattern = 'int wmain\(\)\r?\n\{'
+          if (-not [regex]::IsMatch($source, $mainPattern)) {
+            throw 'Could not find the occlusion probe main function.'
+          }
+          $mainReplacement = @'
+          #ifndef NATIVE_NVOF_OCCLUSION_EMBEDDED
+          int wmain()
+          {
+          '@
+          $mainReplacement = $mainReplacement -replace '(?m)^          ', ''
+          $source = [regex]::Replace(
+            $source,
+            $mainPattern,
+            $mainReplacement.TrimEnd(),
+            1)
+          $source += @'
+
+          #endif
+          #ifdef NATIVE_NVOF_OCCLUSION_EMBEDDED
+          #undef NATIVE_NVOF_OCCLUSION_EMBEDDED
+          #endif
+          '@ -replace '(?m)^          ', ''
+          [IO.File]::WriteAllText($path, $source)
+
       - name: Build 64-bit probes
         shell: cmd
         run: |
