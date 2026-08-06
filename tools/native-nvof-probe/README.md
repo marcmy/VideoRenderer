@@ -9,7 +9,7 @@ They do **not** require or load:
 - an Optical Flow SDK installation
 - an NVIDIA Developer Program account
 
-All five tools load `nvofapi64.dll` from the Windows system directory.
+All six tools load `nvofapi64.dll` from the Windows system directory.
 
 ## `NativeNvofProbe.exe`
 
@@ -98,7 +98,7 @@ The test reports separate statistics for:
 - occlusion and motion-boundary error
 - forward/backward flow consistency
 
-Boundary error is intentionally diagnostic. The current shader is still the naïve two-warp blend, so nonzero error where the object covers or reveals background is expected. The executable passes when NVOF separates the moving object from the stationary background and synthesis remains accurate away from those boundaries.
+Boundary error is intentionally diagnostic. The shader is the naïve two-warp blend, so nonzero error where the object covers or reveals background is expected. The executable passes when NVOF separates the moving object from the stationary background and synthesis remains accurate away from those boundaries.
 
 It writes:
 
@@ -115,7 +115,30 @@ D3D11 compute midpoint: layered scene dispatched
 OCCLUSION DIAGNOSTIC: PASS
 ```
 
-The measured boundary and consistency behavior is the input for the next stage: confidence weighting, occlusion selection, disocclusion filling, and motion-edge-aware flow upsampling.
+## `NativeNvofOcclusionAwareTest.exe`
+
+Runs the v5 naïve blend and a visibility-aware shader against the same NVOF fields. The new shader evaluates multiple inverse-warp hypotheses for each source and scores them using midpoint projection residual, forward/backward agreement, and cross-frame photometric agreement.
+
+When both sources represent the same visible content they are blended. When they disagree near a covering or revealing edge, the lower-error source is selected instead of forcing a 50/50 blend.
+
+It reports the baseline and aware boundary errors side by side and verifies that the previously perfect static background and moving-object interior remain accurate.
+
+It writes:
+
+- `NativeNvofOcclusionAwareMidpoint.bmp`
+- `NativeNvofOcclusionAwareExpected.bmp`
+- `NativeNvofOcclusionAwareDiff.bmp`
+- `NativeNvofOcclusionBaselineDiff.bmp`
+- `NativeNvofOcclusionSelection.bmp`
+
+Selection-map colors are red for frame A, blue for frame B, green for a two-source blend, and magenta for low-confidence areas.
+
+A successful result ends with:
+
+```text
+D3D11 compute synthesis: baseline + occlusion-aware dispatched
+OCCLUSION-AWARE RESULT: PASS
+```
 
 ## Running
 
@@ -129,6 +152,7 @@ The measured boundary and consistency behavior is the input for the next stage: 
 .\NativeNvofMidpointTest.exe
 .\NativeNvofGpuMidpointTest.exe
 .\NativeNvofOcclusionTest.exe
+.\NativeNvofOcclusionAwareTest.exe
 ```
 
-4. Copy the complete console output from `NativeNvofOcclusionTest.exe`. Keep its five generated bitmaps; the difference and consistency maps are especially useful even when the diagnostic passes.
+4. Copy the complete console output from the latest test. For the occlusion-aware test, keep the aware difference and source-selection maps if it fails or reports only a small boundary improvement.
