@@ -1,9 +1,5 @@
 int wmain()
 {
-#ifndef _WIN64
-    std::wcerr << L"This test must be built as a 64-bit executable.\n";
-    return 2;
-#else
     std::wcout << L"Native NVIDIA Optical Flow boundary refinement test\n"
                << L"==================================================\n";
 
