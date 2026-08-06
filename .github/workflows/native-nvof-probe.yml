@@ -24,7 +24,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Prepare embedded occlusion support
+      - name: Prepare embedded probe sources
         shell: pwsh
         run: |
           $path = 'tools/native-nvof-probe/NativeNvofOcclusionTest.cpp'
@@ -67,6 +67,27 @@ jobs:
           #endif
           '@ -replace '(?m)^          ', ''
           [IO.File]::WriteAllText($path, $source)
+
+          # Shader Model 5.0 does not support selecting whole structs with ?:.
+          # Rewrite the embedded HLSL to an explicit assignment before build.
+          $awarePath = 'tools/native-nvof-probe/NativeNvofOcclusionAwareTest.cpp'
+          $awareSource = [IO.File]::ReadAllText($awarePath)
+          $brokenShader = '    return alternative.score < current.score ? alternative : current;'
+          $fixedShader = @'
+              Candidate best = current;
+              if (alternative.score < current.score) {
+                  best = alternative;
+              }
+              return best;
+          '@
+          $fixedShader = $fixedShader -replace '(?m)^              ', '    '
+          if (-not $awareSource.Contains($brokenShader)) {
+            throw 'Could not find the occlusion-aware HLSL struct conditional.'
+          }
+          $awareSource = $awareSource.Replace(
+            $brokenShader,
+            $fixedShader.TrimEnd())
+          [IO.File]::WriteAllText($awarePath, $awareSource)
 
       - name: Build 64-bit probes
         shell: cmd
@@ -139,6 +160,36 @@ jobs:
           if errorlevel 1 exit /b 1
 
           copy /y tools\native-nvof-probe\README.md build\native-nvof-probe\README.md >nul
+
+      - name: Validate occlusion-aware HLSL
+        shell: pwsh
+        run: |
+          $sourcePath = 'tools/native-nvof-probe/NativeNvofOcclusionAwareTest.cpp'
+          $source = [IO.File]::ReadAllText($sourcePath)
+          $pattern = 'constexpr char OcclusionAwareComputeShader\[\] = R"hlsl\((?<shader>[\s\S]*?)\)hlsl";'
+          $match = [regex]::Match($source, $pattern)
+          if (-not $match.Success) {
+            throw 'Could not extract the embedded occlusion-aware HLSL.'
+          }
+
+          $shaderPath = 'build/native-nvof-probe/NativeNvofOcclusionAware.hlsl'
+          [IO.File]::WriteAllText($shaderPath, $match.Groups['shader'].Value)
+
+          $fxc = Get-ChildItem \
+              "${env:ProgramFiles(x86)}\Windows Kits\10\bin" \
+              -Filter fxc.exe -Recurse -File |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $fxc) {
+            throw 'fxc.exe was not found in the Windows SDK.'
+          }
+
+          & $fxc.FullName /nologo /T cs_5_0 /E main /WX \
+              /Fo build/native-nvof-probe/NativeNvofOcclusionAware.cso \
+              $shaderPath
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Upload probes
         uses: actions/upload-artifact@v4
