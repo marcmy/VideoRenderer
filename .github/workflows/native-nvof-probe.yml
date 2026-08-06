@@ -175,18 +175,16 @@ jobs:
           $shaderPath = 'build/native-nvof-probe/NativeNvofOcclusionAware.hlsl'
           [IO.File]::WriteAllText($shaderPath, $match.Groups['shader'].Value)
 
-          $fxc = Get-ChildItem \
-              "${env:ProgramFiles(x86)}\Windows Kits\10\bin" \
-              -Filter fxc.exe -Recurse -File |
+          $sdkBin = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+          $fxc = Get-ChildItem $sdkBin -Filter fxc.exe -Recurse -File |
             Sort-Object FullName -Descending |
             Select-Object -First 1
           if (-not $fxc) {
             throw 'fxc.exe was not found in the Windows SDK.'
           }
 
-          & $fxc.FullName /nologo /T cs_5_0 /E main /WX \
-              /Fo build/native-nvof-probe/NativeNvofOcclusionAware.cso \
-              $shaderPath
+          $outputBytecode = 'build/native-nvof-probe/NativeNvofOcclusionAware.cso'
+          & $fxc.FullName /nologo /T cs_5_0 /E main /WX /Fo $outputBytecode $shaderPath
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
