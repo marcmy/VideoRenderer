@@ -27,49 +27,60 @@ jobs:
       - name: Prepare embedded probe sources
         shell: pwsh
         run: |
-          $path = 'tools/native-nvof-probe/NativeNvofOcclusionTest.cpp'
-          $source = [IO.File]::ReadAllText($path)
-          $marker = '#define wmain NativeNvofCpuMidpointReferenceMain'
-          if (-not $source.Contains($marker)) {
-            throw 'Could not find the occlusion probe entry-point marker.'
-          }
+          function Make-SourceEmbeddable {
+            param(
+              [Parameter(Mandatory)] [string] $Path,
+              [Parameter(Mandatory)] [string] $EntryMarker,
+              [Parameter(Mandatory)] [string] $EmbeddedDefine,
+              [Parameter(Mandatory)] [string] $RenamedEntry
+            )
 
-          $replacement = @'
+            $source = [IO.File]::ReadAllText($Path)
+            if (-not $source.Contains($EntryMarker)) {
+              throw "Could not find entry-point marker in $Path"
+            }
+
+            $replacement = @"
           #ifdef wmain
-          #define NATIVE_NVOF_OCCLUSION_EMBEDDED 1
+          #define $EmbeddedDefine 1
           #undef wmain
           #endif
-          #define wmain NativeNvofCpuMidpointReferenceMain
-          '@
-          $replacement = $replacement -replace '(?m)^          ', ''
-          $source = $source.Replace($marker, $replacement.TrimEnd())
+          #define wmain $RenamedEntry
+          "@
+            $replacement = $replacement -replace '(?m)^          ', ''
+            $source = $source.Replace($EntryMarker, $replacement.TrimEnd())
 
-          $mainPattern = 'int wmain\(\)\r?\n\{'
-          if (-not [regex]::IsMatch($source, $mainPattern)) {
-            throw 'Could not find the occlusion probe main function.'
-          }
-          $mainReplacement = @'
-          #ifndef NATIVE_NVOF_OCCLUSION_EMBEDDED
+            $mainPattern = 'int wmain\(\)\r?\n\{'
+            if (-not [regex]::IsMatch($source, $mainPattern)) {
+              throw "Could not find main function in $Path"
+            }
+            $mainReplacement = @"
+          #ifndef $EmbeddedDefine
           int wmain()
           {
-          '@
-          $mainReplacement = $mainReplacement -replace '(?m)^          ', ''
-          $source = [regex]::Replace(
-            $source,
-            $mainPattern,
-            $mainReplacement.TrimEnd(),
-            1)
-          $source += @'
+          "@
+            $mainReplacement = $mainReplacement -replace '(?m)^          ', ''
+            $source = [regex]::Replace(
+              $source,
+              $mainPattern,
+              $mainReplacement.TrimEnd(),
+              1)
+            $source += @"
 
           #endif
-          #ifdef NATIVE_NVOF_OCCLUSION_EMBEDDED
-          #undef NATIVE_NVOF_OCCLUSION_EMBEDDED
+          #ifdef $EmbeddedDefine
+          #undef $EmbeddedDefine
           #endif
-          '@ -replace '(?m)^          ', ''
-          [IO.File]::WriteAllText($path, $source)
+          "@ -replace '(?m)^          ', ''
+            [IO.File]::WriteAllText($Path, $source)
+          }
 
-          # Shader Model 5.0 does not support selecting whole structs with ?:.
-          # Rewrite the embedded HLSL to an explicit assignment before build.
+          Make-SourceEmbeddable `
+            -Path 'tools/native-nvof-probe/NativeNvofOcclusionTest.cpp' `
+            -EntryMarker '#define wmain NativeNvofCpuMidpointReferenceMain' `
+            -EmbeddedDefine 'NATIVE_NVOF_OCCLUSION_EMBEDDED' `
+            -RenamedEntry 'NativeNvofCpuMidpointReferenceMain'
+
           $awarePath = 'tools/native-nvof-probe/NativeNvofOcclusionAwareTest.cpp'
           $awareSource = [IO.File]::ReadAllText($awarePath)
           $brokenShader = '    return alternative.score < current.score ? alternative : current;'
@@ -88,6 +99,12 @@ jobs:
             $brokenShader,
             $fixedShader.TrimEnd())
           [IO.File]::WriteAllText($awarePath, $awareSource)
+
+          Make-SourceEmbeddable `
+            -Path $awarePath `
+            -EntryMarker '#define wmain NativeNvofOcclusionReferenceMain' `
+            -EmbeddedDefine 'NATIVE_NVOF_OCCLUSION_AWARE_EMBEDDED' `
+            -RenamedEntry 'NativeNvofOcclusionReferenceMain'
 
       - name: Build 64-bit probes
         shell: cmd
@@ -159,22 +176,19 @@ jobs:
             /link d3d11.lib dxgi.lib d3dcompiler.lib
           if errorlevel 1 exit /b 1
 
+          cl /nologo /std:c++20 /permissive- /Zc:__cplusplus /EHsc /W4 /WX /O2 /DUNICODE /D_UNICODE ^
+            /Itools\native-nvof-probe ^
+            /Fo:build\native-nvof-probe\NativeNvofBoundaryRefineTest.obj ^
+            /Fe:build\native-nvof-probe\NativeNvofBoundaryRefineTest.exe ^
+            tools\native-nvof-probe\NativeNvofBoundaryRefineTest.cpp ^
+            /link d3d11.lib dxgi.lib d3dcompiler.lib
+          if errorlevel 1 exit /b 1
+
           copy /y tools\native-nvof-probe\README.md build\native-nvof-probe\README.md >nul
 
-      - name: Validate occlusion-aware HLSL
+      - name: Validate embedded HLSL
         shell: pwsh
         run: |
-          $sourcePath = 'tools/native-nvof-probe/NativeNvofOcclusionAwareTest.cpp'
-          $source = [IO.File]::ReadAllText($sourcePath)
-          $pattern = 'constexpr char OcclusionAwareComputeShader\[\] = R"hlsl\((?<shader>[\s\S]*?)\)hlsl";'
-          $match = [regex]::Match($source, $pattern)
-          if (-not $match.Success) {
-            throw 'Could not extract the embedded occlusion-aware HLSL.'
-          }
-
-          $shaderPath = 'build/native-nvof-probe/NativeNvofOcclusionAware.hlsl'
-          [IO.File]::WriteAllText($shaderPath, $match.Groups['shader'].Value)
-
           $sdkBin = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
           $fxc = Get-ChildItem $sdkBin -Filter fxc.exe -Recurse -File |
             Sort-Object FullName -Descending |
@@ -183,10 +197,40 @@ jobs:
             throw 'fxc.exe was not found in the Windows SDK.'
           }
 
-          $outputBytecode = 'build/native-nvof-probe/NativeNvofOcclusionAware.cso'
-          & $fxc.FullName /nologo /T cs_5_0 /E main /WX /Fo $outputBytecode $shaderPath
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
+          $specs = @(
+            @{
+              Path = 'tools/native-nvof-probe/NativeNvofOcclusionAwareTest.cpp'
+              Name = 'OcclusionAwareComputeShader'
+              Output = 'NativeNvofOcclusionAware'
+            },
+            @{
+              Path = 'tools/native-nvof-probe/NativeNvofBoundaryRefinePart1.inc'
+              Name = 'BoundarySearchComputeShader'
+              Output = 'NativeNvofBoundarySearch'
+            },
+            @{
+              Path = 'tools/native-nvof-probe/NativeNvofBoundaryRefinePart2.inc'
+              Name = 'BoundaryRepairComputeShader'
+              Output = 'NativeNvofBoundaryRepair'
+            }
+          )
+
+          foreach ($spec in $specs) {
+            $source = [IO.File]::ReadAllText($spec.Path)
+            $escapedName = [regex]::Escape($spec.Name)
+            $pattern = "constexpr char $escapedName\[\] = R`"hlsl\((?<shader>[\s\S]*?)\)hlsl`";"
+            $match = [regex]::Match($source, $pattern)
+            if (-not $match.Success) {
+              throw "Could not extract $($spec.Name) from $($spec.Path)"
+            }
+
+            $shaderPath = "build/native-nvof-probe/$($spec.Output).hlsl"
+            $outputBytecode = "build/native-nvof-probe/$($spec.Output).cso"
+            [IO.File]::WriteAllText($shaderPath, $match.Groups['shader'].Value)
+            & $fxc.FullName /nologo /T cs_5_0 /E main /WX /Fo $outputBytecode $shaderPath
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
           }
 
       - name: Upload probes
