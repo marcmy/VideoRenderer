@@ -62,5 +62,4 @@
     std::wcout << L"BOUNDARY REFINEMENT RESULT: "
                << (passed ? L"PASS" : L"FAIL") << L'\n';
     return passed ? 0 : 21;
-#endif
 }
