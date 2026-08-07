@@ -1,12 +1,14 @@
 /*
- * Driver-provided NVIDIA Optical Flow API discovery.
+ * Driver-only NVIDIA Optical Flow frame interpolation backend.
  *
- * The NVOF API implementation is installed with the NVIDIA display driver.
- * This probe does not depend on or redistribute the Optical Flow SDK runtime.
+ * Uses nvofapi.dll/nvofapi64.dll installed by the NVIDIA display driver.
+ * No NvOFFRUC.dll, CUDA runtime, or Optical Flow SDK binary is required.
  */
 
 #pragma once
 
+#include <d3d11.h>
+#include <memory>
 #include <string>
 
 class CNvidiaOpticalFlowNativeProbe
@@ -21,4 +23,35 @@ public:
 	};
 
 	static Result Probe();
+};
+
+class CNvidiaOpticalFlowNative
+{
+public:
+	CNvidiaOpticalFlowNative();
+	~CNvidiaOpticalFlowNative();
+
+	CNvidiaOpticalFlowNative(const CNvidiaOpticalFlowNative&) = delete;
+	CNvidiaOpticalFlowNative& operator=(const CNvidiaOpticalFlowNative&) = delete;
+
+	bool Initialize(ID3D11Device* device, UINT width, UINT height);
+	void Reset();
+
+	bool BeginInputFrame(ID3D11Texture2D** texture);
+	void CancelInputFrame();
+	bool SubmitInputFrame(double inputTimestamp, double outputTimestamp,
+		bool& outputReady, bool& repeated);
+
+	bool AcquireCurrentFrame(ID3D11Texture2D** texture, ID3D11ShaderResourceView** view);
+	void ReleaseCurrentFrame();
+	bool AcquireInterpolatedFrame(ID3D11Texture2D** texture, ID3D11ShaderResourceView** view);
+	void ReleaseInterpolatedFrame();
+
+	const std::wstring& GetStatus() const;
+	const std::wstring& GetRuntimeInfo() const;
+	double GetLastProcessTimeMs() const;
+
+private:
+	struct Impl;
+	std::unique_ptr<Impl> m_impl;
 };
