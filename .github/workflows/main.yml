@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -28,6 +28,30 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+
+      - name: Commit BGRA frame-interpolation staging fix
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feature/native-nvof-interpolation'
+        shell: pwsh
+        run: |
+          $path = 'Source/DX11VideoProcessor.cpp'
+          $source = [IO.File]::ReadAllText($path)
+          $old = 'm_TexFrameInterpolationInput.CheckCreate(m_pDevice,' + "`r`n`t`t" + 'DXGI_FORMAT_R8G8B8A8_UNORM, outputWidth, outputHeight,'
+          $new = 'm_TexFrameInterpolationInput.CheckCreate(m_pDevice,' + "`r`n`t`t" + 'DXGI_FORMAT_B8G8R8A8_UNORM, outputWidth, outputHeight,'
+          if (-not $source.Contains($old)) {
+            $old = 'm_TexFrameInterpolationInput.CheckCreate(m_pDevice,' + "`n`t`t" + 'DXGI_FORMAT_R8G8B8A8_UNORM, outputWidth, outputHeight,'
+            $new = 'm_TexFrameInterpolationInput.CheckCreate(m_pDevice,' + "`n`t`t" + 'DXGI_FORMAT_B8G8R8A8_UNORM, outputWidth, outputHeight,'
+          }
+          if (-not $source.Contains($old)) {
+            throw 'Could not find the frame-interpolation RGBA8 staging declaration.'
+          }
+          $source = $source.Replace($old, $new)
+          [IO.File]::WriteAllText($path, $source)
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- $path
+          git commit -m 'Match frame interpolation staging format to native NVOF BGRA input'
+          git push origin HEAD:feature/native-nvof-interpolation
 
       - name: Build VideoRenderer
         run: |
