@@ -629,7 +629,7 @@ struct CNvidiaOpticalFlowNative::Impl
 		desc.Height = height;
 		desc.MipLevels = 1;
 		desc.ArraySize = 1;
-		desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
 		desc.SampleDesc.Count = 1;
 		desc.Usage = D3D11_USAGE_DEFAULT;
 		desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
@@ -827,9 +827,9 @@ struct CNvidiaOpticalFlowNative::Impl
 				!QueryFormats(nvof::BufferUsageOutput, outputFormats)) {
 			return Fail(L"Could not query native NVOF D3D11 surface formats");
 		}
-		if (std::find(inputFormats.begin(), inputFormats.end(), DXGI_FORMAT_R8G8B8A8_UNORM) == inputFormats.end()) {
+		if (std::find(inputFormats.begin(), inputFormats.end(), DXGI_FORMAT_B8G8R8A8_UNORM) == inputFormats.end()) {
 			return Fail(std::format(
-				L"Native NVOF cannot consume the renderer RGBA8 surface; supported input formats: {}",
+				L"Native NVOF cannot consume the renderer BGRA8 surface; supported input formats: {}",
 				JoinFormats(inputFormats)));
 		}
 		if (std::find(outputFormats.begin(), outputFormats.end(), DXGI_FORMAT_R16G16_SINT) == outputFormats.end()) {
@@ -867,7 +867,7 @@ struct CNvidiaOpticalFlowNative::Impl
 		}
 
 		runtimeInfo = std::format(
-			L"Driver NVOF {}.{}; D3D11; 4x4 bidirectional flow; renderer-owned synthesis",
+			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow; renderer-owned synthesis",
 			apiMajor, apiMinor);
 		status = std::format(L"Native NVOF ready, {}x{}", width, height);
 		DLog(L"Native NVIDIA frame interpolation: {}", runtimeInfo);
