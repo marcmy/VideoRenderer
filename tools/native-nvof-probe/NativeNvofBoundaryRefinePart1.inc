@@ -1,9 +1,10 @@
 /*
  * Driver-only NVIDIA Optical Flow motion-edge refinement test.
  *
- * Extends the v6 occlusion-aware probe with a wider source-space candidate
- * search and a conservative confidence-guided repair pass. The v6 output is
- * produced in the same run and remains the quality baseline.
+ * Extends the v6 occlusion-aware probe with edge-aware local motion-vector
+ * hypotheses. Unlike the failed wide source-position search, every added
+ * candidate is geometrically implied by an actual nearby NVOF vector.
+ * The v6 output is produced in the same run and remains the quality baseline.
  */
 
 #define wmain NativeNvofOcclusionAwareReferenceMain
@@ -44,9 +45,15 @@ struct Candidate
 
 int2 LoadFlowVector(bool backward, int2 coordinate)
 {
+    coordinate = clamp(coordinate, int2(0, 0), int2(FlowSize) - 1);
     return backward
         ? BackwardFlow.Load(int3(coordinate, 0))
         : ForwardFlow.Load(int3(coordinate, 0));
+}
+
+float2 LoadFlowPixels(bool backward, int2 coordinate)
+{
+    return float2(LoadFlowVector(backward, coordinate)) / 32.0;
 }
 
 float2 SampleFlow(bool backward, float2 pixel)
@@ -58,10 +65,10 @@ float2 SampleFlow(bool backward, float2 pixel)
     int2 p1 = min(p0 + 1, int2(FlowSize - 1));
     float2 fraction = grid - float2(p0);
 
-    float2 f00 = float2(LoadFlowVector(backward, int2(p0.x, p0.y))) / 32.0;
-    float2 f10 = float2(LoadFlowVector(backward, int2(p1.x, p0.y))) / 32.0;
-    float2 f01 = float2(LoadFlowVector(backward, int2(p0.x, p1.y))) / 32.0;
-    float2 f11 = float2(LoadFlowVector(backward, int2(p1.x, p1.y))) / 32.0;
+    float2 f00 = LoadFlowPixels(backward, int2(p0.x, p0.y));
+    float2 f10 = LoadFlowPixels(backward, int2(p1.x, p0.y));
+    float2 f01 = LoadFlowPixels(backward, int2(p0.x, p1.y));
+    float2 f11 = LoadFlowPixels(backward, int2(p1.x, p1.y));
 
     float2 top = lerp(f00, f10, fraction.x);
     float2 bottom = lerp(f01, f11, fraction.x);
@@ -99,14 +106,39 @@ Candidate InvalidCandidate()
     return candidate;
 }
 
-Candidate EvaluateFirstCandidate(float2 sourcePosition, float2 targetPixel)
+float OppositeConsistency(
+    bool oppositeBackward,
+    float2 matchingPosition,
+    float2 sourceFlow)
+{
+    float best = length(sourceFlow + SampleFlow(oppositeBackward, matchingPosition));
+    int2 center = int2(round(matchingPosition / GridSize));
+
+    // At a flow discontinuity the bilinear opposite field may be a mixture.
+    // Compare against nearby native grid vectors and keep the best genuine
+    // forward/backward correspondence.
+    [unroll]
+    for (int y = -1; y <= 1; ++y) {
+        [unroll]
+        for (int x = -1; x <= 1; ++x) {
+            float2 opposite = LoadFlowPixels(
+                oppositeBackward, center + int2(x, y));
+            best = min(best, length(sourceFlow + opposite));
+        }
+    }
+    return best;
+}
+
+Candidate EvaluateFirstWithFlow(
+    float2 sourcePosition,
+    float2 targetPixel,
+    float2 sourceToSecond)
 {
     Candidate candidate = InvalidCandidate();
     if (!IsValid(sourcePosition)) {
         return candidate;
     }
 
-    float2 sourceToSecond = SampleFlow(true, sourcePosition);
     float2 projectedMidpoint =
         sourcePosition + MidpointTime * sourceToSecond;
     float2 matchingSecond = sourcePosition + sourceToSecond;
@@ -119,10 +151,9 @@ Candidate EvaluateFirstCandidate(float2 sourcePosition, float2 targetPixel)
     candidate.valid = 1.0;
 
     if (IsValid(matchingSecond)) {
-        float2 secondToSource = SampleFlow(false, matchingSecond);
         float4 secondColor = SampleFrame(SecondFrame, matchingSecond);
-        candidate.consistencyError =
-            length(sourceToSecond + secondToSource);
+        candidate.consistencyError = OppositeConsistency(
+            false, matchingSecond, sourceToSecond);
         candidate.photometricError =
             ColorDifference(candidate.color, secondColor);
     }
@@ -134,14 +165,16 @@ Candidate EvaluateFirstCandidate(float2 sourcePosition, float2 targetPixel)
     return candidate;
 }
 
-Candidate EvaluateSecondCandidate(float2 sourcePosition, float2 targetPixel)
+Candidate EvaluateSecondWithFlow(
+    float2 sourcePosition,
+    float2 targetPixel,
+    float2 sourceToFirst)
 {
     Candidate candidate = InvalidCandidate();
     if (!IsValid(sourcePosition)) {
         return candidate;
     }
 
-    float2 sourceToFirst = SampleFlow(false, sourcePosition);
     float2 projectedMidpoint =
         sourcePosition + (1.0 - MidpointTime) * sourceToFirst;
     float2 matchingFirst = sourcePosition + sourceToFirst;
@@ -154,10 +187,9 @@ Candidate EvaluateSecondCandidate(float2 sourcePosition, float2 targetPixel)
     candidate.valid = 1.0;
 
     if (IsValid(matchingFirst)) {
-        float2 firstToSource = SampleFlow(true, matchingFirst);
         float4 firstColor = SampleFrame(FirstFrame, matchingFirst);
-        candidate.consistencyError =
-            length(sourceToFirst + firstToSource);
+        candidate.consistencyError = OppositeConsistency(
+            true, matchingFirst, sourceToFirst);
         candidate.photometricError =
             ColorDifference(candidate.color, firstColor);
     }
@@ -169,10 +201,35 @@ Candidate EvaluateSecondCandidate(float2 sourcePosition, float2 targetPixel)
     return candidate;
 }
 
+Candidate EvaluateFirstCandidate(float2 sourcePosition, float2 targetPixel)
+{
+    return EvaluateFirstWithFlow(
+        sourcePosition, targetPixel, SampleFlow(true, sourcePosition));
+}
+
+Candidate EvaluateSecondCandidate(float2 sourcePosition, float2 targetPixel)
+{
+    return EvaluateSecondWithFlow(
+        sourcePosition, targetPixel, SampleFlow(false, sourcePosition));
+}
+
 Candidate BetterCandidate(Candidate current, Candidate alternative)
 {
     Candidate best = current;
     if (alternative.score < current.score) {
+        best = alternative;
+    }
+    return best;
+}
+
+Candidate BetterEdgeCandidate(Candidate current, Candidate alternative)
+{
+    Candidate best = current;
+    // Preserve the v6-style solution unless a native-vector hypothesis is
+    // meaningfully better. This prevents an edge search from trading a tiny
+    // score change for a different motion layer.
+    if (alternative.valid > 0.5 &&
+        alternative.score + 0.30 < current.score) {
         best = alternative;
     }
     return best;
@@ -191,17 +248,18 @@ Candidate FindFirstCandidate(float2 targetPixel)
             best, EvaluateFirstCandidate(position, targetPixel));
     }
 
-    // Search both sides of a motion discontinuity. The half-displacement in
-    // this diagnostic is 12x6 pixels; a +/-16 pixel, four-pixel-step window
-    // covers both foreground and background source hypotheses.
+    int2 center = int2(round(targetPixel / GridSize));
     [unroll]
-    for (int offsetY = -4; offsetY <= 4; ++offsetY) {
+    for (int offsetY = -2; offsetY <= 2; ++offsetY) {
         [unroll]
-        for (int offsetX = -4; offsetX <= 4; ++offsetX) {
-            float2 sourcePosition = targetPixel +
-                float2(offsetX, offsetY) * GridSize;
-            best = BetterCandidate(
-                best, EvaluateFirstCandidate(sourcePosition, targetPixel));
+        for (int offsetX = -2; offsetX <= 2; ++offsetX) {
+            float2 flow = LoadFlowPixels(
+                true, center + int2(offsetX, offsetY));
+            float2 sourcePosition =
+                targetPixel - MidpointTime * flow;
+            Candidate alternative = EvaluateFirstWithFlow(
+                sourcePosition, targetPixel, flow);
+            best = BetterEdgeCandidate(best, alternative);
         }
     }
     return best;
@@ -220,14 +278,18 @@ Candidate FindSecondCandidate(float2 targetPixel)
             best, EvaluateSecondCandidate(position, targetPixel));
     }
 
+    int2 center = int2(round(targetPixel / GridSize));
     [unroll]
-    for (int offsetY = -4; offsetY <= 4; ++offsetY) {
+    for (int offsetY = -2; offsetY <= 2; ++offsetY) {
         [unroll]
-        for (int offsetX = -4; offsetX <= 4; ++offsetX) {
-            float2 sourcePosition = targetPixel +
-                float2(offsetX, offsetY) * GridSize;
-            best = BetterCandidate(
-                best, EvaluateSecondCandidate(sourcePosition, targetPixel));
+        for (int offsetX = -2; offsetX <= 2; ++offsetX) {
+            float2 flow = LoadFlowPixels(
+                false, center + int2(offsetX, offsetY));
+            float2 sourcePosition =
+                targetPixel - (1.0 - MidpointTime) * flow;
+            Candidate alternative = EvaluateSecondWithFlow(
+                sourcePosition, targetPixel, flow);
+            best = BetterEdgeCandidate(best, alternative);
         }
     }
     return best;
