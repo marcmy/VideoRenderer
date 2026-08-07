@@ -159,9 +159,9 @@ struct ExecuteOutputParams {
 	GpuBufferHandle globalFlowBuffer;
 };
 
-static_assert(sizeof(InitParams) == 64);
-static_assert(sizeof(ExecuteInputParams) == 56);
-static_assert(sizeof(ExecuteOutputParams) == 48);
+static_assert(sizeof(InitParams) == (sizeof(void*) == 8 ? 64 : 56));
+static_assert(sizeof(ExecuteInputParams) == (sizeof(void*) == 8 ? 56 : 36));
+static_assert(sizeof(ExecuteOutputParams) == (sizeof(void*) == 8 ? 48 : 24));
 
 using GetMaxSupportedApiVersionFn = Status (WINAPI*)(uint32_t* version);
 using CreateOpticalFlowD3D11Fn = Status (WINAPI*)(
