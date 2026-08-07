@@ -6,10 +6,12 @@ on:
     branches:
       - feature/native-nvof-interpolation
     paths:
+      - Source/NvidiaOpticalFlowNative.cpp
       - tools/native-nvof-probe/**
       - .github/workflows/native-nvof-probe.yml
   pull_request:
     paths:
+      - Source/NvidiaOpticalFlowNative.cpp
       - tools/native-nvof-probe/**
       - .github/workflows/native-nvof-probe.yml
 
@@ -198,6 +200,11 @@ jobs:
           }
 
           $specs = @(
+            @{
+              Path = 'Source/NvidiaOpticalFlowNative.cpp'
+              Name = 'MidpointShader'
+              Output = 'NativeNvofProductionMidpoint'
+            },
             @{
               Path = 'tools/native-nvof-probe/NativeNvofOcclusionAwareTest.cpp'
               Name = 'OcclusionAwareComputeShader'
