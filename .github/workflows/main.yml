@@ -19,7 +19,62 @@ permissions:
   contents: read
 
 jobs:
+  cleanup-deleted-validation-workflows:
+    name: Purge deleted validation workflow history
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/master' &&
+      contains(github.event.head_commit.message, '[cleanup-deleted-workflows]')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Delete historical runs for deleted validation workflows
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          workflow_ids=(
+            327573438 # Unified setup validation
+            327614137 # Validate calibration tooling
+            327622180 # Validate renderer recommendations
+            327629640 # Validate automatic calibration
+            327632306 # Validate unified setup GUI
+            327702110 # Validate NvOFFRUC SDK acquisition
+            328166082 # Native NVOF Probe
+          )
+
+          total_deleted=0
+          for workflow_id in "${workflow_ids[@]}"; do
+            deleted=0
+            echo "::group::Workflow ${workflow_id}"
+            while :; do
+              run_ids="$(gh api "repos/${REPO}/actions/workflows/${workflow_id}/runs?per_page=100" --jq '.workflow_runs[].id')"
+              if [[ -z "$run_ids" ]]; then
+                break
+              fi
+
+              while IFS= read -r run_id; do
+                [[ -z "$run_id" ]] && continue
+                gh api -X DELETE "repos/${REPO}/actions/runs/${run_id}"
+                deleted=$((deleted + 1))
+                total_deleted=$((total_deleted + 1))
+              done <<< "$run_ids"
+            done
+            echo "Deleted ${deleted} runs from workflow ${workflow_id}."
+            echo "::endgroup::"
+          done
+
+          echo "Deleted ${total_deleted} stale workflow runs in total."
+
   build:
+    if: >-
+      github.event_name != 'push' ||
+      !contains(github.event.head_commit.message, '[cleanup-deleted-workflows]')
     runs-on: windows-2022
 
     steps:
