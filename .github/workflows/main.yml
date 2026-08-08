@@ -20,6 +20,7 @@ permissions:
 
 jobs:
   build:
+    if: ${{ !contains(github.event.head_commit.message, '[cleanup-deleted-workflows-v2]') }}
     runs-on: windows-2022
 
     steps:
@@ -130,7 +131,6 @@ jobs:
 
           cp tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 "$payload_root/"
           cp tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1 "$payload_root/"
-          cp tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1 "$payload_root/"
           cp release/MpcVideoRenderer-Maxine.zip "$payload_root/"
           cp "$runtime_zip" "$payload_root/"
           cp "$runtime_checksum" "$payload_root/"
@@ -190,3 +190,75 @@ jobs:
             --title "MPC Video Renderer Maxine build ${GITHUB_RUN_NUMBER}" \
             --notes "$notes" \
             --latest
+
+  purge-deleted-workflow-history:
+    name: Purge deleted validation workflow history
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[cleanup-deleted-workflows-v2]') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: read
+
+    steps:
+      - name: Delete historical runs for deleted validation workflows
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+
+          workflow_ids=(
+            327614137 # Validate calibration tooling
+            327622180 # Validate renderer recommendations
+            327629640 # Validate automatic calibration
+            327632306 # Validate unified setup GUI
+            327702110 # Validate NvOFFRUC SDK acquisition
+            328166082 # Native NVOF Probe
+          )
+
+          total_deleted=0
+          for workflow_id in "${workflow_ids[@]}"; do
+            deleted=0
+            echo "::group::Workflow ${workflow_id}"
+            while :; do
+              errfile="$(mktemp)"
+              if ! response="$(gh api "repos/${REPO}/actions/workflows/${workflow_id}/runs?per_page=100" 2>"$errfile")"; then
+                if grep -q 'HTTP 404' "$errfile"; then
+                  echo "Workflow ${workflow_id} is already gone; treating as complete."
+                  rm -f "$errfile"
+                  break
+                fi
+                cat "$errfile" >&2
+                rm -f "$errfile"
+                exit 1
+              fi
+              rm -f "$errfile"
+
+              run_ids="$(jq -r '.workflow_runs[].id' <<< "$response")"
+              if [[ -z "$run_ids" ]]; then
+                break
+              fi
+
+              while IFS= read -r run_id; do
+                [[ -z "$run_id" ]] && continue
+                errfile="$(mktemp)"
+                if gh api -X DELETE "repos/${REPO}/actions/runs/${run_id}" 2>"$errfile"; then
+                  deleted=$((deleted + 1))
+                  total_deleted=$((total_deleted + 1))
+                elif grep -q 'HTTP 404' "$errfile"; then
+                  echo "Run ${run_id} was already deleted; continuing."
+                else
+                  cat "$errfile" >&2
+                  rm -f "$errfile"
+                  exit 1
+                fi
+                rm -f "$errfile"
+                sleep 0.1
+              done <<< "$run_ids"
+            done
+            echo "Deleted ${deleted} runs from workflow ${workflow_id}."
+            echo "::endgroup::"
+          done
+
+          echo "Deleted ${total_deleted} stale workflow runs in total."
