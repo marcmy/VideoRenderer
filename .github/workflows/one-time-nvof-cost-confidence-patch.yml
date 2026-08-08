@@ -1,0 +1,478 @@
+name: One-time NVOF cost confidence patch
+
+on:
+  push:
+    branches:
+      - feature/native-nvof-interpolation
+    paths:
+      - .github/workflows/one-time-nvof-cost-confidence-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Patch production native NVOF backend
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('Source/NvidiaOpticalFlowNative.cpp')
+          source = path.read_text(encoding='utf-8')
+          if 'ForwardCost : register(t4)' in source:
+              print('Cost-confidence backend is already present.')
+              raise SystemExit(0)
+
+          def replace_once(old, new):
+              global source
+              if old not in source:
+                  raise RuntimeError('Could not find patch target:\n' + old[:300])
+              source = source.replace(old, new, 1)
+
+          shader = r'''constexpr char MidpointShader[] = R"hlsl(
+          cbuffer Parameters : register(b0)
+          {
+              uint2 FrameSize;
+              uint2 FlowSize;
+              float MidpointTime;
+              float GridSize;
+              float2 Padding;
+          };
+
+          Texture2D<float4> FirstFrame : register(t0);
+          Texture2D<float4> SecondFrame : register(t1);
+          Texture2D<int2> ForwardFlow : register(t2);   // second -> first
+          Texture2D<int2> BackwardFlow : register(t3);  // first -> second
+          Texture2D<uint> ForwardCost : register(t4);
+          Texture2D<uint> BackwardCost : register(t5);
+          SamplerState LinearClamp : register(s0);
+          RWTexture2D<float4> OutputFrame : register(u0);
+
+          struct Candidate
+          {
+              float2 position;
+              float4 color;
+              float score;
+              float projectionError;
+              float consistencyError;
+              float photometricError;
+              float hardwareCost;
+              float motionMagnitude;
+              float valid;
+          };
+
+          int2 ClampFlowCell(int2 coordinate)
+          {
+              return clamp(coordinate, int2(0, 0), int2(FlowSize) - 1);
+          }
+
+          int2 LoadFlowVector(bool backward, int2 coordinate)
+          {
+              coordinate = ClampFlowCell(coordinate);
+              return backward
+                  ? BackwardFlow.Load(int3(coordinate, 0))
+                  : ForwardFlow.Load(int3(coordinate, 0));
+          }
+
+          float LoadHardwareCost(bool backward, int2 coordinate)
+          {
+              coordinate = ClampFlowCell(coordinate);
+              uint cost = backward
+                  ? BackwardCost.Load(int3(coordinate, 0))
+                  : ForwardCost.Load(int3(coordinate, 0));
+              return saturate(float(cost) / 255.0);
+          }
+
+          float SampleHardwareCost(bool backward, float2 pixel)
+          {
+              int2 cell = int2(round(pixel / GridSize));
+              return LoadHardwareCost(backward, cell);
+          }
+
+          float3 SampleSourceRgb(bool backward, float2 position)
+          {
+              position = clamp(position, 0.0, float2(FrameSize - 1));
+              float2 uv = (position + 0.5) / float2(FrameSize);
+              if (backward) {
+                  return FirstFrame.SampleLevel(LinearClamp, uv, 0.0).rgb;
+              }
+              return SecondFrame.SampleLevel(LinearClamp, uv, 0.0).rgb;
+          }
+
+          float SourceColorDistance(float3 first, float3 second)
+          {
+              float3 difference = abs(first - second);
+              return dot(difference, float3(0.299, 0.587, 0.114));
+          }
+
+          float2 FlowCellPixel(int2 cell)
+          {
+              return (float2(cell) + 0.5) * GridSize - 0.5;
+          }
+
+          float ContentAwareFlowCellScore(bool backward, float2 pixel,
+                                          float3 sourceColor, int2 cell)
+          {
+              cell = ClampFlowCell(cell);
+              float2 cellPixel = clamp(FlowCellPixel(cell),
+                                       0.0, float2(FrameSize - 1));
+              float colorError = SourceColorDistance(
+                  sourceColor, SampleSourceRgb(backward, cellPixel));
+              float spatialError = length(pixel - cellPixel) / GridSize;
+              float hardwareCost = LoadHardwareCost(backward, cell);
+              return 8.0 * colorError + 0.12 * spatialError +
+                     1.5 * hardwareCost;
+          }
+
+          float2 SampleFlow(bool backward, float2 pixel)
+          {
+              float2 grid = pixel / GridSize;
+              grid = clamp(grid, 0.0, float2(FlowSize - 1));
+              int2 p0 = int2(floor(grid));
+              int2 p1 = min(p0 + 1, int2(FlowSize - 1));
+              float2 fraction = grid - float2(p0);
+
+              float2 f00 = float2(LoadFlowVector(backward, int2(p0.x, p0.y))) / 32.0;
+              float2 f10 = float2(LoadFlowVector(backward, int2(p1.x, p0.y))) / 32.0;
+              float2 f01 = float2(LoadFlowVector(backward, int2(p0.x, p1.y))) / 32.0;
+              float2 f11 = float2(LoadFlowVector(backward, int2(p1.x, p1.y))) / 32.0;
+              float2 top = lerp(f00, f10, fraction.x);
+              float2 bottom = lerp(f01, f11, fraction.x);
+              float2 blended = lerp(top, bottom, fraction.y);
+
+              float localMotion = max(max(length(f00), length(f10)),
+                                      max(length(f01), length(f11)));
+              float localSpread = max(max(length(f00 - f10), length(f00 - f01)),
+                                      max(length(f11 - f10), length(f11 - f01)));
+              if (localMotion < 4.5 || localSpread < 2.75) {
+                  return blended;
+              }
+
+              float3 sourceColor = SampleSourceRgb(backward, pixel);
+              float bestScore = ContentAwareFlowCellScore(
+                  backward, pixel, sourceColor, int2(p0.x, p0.y));
+              float2 bestFlow = f00;
+
+              float score = ContentAwareFlowCellScore(
+                  backward, pixel, sourceColor, int2(p1.x, p0.y));
+              if (score < bestScore) {
+                  bestScore = score;
+                  bestFlow = f10;
+              }
+
+              score = ContentAwareFlowCellScore(
+                  backward, pixel, sourceColor, int2(p0.x, p1.y));
+              if (score < bestScore) {
+                  bestScore = score;
+                  bestFlow = f01;
+              }
+
+              score = ContentAwareFlowCellScore(
+                  backward, pixel, sourceColor, int2(p1.x, p1.y));
+              if (score < bestScore) {
+                  bestFlow = f11;
+              }
+              return bestFlow;
+          }
+
+          bool IsValid(float2 position)
+          {
+              return all(position >= 0.0) && all(position <= float2(FrameSize - 1));
+          }
+
+          float4 SampleFrame(Texture2D<float4> frame, float2 position)
+          {
+              float2 uv = (position + 0.5) / float2(FrameSize);
+              return frame.SampleLevel(LinearClamp, uv, 0.0);
+          }
+
+          float ColorDifference(float4 first, float4 second)
+          {
+              float3 difference = abs(first.rgb - second.rgb);
+              return dot(difference, float3(0.299, 0.587, 0.114));
+          }
+
+          Candidate InvalidCandidate()
+          {
+              Candidate candidate;
+              candidate.position = 0.0;
+              candidate.color = float4(0.0, 0.0, 0.0, 1.0);
+              candidate.score = 10000.0;
+              candidate.projectionError = 1000.0;
+              candidate.consistencyError = 1000.0;
+              candidate.photometricError = 1.0;
+              candidate.hardwareCost = 1.0;
+              candidate.motionMagnitude = 0.0;
+              candidate.valid = 0.0;
+              return candidate;
+          }
+
+          Candidate EvaluateFirstCandidate(float2 sourcePosition, float2 targetPixel)
+          {
+              Candidate candidate = InvalidCandidate();
+              if (!IsValid(sourcePosition)) return candidate;
+
+              float2 sourceToSecond = SampleFlow(true, sourcePosition);
+              float2 projectedMidpoint = sourcePosition + MidpointTime * sourceToSecond;
+              float2 matchingSecond = sourcePosition + sourceToSecond;
+
+              candidate.position = sourcePosition;
+              candidate.color = SampleFrame(FirstFrame, sourcePosition);
+              candidate.projectionError = length(projectedMidpoint - targetPixel);
+              candidate.consistencyError = 64.0;
+              candidate.photometricError = 1.0;
+              candidate.hardwareCost = SampleHardwareCost(true, sourcePosition);
+              candidate.motionMagnitude = length(sourceToSecond);
+              candidate.valid = 1.0;
+
+              if (IsValid(matchingSecond)) {
+                  float2 secondToSource = SampleFlow(false, matchingSecond);
+                  float4 secondColor = SampleFrame(SecondFrame, matchingSecond);
+                  candidate.consistencyError = length(sourceToSecond + secondToSource);
+                  candidate.photometricError = ColorDifference(candidate.color, secondColor);
+              }
+
+              candidate.score = 4.0 * candidate.projectionError
+                  + 0.30 * candidate.consistencyError
+                  + 10.0 * candidate.photometricError
+                  + 2.0 * candidate.hardwareCost;
+              return candidate;
+          }
+
+          Candidate EvaluateSecondCandidate(float2 sourcePosition, float2 targetPixel)
+          {
+              Candidate candidate = InvalidCandidate();
+              if (!IsValid(sourcePosition)) return candidate;
+
+              float2 sourceToFirst = SampleFlow(false, sourcePosition);
+              float2 projectedMidpoint = sourcePosition + (1.0 - MidpointTime) * sourceToFirst;
+              float2 matchingFirst = sourcePosition + sourceToFirst;
+
+              candidate.position = sourcePosition;
+              candidate.color = SampleFrame(SecondFrame, sourcePosition);
+              candidate.projectionError = length(projectedMidpoint - targetPixel);
+              candidate.consistencyError = 64.0;
+              candidate.photometricError = 1.0;
+              candidate.hardwareCost = SampleHardwareCost(false, sourcePosition);
+              candidate.motionMagnitude = length(sourceToFirst);
+              candidate.valid = 1.0;
+
+              if (IsValid(matchingFirst)) {
+                  float2 firstToSource = SampleFlow(true, matchingFirst);
+                  float4 firstColor = SampleFrame(FirstFrame, matchingFirst);
+                  candidate.consistencyError = length(sourceToFirst + firstToSource);
+                  candidate.photometricError = ColorDifference(candidate.color, firstColor);
+              }
+
+              candidate.score = 4.0 * candidate.projectionError
+                  + 0.30 * candidate.consistencyError
+                  + 10.0 * candidate.photometricError
+                  + 2.0 * candidate.hardwareCost;
+              return candidate;
+          }
+
+          Candidate BetterCandidate(Candidate current, Candidate alternative)
+          {
+              Candidate best = current;
+              if (alternative.score < current.score) {
+                  best = alternative;
+              }
+              return best;
+          }
+
+          Candidate FindFirstCandidate(float2 targetPixel)
+          {
+              float2 position = targetPixel;
+              Candidate best = EvaluateFirstCandidate(position, targetPixel);
+              [unroll]
+              for (int iteration = 0; iteration < 6; ++iteration) {
+                  float2 flow = SampleFlow(true, position);
+                  position = targetPixel - MidpointTime * flow;
+                  best = BetterCandidate(best, EvaluateFirstCandidate(position, targetPixel));
+              }
+              return best;
+          }
+
+          Candidate FindSecondCandidate(float2 targetPixel)
+          {
+              float2 position = targetPixel;
+              Candidate best = EvaluateSecondCandidate(position, targetPixel);
+              [unroll]
+              for (int iteration = 0; iteration < 6; ++iteration) {
+                  float2 flow = SampleFlow(false, position);
+                  position = targetPixel - (1.0 - MidpointTime) * flow;
+                  best = BetterCandidate(best, EvaluateSecondCandidate(position, targetPixel));
+              }
+              return best;
+          }
+
+          float CandidateRisk(Candidate candidate)
+          {
+              float consistencyRisk = smoothstep(1.0, 4.0, candidate.consistencyError);
+              float costRisk = smoothstep(0.35, 0.75, candidate.hardwareCost);
+              float photoRisk = smoothstep(0.04, 0.18, candidate.photometricError);
+              float projectionRisk = smoothstep(0.75, 2.0, candidate.projectionError);
+              return max(max(consistencyRisk, projectionRisk), costRisk * photoRisk);
+          }
+
+          [numthreads(8, 8, 1)]
+          void main(uint3 id : SV_DispatchThreadID)
+          {
+              if (any(id.xy >= FrameSize)) return;
+
+              float2 pixel = float2(id.xy);
+              Candidate first = FindFirstCandidate(pixel);
+              Candidate second = FindSecondCandidate(pixel);
+              float4 result = float4(0.0, 0.0, 0.0, 1.0);
+
+              if (first.valid > 0.5 && second.valid > 0.5) {
+                  float scoreDifference = abs(first.score - second.score);
+                  float colorDifference = ColorDifference(first.color, second.color);
+                  bool bothReliable = first.score < 2.0 && second.score < 2.0
+                      && colorDifference < 0.04;
+
+                  if (bothReliable || scoreDifference < 0.35) {
+                      float firstWeight = rcp(0.10 + first.score);
+                      float secondWeight = rcp(0.10 + second.score);
+                      result = (firstWeight * first.color + secondWeight * second.color)
+                          / (firstWeight + secondWeight);
+                  } else if (first.score < second.score) {
+                      result = first.color;
+                  } else {
+                      result = second.color;
+                  }
+
+                  float motion = max(first.motionMagnitude, second.motionMagnitude);
+                  if (motion >= 4.5) {
+                      float firstRisk = CandidateRisk(first);
+                      float secondRisk = CandidateRisk(second);
+
+                      if (firstRisk > 0.72 && secondRisk < 0.45) {
+                          result = second.color;
+                      } else if (secondRisk > 0.72 && firstRisk < 0.45) {
+                          result = first.color;
+                      }
+
+                      float bothRisk = min(firstRisk, secondRisk);
+                      float fallbackStrength = smoothstep(0.58, 0.92, bothRisk);
+                      if (fallbackStrength > 0.0) {
+                          float4 firstEndpoint = SampleFrame(FirstFrame, pixel);
+                          float4 secondEndpoint = SampleFrame(SecondFrame, pixel);
+                          float4 endpointBlend = lerp(
+                              firstEndpoint, secondEndpoint, MidpointTime);
+                          result = lerp(result, endpointBlend, fallbackStrength);
+                      }
+                  }
+              } else if (first.valid > 0.5) {
+                  result = first.color;
+              } else if (second.valid > 0.5) {
+                  result = second.color;
+              }
+
+              OutputFrame[id.xy] = result;
+          }
+          )hlsl";'''
+
+          start_marker = 'constexpr char MidpointShader[] = R"hlsl('
+          start = source.find(start_marker)
+          if start < 0:
+              raise RuntimeError('Could not find production MidpointShader start.')
+          end = source.find(')hlsl";', start)
+          if end < 0:
+              raise RuntimeError('Could not find production MidpointShader end.')
+          end += len(')hlsl";')
+          source = source[:start] + shader + source[end:]
+
+          replace_once(
+              '\tRegisteredSurface forwardFlow;\n\tRegisteredSurface backwardFlow;\n',
+              '\tRegisteredSurface forwardFlow;\n\tRegisteredSurface backwardFlow;\n\tRegisteredSurface forwardCost;\n\tRegisteredSurface backwardCost;\n')
+
+          replace_once(
+              '\t\tUnregister(forwardFlow);\n\t\tUnregister(backwardFlow);\n',
+              '\t\tUnregister(forwardCost);\n\t\tUnregister(backwardCost);\n\t\tUnregister(forwardFlow);\n\t\tUnregister(backwardFlow);\n')
+
+          marker = '\n\tbool CreateSynthesisResources()\n\t{\n'
+          if marker not in source:
+              raise RuntimeError('Could not find CreateSynthesisResources insertion point.')
+          create_cost = r'''
+
+          	bool CreateCostSurface(RegisteredSurface& surface)
+          	{
+          		D3D11_TEXTURE2D_DESC desc = {};
+          		desc.Width = flowWidth;
+          		desc.Height = flowHeight;
+          		desc.MipLevels = 1;
+          		desc.ArraySize = 1;
+          		desc.Format = DXGI_FORMAT_R8_UINT;
+          		desc.SampleDesc.Count = 1;
+          		desc.Usage = D3D11_USAGE_DEFAULT;
+          		desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+          		HRESULT hr = device->CreateTexture2D(&desc, nullptr, &surface.texture);
+          		if (FAILED(hr)) {
+          			status = std::format(L"CreateTexture2D(native cost) failed ({})", HR2Str(hr));
+          			return false;
+          		}
+          		hr = device->CreateShaderResourceView(surface.texture, nullptr, &surface.view);
+          		if (FAILED(hr)) {
+          			status = std::format(L"CreateShaderResourceView(native cost) failed ({})", HR2Str(hr));
+          			return false;
+          		}
+          		const nvof::Status code = api.registerResourceD3D11(
+          			session, surface.texture, &surface.nvofHandle);
+          		if (code != nvof::Success) {
+          			status = std::format(L"NvOFRegisterResourceD3D11(cost) failed: {}", DriverError(code));
+          			return false;
+          		}
+          		return true;
+          	}
+          '''.replace('          ', '')
+          source = source.replace(marker, create_cost + marker, 1)
+
+          replace_once(
+              '\t\tstd::vector<DXGI_FORMAT> inputFormats;\n\t\tstd::vector<DXGI_FORMAT> outputFormats;\n\t\tif (!QueryFormats(nvof::BufferUsageInput, inputFormats) ||\n\t\t\t\t!QueryFormats(nvof::BufferUsageOutput, outputFormats)) {\n',
+              '\t\tstd::vector<DXGI_FORMAT> inputFormats;\n\t\tstd::vector<DXGI_FORMAT> outputFormats;\n\t\tstd::vector<DXGI_FORMAT> costFormats;\n\t\tif (!QueryFormats(nvof::BufferUsageInput, inputFormats) ||\n\t\t\t\t!QueryFormats(nvof::BufferUsageOutput, outputFormats) ||\n\t\t\t\t!QueryFormats(nvof::BufferUsageCost, costFormats)) {\n')
+
+          replace_once(
+              '\t\tif (std::find(outputFormats.begin(), outputFormats.end(), DXGI_FORMAT_R16G16_SINT) == outputFormats.end()) {\n\t\t\treturn Fail(std::format(\n\t\t\t\tL"Native NVOF R16G16_SINT flow output is unavailable; supported formats: {}",\n\t\t\t\tJoinFormats(outputFormats)));\n\t\t}\n',
+              '\t\tif (std::find(outputFormats.begin(), outputFormats.end(), DXGI_FORMAT_R16G16_SINT) == outputFormats.end()) {\n\t\t\treturn Fail(std::format(\n\t\t\t\tL"Native NVOF R16G16_SINT flow output is unavailable; supported formats: {}",\n\t\t\t\tJoinFormats(outputFormats)));\n\t\t}\n\t\tif (std::find(costFormats.begin(), costFormats.end(), DXGI_FORMAT_R8_UINT) == costFormats.end()) {\n\t\t\treturn Fail(std::format(\n\t\t\t\tL"Native NVOF 8-bit cost output is unavailable; supported cost formats: {}",\n\t\t\t\tJoinFormats(costFormats)));\n\t\t}\n')
+
+          replace_once(
+              '\t\tinit.enableOutputCost = nvof::False;\n',
+              '\t\tinit.enableOutputCost = nvof::True;\n')
+
+          replace_once(
+              '\t\tif (!CreateInputSurface(inputs[0]) || !CreateInputSurface(inputs[1]) ||\n\t\t\t\t!CreateFlowSurface(forwardFlow) || !CreateFlowSurface(backwardFlow) ||\n\t\t\t\t!CreateSynthesisResources()) {\n',
+              '\t\tif (!CreateInputSurface(inputs[0]) || !CreateInputSurface(inputs[1]) ||\n\t\t\t\t!CreateFlowSurface(forwardFlow) || !CreateFlowSurface(backwardFlow) ||\n\t\t\t\t!CreateCostSurface(forwardCost) || !CreateCostSurface(backwardCost) ||\n\t\t\t\t!CreateSynthesisResources()) {\n')
+
+          replace_once(
+              'L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow; renderer-owned synthesis",',
+              'L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow + 8-bit cost; confidence fallback",')
+
+          replace_once(
+              '\t\tconst std::array<ID3D11ShaderResourceView*, 4> inputsViews = {\n\t\t\tinputs[currentIndex].view,\n\t\t\tinputs[writeIndex].view,\n\t\t\tforwardFlow.view,\n\t\t\tbackwardFlow.view,\n\t\t};\n',
+              '\t\tconst std::array<ID3D11ShaderResourceView*, 6> inputsViews = {\n\t\t\tinputs[currentIndex].view,\n\t\t\tinputs[writeIndex].view,\n\t\t\tforwardFlow.view,\n\t\t\tbackwardFlow.view,\n\t\t\tforwardCost.view,\n\t\t\tbackwardCost.view,\n\t\t};\n')
+
+          replace_once(
+              '\t\tconst std::array<ID3D11ShaderResourceView*, 4> nullViews = {};\n',
+              '\t\tconst std::array<ID3D11ShaderResourceView*, 6> nullViews = {};\n')
+
+          replace_once(
+              '\t\toutput.outputBuffer = forwardFlow.nvofHandle;\n\t\toutput.backwardOutputBuffer = backwardFlow.nvofHandle;\n',
+              '\t\toutput.outputBuffer = forwardFlow.nvofHandle;\n\t\toutput.outputCostBuffer = forwardCost.nvofHandle;\n\t\toutput.backwardOutputBuffer = backwardFlow.nvofHandle;\n\t\toutput.backwardOutputCostBuffer = backwardCost.nvofHandle;\n')
+
+          path.write_text(source, encoding='utf-8')
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- Source/NvidiaOpticalFlowNative.cpp
+          git commit -m 'Use NVOF cost confidence for unsafe fast-motion fallback'
+          git push origin HEAD:feature/native-nvof-interpolation
