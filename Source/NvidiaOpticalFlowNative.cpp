@@ -301,6 +301,38 @@ int2 LoadFlowVector(bool backward, int2 coordinate)
         : ForwardFlow.Load(int3(coordinate, 0));
 }
 
+float3 SampleSourceRgb(bool backward, float2 position)
+{
+    position = clamp(position, 0.0, float2(FrameSize - 1));
+    float2 uv = (position + 0.5) / float2(FrameSize);
+    if (backward) {
+        return FirstFrame.SampleLevel(LinearClamp, uv, 0.0).rgb;
+    }
+    return SecondFrame.SampleLevel(LinearClamp, uv, 0.0).rgb;
+}
+
+float SourceColorDistance(float3 first, float3 second)
+{
+    float3 difference = abs(first - second);
+    return dot(difference, float3(0.299, 0.587, 0.114));
+}
+
+float2 FlowCellPixel(int2 cell)
+{
+    return (float2(cell) + 0.5) * GridSize - 0.5;
+}
+
+float ContentAwareFlowCellScore(bool backward, float2 pixel,
+                      float3 sourceColor, int2 cell)
+{
+    float2 cellPixel = clamp(FlowCellPixel(cell),
+                   0.0, float2(FrameSize - 1));
+    float colorError = SourceColorDistance(
+        sourceColor, SampleSourceRgb(backward, cellPixel));
+    float spatialError = length(pixel - cellPixel) / GridSize;
+    return 8.0 * colorError + 0.12 * spatialError;
+}
+
 float2 SampleFlow(bool backward, float2 pixel)
 {
     float2 grid = pixel / GridSize;
@@ -317,25 +349,46 @@ float2 SampleFlow(bool backward, float2 pixel)
     float2 bottom = lerp(f01, f11, fraction.x);
     float2 blended = lerp(top, bottom, fraction.y);
 
-    // Keep smooth bilinear flow for ordinary motion. At fast motion
-    // discontinuities, however, averaging foreground/background
-    // vectors invents a third motion and causes local stretching.
     float localMotion = max(max(length(f00), length(f10)),
                   max(length(f01), length(f11)));
     float localSpread = max(max(length(f00 - f10), length(f00 - f01)),
                   max(length(f11 - f10), length(f11 - f01)));
-    if (localMotion < 6.0 || localSpread < 4.0) {
+
+    // Smooth flow is still preferred for ordinary motion. Only
+    // fast/high-gradient regions switch to motion-layer selection.
+    if (localMotion < 4.5 || localSpread < 2.75) {
         return blended;
     }
 
-    // Select an actual nearby NVOF vector instead of an averaged
-    // vector when fast neighboring motion layers disagree.
-    bool useRight = fraction.x >= 0.5;
-    bool useBottom = fraction.y >= 0.5;
-    if (useBottom) {
-        return useRight ? f11 : f01;
+    // At a fast motion boundary, choose an actual NVOF vector from
+    // the source-image region whose appearance best matches this
+    // pixel. This avoids averaging foreground and background motion.
+    float3 sourceColor = SampleSourceRgb(backward, pixel);
+    float bestScore = ContentAwareFlowCellScore(
+        backward, pixel, sourceColor, int2(p0.x, p0.y));
+    float2 bestFlow = f00;
+
+    float score = ContentAwareFlowCellScore(
+        backward, pixel, sourceColor, int2(p1.x, p0.y));
+    if (score < bestScore) {
+        bestScore = score;
+        bestFlow = f10;
     }
-    return useRight ? f10 : f00;
+
+    score = ContentAwareFlowCellScore(
+        backward, pixel, sourceColor, int2(p0.x, p1.y));
+    if (score < bestScore) {
+        bestScore = score;
+        bestFlow = f01;
+    }
+
+    score = ContentAwareFlowCellScore(
+        backward, pixel, sourceColor, int2(p1.x, p1.y));
+    if (score < bestScore) {
+        bestFlow = f11;
+    }
+
+    return bestFlow;
 }
 
 bool IsValid(float2 position)
