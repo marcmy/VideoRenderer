@@ -315,7 +315,27 @@ float2 SampleFlow(bool backward, float2 pixel)
     float2 f11 = float2(LoadFlowVector(backward, int2(p1.x, p1.y))) / 32.0;
     float2 top = lerp(f00, f10, fraction.x);
     float2 bottom = lerp(f01, f11, fraction.x);
-    return lerp(top, bottom, fraction.y);
+    float2 blended = lerp(top, bottom, fraction.y);
+
+    // Keep smooth bilinear flow for ordinary motion. At fast motion
+    // discontinuities, however, averaging foreground/background
+    // vectors invents a third motion and causes local stretching.
+    float localMotion = max(max(length(f00), length(f10)),
+                  max(length(f01), length(f11)));
+    float localSpread = max(max(length(f00 - f10), length(f00 - f01)),
+                  max(length(f11 - f10), length(f11 - f01)));
+    if (localMotion < 6.0 || localSpread < 4.0) {
+        return blended;
+    }
+
+    // Select an actual nearby NVOF vector instead of an averaged
+    // vector when fast neighboring motion layers disagree.
+    bool useRight = fraction.x >= 0.5;
+    bool useBottom = fraction.y >= 0.5;
+    if (useBottom) {
+        return useRight ? f11 : f01;
+    }
+    return useRight ? f10 : f00;
 }
 
 bool IsValid(float2 position)
