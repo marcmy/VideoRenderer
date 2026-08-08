@@ -280,6 +280,8 @@ Texture2D<float4> FirstFrame : register(t0);
 Texture2D<float4> SecondFrame : register(t1);
 Texture2D<int2> ForwardFlow : register(t2);   // second -> first
 Texture2D<int2> BackwardFlow : register(t3);  // first -> second
+Texture2D<uint> ForwardCost : register(t4);
+Texture2D<uint> BackwardCost : register(t5);
 SamplerState LinearClamp : register(s0);
 RWTexture2D<float4> OutputFrame : register(u0);
 
@@ -291,14 +293,37 @@ struct Candidate
     float projectionError;
     float consistencyError;
     float photometricError;
+    float hardwareCost;
+    float motionMagnitude;
     float valid;
 };
 
+int2 ClampFlowCell(int2 coordinate)
+{
+    return clamp(coordinate, int2(0, 0), int2(FlowSize) - 1);
+}
+
 int2 LoadFlowVector(bool backward, int2 coordinate)
 {
+    coordinate = ClampFlowCell(coordinate);
     return backward
         ? BackwardFlow.Load(int3(coordinate, 0))
         : ForwardFlow.Load(int3(coordinate, 0));
+}
+
+float LoadHardwareCost(bool backward, int2 coordinate)
+{
+    coordinate = ClampFlowCell(coordinate);
+    uint cost = backward
+        ? BackwardCost.Load(int3(coordinate, 0))
+        : ForwardCost.Load(int3(coordinate, 0));
+    return saturate(float(cost) / 255.0);
+}
+
+float SampleHardwareCost(bool backward, float2 pixel)
+{
+    int2 cell = int2(round(pixel / GridSize));
+    return LoadHardwareCost(backward, cell);
 }
 
 float3 SampleSourceRgb(bool backward, float2 position)
@@ -323,14 +348,17 @@ float2 FlowCellPixel(int2 cell)
 }
 
 float ContentAwareFlowCellScore(bool backward, float2 pixel,
-                      float3 sourceColor, int2 cell)
+                                float3 sourceColor, int2 cell)
 {
+    cell = ClampFlowCell(cell);
     float2 cellPixel = clamp(FlowCellPixel(cell),
-                   0.0, float2(FrameSize - 1));
+                             0.0, float2(FrameSize - 1));
     float colorError = SourceColorDistance(
         sourceColor, SampleSourceRgb(backward, cellPixel));
     float spatialError = length(pixel - cellPixel) / GridSize;
-    return 8.0 * colorError + 0.12 * spatialError;
+    float hardwareCost = LoadHardwareCost(backward, cell);
+    return 8.0 * colorError + 0.12 * spatialError +
+           1.5 * hardwareCost;
 }
 
 float2 SampleFlow(bool backward, float2 pixel)
@@ -350,19 +378,13 @@ float2 SampleFlow(bool backward, float2 pixel)
     float2 blended = lerp(top, bottom, fraction.y);
 
     float localMotion = max(max(length(f00), length(f10)),
-                  max(length(f01), length(f11)));
+                            max(length(f01), length(f11)));
     float localSpread = max(max(length(f00 - f10), length(f00 - f01)),
-                  max(length(f11 - f10), length(f11 - f01)));
-
-    // Smooth flow is still preferred for ordinary motion. Only
-    // fast/high-gradient regions switch to motion-layer selection.
+                            max(length(f11 - f10), length(f11 - f01)));
     if (localMotion < 4.5 || localSpread < 2.75) {
         return blended;
     }
 
-    // At a fast motion boundary, choose an actual NVOF vector from
-    // the source-image region whose appearance best matches this
-    // pixel. This avoids averaging foreground and background motion.
     float3 sourceColor = SampleSourceRgb(backward, pixel);
     float bestScore = ContentAwareFlowCellScore(
         backward, pixel, sourceColor, int2(p0.x, p0.y));
@@ -387,7 +409,6 @@ float2 SampleFlow(bool backward, float2 pixel)
     if (score < bestScore) {
         bestFlow = f11;
     }
-
     return bestFlow;
 }
 
@@ -417,6 +438,8 @@ Candidate InvalidCandidate()
     candidate.projectionError = 1000.0;
     candidate.consistencyError = 1000.0;
     candidate.photometricError = 1.0;
+    candidate.hardwareCost = 1.0;
+    candidate.motionMagnitude = 0.0;
     candidate.valid = 0.0;
     return candidate;
 }
@@ -435,6 +458,8 @@ Candidate EvaluateFirstCandidate(float2 sourcePosition, float2 targetPixel)
     candidate.projectionError = length(projectedMidpoint - targetPixel);
     candidate.consistencyError = 64.0;
     candidate.photometricError = 1.0;
+    candidate.hardwareCost = SampleHardwareCost(true, sourcePosition);
+    candidate.motionMagnitude = length(sourceToSecond);
     candidate.valid = 1.0;
 
     if (IsValid(matchingSecond)) {
@@ -446,7 +471,8 @@ Candidate EvaluateFirstCandidate(float2 sourcePosition, float2 targetPixel)
 
     candidate.score = 4.0 * candidate.projectionError
         + 0.30 * candidate.consistencyError
-        + 10.0 * candidate.photometricError;
+        + 10.0 * candidate.photometricError
+        + 2.0 * candidate.hardwareCost;
     return candidate;
 }
 
@@ -464,6 +490,8 @@ Candidate EvaluateSecondCandidate(float2 sourcePosition, float2 targetPixel)
     candidate.projectionError = length(projectedMidpoint - targetPixel);
     candidate.consistencyError = 64.0;
     candidate.photometricError = 1.0;
+    candidate.hardwareCost = SampleHardwareCost(false, sourcePosition);
+    candidate.motionMagnitude = length(sourceToFirst);
     candidate.valid = 1.0;
 
     if (IsValid(matchingFirst)) {
@@ -475,7 +503,8 @@ Candidate EvaluateSecondCandidate(float2 sourcePosition, float2 targetPixel)
 
     candidate.score = 4.0 * candidate.projectionError
         + 0.30 * candidate.consistencyError
-        + 10.0 * candidate.photometricError;
+        + 10.0 * candidate.photometricError
+        + 2.0 * candidate.hardwareCost;
     return candidate;
 }
 
@@ -514,6 +543,15 @@ Candidate FindSecondCandidate(float2 targetPixel)
     return best;
 }
 
+float CandidateRisk(Candidate candidate)
+{
+    float consistencyRisk = smoothstep(1.0, 4.0, candidate.consistencyError);
+    float costRisk = smoothstep(0.35, 0.75, candidate.hardwareCost);
+    float photoRisk = smoothstep(0.04, 0.18, candidate.photometricError);
+    float projectionRisk = smoothstep(0.75, 2.0, candidate.projectionError);
+    return max(max(consistencyRisk, projectionRisk), costRisk * photoRisk);
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
@@ -527,7 +565,7 @@ void main(uint3 id : SV_DispatchThreadID)
     if (first.valid > 0.5 && second.valid > 0.5) {
         float scoreDifference = abs(first.score - second.score);
         float colorDifference = ColorDifference(first.color, second.color);
-        bool bothReliable = first.score < 1.5 && second.score < 1.5
+        bool bothReliable = first.score < 2.0 && second.score < 2.0
             && colorDifference < 0.04;
 
         if (bothReliable || scoreDifference < 0.35) {
@@ -539,6 +577,28 @@ void main(uint3 id : SV_DispatchThreadID)
             result = first.color;
         } else {
             result = second.color;
+        }
+
+        float motion = max(first.motionMagnitude, second.motionMagnitude);
+        if (motion >= 4.5) {
+            float firstRisk = CandidateRisk(first);
+            float secondRisk = CandidateRisk(second);
+
+            if (firstRisk > 0.72 && secondRisk < 0.45) {
+                result = second.color;
+            } else if (secondRisk > 0.72 && firstRisk < 0.45) {
+                result = first.color;
+            }
+
+            float bothRisk = min(firstRisk, secondRisk);
+            float fallbackStrength = smoothstep(0.58, 0.92, bothRisk);
+            if (fallbackStrength > 0.0) {
+                float4 firstEndpoint = SampleFrame(FirstFrame, pixel);
+                float4 secondEndpoint = SampleFrame(SecondFrame, pixel);
+                float4 endpointBlend = lerp(
+                    firstEndpoint, secondEndpoint, MidpointTime);
+                result = lerp(result, endpointBlend, fallbackStrength);
+            }
         }
     } else if (first.valid > 0.5) {
         result = first.color;
@@ -582,6 +642,8 @@ struct CNvidiaOpticalFlowNative::Impl
 	std::array<RegisteredSurface, 2> inputs;
 	RegisteredSurface forwardFlow;
 	RegisteredSurface backwardFlow;
+	RegisteredSurface forwardCost;
+	RegisteredSurface backwardCost;
 	CComPtr<ID3D11Texture2D> outputTexture;
 	CComPtr<ID3D11ShaderResourceView> outputView;
 	CComPtr<ID3D11UnorderedAccessView> outputUav;
@@ -636,6 +698,8 @@ struct CNvidiaOpticalFlowNative::Impl
 
 	void ResetUnlocked()
 	{
+		Unregister(forwardCost);
+		Unregister(backwardCost);
 		Unregister(forwardFlow);
 		Unregister(backwardFlow);
 		Unregister(inputs[0]);
@@ -751,6 +815,37 @@ struct CNvidiaOpticalFlowNative::Impl
 			session, surface.texture, &surface.nvofHandle);
 		if (code != nvof::Success) {
 			status = std::format(L"NvOFRegisterResourceD3D11(flow) failed: {}", DriverError(code));
+			return false;
+		}
+		return true;
+	}
+
+
+	bool CreateCostSurface(RegisteredSurface& surface)
+	{
+		D3D11_TEXTURE2D_DESC desc = {};
+		desc.Width = flowWidth;
+		desc.Height = flowHeight;
+		desc.MipLevels = 1;
+		desc.ArraySize = 1;
+		desc.Format = DXGI_FORMAT_R8_UINT;
+		desc.SampleDesc.Count = 1;
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+		HRESULT hr = device->CreateTexture2D(&desc, nullptr, &surface.texture);
+		if (FAILED(hr)) {
+			status = std::format(L"CreateTexture2D(native cost) failed ({})", HR2Str(hr));
+			return false;
+		}
+		hr = device->CreateShaderResourceView(surface.texture, nullptr, &surface.view);
+		if (FAILED(hr)) {
+			status = std::format(L"CreateShaderResourceView(native cost) failed ({})", HR2Str(hr));
+			return false;
+		}
+		const nvof::Status code = api.registerResourceD3D11(
+			session, surface.texture, &surface.nvofHandle);
+		if (code != nvof::Success) {
+			status = std::format(L"NvOFRegisterResourceD3D11(cost) failed: {}", DriverError(code));
 			return false;
 		}
 		return true;
@@ -896,8 +991,10 @@ struct CNvidiaOpticalFlowNative::Impl
 
 		std::vector<DXGI_FORMAT> inputFormats;
 		std::vector<DXGI_FORMAT> outputFormats;
+		std::vector<DXGI_FORMAT> costFormats;
 		if (!QueryFormats(nvof::BufferUsageInput, inputFormats) ||
-				!QueryFormats(nvof::BufferUsageOutput, outputFormats)) {
+				!QueryFormats(nvof::BufferUsageOutput, outputFormats) ||
+				!QueryFormats(nvof::BufferUsageCost, costFormats)) {
 			return Fail(L"Could not query native NVOF D3D11 surface formats");
 		}
 		if (std::find(inputFormats.begin(), inputFormats.end(), DXGI_FORMAT_B8G8R8A8_UNORM) == inputFormats.end()) {
@@ -910,6 +1007,11 @@ struct CNvidiaOpticalFlowNative::Impl
 				L"Native NVOF R16G16_SINT flow output is unavailable; supported formats: {}",
 				JoinFormats(outputFormats)));
 		}
+		if (std::find(costFormats.begin(), costFormats.end(), DXGI_FORMAT_R8_UINT) == costFormats.end()) {
+			return Fail(std::format(
+				L"Native NVOF 8-bit cost output is unavailable; supported cost formats: {}",
+				JoinFormats(costFormats)));
+		}
 
 		nvof::InitParams init = {};
 		init.width = width;
@@ -919,7 +1021,7 @@ struct CNvidiaOpticalFlowNative::Impl
 		init.mode = nvof::ModeOpticalFlow;
 		init.performance = nvof::PerfSlow;
 		init.enableExternalHints = nvof::False;
-		init.enableOutputCost = nvof::False;
+		init.enableOutputCost = nvof::True;
 		init.disparityRange = nvof::StereoRangeUndefined;
 		init.enableRoi = nvof::False;
 		init.predictionDirection = nvof::PredictionBoth;
@@ -932,6 +1034,7 @@ struct CNvidiaOpticalFlowNative::Impl
 
 		if (!CreateInputSurface(inputs[0]) || !CreateInputSurface(inputs[1]) ||
 				!CreateFlowSurface(forwardFlow) || !CreateFlowSurface(backwardFlow) ||
+				!CreateCostSurface(forwardCost) || !CreateCostSurface(backwardCost) ||
 				!CreateSynthesisResources()) {
 			const std::wstring saved = status;
 			ResetUnlocked();
@@ -940,7 +1043,7 @@ struct CNvidiaOpticalFlowNative::Impl
 		}
 
 		runtimeInfo = std::format(
-			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow; renderer-owned synthesis",
+			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow + 8-bit cost; confidence fallback",
 			apiMajor, apiMinor);
 		status = std::format(L"Native NVOF ready, {}x{}", width, height);
 		DLog(L"Native NVIDIA frame interpolation: {}", runtimeInfo);
@@ -955,11 +1058,13 @@ struct CNvidiaOpticalFlowNative::Impl
 		};
 		context->UpdateSubresource(parameters, 0, nullptr, &values, 0, 0);
 
-		const std::array<ID3D11ShaderResourceView*, 4> inputsViews = {
+		const std::array<ID3D11ShaderResourceView*, 6> inputsViews = {
 			inputs[currentIndex].view,
 			inputs[writeIndex].view,
 			forwardFlow.view,
 			backwardFlow.view,
+			forwardCost.view,
+			backwardCost.view,
 		};
 		ID3D11UnorderedAccessView* output = outputUav;
 		ID3D11Buffer* constantBuffer = parameters;
@@ -971,7 +1076,7 @@ struct CNvidiaOpticalFlowNative::Impl
 		context->CSSetUnorderedAccessViews(0, 1, &output, nullptr);
 		context->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
 
-		const std::array<ID3D11ShaderResourceView*, 4> nullViews = {};
+		const std::array<ID3D11ShaderResourceView*, 6> nullViews = {};
 		ID3D11UnorderedAccessView* nullOutput = nullptr;
 		ID3D11Buffer* nullBuffer = nullptr;
 		ID3D11SamplerState* nullSampler = nullptr;
@@ -1043,7 +1148,9 @@ struct CNvidiaOpticalFlowNative::Impl
 		input.disableTemporalHints = hasExecutedFlow ? nvof::False : nvof::True;
 		nvof::ExecuteOutputParams output = {};
 		output.outputBuffer = forwardFlow.nvofHandle;
+		output.outputCostBuffer = forwardCost.nvofHandle;
 		output.backwardOutputBuffer = backwardFlow.nvofHandle;
+		output.backwardOutputCostBuffer = backwardCost.nvofHandle;
 
 		const auto started = std::chrono::steady_clock::now();
 		const nvof::Status code = api.execute(session, &input, &output);
