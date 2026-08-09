@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -28,6 +28,12 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+
+      - name: Apply forward-splat synthesis integration
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feature/native-nvof-interpolation'
+        run: |
+          .\tools\native-nvof-probe\apply-forward-splat-synthesis.ps1
+        shell: pwsh
 
       - name: Build VideoRenderer
         run: |
@@ -79,8 +85,6 @@ jobs:
 
           mkdir -p release/runtime-source
 
-          # New releases carry the runtime inside the previous unified setup.
-          # The first unified release can migrate from the old standalone assets.
           mkdir -p release/previous-setup
           if gh release download \
               --repo "$GITHUB_REPOSITORY" \
@@ -118,7 +122,6 @@ jobs:
             echo "The carried Maxine runtime checksum did not verify." >&2
             exit 1
           fi
-          echo "Verified the carried Maxine runtime bundle: $actual"
 
           setup_root='release/setup-root'
           payload_root="$setup_root/payload"
@@ -127,7 +130,6 @@ jobs:
           cp tools/MaxineSetup/Install-MPCVR-Maxine.cmd "$setup_root/"
           cp tools/MaxineSetup/Install-MPCVR-Maxine.ps1 "$setup_root/"
           cp tools/MaxineSetup/README.md "$setup_root/README.md"
-
           cp tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 "$payload_root/"
           cp tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1 "$payload_root/"
           cp tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1 "$payload_root/"
@@ -137,26 +139,15 @@ jobs:
 
           (
             cd "$payload_root"
-            sha256sum \
-              MpcVideoRenderer-Maxine.zip \
-              MPCVR-Maxine-Runtime.zip \
-              > PAYLOAD-SHA256SUMS.txt
+            sha256sum MpcVideoRenderer-Maxine.zip MPCVR-Maxine-Runtime.zip > PAYLOAD-SHA256SUMS.txt
           )
-
           (
             cd "$setup_root"
             zip -r ../MPCVR-Maxine-Setup.zip .
           )
-
           (
             cd release
-            sha256sum \
-              MPCVR-Maxine-Setup.zip \
-              MpcVideoRenderer-Maxine.zip \
-              > SHA256SUMS.txt
-
-            # Keep one tiny compatibility checksum so updater scripts installed
-            # by older releases continue working after the asset cleanup.
+            sha256sum MPCVR-Maxine-Setup.zip MpcVideoRenderer-Maxine.zip > SHA256SUMS.txt
             sha256sum MpcVideoRenderer-Maxine.zip > MpcVideoRenderer-Maxine.zip.sha256
           )
 
@@ -176,8 +167,6 @@ jobs:
 
           Advanced/manual download:
           - MpcVideoRenderer-Maxine.zip: portable renderer files only.
-
-          SHA256SUMS.txt verifies both public ZIP files. The small per-renderer checksum remains only for compatibility with updater shortcuts installed by older releases.
           EOF
           )
 
