@@ -548,6 +548,32 @@ void main(uint3 id : SV_DispatchThreadID)
         result = second.color;
     }
 
+    // Hard safety fallback for fast motion. If both optical-flow directions
+    // fail their round-trip consistency test by a large margin, do not blend
+    // or further warp the pixel. Reuse the nearer real endpoint instead.
+    // This trades a local half-frame repeat for avoiding severe geometry melt.
+    float2 firstFlowAtPixel = SampleFlow(true, pixel);
+    float2 secondFlowAtPixel = SampleFlow(false, pixel);
+    float localMotion = max(length(firstFlowAtPixel), length(secondFlowAtPixel));
+
+    float firstRoundTripError = 1000.0;
+    float2 firstMatch = pixel + firstFlowAtPixel;
+    if (IsValid(firstMatch)) {
+        firstRoundTripError = length(firstFlowAtPixel + SampleFlow(false, firstMatch));
+    }
+
+    float secondRoundTripError = 1000.0;
+    float2 secondMatch = pixel + secondFlowAtPixel;
+    if (IsValid(secondMatch)) {
+        secondRoundTripError = length(secondFlowAtPixel + SampleFlow(true, secondMatch));
+    }
+
+    if (localMotion >= 20.0 && min(firstRoundTripError, secondRoundTripError) >= 20.0) {
+        result = MidpointTime <= 0.5
+            ? SampleFrame(FirstFrame, pixel)
+            : SampleFrame(SecondFrame, pixel);
+    }
+
     OutputFrame[id.xy] = result;
 }
 )hlsl";
