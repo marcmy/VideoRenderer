@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -28,6 +28,12 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+
+      - name: Apply hard flow-consistency fallback
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feature/native-nvof-interpolation'
+        run: |
+          .\tools\native-nvof-probe\apply-hard-flow-fallback.ps1
+        shell: pwsh
 
       - name: Build VideoRenderer
         run: |
