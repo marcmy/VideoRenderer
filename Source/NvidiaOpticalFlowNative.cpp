@@ -8,6 +8,7 @@
 
 #include "stdafx.h"
 #include "NvidiaOpticalFlowNative.h"
+#include "NvidiaOpticalFlowCapture.h"
 #include "Helper.h"
 
 #include <d3d11_4.h>
@@ -582,6 +583,9 @@ struct CNvidiaOpticalFlowNative::Impl
 	std::array<RegisteredSurface, 2> inputs;
 	RegisteredSurface forwardFlow;
 	RegisteredSurface backwardFlow;
+	RegisteredSurface forwardCost;
+	RegisteredSurface backwardCost;
+	bool costCaptureEnabled = false;
 	CComPtr<ID3D11Texture2D> outputTexture;
 	CComPtr<ID3D11ShaderResourceView> outputView;
 	CComPtr<ID3D11UnorderedAccessView> outputUav;
@@ -636,6 +640,8 @@ struct CNvidiaOpticalFlowNative::Impl
 
 	void ResetUnlocked()
 	{
+		Unregister(forwardCost);
+		Unregister(backwardCost);
 		Unregister(forwardFlow);
 		Unregister(backwardFlow);
 		Unregister(inputs[0]);
@@ -666,6 +672,7 @@ struct CNvidiaOpticalFlowNative::Impl
 		processTimeMs = 0.0;
 		apiMajor = apiMinor = 0;
 		runtimeInfo.clear();
+		costCaptureEnabled = false;
 	}
 
 	bool Fail(const std::wstring& message)
@@ -751,6 +758,37 @@ struct CNvidiaOpticalFlowNative::Impl
 			session, surface.texture, &surface.nvofHandle);
 		if (code != nvof::Success) {
 			status = std::format(L"NvOFRegisterResourceD3D11(flow) failed: {}", DriverError(code));
+			return false;
+		}
+		return true;
+	}
+
+
+	bool CreateCostSurface(RegisteredSurface& surface)
+	{
+		D3D11_TEXTURE2D_DESC desc = {};
+		desc.Width = flowWidth;
+		desc.Height = flowHeight;
+		desc.MipLevels = 1;
+		desc.ArraySize = 1;
+		desc.Format = DXGI_FORMAT_R8_UINT;
+		desc.SampleDesc.Count = 1;
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+		HRESULT hr = device->CreateTexture2D(&desc, nullptr, &surface.texture);
+		if (FAILED(hr)) {
+			status = std::format(L"CreateTexture2D(native diagnostic cost) failed ({})", HR2Str(hr));
+			return false;
+		}
+		hr = device->CreateShaderResourceView(surface.texture, nullptr, &surface.view);
+		if (FAILED(hr)) {
+			status = std::format(L"CreateShaderResourceView(native diagnostic cost) failed ({})", HR2Str(hr));
+			return false;
+		}
+		const nvof::Status code = api.registerResourceD3D11(
+			session, surface.texture, &surface.nvofHandle);
+		if (code != nvof::Success) {
+			status = std::format(L"NvOFRegisterResourceD3D11(diagnostic cost) failed: {}", DriverError(code));
 			return false;
 		}
 		return true;
@@ -896,6 +934,7 @@ struct CNvidiaOpticalFlowNative::Impl
 
 		std::vector<DXGI_FORMAT> inputFormats;
 		std::vector<DXGI_FORMAT> outputFormats;
+		std::vector<DXGI_FORMAT> costFormats;
 		if (!QueryFormats(nvof::BufferUsageInput, inputFormats) ||
 				!QueryFormats(nvof::BufferUsageOutput, outputFormats)) {
 			return Fail(L"Could not query native NVOF D3D11 surface formats");
@@ -911,6 +950,9 @@ struct CNvidiaOpticalFlowNative::Impl
 				JoinFormats(outputFormats)));
 		}
 
+		costCaptureEnabled = QueryFormats(nvof::BufferUsageCost, costFormats) &&
+			std::find(costFormats.begin(), costFormats.end(), DXGI_FORMAT_R8_UINT) != costFormats.end();
+
 		nvof::InitParams init = {};
 		init.width = width;
 		init.height = height;
@@ -919,7 +961,7 @@ struct CNvidiaOpticalFlowNative::Impl
 		init.mode = nvof::ModeOpticalFlow;
 		init.performance = nvof::PerfSlow;
 		init.enableExternalHints = nvof::False;
-		init.enableOutputCost = nvof::False;
+		init.enableOutputCost = costCaptureEnabled ? nvof::True : nvof::False;
 		init.disparityRange = nvof::StereoRangeUndefined;
 		init.enableRoi = nvof::False;
 		init.predictionDirection = nvof::PredictionBoth;
@@ -932,6 +974,7 @@ struct CNvidiaOpticalFlowNative::Impl
 
 		if (!CreateInputSurface(inputs[0]) || !CreateInputSurface(inputs[1]) ||
 				!CreateFlowSurface(forwardFlow) || !CreateFlowSurface(backwardFlow) ||
+				(costCaptureEnabled && (!CreateCostSurface(forwardCost) || !CreateCostSurface(backwardCost))) ||
 				!CreateSynthesisResources()) {
 			const std::wstring saved = status;
 			ResetUnlocked();
@@ -940,8 +983,8 @@ struct CNvidiaOpticalFlowNative::Impl
 		}
 
 		runtimeInfo = std::format(
-			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow; renderer-owned synthesis",
-			apiMajor, apiMinor);
+			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow; renderer-owned synthesis; diagnostic cost {}",
+			apiMajor, apiMinor, costCaptureEnabled ? L"R8_UINT" : L"unavailable");
 		status = std::format(L"Native NVOF ready, {}x{}", width, height);
 		DLog(L"Native NVIDIA frame interpolation: {}", runtimeInfo);
 		return true;
@@ -1044,6 +1087,10 @@ struct CNvidiaOpticalFlowNative::Impl
 		nvof::ExecuteOutputParams output = {};
 		output.outputBuffer = forwardFlow.nvofHandle;
 		output.backwardOutputBuffer = backwardFlow.nvofHandle;
+		if (costCaptureEnabled) {
+			output.outputCostBuffer = forwardCost.nvofHandle;
+			output.backwardOutputCostBuffer = backwardCost.nvofHandle;
+		}
 
 		const auto started = std::chrono::steady_clock::now();
 		const nvof::Status code = api.execute(session, &input, &output);
@@ -1053,6 +1100,35 @@ struct CNvidiaOpticalFlowNative::Impl
 			return false;
 		}
 		DispatchMidpoint(midpointTime);
+
+		if (IsNativeNvofCaptureRequested()) {
+			NativeNvofCaptureInputs capture = {};
+			capture.device = device;
+			capture.context = context;
+			capture.firstFrame = inputs[currentIndex].texture;
+			capture.secondFrame = inputs[writeIndex].texture;
+			capture.midpointFrame = outputTexture;
+			capture.forwardFlow = forwardFlow.texture;
+			capture.backwardFlow = backwardFlow.texture;
+			capture.forwardCost = costCaptureEnabled ? forwardCost.texture.p : nullptr;
+			capture.backwardCost = costCaptureEnabled ? backwardCost.texture.p : nullptr;
+			capture.frameWidth = width;
+			capture.frameHeight = height;
+			capture.flowWidth = flowWidth;
+			capture.flowHeight = flowHeight;
+			capture.midpointTime = midpointTime;
+			capture.firstTimestamp = previousTimestamp;
+			capture.secondTimestamp = inputTimestamp;
+
+			std::wstring captureDirectory;
+			std::wstring captureError;
+			if (CaptureNativeNvofFramePair(capture, captureDirectory, captureError)) {
+				DLog(L"Native NVOF diagnostic capture saved to {}", captureDirectory);
+			} else {
+				DLog(L"Native NVOF diagnostic capture failed: {}", captureError);
+			}
+		}
+
 		processTimeMs = std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - started).count();
 
