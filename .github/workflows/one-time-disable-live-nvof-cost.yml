@@ -1,0 +1,31 @@
+name: One-time disable live NVOF cost
+
+on:
+  push:
+    branches:
+      - feature/native-nvof-interpolation
+    paths:
+      - .github/workflows/one-time-disable-live-nvof-cost.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Disable live hardware cost output
+        run: python .github/scripts/disable-live-nvof-cost.py
+      - name: Commit source change and clean temporary files
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm .github/scripts/disable-live-nvof-cost.py
+          rm .github/workflows/one-time-disable-live-nvof-cost.yml
+          git add -A
+          git commit -m "Disable live NVOF cost output to prevent stalls"
+          git push origin HEAD:feature/native-nvof-interpolation
