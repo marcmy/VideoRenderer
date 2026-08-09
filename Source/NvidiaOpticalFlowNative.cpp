@@ -8,6 +8,7 @@
 
 #include "stdafx.h"
 #include "NvidiaOpticalFlowNative.h"
+#include "NvidiaOpticalFlowMidpointBytecode.h"
 #include "NvidiaOpticalFlowCapture.h"
 #include "Helper.h"
 
@@ -638,6 +639,19 @@ struct CNvidiaOpticalFlowNative::Impl
 		surface.texture.Release();
 	}
 
+
+	void SoftResetUnlocked()
+	{
+		writeIndex = currentIndex = 0;
+		warmedUp = false;
+		outputValid = false;
+		hasExecutedFlow = false;
+		havePreviousTimestamp = false;
+		previousTimestamp = 0.0;
+		processTimeMs = 0.0;
+		status = session ? L"Native NVOF reset; waiting for frames" : L"Disabled";
+	}
+
 	void ResetUnlocked()
 	{
 		Unregister(forwardCost);
@@ -821,29 +835,12 @@ struct CNvidiaOpticalFlowNative::Impl
 			return false;
 		}
 
-		CComPtr<ID3DBlob> bytecode;
-		CComPtr<ID3DBlob> messages;
-		const UINT flags = D3DCOMPILE_ENABLE_STRICTNESS |
-			D3DCOMPILE_WARNINGS_ARE_ERRORS | D3DCOMPILE_OPTIMIZATION_LEVEL3;
-		hr = D3DCompile(MidpointShader, sizeof(MidpointShader) - 1,
-			"NativeNvofMidpoint", nullptr, nullptr, "main", "cs_5_0",
-			flags, 0, &bytecode, &messages);
-		if (FAILED(hr)) {
-			std::wstring detail;
-			if (messages && messages->GetBufferPointer()) {
-				const char* text = static_cast<const char*>(messages->GetBufferPointer());
-				for (size_t i = 0; i < messages->GetBufferSize(); ++i) {
-					detail.push_back(static_cast<wchar_t>(
-						static_cast<unsigned char>(text[i])));
-				}
-			}
-			status = std::format(L"D3DCompile(native midpoint) failed ({}) {}", HR2Str(hr), detail);
-			return false;
-		}
 		hr = device->CreateComputeShader(
-			bytecode->GetBufferPointer(), bytecode->GetBufferSize(), nullptr, &midpointShader);
+			g_NativeNvofMidpointBytecode,
+			sizeof(g_NativeNvofMidpointBytecode),
+			nullptr, &midpointShader);
 		if (FAILED(hr)) {
-			status = std::format(L"CreateComputeShader(native midpoint) failed ({})", HR2Str(hr));
+			status = std::format(L"CreateComputeShader(native midpoint bytecode) failed ({})", HR2Str(hr));
 			return false;
 		}
 
@@ -1186,7 +1183,13 @@ CNvidiaOpticalFlowNative::CNvidiaOpticalFlowNative()
 
 CNvidiaOpticalFlowNative::~CNvidiaOpticalFlowNative()
 {
-	Reset();
+#ifdef _WIN64
+	if (m_impl->inputTransaction.owns_lock()) {
+		m_impl->inputTransaction.unlock();
+	}
+	std::lock_guard<std::recursive_mutex> lock(m_impl->apiMutex);
+	m_impl->ResetUnlocked();
+#endif
 }
 
 bool CNvidiaOpticalFlowNative::Initialize(ID3D11Device* device, const UINT width, const UINT height)
@@ -1208,8 +1211,10 @@ void CNvidiaOpticalFlowNative::Reset()
 		m_impl->inputTransaction.unlock();
 	}
 	std::lock_guard<std::recursive_mutex> lock(m_impl->apiMutex);
-	m_impl->ResetUnlocked();
-	m_impl->status = L"Disabled";
+	// Playback discontinuities only invalidate frame/temporal history.
+	// Preserve the initialized driver session and D3D11 resources so a seek
+	// cannot force synchronous shader compilation/session reconstruction.
+	m_impl->SoftResetUnlocked();
 #endif
 }
 
