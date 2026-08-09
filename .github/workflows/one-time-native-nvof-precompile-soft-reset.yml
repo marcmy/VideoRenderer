@@ -1,5 +1,6 @@
 name: One-time native NVOF precompile and soft reset
 
+# Second push intentionally triggers this one-time branch workflow.
 on:
   push:
     branches:
@@ -30,7 +31,6 @@ jobs:
 
           @'
           from pathlib import Path
-          import re
 
           path = Path('Source/NvidiaOpticalFlowNative.cpp')
           source = path.read_text(encoding='utf-8')
