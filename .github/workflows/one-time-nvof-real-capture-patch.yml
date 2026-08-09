@@ -1,0 +1,131 @@
+name: One-time real-frame NVOF capture patch
+
+on:
+  push:
+    branches:
+      - feature/native-nvof-interpolation
+    paths:
+      - .github/workflows/one-time-nvof-real-capture-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Wire real-frame capture into native NVOF backend
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('Source/NvidiaOpticalFlowNative.cpp')
+          source = path.read_text(encoding='utf-8')
+          if 'CaptureNativeNvofFramePair' in source:
+              print('Real-frame capture is already wired.')
+              raise SystemExit(0)
+
+          def replace_once(old, new):
+              global source
+              if old not in source:
+                  raise RuntimeError('Could not find patch target:\n' + old[:500])
+              source = source.replace(old, new, 1)
+
+          replace_once(
+              '#include "NvidiaOpticalFlowNative.h"\n',
+              '#include "NvidiaOpticalFlowNative.h"\n#include "NvidiaOpticalFlowCapture.h"\n')
+
+          replace_once(
+              '\tRegisteredSurface forwardFlow;\n\tRegisteredSurface backwardFlow;\n',
+              '\tRegisteredSurface forwardFlow;\n\tRegisteredSurface backwardFlow;\n\tRegisteredSurface forwardCost;\n\tRegisteredSurface backwardCost;\n\tbool costCaptureEnabled = false;\n')
+
+          replace_once(
+              '\t\tUnregister(forwardFlow);\n\t\tUnregister(backwardFlow);\n',
+              '\t\tUnregister(forwardCost);\n\t\tUnregister(backwardCost);\n\t\tUnregister(forwardFlow);\n\t\tUnregister(backwardFlow);\n')
+
+          replace_once(
+              '\t\truntimeInfo.clear();\n\t}\n',
+              '\t\truntimeInfo.clear();\n\t\tcostCaptureEnabled = false;\n\t}\n')
+
+          marker = '\n\tbool CreateSynthesisResources()\n\t{\n'
+          if marker not in source:
+              raise RuntimeError('Could not find CreateSynthesisResources marker.')
+          cost_function = r'''
+	bool CreateCostSurface(RegisteredSurface& surface)
+	{
+		D3D11_TEXTURE2D_DESC desc = {};
+		desc.Width = flowWidth;
+		desc.Height = flowHeight;
+		desc.MipLevels = 1;
+		desc.ArraySize = 1;
+		desc.Format = DXGI_FORMAT_R8_UINT;
+		desc.SampleDesc.Count = 1;
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+		HRESULT hr = device->CreateTexture2D(&desc, nullptr, &surface.texture);
+		if (FAILED(hr)) {
+			status = std::format(L"CreateTexture2D(native diagnostic cost) failed ({})", HR2Str(hr));
+			return false;
+		}
+		hr = device->CreateShaderResourceView(surface.texture, nullptr, &surface.view);
+		if (FAILED(hr)) {
+			status = std::format(L"CreateShaderResourceView(native diagnostic cost) failed ({})", HR2Str(hr));
+			return false;
+		}
+		const nvof::Status code = api.registerResourceD3D11(
+			session, surface.texture, &surface.nvofHandle);
+		if (code != nvof::Success) {
+			status = std::format(L"NvOFRegisterResourceD3D11(diagnostic cost) failed: {}", DriverError(code));
+			return false;
+		}
+		return true;
+	}
+'''
+          source = source.replace(marker, '\n' + cost_function + marker, 1)
+
+          replace_once(
+              '\t\tstd::vector<DXGI_FORMAT> inputFormats;\n\t\tstd::vector<DXGI_FORMAT> outputFormats;\n\t\tif (!QueryFormats(nvof::BufferUsageInput, inputFormats) ||\n\t\t\t\t!QueryFormats(nvof::BufferUsageOutput, outputFormats)) {\n',
+              '\t\tstd::vector<DXGI_FORMAT> inputFormats;\n\t\tstd::vector<DXGI_FORMAT> outputFormats;\n\t\tstd::vector<DXGI_FORMAT> costFormats;\n\t\tif (!QueryFormats(nvof::BufferUsageInput, inputFormats) ||\n\t\t\t\t!QueryFormats(nvof::BufferUsageOutput, outputFormats)) {\n')
+
+          replace_once(
+              '\t\tif (std::find(outputFormats.begin(), outputFormats.end(), DXGI_FORMAT_R16G16_SINT) == outputFormats.end()) {\n\t\t\treturn Fail(std::format(\n\t\t\t\tL"Native NVOF R16G16_SINT flow output is unavailable; supported formats: {}",\n\t\t\t\tJoinFormats(outputFormats)));\n\t\t}\n\n\t\tnvof::InitParams init = {};\n',
+              '\t\tif (std::find(outputFormats.begin(), outputFormats.end(), DXGI_FORMAT_R16G16_SINT) == outputFormats.end()) {\n\t\t\treturn Fail(std::format(\n\t\t\t\tL"Native NVOF R16G16_SINT flow output is unavailable; supported formats: {}",\n\t\t\t\tJoinFormats(outputFormats)));\n\t\t}\n\n\t\tcostCaptureEnabled = QueryFormats(nvof::BufferUsageCost, costFormats) &&\n\t\t\tstd::find(costFormats.begin(), costFormats.end(), DXGI_FORMAT_R8_UINT) != costFormats.end();\n\n\t\tnvof::InitParams init = {};\n')
+
+          replace_once(
+              '\t\tinit.enableOutputCost = nvof::False;\n',
+              '\t\tinit.enableOutputCost = costCaptureEnabled ? nvof::True : nvof::False;\n')
+
+          replace_once(
+              '\t\tif (!CreateInputSurface(inputs[0]) || !CreateInputSurface(inputs[1]) ||\n\t\t\t\t!CreateFlowSurface(forwardFlow) || !CreateFlowSurface(backwardFlow) ||\n\t\t\t\t!CreateSynthesisResources()) {\n',
+              '\t\tif (!CreateInputSurface(inputs[0]) || !CreateInputSurface(inputs[1]) ||\n\t\t\t\t!CreateFlowSurface(forwardFlow) || !CreateFlowSurface(backwardFlow) ||\n\t\t\t\t(costCaptureEnabled && (!CreateCostSurface(forwardCost) || !CreateCostSurface(backwardCost))) ||\n\t\t\t\t!CreateSynthesisResources()) {\n')
+
+          replace_once(
+              '\t\truntimeInfo = std::format(\n\t\t\tL"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow; renderer-owned synthesis",\n\t\t\tapiMajor, apiMinor);\n',
+              '\t\truntimeInfo = std::format(\n\t\t\tL"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow; renderer-owned synthesis; diagnostic cost {}",\n\t\t\tapiMajor, apiMinor, costCaptureEnabled ? L"R8_UINT" : L"unavailable");\n')
+
+          replace_once(
+              '\t\toutput.outputBuffer = forwardFlow.nvofHandle;\n\t\toutput.backwardOutputBuffer = backwardFlow.nvofHandle;\n',
+              '\t\toutput.outputBuffer = forwardFlow.nvofHandle;\n\t\toutput.backwardOutputBuffer = backwardFlow.nvofHandle;\n\t\tif (costCaptureEnabled) {\n\t\t\toutput.outputCostBuffer = forwardCost.nvofHandle;\n\t\t\toutput.backwardOutputCostBuffer = backwardCost.nvofHandle;\n\t\t}\n')
+
+          replace_once(
+              '\t\tDispatchMidpoint(midpointTime);\n\t\tprocessTimeMs = std::chrono::duration<double, std::milli>(\n',
+              '''\t\tDispatchMidpoint(midpointTime);\n\n\t\tif (IsNativeNvofCaptureRequested()) {\n\t\t\tNativeNvofCaptureInputs capture = {};\n\t\t\tcapture.device = device;\n\t\t\tcapture.context = context;\n\t\t\tcapture.firstFrame = inputs[currentIndex].texture;\n\t\t\tcapture.secondFrame = inputs[writeIndex].texture;\n\t\t\tcapture.midpointFrame = outputTexture;\n\t\t\tcapture.forwardFlow = forwardFlow.texture;\n\t\t\tcapture.backwardFlow = backwardFlow.texture;\n\t\t\tcapture.forwardCost = costCaptureEnabled ? forwardCost.texture.p : nullptr;\n\t\t\tcapture.backwardCost = costCaptureEnabled ? backwardCost.texture.p : nullptr;\n\t\t\tcapture.frameWidth = width;\n\t\t\tcapture.frameHeight = height;\n\t\t\tcapture.flowWidth = flowWidth;\n\t\t\tcapture.flowHeight = flowHeight;\n\t\t\tcapture.midpointTime = midpointTime;\n\t\t\tcapture.firstTimestamp = previousTimestamp;\n\t\t\tcapture.secondTimestamp = inputTimestamp;\n\n\t\t\tstd::wstring captureDirectory;\n\t\t\tstd::wstring captureError;\n\t\t\tif (CaptureNativeNvofFramePair(capture, captureDirectory, captureError)) {\n\t\t\t\tDLog(L"Native NVOF diagnostic capture saved to {}", captureDirectory);\n\t\t\t} else {\n\t\t\t\tDLog(L"Native NVOF diagnostic capture failed: {}", captureError);\n\t\t\t}\n\t\t}\n\n\t\tprocessTimeMs = std::chrono::duration<double, std::milli>(\n''')
+
+          path.write_text(source, encoding='utf-8')
+          PY
+
+      - name: Commit capture wiring and remove one-time workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -- .github/workflows/one-time-nvof-real-capture-patch.yml
+          git add -- Source/NvidiaOpticalFlowNative.cpp
+          git commit -m 'Add real-frame NVOF capture diagnostics'
+          git push origin HEAD:feature/native-nvof-interpolation
