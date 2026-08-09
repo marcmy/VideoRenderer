@@ -82,6 +82,7 @@
     <ClCompile Include="NvidiaFrameInterpolation.cpp" />
     <ClCompile Include="NvidiaOpticalFlowCapture.cpp" />
     <ClCompile Include="NvidiaOpticalFlowNative.cpp" />
+    <ClCompile Include="NvidiaOpticalFlowSplatSynthesizer.cpp" />
     <ClCompile Include="PropPage.cpp" />
     <ClCompile Include="renbase2.cpp" />
     <ClCompile Include="Shaders.cpp" />
@@ -126,6 +127,7 @@
     <ClInclude Include="NvidiaFrameInterpolation.h" />
     <ClInclude Include="NvidiaOpticalFlowCapture.h" />
     <ClInclude Include="NvidiaOpticalFlowNative.h" />
+    <ClInclude Include="NvidiaOpticalFlowSplatSynthesizer.h" />
     <ClInclude Include="PropPage.h" />
     <ClInclude Include="renbase2.h" />
     <ClInclude Include="resource.h" />

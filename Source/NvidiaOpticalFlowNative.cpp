@@ -8,6 +8,7 @@
 
 #include "stdafx.h"
 #include "NvidiaOpticalFlowNative.h"
+#include "NvidiaOpticalFlowSplatSynthesizer.h"
 #include "NvidiaOpticalFlowMidpointBytecode.h"
 #include "NvidiaOpticalFlowCapture.h"
 #include "Helper.h"
@@ -636,6 +637,7 @@ struct CNvidiaOpticalFlowNative::Impl
 	CComPtr<ID3D11ComputeShader> midpointShader;
 	CComPtr<ID3D11SamplerState> sampler;
 	CComPtr<ID3D11Buffer> parameters;
+	std::unique_ptr<CNvidiaOpticalFlowSplatSynthesizer> splatSynthesizer;
 	UINT width = 0;
 	UINT height = 0;
 	UINT flowWidth = 0;
@@ -713,6 +715,7 @@ struct CNvidiaOpticalFlowNative::Impl
 		midpointShader.Release();
 		sampler.Release();
 		parameters.Release();
+		splatSynthesizer.reset();
 		multithread.Release();
 		context.Release();
 		device.Release();
@@ -908,6 +911,11 @@ struct CNvidiaOpticalFlowNative::Impl
 			status = std::format(L"CreateBuffer(native midpoint params) failed ({})", HR2Str(hr));
 			return false;
 		}
+
+		splatSynthesizer = std::make_unique<CNvidiaOpticalFlowSplatSynthesizer>();
+		if (!splatSynthesizer->Initialize(device, width, height, flowWidth, flowHeight, status)) {
+			return false;
+		}
 		return true;
 	}
 
@@ -1024,46 +1032,28 @@ struct CNvidiaOpticalFlowNative::Impl
 		}
 
 		runtimeInfo = std::format(
-			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow; renderer-owned synthesis; live cost disabled",
+			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow; forward-splat winner synthesis; live cost disabled",
 			apiMajor, apiMinor);
 		status = std::format(L"Native NVOF ready, {}x{}", width, height);
 		DLog(L"Native NVIDIA frame interpolation: {}", runtimeInfo);
 		return true;
 	}
 
-	void DispatchMidpoint(const float midpointTime)
+	bool DispatchMidpoint(const float midpointTime)
 	{
-		const ShaderParameters values = {
-			width, height, flowWidth, flowHeight,
-			midpointTime, static_cast<float>(FlowGridSize), {0.0f, 0.0f},
-		};
-		context->UpdateSubresource(parameters, 0, nullptr, &values, 0, 0);
-
-		const std::array<ID3D11ShaderResourceView*, 4> inputsViews = {
+		if (!splatSynthesizer) {
+			status = L"Native NVOF forward-splat synthesizer is unavailable";
+			return false;
+		}
+		return splatSynthesizer->Dispatch(
+			context,
 			inputs[currentIndex].view,
 			inputs[writeIndex].view,
 			forwardFlow.view,
 			backwardFlow.view,
-		};
-		ID3D11UnorderedAccessView* output = outputUav;
-		ID3D11Buffer* constantBuffer = parameters;
-		ID3D11SamplerState* samplerState = sampler;
-		context->CSSetShader(midpointShader, nullptr, 0);
-		context->CSSetConstantBuffers(0, 1, &constantBuffer);
-		context->CSSetSamplers(0, 1, &samplerState);
-		context->CSSetShaderResources(0, static_cast<UINT>(inputsViews.size()), inputsViews.data());
-		context->CSSetUnorderedAccessViews(0, 1, &output, nullptr);
-		context->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
-
-		const std::array<ID3D11ShaderResourceView*, 4> nullViews = {};
-		ID3D11UnorderedAccessView* nullOutput = nullptr;
-		ID3D11Buffer* nullBuffer = nullptr;
-		ID3D11SamplerState* nullSampler = nullptr;
-		context->CSSetUnorderedAccessViews(0, 1, &nullOutput, nullptr);
-		context->CSSetShaderResources(0, static_cast<UINT>(nullViews.size()), nullViews.data());
-		context->CSSetConstantBuffers(0, 1, &nullBuffer);
-		context->CSSetSamplers(0, 1, &nullSampler);
-		context->CSSetShader(nullptr, nullptr, 0);
+			outputUav,
+			midpointTime,
+			status);
 	}
 
 	bool BeginInputFrame(ID3D11Texture2D** texture)
@@ -1140,7 +1130,10 @@ struct CNvidiaOpticalFlowNative::Impl
 			Finish();
 			return false;
 		}
-		DispatchMidpoint(midpointTime);
+		if (!DispatchMidpoint(midpointTime)) {
+			Finish();
+			return false;
+		}
 
 		if (IsNativeNvofCaptureRequested()) {
 			NativeNvofCaptureInputs capture = {};
