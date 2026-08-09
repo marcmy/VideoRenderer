@@ -8,7 +8,6 @@
 
 #include "stdafx.h"
 #include "NvidiaOpticalFlowNative.h"
-#include "NvidiaOpticalFlowSplatSynthesizer.h"
 #include "NvidiaOpticalFlowMidpointBytecode.h"
 #include "NvidiaOpticalFlowCapture.h"
 #include "Helper.h"
@@ -534,6 +533,49 @@ Candidate FindSecondCandidate(float2 targetPixel)
     return best;
 }
 
+
+// Exact offline cell-risk fallback. The real-frame replay that removed the
+// fast Apex weapon deformation used nearest 4x4-cell flow/consistency values,
+// then a 5x5 pixel dilation. Keep this metric separate from SampleFlow(), which
+// deliberately modifies vectors for synthesis.
+float FlowCellConsistency(bool backward, int2 cell)
+{
+    cell = clamp(cell, int2(0, 0), int2(FlowSize) - 1);
+    float2 flow = float2(LoadFlowVector(backward, cell)) / 32.0;
+    float2 cellPixel = float2(cell) * GridSize;
+    float2 reverseFlow = SampleRawFlow(!backward, cellPixel + flow);
+    return length(flow + reverseFlow);
+}
+
+bool UnsafeFlowCellAtPixel(float2 samplePixel)
+{
+    samplePixel = clamp(samplePixel, 0.0, float2(FrameSize - 1));
+    int2 cell = int2(samplePixel / GridSize);
+    float2 firstToSecond = float2(LoadFlowVector(true, cell)) / 32.0;
+    float2 secondToFirst = float2(LoadFlowVector(false, cell)) / 32.0;
+    float motion = max(length(firstToSecond), length(secondToFirst));
+    if (motion <= 20.0) return false;
+
+    float risk = max(
+        FlowCellConsistency(true, cell),
+        FlowCellConsistency(false, cell));
+    return risk > 20.0;
+}
+
+bool UnsafeFlowNeighborhood(float2 pixel)
+{
+    // Because UnsafeFlowCellAtPixel is constant inside each 4x4 NVOF cell,
+    // these nine probes reproduce a 5x5 full-resolution dilation exactly.
+    [unroll]
+    for (int oy = -2; oy <= 2; oy += 2) {
+        [unroll]
+        for (int ox = -2; ox <= 2; ox += 2) {
+            if (UnsafeFlowCellAtPixel(pixel + float2(ox, oy))) return true;
+        }
+    }
+    return false;
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
@@ -566,27 +608,7 @@ void main(uint3 id : SV_DispatchThreadID)
         result = second.color;
     }
 
-    // Hard safety fallback for fast motion. If both optical-flow directions
-    // expose a severe raw round-trip inconsistency in either direction, do not blend
-    // or further warp the pixel. Reuse the nearer real endpoint instead.
-    // Safety deliberately uses raw NVOF flow rather than the content-aware synthesis selector.\n    // This trades a local half-frame repeat for avoiding severe geometry melt.
-    float2 firstFlowAtPixel = SampleRawFlow(true, pixel);
-    float2 secondFlowAtPixel = SampleRawFlow(false, pixel);
-    float localMotion = max(length(firstFlowAtPixel), length(secondFlowAtPixel));
-
-    float firstRoundTripError = 1000.0;
-    float2 firstMatch = pixel + firstFlowAtPixel;
-    if (IsValid(firstMatch)) {
-        firstRoundTripError = length(firstFlowAtPixel + SampleRawFlow(false, firstMatch));
-    }
-
-    float secondRoundTripError = 1000.0;
-    float2 secondMatch = pixel + secondFlowAtPixel;
-    if (IsValid(secondMatch)) {
-        secondRoundTripError = length(secondFlowAtPixel + SampleRawFlow(true, secondMatch));
-    }
-
-    if (localMotion >= 20.0 && max(firstRoundTripError, secondRoundTripError) >= 20.0) {
+    if (UnsafeFlowNeighborhood(pixel)) {
         result = MidpointTime <= 0.5
             ? SampleFrame(FirstFrame, pixel)
             : SampleFrame(SecondFrame, pixel);
@@ -637,7 +659,6 @@ struct CNvidiaOpticalFlowNative::Impl
 	CComPtr<ID3D11ComputeShader> midpointShader;
 	CComPtr<ID3D11SamplerState> sampler;
 	CComPtr<ID3D11Buffer> parameters;
-	std::unique_ptr<CNvidiaOpticalFlowSplatSynthesizer> splatSynthesizer;
 	UINT width = 0;
 	UINT height = 0;
 	UINT flowWidth = 0;
@@ -715,7 +736,6 @@ struct CNvidiaOpticalFlowNative::Impl
 		midpointShader.Release();
 		sampler.Release();
 		parameters.Release();
-		splatSynthesizer.reset();
 		multithread.Release();
 		context.Release();
 		device.Release();
@@ -912,10 +932,6 @@ struct CNvidiaOpticalFlowNative::Impl
 			return false;
 		}
 
-		splatSynthesizer = std::make_unique<CNvidiaOpticalFlowSplatSynthesizer>();
-		if (!splatSynthesizer->Initialize(device, width, height, flowWidth, flowHeight, status)) {
-			return false;
-		}
 		return true;
 	}
 
@@ -1032,7 +1048,7 @@ struct CNvidiaOpticalFlowNative::Impl
 		}
 
 		runtimeInfo = std::format(
-			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow; forward-splat winner synthesis; live cost disabled",
+			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow; occlusion-aware inverse warp + exact cell-risk fallback; live cost disabled",
 			apiMajor, apiMinor);
 		status = std::format(L"Native NVOF ready, {}x{}", width, height);
 		DLog(L"Native NVIDIA frame interpolation: {}", runtimeInfo);
@@ -1041,19 +1057,38 @@ struct CNvidiaOpticalFlowNative::Impl
 
 	bool DispatchMidpoint(const float midpointTime)
 	{
-		if (!splatSynthesizer) {
-			status = L"Native NVOF forward-splat synthesizer is unavailable";
-			return false;
-		}
-		return splatSynthesizer->Dispatch(
-			context,
+		const ShaderParameters values = {
+			width, height, flowWidth, flowHeight,
+			midpointTime, static_cast<float>(FlowGridSize), {0.0f, 0.0f},
+		};
+		context->UpdateSubresource(parameters, 0, nullptr, &values, 0, 0);
+
+		const std::array<ID3D11ShaderResourceView*, 4> inputsViews = {
 			inputs[currentIndex].view,
 			inputs[writeIndex].view,
 			forwardFlow.view,
 			backwardFlow.view,
-			outputUav,
-			midpointTime,
-			status);
+		};
+		ID3D11UnorderedAccessView* output = outputUav;
+		ID3D11Buffer* constantBuffer = parameters;
+		ID3D11SamplerState* samplerState = sampler;
+		context->CSSetShader(midpointShader, nullptr, 0);
+		context->CSSetConstantBuffers(0, 1, &constantBuffer);
+		context->CSSetSamplers(0, 1, &samplerState);
+		context->CSSetShaderResources(0, static_cast<UINT>(inputsViews.size()), inputsViews.data());
+		context->CSSetUnorderedAccessViews(0, 1, &output, nullptr);
+		context->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
+
+		const std::array<ID3D11ShaderResourceView*, 4> nullViews = {};
+		ID3D11UnorderedAccessView* nullOutput = nullptr;
+		ID3D11Buffer* nullBuffer = nullptr;
+		ID3D11SamplerState* nullSampler = nullptr;
+		context->CSSetUnorderedAccessViews(0, 1, &nullOutput, nullptr);
+		context->CSSetShaderResources(0, static_cast<UINT>(nullViews.size()), nullViews.data());
+		context->CSSetConstantBuffers(0, 1, &nullBuffer);
+		context->CSSetSamplers(0, 1, &nullSampler);
+		context->CSSetShader(nullptr, nullptr, 0);
+		return true;
 	}
 
 	bool BeginInputFrame(ID3D11Texture2D** texture)
