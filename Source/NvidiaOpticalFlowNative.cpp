@@ -335,6 +335,23 @@ float ContentAwareFlowCellScore(bool backward, float2 pixel,
     return 8.0 * colorError + 0.12 * spatialError;
 }
 
+float2 SampleRawFlow(bool backward, float2 pixel)
+{
+    float2 grid = pixel / GridSize;
+    grid = clamp(grid, 0.0, float2(FlowSize - 1));
+    int2 p0 = int2(floor(grid));
+    int2 p1 = min(p0 + 1, int2(FlowSize - 1));
+    float2 fraction = grid - float2(p0);
+
+    float2 f00 = float2(LoadFlowVector(backward, int2(p0.x, p0.y))) / 32.0;
+    float2 f10 = float2(LoadFlowVector(backward, int2(p1.x, p0.y))) / 32.0;
+    float2 f01 = float2(LoadFlowVector(backward, int2(p0.x, p1.y))) / 32.0;
+    float2 f11 = float2(LoadFlowVector(backward, int2(p1.x, p1.y))) / 32.0;
+    float2 top = lerp(f00, f10, fraction.x);
+    float2 bottom = lerp(f01, f11, fraction.x);
+    return lerp(top, bottom, fraction.y);
+}
+
 float2 SampleFlow(bool backward, float2 pixel)
 {
     float2 grid = pixel / GridSize;
@@ -549,26 +566,26 @@ void main(uint3 id : SV_DispatchThreadID)
     }
 
     // Hard safety fallback for fast motion. If both optical-flow directions
-    // fail their round-trip consistency test by a large margin, do not blend
+    // expose a severe raw round-trip inconsistency in either direction, do not blend
     // or further warp the pixel. Reuse the nearer real endpoint instead.
-    // This trades a local half-frame repeat for avoiding severe geometry melt.
-    float2 firstFlowAtPixel = SampleFlow(true, pixel);
-    float2 secondFlowAtPixel = SampleFlow(false, pixel);
+    // Safety deliberately uses raw NVOF flow rather than the content-aware synthesis selector.\n    // This trades a local half-frame repeat for avoiding severe geometry melt.
+    float2 firstFlowAtPixel = SampleRawFlow(true, pixel);
+    float2 secondFlowAtPixel = SampleRawFlow(false, pixel);
     float localMotion = max(length(firstFlowAtPixel), length(secondFlowAtPixel));
 
     float firstRoundTripError = 1000.0;
     float2 firstMatch = pixel + firstFlowAtPixel;
     if (IsValid(firstMatch)) {
-        firstRoundTripError = length(firstFlowAtPixel + SampleFlow(false, firstMatch));
+        firstRoundTripError = length(firstFlowAtPixel + SampleRawFlow(false, firstMatch));
     }
 
     float secondRoundTripError = 1000.0;
     float2 secondMatch = pixel + secondFlowAtPixel;
     if (IsValid(secondMatch)) {
-        secondRoundTripError = length(secondFlowAtPixel + SampleFlow(true, secondMatch));
+        secondRoundTripError = length(secondFlowAtPixel + SampleRawFlow(true, secondMatch));
     }
 
-    if (localMotion >= 20.0 && min(firstRoundTripError, secondRoundTripError) >= 20.0) {
+    if (localMotion >= 20.0 && max(firstRoundTripError, secondRoundTripError) >= 20.0) {
         result = MidpointTime <= 0.5
             ? SampleFrame(FirstFrame, pixel)
             : SampleFrame(SecondFrame, pixel);
