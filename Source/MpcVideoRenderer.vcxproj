@@ -80,6 +80,7 @@
     <ClCompile Include="MediaSampleSideData.cpp" />
     <ClCompile Include="NvidiaMaxineVSR.cpp" />
     <ClCompile Include="NvidiaFrameInterpolation.cpp" />
+    <ClCompile Include="NvidiaOpticalFlowCapture.cpp" />
     <ClCompile Include="NvidiaOpticalFlowNative.cpp" />
     <ClCompile Include="PropPage.cpp" />
     <ClCompile Include="renbase2.cpp" />
@@ -123,6 +124,7 @@
     <ClInclude Include="MediaSampleSideData.h" />
     <ClInclude Include="NvidiaMaxineVSR.h" />
     <ClInclude Include="NvidiaFrameInterpolation.h" />
+    <ClInclude Include="NvidiaOpticalFlowCapture.h" />
     <ClInclude Include="NvidiaOpticalFlowNative.h" />
     <ClInclude Include="PropPage.h" />
     <ClInclude Include="renbase2.h" />
