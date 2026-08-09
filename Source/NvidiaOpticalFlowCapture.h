@@ -3,6 +3,8 @@
 #include <d3d11.h>
 #include <string>
 
+// Diagnostic-only frame-pair capture used to replay real NVOF failures offline.
+// The normal interpolation path does not depend on capture being armed.
 struct NativeNvofCaptureInputs
 {
 	ID3D11Device* device = nullptr;
