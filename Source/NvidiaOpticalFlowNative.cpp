@@ -934,7 +934,6 @@ struct CNvidiaOpticalFlowNative::Impl
 
 		std::vector<DXGI_FORMAT> inputFormats;
 		std::vector<DXGI_FORMAT> outputFormats;
-		std::vector<DXGI_FORMAT> costFormats;
 		if (!QueryFormats(nvof::BufferUsageInput, inputFormats) ||
 				!QueryFormats(nvof::BufferUsageOutput, outputFormats)) {
 			return Fail(L"Could not query native NVOF D3D11 surface formats");
@@ -950,8 +949,10 @@ struct CNvidiaOpticalFlowNative::Impl
 				JoinFormats(outputFormats)));
 		}
 
-		costCaptureEnabled = QueryFormats(nvof::BufferUsageCost, costFormats) &&
-			std::find(costFormats.begin(), costFormats.end(), DXGI_FORMAT_R8_UINT) != costFormats.end();
+		// Hardware cost output is intentionally disabled in the live renderer.
+		// On Turing it can severely stall startup/seeks and sustained playback.
+		// Real-frame capture still records source frames, flow, consistency, and midpoint.
+		costCaptureEnabled = false;
 
 		nvof::InitParams init = {};
 		init.width = width;
@@ -961,7 +962,7 @@ struct CNvidiaOpticalFlowNative::Impl
 		init.mode = nvof::ModeOpticalFlow;
 		init.performance = nvof::PerfSlow;
 		init.enableExternalHints = nvof::False;
-		init.enableOutputCost = costCaptureEnabled ? nvof::True : nvof::False;
+		init.enableOutputCost = nvof::False;
 		init.disparityRange = nvof::StereoRangeUndefined;
 		init.enableRoi = nvof::False;
 		init.predictionDirection = nvof::PredictionBoth;
@@ -983,8 +984,8 @@ struct CNvidiaOpticalFlowNative::Impl
 		}
 
 		runtimeInfo = std::format(
-			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow; renderer-owned synthesis; diagnostic cost {}",
-			apiMajor, apiMinor, costCaptureEnabled ? L"R8_UINT" : L"unavailable");
+			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow; renderer-owned synthesis; live cost disabled",
+			apiMajor, apiMinor);
 		status = std::format(L"Native NVOF ready, {}x{}", width, height);
 		DLog(L"Native NVIDIA frame interpolation: {}", runtimeInfo);
 		return true;
