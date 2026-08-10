@@ -387,7 +387,7 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
 
     const RepairParameters repairValues = {
         m_flowWidth, m_flowHeight, 1.25f, 1.0f,
-        2u, 3u, 1.0f, 0.0f,
+        2u, 4u, 1.5f, 0.0f,
     };
     context->UpdateSubresource(m_repairParameters, 0, nullptr, &repairValues, 0, 0);
     ID3D11Buffer* repairBuffer = m_repairParameters;

@@ -71,7 +71,7 @@ void main(uint3 id : SV_DispatchThreadID)
     // is evaluated in target coordinates. Symmetrically motion-compensating
     // both real endpoints avoids the hard patch seams and severe crossfade
     // blur of earlier local fallback experiments.
-    float repairMask = SampleRepair(source).z;
+    float repairMask = max(SampleRepair(source).z, SampleRepair(target).z);
     if (repairMask > 1.0e-4) {
         float2 repairMotion = SampleRepair(target).xy;
         float2 previousSource = target - MidpointTime * repairMotion;
