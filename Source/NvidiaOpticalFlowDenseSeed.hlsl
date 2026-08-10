@@ -1,12 +1,15 @@
 Texture2D<int2> ForwardFlowBtoA : register(t0);
 Texture2D<int2> BackwardFlowAtoB : register(t1);
 RWTexture2D<uint> SeedMap : register(u0);
+RWTexture2D<uint> UnsafeCellCount : register(u1);
 
 cbuffer SeedParameters : register(b0)
 {
     uint2 FlowSize;
     float GridSize;
     float ConsistencyThreshold;
+    float MotionThreshold;
+    float3 Padding;
 };
 
 static const uint InvalidSeed = 0xffffffffu;
@@ -49,6 +52,11 @@ void main(uint3 id : SV_DispatchThreadID)
     float bToAError = length(bToA + SampleFlow(BackwardFlowAtoB, pixel + bToA));
     float aToBError = length(aToB + SampleFlow(ForwardFlowBtoA, pixel + aToB));
     float consistency = max(bToAError, aToBError);
+    float motion = max(length(bToA), length(aToB));
+
+    if (motion > MotionThreshold && consistency > ConsistencyThreshold) {
+        InterlockedAdd(UnsafeCellCount[uint2(0, 0)], 1u);
+    }
 
     SeedMap[id.xy] = consistency <= ConsistencyThreshold
         ? PackSeed(id.xy)
