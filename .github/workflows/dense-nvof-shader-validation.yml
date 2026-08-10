@@ -39,6 +39,7 @@ jobs:
           New-Item -ItemType Directory -Force build\dense-nvof | Out-Null
           $specs = @(
             @{ Source='Source/NvidiaOpticalFlowDenseSeed.hlsl'; Header='Source/NvidiaOpticalFlowDenseSeedBytecode.h'; Name='g_NvofDenseSeedBytecode' },
+            @{ Source='Source/NvidiaOpticalFlowDenseRepair.hlsl'; Header='Source/NvidiaOpticalFlowDenseRepairBytecode.h'; Name='g_NvofDenseRepairBytecode' },
             @{ Source='Source/NvidiaOpticalFlowDenseRegionGate.hlsl'; Header='Source/NvidiaOpticalFlowDenseRegionGateBytecode.h'; Name='g_NvofDenseRegionGateBytecode' },
             @{ Source='Source/NvidiaOpticalFlowDenseJump.hlsl'; Header='Source/NvidiaOpticalFlowDenseJumpBytecode.h'; Name='g_NvofDenseJumpBytecode' },
             @{ Source='Source/NvidiaOpticalFlowDenseUpsample.hlsl'; Header='Source/NvidiaOpticalFlowDenseUpsampleBytecode.h'; Name='g_NvofDenseUpsampleBytecode' },

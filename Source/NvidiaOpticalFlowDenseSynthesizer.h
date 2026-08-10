@@ -40,6 +40,18 @@ private:
     };
     static_assert(sizeof(SeedParameters) == 32);
 
+    struct RepairParameters {
+        UINT flowWidth;
+        UINT flowHeight;
+        float flowSigma;
+        float maskSigma;
+        UINT flowRadius;
+        UINT maskRadius;
+        float maskDilation;
+        float padding;
+    };
+    static_assert(sizeof(RepairParameters) == 32);
+
     struct RegionGateParameters {
         UINT flowWidth;
         UINT flowHeight;
@@ -74,7 +86,8 @@ private:
         UINT flowCellCount;
         float repeatBadFraction;
         float midpointTime;
-        float padding[3];
+        float repairGridSize;
+        float padding[2];
     };
     static_assert(sizeof(WarpParameters) == 32);
 
@@ -84,6 +97,7 @@ private:
     UINT m_flowHeight = 0;
 
     CComPtr<ID3D11ComputeShader> m_seedShader;
+    CComPtr<ID3D11ComputeShader> m_repairShader;
     CComPtr<ID3D11ComputeShader> m_regionGateShader;
     CComPtr<ID3D11ComputeShader> m_jumpShader;
     CComPtr<ID3D11ComputeShader> m_denseShader;
@@ -92,6 +106,10 @@ private:
     CComPtr<ID3D11Texture2D> m_seedTextures[2];
     CComPtr<ID3D11ShaderResourceView> m_seedViews[2];
     CComPtr<ID3D11UnorderedAccessView> m_seedUavs[2];
+
+    CComPtr<ID3D11Texture2D> m_repairTextures[2];
+    CComPtr<ID3D11ShaderResourceView> m_repairViews[2];
+    CComPtr<ID3D11UnorderedAccessView> m_repairUavs[2];
 
     CComPtr<ID3D11Texture2D> m_qualityTexture;
     CComPtr<ID3D11ShaderResourceView> m_qualityView;
@@ -119,6 +137,7 @@ private:
     CComPtr<ID3D11UnorderedAccessView> m_denseFlowUav;
 
     CComPtr<ID3D11Buffer> m_seedParameters;
+    CComPtr<ID3D11Buffer> m_repairParameters;
     CComPtr<ID3D11Buffer> m_regionGateParameters;
     CComPtr<ID3D11Buffer> m_jumpParameters;
     CComPtr<ID3D11Buffer> m_denseParameters;

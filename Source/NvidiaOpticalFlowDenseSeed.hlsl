@@ -3,6 +3,7 @@ Texture2D<int2> BackwardFlowAtoB : register(t1);
 RWTexture2D<uint> SeedMap : register(u0);
 RWTexture2D<uint> UnsafeCellCount : register(u1);
 RWTexture2D<uint> UnsafeCellMap : register(u2);
+RWTexture2D<float4> RepairCandidate : register(u3);
 
 cbuffer SeedParameters : register(b0)
 {
@@ -60,6 +61,16 @@ void main(uint3 id : SV_DispatchThreadID)
     if (catastrophic) {
         InterlockedAdd(UnsafeCellCount[uint2(0, 0)], 1u);
     }
+
+    // Build a local-repair motion candidate in a common A->B orientation.
+    // Occlusions are strongly asymmetric: keep the direction whose own
+    // round-trip check is more trustworthy instead of discarding both.
+    bool useAtoB = aToBError <= bToAError;
+    float2 repairMotion = useAtoB ? aToB : -bToA;
+    float repairError = min(aToBError, bToAError);
+    float repairConfidence = exp(-min(repairError, 80.0) / 10.0);
+    RepairCandidate[id.xy] = float4(
+        repairMotion, repairConfidence, catastrophic ? 1.0 : 0.0);
 
     SeedMap[id.xy] = consistency <= ConsistencyThreshold
         ? PackSeed(id.xy)
