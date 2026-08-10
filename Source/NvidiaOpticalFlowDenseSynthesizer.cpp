@@ -107,6 +107,34 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Initialize(ID3D11Device* device,
         }
     }
 
+    D3D11_TEXTURE2D_DESC qualityDesc = {};
+    qualityDesc.Width = 1;
+    qualityDesc.Height = 1;
+    qualityDesc.MipLevels = 1;
+    qualityDesc.ArraySize = 1;
+    qualityDesc.Format = DXGI_FORMAT_R32_UINT;
+    qualityDesc.SampleDesc.Count = 1;
+    qualityDesc.Usage = D3D11_USAGE_DEFAULT;
+    qualityDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+    HRESULT hr = device->CreateTexture2D(&qualityDesc, nullptr, &m_qualityTexture);
+    if (FAILED(hr)) {
+        status = std::format(L"CreateTexture2D(dense NVOF quality counter) failed ({})", HR2Str(hr));
+        Reset();
+        return false;
+    }
+    hr = device->CreateShaderResourceView(m_qualityTexture, nullptr, &m_qualityView);
+    if (FAILED(hr)) {
+        status = std::format(L"CreateShaderResourceView(dense NVOF quality counter) failed ({})", HR2Str(hr));
+        Reset();
+        return false;
+    }
+    hr = device->CreateUnorderedAccessView(m_qualityTexture, nullptr, &m_qualityUav);
+    if (FAILED(hr)) {
+        status = std::format(L"CreateUnorderedAccessView(dense NVOF quality counter) failed ({})", HR2Str(hr));
+        Reset();
+        return false;
+    }
+
     D3D11_TEXTURE2D_DESC denseDesc = {};
     denseDesc.Width = frameWidth;
     denseDesc.Height = frameHeight;
@@ -116,7 +144,7 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Initialize(ID3D11Device* device,
     denseDesc.SampleDesc.Count = 1;
     denseDesc.Usage = D3D11_USAGE_DEFAULT;
     denseDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-    HRESULT hr = device->CreateTexture2D(&denseDesc, nullptr, &m_denseFlowTexture);
+    hr = device->CreateTexture2D(&denseDesc, nullptr, &m_denseFlowTexture);
     if (FAILED(hr)) {
         status = std::format(L"CreateTexture2D(dense NVOF full-resolution flow) failed ({})", HR2Str(hr));
         Reset();
@@ -169,6 +197,9 @@ void CNvidiaOpticalFlowDenseSynthesizer::Reset()
     m_denseFlowUav.Release();
     m_denseFlowView.Release();
     m_denseFlowTexture.Release();
+    m_qualityUav.Release();
+    m_qualityView.Release();
+    m_qualityTexture.Release();
     for (auto index = 0u; index < 2u; ++index) {
         m_seedUavs[index].Release();
         m_seedViews[index].Release();
@@ -190,26 +221,31 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
     const float midpointTime,
     std::wstring& status)
 {
-    UNREFERENCED_PARAMETER(previousFrame);
-    if (!context || !nextFrame || !forwardFlowBtoA || !backwardFlowAtoB || !output ||
-            !m_seedShader || !m_jumpShader || !m_denseShader || !m_warpShader) {
+    if (!context || !previousFrame || !nextFrame || !forwardFlowBtoA || !backwardFlowAtoB || !output ||
+            !m_seedShader || !m_jumpShader || !m_denseShader || !m_warpShader || !m_qualityUav || !m_qualityView) {
         status = L"Dense NVOF synthesis resources are incomplete";
         return false;
     }
 
+    const UINT zero[4] = {};
+    context->ClearUnorderedAccessViewUint(m_qualityUav, zero);
+
     const SeedParameters seedValues = {
         m_flowWidth, m_flowHeight, 4.0f, 20.0f,
+        20.0f, {0.0f, 0.0f, 0.0f},
     };
     context->UpdateSubresource(m_seedParameters, 0, nullptr, &seedValues, 0, 0);
     ID3D11Buffer* seedBuffer = m_seedParameters;
     const std::array<ID3D11ShaderResourceView*, 2> seedInputs = {
         forwardFlowBtoA, backwardFlowAtoB,
     };
-    ID3D11UnorderedAccessView* seedOutput = m_seedUavs[0];
+    const std::array<ID3D11UnorderedAccessView*, 2> seedOutputs = {
+        m_seedUavs[0], m_qualityUav,
+    };
     context->CSSetShader(m_seedShader, nullptr, 0);
     context->CSSetConstantBuffers(0, 1, &seedBuffer);
     context->CSSetShaderResources(0, static_cast<UINT>(seedInputs.size()), seedInputs.data());
-    context->CSSetUnorderedAccessViews(0, 1, &seedOutput, nullptr);
+    context->CSSetUnorderedAccessViews(0, static_cast<UINT>(seedOutputs.size()), seedOutputs.data(), nullptr);
     context->Dispatch((m_flowWidth + 7) / 8, (m_flowHeight + 7) / 8, 1);
     UnbindCompute(context);
 
@@ -261,12 +297,13 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
     UnbindCompute(context);
 
     const WarpParameters warpValues = {
-        m_frameWidth, m_frameHeight, midpointTime, 0.0f,
+        m_frameWidth, m_frameHeight, m_flowWidth * m_flowHeight, 0.25f,
+        midpointTime, {0.0f, 0.0f, 0.0f},
     };
     context->UpdateSubresource(m_warpParameters, 0, nullptr, &warpValues, 0, 0);
     ID3D11Buffer* warpBuffer = m_warpParameters;
-    const std::array<ID3D11ShaderResourceView*, 2> warpInputs = {
-        nextFrame, m_denseFlowView,
+    const std::array<ID3D11ShaderResourceView*, 4> warpInputs = {
+        previousFrame, nextFrame, m_denseFlowView, m_qualityView,
     };
     ID3D11SamplerState* sampler = m_linearSampler;
     context->CSSetShader(m_warpShader, nullptr, 0);
