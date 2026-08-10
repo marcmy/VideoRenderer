@@ -14,7 +14,6 @@
 #include "Helper.h"
 
 #include <d3d11_4.h>
-#include <d3dcompiler.h>
 
 #include <algorithm>
 #include <array>
@@ -213,6 +212,7 @@ constexpr wchar_t NvofModuleName[] = L"nvofapi.dll";
 #endif
 
 constexpr UINT FlowGridSize = 4;
+constexpr int CapsSupportedOutputGridSizes = 0;
 
 const wchar_t* StatusName(const nvof::Status status)
 {
@@ -265,6 +265,18 @@ std::wstring JoinFormats(const std::vector<DXGI_FORMAT>& formats)
 			result.append(L", ");
 		}
 		result.append(FormatName(format));
+	}
+	return result.empty() ? L"none" : result;
+}
+
+std::wstring JoinGridSizes(const std::vector<uint32_t>& grids)
+{
+	std::wstring result;
+	for (const auto grid : grids) {
+		if (!result.empty()) {
+			result.append(L", ");
+		}
+		result.append(std::format(L"{}x{}", grid, grid));
 	}
 	return result.empty() ? L"none" : result;
 }
@@ -788,6 +800,28 @@ struct CNvidiaOpticalFlowNative::Impl
 		return code == nvof::Success;
 	}
 
+	bool QueryCapability(const int capability, std::vector<uint32_t>& values)
+	{
+		if (!api.getCaps) {
+			return false;
+		}
+		uint32_t count = 0;
+		nvof::Status code = api.getCaps(session, capability, nullptr, &count);
+		if (code != nvof::Success) {
+			return false;
+		}
+		values.assign(count, 0);
+		if (!count) {
+			return true;
+		}
+		code = api.getCaps(session, capability, values.data(), &count);
+		if (code != nvof::Success) {
+			return false;
+		}
+		values.resize(count);
+		return true;
+	}
+
 	bool CreateInputSurface(RegisteredSurface& surface)
 	{
 		D3D11_TEXTURE2D_DESC desc = {};
@@ -983,7 +1017,7 @@ struct CNvidiaOpticalFlowNative::Impl
 		if (code != nvof::Success || !api.createOpticalFlowD3D11 ||
 				!api.initialize || !api.getSurfaceFormatCountD3D11 ||
 				!api.getSurfaceFormatD3D11 || !api.registerResourceD3D11 ||
-				!api.unregisterResourceD3D11 || !api.execute || !api.destroy) {
+				!api.unregisterResourceD3D11 || !api.execute || !api.destroy || !api.getCaps) {
 			return Fail(L"Could not create the NVOF D3D11 function table");
 		}
 
@@ -1005,6 +1039,16 @@ struct CNvidiaOpticalFlowNative::Impl
 		code = api.createOpticalFlowD3D11(device, context, &session);
 		if (code != nvof::Success || !session) {
 			return Fail(std::format(L"NvCreateOpticalFlowD3D11 failed: {}", DriverError(code)));
+		}
+
+		std::vector<uint32_t> outputGridSizes;
+		if (!QueryCapability(CapsSupportedOutputGridSizes, outputGridSizes)) {
+			return Fail(L"Could not query native NVOF output-grid capabilities");
+		}
+		if (std::find(outputGridSizes.begin(), outputGridSizes.end(), FlowGridSize) == outputGridSizes.end()) {
+			return Fail(std::format(
+				L"Native NVOF 4x4 flow is required by the validated synthesis pipeline; GPU/driver supports: {}",
+				JoinGridSizes(outputGridSizes)));
 		}
 
 		std::vector<DXGI_FORMAT> inputFormats;
@@ -1059,8 +1103,8 @@ struct CNvidiaOpticalFlowNative::Impl
 		}
 
 		runtimeInfo = std::format(
-			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow; validated jump-flood dense flow + edge-aware next-frame warp; live cost disabled",
-			apiMajor, apiMinor);
+			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow (GPU grids: {}); validated jump-flood dense flow + edge-aware next-frame warp + frame quality gate; live cost disabled",
+			apiMajor, apiMinor, JoinGridSizes(outputGridSizes));
 		status = std::format(L"Native NVOF ready, {}x{}", width, height);
 		DLog(L"Native NVIDIA frame interpolation: {}", runtimeInfo);
 		return true;
