@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "NvidiaOpticalFlowDenseSynthesizer.h"
 #include "NvidiaOpticalFlowDenseSeedBytecode.h"
+#include "NvidiaOpticalFlowDenseRepairBytecode.h"
 #include "NvidiaOpticalFlowDenseRegionGateBytecode.h"
 #include "NvidiaOpticalFlowDenseJumpBytecode.h"
 #include "NvidiaOpticalFlowDenseUpsampleBytecode.h"
@@ -43,7 +44,7 @@ bool CreateShader(ID3D11Device* device, const void* bytecode, const size_t bytec
 void UnbindCompute(ID3D11DeviceContext* context)
 {
     const std::array<ID3D11ShaderResourceView*, 5> nullSrvs = {};
-    const std::array<ID3D11UnorderedAccessView*, 3> nullUavs = {};
+    const std::array<ID3D11UnorderedAccessView*, 4> nullUavs = {};
     context->CSSetShaderResources(0, static_cast<UINT>(nullSrvs.size()), nullSrvs.data());
     context->CSSetUnorderedAccessViews(0, static_cast<UINT>(nullUavs.size()), nullUavs.data(), nullptr);
     context->CSSetShader(nullptr, nullptr, 0);
@@ -68,6 +69,8 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Initialize(ID3D11Device* device,
 
     if (!CreateShader(device, g_NvofDenseSeedBytecode, sizeof(g_NvofDenseSeedBytecode),
             m_seedShader, status, L"dense NVOF validation") ||
+        !CreateShader(device, g_NvofDenseRepairBytecode, sizeof(g_NvofDenseRepairBytecode),
+            m_repairShader, status, L"dense NVOF local repair field") ||
         !CreateShader(device, g_NvofDenseRegionGateBytecode, sizeof(g_NvofDenseRegionGateBytecode),
             m_regionGateShader, status, L"dense NVOF regional frame gate") ||
         !CreateShader(device, g_NvofDenseJumpBytecode, sizeof(g_NvofDenseJumpBytecode),
@@ -105,6 +108,36 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Initialize(ID3D11Device* device,
         hr = device->CreateUnorderedAccessView(m_seedTextures[index], nullptr, &m_seedUavs[index]);
         if (FAILED(hr)) {
             status = std::format(L"CreateUnorderedAccessView(dense NVOF seed {}) failed ({})", index, HR2Str(hr));
+            Reset();
+            return false;
+        }
+    }
+
+    D3D11_TEXTURE2D_DESC repairDesc = {};
+    repairDesc.Width = flowWidth;
+    repairDesc.Height = flowHeight;
+    repairDesc.MipLevels = 1;
+    repairDesc.ArraySize = 1;
+    repairDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    repairDesc.SampleDesc.Count = 1;
+    repairDesc.Usage = D3D11_USAGE_DEFAULT;
+    repairDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+    for (auto index = 0u; index < 2u; ++index) {
+        HRESULT repairHr = device->CreateTexture2D(&repairDesc, nullptr, &m_repairTextures[index]);
+        if (FAILED(repairHr)) {
+            status = std::format(L"CreateTexture2D(dense NVOF repair {}) failed ({})", index, HR2Str(repairHr));
+            Reset();
+            return false;
+        }
+        repairHr = device->CreateShaderResourceView(m_repairTextures[index], nullptr, &m_repairViews[index]);
+        if (FAILED(repairHr)) {
+            status = std::format(L"CreateShaderResourceView(dense NVOF repair {}) failed ({})", index, HR2Str(repairHr));
+            Reset();
+            return false;
+        }
+        repairHr = device->CreateUnorderedAccessView(m_repairTextures[index], nullptr, &m_repairUavs[index]);
+        if (FAILED(repairHr)) {
+            status = std::format(L"CreateUnorderedAccessView(dense NVOF repair {}) failed ({})", index, HR2Str(repairHr));
             Reset();
             return false;
         }
@@ -224,6 +257,7 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Initialize(ID3D11Device* device,
     }
 
     if (!CreateConstantBuffer<SeedParameters>(device, m_seedParameters, status, L"dense NVOF seed params") ||
+        !CreateConstantBuffer<RepairParameters>(device, m_repairParameters, status, L"dense NVOF repair params") ||
         !CreateConstantBuffer<RegionGateParameters>(device, m_regionGateParameters, status, L"dense NVOF regional-gate params") ||
         !CreateConstantBuffer<JumpParameters>(device, m_jumpParameters, status, L"dense NVOF jump params") ||
         !CreateConstantBuffer<DenseParameters>(device, m_denseParameters, status, L"dense NVOF upsample params") ||
@@ -255,6 +289,7 @@ void CNvidiaOpticalFlowDenseSynthesizer::Reset()
     m_denseParameters.Release();
     m_jumpParameters.Release();
     m_seedParameters.Release();
+    m_repairParameters.Release();
     m_regionGateParameters.Release();
     m_denseFlowUav.Release();
     m_denseFlowView.Release();
@@ -281,11 +316,15 @@ void CNvidiaOpticalFlowDenseSynthesizer::Reset()
         m_seedUavs[index].Release();
         m_seedViews[index].Release();
         m_seedTextures[index].Release();
+        m_repairUavs[index].Release();
+        m_repairViews[index].Release();
+        m_repairTextures[index].Release();
     }
     m_warpShader.Release();
     m_denseShader.Release();
     m_jumpShader.Release();
     m_regionGateShader.Release();
+    m_repairShader.Release();
     m_seedShader.Release();
     m_frameWidth = m_frameHeight = m_flowWidth = m_flowHeight = 0;
 }
@@ -315,8 +354,9 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
     std::wstring& status)
 {
     if (!context || !previousFrame || !nextFrame || !forwardFlowBtoA || !backwardFlowAtoB || !output ||
-            !m_seedShader || !m_regionGateShader || !m_jumpShader || !m_denseShader || !m_warpShader ||
+            !m_seedShader || !m_repairShader || !m_regionGateShader || !m_jumpShader || !m_denseShader || !m_warpShader ||
             !m_qualityUav || !m_qualityView || !m_unsafeCellUav || !m_unsafeCellView ||
+            !m_repairUavs[0] || !m_repairViews[0] || !m_repairUavs[1] || !m_repairViews[1] ||
             !m_regionRejectUav || !m_regionRejectView) {
         status = L"Dense NVOF synthesis resources are incomplete";
         return false;
@@ -335,8 +375,8 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
     const std::array<ID3D11ShaderResourceView*, 2> seedInputs = {
         forwardFlowBtoA, backwardFlowAtoB,
     };
-    const std::array<ID3D11UnorderedAccessView*, 3> seedOutputs = {
-        m_seedUavs[0], m_qualityUav, m_unsafeCellUav,
+    const std::array<ID3D11UnorderedAccessView*, 4> seedOutputs = {
+        m_seedUavs[0], m_qualityUav, m_unsafeCellUav, m_repairUavs[0],
     };
     context->CSSetShader(m_seedShader, nullptr, 0);
     context->CSSetConstantBuffers(0, 1, &seedBuffer);
@@ -345,9 +385,23 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
     context->Dispatch((m_flowWidth + 7) / 8, (m_flowHeight + 7) / 8, 1);
     UnbindCompute(context);
 
-    // A local catastrophic cluster can be visually unacceptable even when it
-    // occupies far less than the global 25% threshold. Reject the entire
-    // inserted midpoint rather than compositing real-frame patches locally.
+    const RepairParameters repairValues = {
+        m_flowWidth, m_flowHeight, 1.25f, 1.0f,
+        2u, 3u, 1.0f, 0.0f,
+    };
+    context->UpdateSubresource(m_repairParameters, 0, nullptr, &repairValues, 0, 0);
+    ID3D11Buffer* repairBuffer = m_repairParameters;
+    ID3D11ShaderResourceView* repairInput = m_repairViews[0];
+    ID3D11UnorderedAccessView* repairOutput = m_repairUavs[1];
+    context->CSSetShader(m_repairShader, nullptr, 0);
+    context->CSSetConstantBuffers(0, 1, &repairBuffer);
+    context->CSSetShaderResources(0, 1, &repairInput);
+    context->CSSetUnorderedAccessViews(0, 1, &repairOutput, nullptr);
+    context->Dispatch((m_flowWidth + 7) / 8, (m_flowHeight + 7) / 8, 1);
+    UnbindCompute(context);
+
+    // Regional occupancy is observe-only telemetry. The local repair field above
+    // handles coherent catastrophic islands without collapsing the whole midpoint.
     const RegionGateParameters regionValues = {
         // 18/49 (~36.7%) requires a genuinely dense catastrophic cluster.
         // The previous 8/49 threshold over-triggered on ordinary 23.976p
@@ -441,12 +495,12 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
 
     const WarpParameters warpValues = {
         m_frameWidth, m_frameHeight, m_flowWidth * m_flowHeight, 0.25f,
-        midpointTime, {0.0f, 0.0f, 0.0f},
+        midpointTime, 4.0f, {0.0f, 0.0f},
     };
     context->UpdateSubresource(m_warpParameters, 0, nullptr, &warpValues, 0, 0);
     ID3D11Buffer* warpBuffer = m_warpParameters;
-    const std::array<ID3D11ShaderResourceView*, 4> warpInputs = {
-        previousFrame, nextFrame, m_denseFlowView, m_qualityView,
+    const std::array<ID3D11ShaderResourceView*, 5> warpInputs = {
+        previousFrame, nextFrame, m_denseFlowView, m_qualityView, m_repairViews[1],
     };
     ID3D11SamplerState* sampler = m_linearSampler;
     context->CSSetShader(m_warpShader, nullptr, 0);
