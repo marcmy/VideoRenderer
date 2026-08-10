@@ -1,158 +1,169 @@
 # Native NVIDIA Optical Flow probes
 
-These small 64-bit diagnostics verify the driver-only D3D11 Optical Flow path before it is integrated into MPC Video Renderer.
+These 64-bit diagnostics exercise the driver-only D3D11 Optical Flow path used by MPC Video Renderer.
 
-They do **not** require or load:
+The primary shipping use is now **cross-GPU compatibility validation**. The older synthetic probes are retained because they document and regression-test the stages that led to the production dense-flow implementation.
+
+Except for the separate NvOFFRUC replay reference probe, the native NVOF tools do **not** require or load:
 
 - `NvOFFRUC.dll`
-- `cudart64_110.dll`
-- an Optical Flow SDK installation
+- CUDA or `cudart64_110.dll`
+- an Optical Flow SDK runtime installation
 - an NVIDIA Developer Program account
 
-All six tools load `nvofapi64.dll` from the Windows system directory.
+They load the driver-provided `nvofapi64.dll` from the Windows system directory.
 
-## `NativeNvofProbe.exe`
+## First test on any new GPU: `NativeNvofProbe.exe`
 
-Creates a D3D11 Optical Flow session on the first NVIDIA hardware adapter and reports:
+Run this before installing a native-NVOF MPCVR test build on an unvalidated GPU.
 
-- the driver-supported NVOF API version
+It creates a D3D11 NVOF session on the first NVIDIA hardware adapter and reports:
+
+- adapter name
+- driver-supported NVOF API version
 - supported input and output formats
 - supported output-vector grid sizes
 - minimum and maximum frame dimensions
 - region-of-interest capability
 
-A successful Turing-class result should end with:
+The first shipping native interpolation pipeline is deliberately fixed to a **4x4 output grid** even if the GPU exposes denser grids. Production MPCVR performs the same capability check at runtime and refuses native interpolation cleanly if 4x4 output is unavailable.
+
+A compatible result must include `4x4` in `Output vector grids` and end with:
 
 ```text
 D3D11 NVOF session: created
-Output vector grids: 4x4
+Output vector grids: ... 4x4 ...
 RESULT: PASS
 ```
 
-## `NativeNvofFlowTest.exe`
+When testing an RTX 30-, RTX 40-, or newer GPU, preserve the **complete probe output**. The advertised grid list and formats are part of the release-validation record; do not infer compatibility from the GPU model name alone.
 
-Executes one forward optical-flow pass for a synthetic +16 pixel horizontal translation. It reads the S10.5 vectors back, validates their magnitude and direction consistency, and writes `NativeNvofFlow.bmp`.
+## Historical/regression probes
 
-A successful result ends with:
+### `NativeNvofFlowTest.exe`
+
+Executes one forward optical-flow pass for a synthetic +16 pixel horizontal translation. It validates S10.5 vector magnitude/direction and writes `NativeNvofFlow.bmp`.
+
+Expected ending:
 
 ```text
 nvOFExecute: submitted
 FLOW RESULT: PASS
 ```
 
-## `NativeNvofMidpointTest.exe`
+### `NativeNvofMidpointTest.exe`
 
-Tests the first complete frame-synthesis stage:
+Validates bidirectional flow direction and midpoint math using a synthetic +16 pixel source translation with an exact +8 pixel midpoint. The synthesis reference runs on the CPU after NVOF readback so flow semantics can be verified independently of the GPU interpolation shader.
 
-1. Creates frame A and frame B, where B is A translated +16 pixels horizontally.
-2. Requests forward and backward flow in one `nvOFExecute` call.
-3. Verifies that B to A is approximately -16 pixels and A to B is approximately +16 pixels.
-4. Upsamples the 4x4 flow fields and backward-warps both source images to `t = 0.5`.
-5. Blends the two warped samples.
-6. Compares the result against the exact +8 pixel midpoint ground truth.
-
-The baseline warp is deliberately performed on the CPU after reading back the hardware vectors. This isolates and validates the flow direction, midpoint math, and error thresholds before moving the same operation to the GPU.
-
-It writes:
-
-- `NativeNvofMidpoint.bmp`
-- `NativeNvofMidpointExpected.bmp`
-- `NativeNvofMidpointDiff.bmp` (errors amplified 8x)
-
-A successful result ends with:
+Expected ending:
 
 ```text
 nvOFExecute: forward/backward submitted
 MIDPOINT RESULT: PASS
 ```
 
-## `NativeNvofGpuMidpointTest.exe`
+### `NativeNvofGpuMidpointTest.exe`
 
-Runs the same +16 to +8 midpoint test through a D3D11 compute shader. The NVOF forward and backward `R16G16_SINT` textures remain GPU-resident through flow upsampling, backward warping, and frame blending. They are read back only after synthesis for diagnostic statistics.
+Runs the same +16 -> +8 test through D3D11 compute while keeping NVOF flow textures GPU-resident through synthesis.
 
-It writes:
-
-- `NativeNvofGpuMidpoint.bmp`
-- `NativeNvofGpuMidpointExpected.bmp`
-- `NativeNvofGpuMidpointDiff.bmp` (errors amplified 8x)
-
-A successful result ends with:
+Expected ending:
 
 ```text
 D3D11 compute midpoint: dispatched with GPU-resident flow
 GPU MIDPOINT RESULT: PASS
 ```
 
-This is the closest simple standalone probe to the eventual MPCVR render path: decoded D3D11 textures, NVOF output textures, a compute-shader interpolation pass, and one synthesized D3D11 output texture.
+### `NativeNvofOcclusionTest.exe`
 
-## `NativeNvofOcclusionTest.exe`
+Uses layered foreground/background motion to expose occlusion/disocclusion behavior. It verifies accurate flow and synthesis away from motion boundaries while reporting boundary error diagnostically.
 
-Introduces the first layered-motion scene rather than translating the whole frame. A textured foreground rectangle moves +24 pixels horizontally and +12 pixels vertically over a different static textured background. The exact midpoint contains the object at +12/+6.
-
-The test reports separate statistics for:
-
-- foreground-object flow in both directions
-- static-background flow in both directions
-- stable-background synthesis error
-- moving-object interior synthesis error
-- occlusion and motion-boundary error
-- forward/backward flow consistency
-
-Boundary error is intentionally diagnostic. The shader is the naïve two-warp blend, so nonzero error where the object covers or reveals background is expected. The executable passes when NVOF separates the moving object from the stationary background and synthesis remains accurate away from those boundaries.
-
-It writes:
-
-- `NativeNvofOcclusionMidpoint.bmp`
-- `NativeNvofOcclusionExpected.bmp`
-- `NativeNvofOcclusionDiff.bmp` (errors amplified 8x)
-- `NativeNvofOcclusionRegions.bmp`
-- `NativeNvofOcclusionConsistency.bmp`
-
-A successful diagnostic ends with:
+Expected ending:
 
 ```text
 D3D11 compute midpoint: layered scene dispatched
 OCCLUSION DIAGNOSTIC: PASS
 ```
 
-## `NativeNvofOcclusionAwareTest.exe`
+### `NativeNvofOcclusionAwareTest.exe`
 
-Runs the v5 naïve blend and a visibility-aware shader against the same NVOF fields. The new shader evaluates multiple inverse-warp hypotheses for each source and scores them using midpoint projection residual, forward/backward agreement, and cross-frame photometric agreement.
+Compares the naïve layered blend against the visibility-aware inverse-warp experiment. This was an important quality milestone but is **not the current production synthesizer**; production now uses validated coarse flow, jump-flood infill, edge-aware dense reconstruction, and a whole-frame quality gate.
 
-When both sources represent the same visible content they are blended. When they disagree near a covering or revealing edge, the lower-error source is selected instead of forcing a 50/50 blend.
-
-It reports the baseline and aware boundary errors side by side and verifies that the previously perfect static background and moving-object interior remain accurate.
-
-It writes:
-
-- `NativeNvofOcclusionAwareMidpoint.bmp`
-- `NativeNvofOcclusionAwareExpected.bmp`
-- `NativeNvofOcclusionAwareDiff.bmp`
-- `NativeNvofOcclusionBaselineDiff.bmp`
-- `NativeNvofOcclusionSelection.bmp`
-
-Selection-map colors are red for frame A, blue for frame B, green for a two-source blend, and magenta for low-confidence areas.
-
-A successful result ends with:
+Expected ending:
 
 ```text
 D3D11 compute synthesis: baseline + occlusion-aware dispatched
 OCCLUSION-AWARE RESULT: PASS
 ```
 
-## Running
+### `NativeNvofBoundaryRefineTest.exe`
+
+Retains the rejected boundary-refinement experiment for regression/history. It is not a shipping algorithm and may report a failed quality comparison on the synthetic scene by design.
+
+## Separate NvOFFRUC same-pair reference probe
+
+`NativeFrucReplayTest.exe` is built by the **Native FRUC Replay Probe** workflow rather than the normal driver-only probe artifact. It exists only to compare the proprietary reference backend against captured real frame pairs.
+
+A critical real-world capture produced:
+
+```text
+Prime process: 1.437 ms, repeated=no
+Midpoint process: 16.6276 ms, repeated=yes
+FRUC REPLAY RESULT: PASS
+```
+
+That result motivated the production native whole-frame quality gate: severely unreliable motion pairs are allowed to repeat a real frame rather than force a visibly broken synthetic midpoint.
+
+## Production implementation
+
+The shipping candidate no longer uses the historical inverse-warp or forward-splat experiments. Its GPU path is:
+
+```text
+4x4 bidirectional NVOF
+        -> forward/backward validation
+        -> jump-flood coarse-flow infill
+        -> edge-aware full-resolution dense flow
+        -> next-frame-dominant midpoint warp
+        -> whole-frame catastrophic-motion quality gate
+```
+
+All production dense shaders are precompiled at build time. The separate `Validate dense NVOF shaders` workflow recompiles them with warnings-as-errors and verifies the committed bytecode byte-for-byte.
+
+## Running the compatibility test
 
 1. Download the `Native-NVOF-Probe` artifact from PR #25's **Native NVOF Probe** workflow.
 2. Extract it.
-3. Run the tests from PowerShell or Command Prompt:
+3. On a new GPU, run this first:
 
 ```powershell
 .\NativeNvofProbe.exe
+```
+
+4. Send/save the complete output.
+5. Only after the capability result is compatible, install the current MPCVR shipping candidate and test playback.
+
+For deeper regression work, the other executables can be run individually:
+
+```powershell
 .\NativeNvofFlowTest.exe
 .\NativeNvofMidpointTest.exe
 .\NativeNvofGpuMidpointTest.exe
 .\NativeNvofOcclusionTest.exe
 .\NativeNvofOcclusionAwareTest.exe
+.\NativeNvofBoundaryRefineTest.exe
 ```
 
-4. Copy the complete console output from the latest test. For the occlusion-aware test, keep the aware difference and source-selection maps if it fails or reports only a small boundary improvement.
+## Cross-generation playback checklist
+
+For each new GPU generation, record:
+
+- full `NativeNvofProbe.exe` output
+- NVIDIA driver version
+- MPCVR runtime status line including advertised NVOF grids
+- 30 -> 60 playback
+- 60 -> 120 where the display and source allow it
+- repeated seeking and pause/resume
+- A/V sync
+- fast hands/fingers/thin geometry and camera pans
+- whether difficult sequences show distortion or only occasional quality-gate frame repetition
+
+Do not enable 2x2/1x1 production flow merely because a newer GPU advertises it. A denser-grid implementation requires its own reconstruction and quality validation.
