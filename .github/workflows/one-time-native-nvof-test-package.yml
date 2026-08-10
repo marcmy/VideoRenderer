@@ -1,0 +1,43 @@
+name: One-time native NVOF test package
+
+on:
+  push:
+    branches:
+      - feature/native-nvof-interpolation
+    paths:
+      - .github/workflows/one-time-native-nvof-test-package.yml
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Build VideoRenderer
+        shell: pwsh
+        run: |
+          .\build_mpcvr.cmd NoWait
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload MPCVR package
+        uses: actions/upload-artifact@v7
+        with:
+          name: MPCVR-Native-NVOF-Local-Repair-Test
+          path: _bin/MpcVideoRenderer*.zip
+          compression-level: 0
+
+      - name: Remove one-time workflow
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -- .github/workflows/one-time-native-nvof-test-package.yml
+          git commit -m 'Remove one-time native NVOF package workflow'
+          git push origin HEAD:feature/native-nvof-interpolation
