@@ -1,5 +1,5 @@
 name: One-time native NVOF local repair integration v2
-# Retry after excluding fxc-generated header whitespace from the integration gate.
+# Retry with the same recursive-submodule checkout as the production build.
 
 on:
   push:
@@ -19,6 +19,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          submodules: recursive
 
       - name: Patch synthesizer, compile shaders, and build
         shell: pwsh
