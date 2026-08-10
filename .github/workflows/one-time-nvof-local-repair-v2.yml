@@ -24,6 +24,14 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
+          # Repair a quoting typo in the temporary patch helper before executing it.
+          $patchPath = 'tools/one-time-nvof-local-repair.py'
+          $patchText = [IO.File]::ReadAllText($patchPath)
+          $bad = '||\n", "repair parameter buffer")'
+          $good = "||\n', 'repair parameter buffer')"
+          if (-not $patchText.Contains($bad)) { throw 'Expected temporary patch-script typo was not found.' }
+          [IO.File]::WriteAllText($patchPath, $patchText.Replace($bad, $good), [Text.UTF8Encoding]::new($false))
+
           python tools/one-time-nvof-local-repair.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
