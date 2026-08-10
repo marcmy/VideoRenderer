@@ -5,7 +5,7 @@ on:
     branches:
       - feature/native-nvof-interpolation
     paths:
-      - tools/native-nvof-probe/apply-native-nvof-observe-telemetry.ps1
+      - tools/native-nvof-probe/apply-native-nvof-observe-telemetry-v2.ps1
       - .github/workflows/native-nvof-observe-telemetry.yml
 
 permissions:
@@ -20,21 +20,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Normalize patch-target line endings
-        shell: pwsh
-        run: |
-          $paths = @(
-            'Source/NvidiaOpticalFlowDenseRegionGate.hlsl',
-            'Source/NvidiaOpticalFlowDenseWarp.hlsl',
-            'Source/NvidiaOpticalFlowDenseSynthesizer.h',
-            'Source/NvidiaOpticalFlowDenseSynthesizer.cpp',
-            'Source/NvidiaOpticalFlowNative.cpp'
-          )
-          foreach ($path in $paths) {
-            $text = [IO.File]::ReadAllText($path) -replace "`r`n", "`n"
-            [IO.File]::WriteAllText($path, $text)
-          }
-
       - name: Make regional detector observe-only and add telemetry
         shell: pwsh
-        run: .\tools\native-nvof-probe\apply-native-nvof-observe-telemetry.ps1
+        run: .\tools\native-nvof-probe\apply-native-nvof-observe-telemetry-v2.ps1
