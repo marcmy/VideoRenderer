@@ -788,7 +788,7 @@ struct CNvidiaOpticalFlowNative::Impl
 		nvof::ExecuteInputParams input = {};
 		input.inputFrame = inputs[writeIndex].nvofHandle;
 		input.referenceFrame = inputs[currentIndex].nvofHandle;
-		input.disableTemporalHints = hasExecutedFlow ? nvof::False : nvof::True;
+		input.disableTemporalHints = nvof::True;
 		nvof::ExecuteOutputParams output = {};
 		output.outputBuffer = forwardFlow.nvofHandle;
 		output.backwardOutputBuffer = backwardFlow.nvofHandle;
