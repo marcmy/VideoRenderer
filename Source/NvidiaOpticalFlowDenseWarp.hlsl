@@ -2,6 +2,7 @@ Texture2D<float4> PreviousFrame : register(t0);
 Texture2D<float4> NextFrame : register(t1);
 Texture2D<float2> DenseFlow : register(t2);
 Texture2D<uint> UnsafeCellCount : register(t3);
+Texture2D<uint> RegionReject : register(t4);
 SamplerState LinearClamp : register(s0);
 RWTexture2D<float4> OutputFrame : register(u0);
 
@@ -36,7 +37,8 @@ void main(uint3 id : SV_DispatchThreadID)
 
     uint unsafeCount = UnsafeCellCount.Load(int3(0, 0, 0));
     float unsafeFraction = float(unsafeCount) / max(1.0, float(FlowCellCount));
-    if (unsafeFraction >= RepeatBadFraction) {
+    bool rejectRegion = RegionReject.Load(int3(0, 0, 0)) != 0u;
+    if (unsafeFraction >= RepeatBadFraction || rejectRegion) {
         OutputFrame[id.xy] = SampleFrame(PreviousFrame, float2(id.xy));
         return;
     }

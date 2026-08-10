@@ -2,6 +2,7 @@ Texture2D<int2> ForwardFlowBtoA : register(t0);
 Texture2D<int2> BackwardFlowAtoB : register(t1);
 RWTexture2D<uint> SeedMap : register(u0);
 RWTexture2D<uint> UnsafeCellCount : register(u1);
+RWTexture2D<uint> UnsafeCellMap : register(u2);
 
 cbuffer SeedParameters : register(b0)
 {
@@ -54,7 +55,9 @@ void main(uint3 id : SV_DispatchThreadID)
     float consistency = max(bToAError, aToBError);
     float motion = max(length(bToA), length(aToB));
 
-    if (motion > MotionThreshold && consistency > ConsistencyThreshold) {
+    bool catastrophic = motion > MotionThreshold && consistency > ConsistencyThreshold;
+    UnsafeCellMap[id.xy] = catastrophic ? 1u : 0u;
+    if (catastrophic) {
         InterlockedAdd(UnsafeCellCount[uint2(0, 0)], 1u);
     }
 

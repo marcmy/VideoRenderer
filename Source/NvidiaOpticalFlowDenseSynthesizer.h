@@ -39,6 +39,14 @@ private:
     };
     static_assert(sizeof(SeedParameters) == 32);
 
+    struct RegionGateParameters {
+        UINT flowWidth;
+        UINT flowHeight;
+        UINT minUnsafeCells;
+        UINT radius;
+    };
+    static_assert(sizeof(RegionGateParameters) == 16);
+
     struct JumpParameters {
         UINT flowWidth;
         UINT flowHeight;
@@ -75,6 +83,7 @@ private:
     UINT m_flowHeight = 0;
 
     CComPtr<ID3D11ComputeShader> m_seedShader;
+    CComPtr<ID3D11ComputeShader> m_regionGateShader;
     CComPtr<ID3D11ComputeShader> m_jumpShader;
     CComPtr<ID3D11ComputeShader> m_denseShader;
     CComPtr<ID3D11ComputeShader> m_warpShader;
@@ -87,11 +96,20 @@ private:
     CComPtr<ID3D11ShaderResourceView> m_qualityView;
     CComPtr<ID3D11UnorderedAccessView> m_qualityUav;
 
+    CComPtr<ID3D11Texture2D> m_unsafeCellTexture;
+    CComPtr<ID3D11ShaderResourceView> m_unsafeCellView;
+    CComPtr<ID3D11UnorderedAccessView> m_unsafeCellUav;
+
+    CComPtr<ID3D11Texture2D> m_regionRejectTexture;
+    CComPtr<ID3D11ShaderResourceView> m_regionRejectView;
+    CComPtr<ID3D11UnorderedAccessView> m_regionRejectUav;
+
     CComPtr<ID3D11Texture2D> m_denseFlowTexture;
     CComPtr<ID3D11ShaderResourceView> m_denseFlowView;
     CComPtr<ID3D11UnorderedAccessView> m_denseFlowUav;
 
     CComPtr<ID3D11Buffer> m_seedParameters;
+    CComPtr<ID3D11Buffer> m_regionGateParameters;
     CComPtr<ID3D11Buffer> m_jumpParameters;
     CComPtr<ID3D11Buffer> m_denseParameters;
     CComPtr<ID3D11Buffer> m_warpParameters;

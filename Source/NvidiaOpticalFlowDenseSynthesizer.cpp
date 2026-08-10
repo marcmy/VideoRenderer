@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "NvidiaOpticalFlowDenseSynthesizer.h"
 #include "NvidiaOpticalFlowDenseSeedBytecode.h"
+#include "NvidiaOpticalFlowDenseRegionGateBytecode.h"
 #include "NvidiaOpticalFlowDenseJumpBytecode.h"
 #include "NvidiaOpticalFlowDenseUpsampleBytecode.h"
 #include "NvidiaOpticalFlowDenseWarpBytecode.h"
@@ -41,8 +42,8 @@ bool CreateShader(ID3D11Device* device, const void* bytecode, const size_t bytec
 
 void UnbindCompute(ID3D11DeviceContext* context)
 {
-    const std::array<ID3D11ShaderResourceView*, 4> nullSrvs = {};
-    const std::array<ID3D11UnorderedAccessView*, 2> nullUavs = {};
+    const std::array<ID3D11ShaderResourceView*, 5> nullSrvs = {};
+    const std::array<ID3D11UnorderedAccessView*, 3> nullUavs = {};
     context->CSSetShaderResources(0, static_cast<UINT>(nullSrvs.size()), nullSrvs.data());
     context->CSSetUnorderedAccessViews(0, static_cast<UINT>(nullUavs.size()), nullUavs.data(), nullptr);
     context->CSSetShader(nullptr, nullptr, 0);
@@ -67,6 +68,8 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Initialize(ID3D11Device* device,
 
     if (!CreateShader(device, g_NvofDenseSeedBytecode, sizeof(g_NvofDenseSeedBytecode),
             m_seedShader, status, L"dense NVOF validation") ||
+        !CreateShader(device, g_NvofDenseRegionGateBytecode, sizeof(g_NvofDenseRegionGateBytecode),
+            m_regionGateShader, status, L"dense NVOF regional frame gate") ||
         !CreateShader(device, g_NvofDenseJumpBytecode, sizeof(g_NvofDenseJumpBytecode),
             m_jumpShader, status, L"dense NVOF jump flood") ||
         !CreateShader(device, g_NvofDenseUpsampleBytecode, sizeof(g_NvofDenseUpsampleBytecode),
@@ -135,6 +138,44 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Initialize(ID3D11Device* device,
         return false;
     }
 
+    hr = device->CreateTexture2D(&seedDesc, nullptr, &m_unsafeCellTexture);
+    if (FAILED(hr)) {
+        status = std::format(L"CreateTexture2D(dense NVOF unsafe-cell map) failed ({})", HR2Str(hr));
+        Reset();
+        return false;
+    }
+    hr = device->CreateShaderResourceView(m_unsafeCellTexture, nullptr, &m_unsafeCellView);
+    if (FAILED(hr)) {
+        status = std::format(L"CreateShaderResourceView(dense NVOF unsafe-cell map) failed ({})", HR2Str(hr));
+        Reset();
+        return false;
+    }
+    hr = device->CreateUnorderedAccessView(m_unsafeCellTexture, nullptr, &m_unsafeCellUav);
+    if (FAILED(hr)) {
+        status = std::format(L"CreateUnorderedAccessView(dense NVOF unsafe-cell map) failed ({})", HR2Str(hr));
+        Reset();
+        return false;
+    }
+
+    hr = device->CreateTexture2D(&qualityDesc, nullptr, &m_regionRejectTexture);
+    if (FAILED(hr)) {
+        status = std::format(L"CreateTexture2D(dense NVOF regional reject flag) failed ({})", HR2Str(hr));
+        Reset();
+        return false;
+    }
+    hr = device->CreateShaderResourceView(m_regionRejectTexture, nullptr, &m_regionRejectView);
+    if (FAILED(hr)) {
+        status = std::format(L"CreateShaderResourceView(dense NVOF regional reject flag) failed ({})", HR2Str(hr));
+        Reset();
+        return false;
+    }
+    hr = device->CreateUnorderedAccessView(m_regionRejectTexture, nullptr, &m_regionRejectUav);
+    if (FAILED(hr)) {
+        status = std::format(L"CreateUnorderedAccessView(dense NVOF regional reject flag) failed ({})", HR2Str(hr));
+        Reset();
+        return false;
+    }
+
     D3D11_TEXTURE2D_DESC denseDesc = {};
     denseDesc.Width = frameWidth;
     denseDesc.Height = frameHeight;
@@ -164,6 +205,7 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Initialize(ID3D11Device* device,
     }
 
     if (!CreateConstantBuffer<SeedParameters>(device, m_seedParameters, status, L"dense NVOF seed params") ||
+        !CreateConstantBuffer<RegionGateParameters>(device, m_regionGateParameters, status, L"dense NVOF regional-gate params") ||
         !CreateConstantBuffer<JumpParameters>(device, m_jumpParameters, status, L"dense NVOF jump params") ||
         !CreateConstantBuffer<DenseParameters>(device, m_denseParameters, status, L"dense NVOF upsample params") ||
         !CreateConstantBuffer<WarpParameters>(device, m_warpParameters, status, L"dense NVOF warp params")) {
@@ -194,12 +236,19 @@ void CNvidiaOpticalFlowDenseSynthesizer::Reset()
     m_denseParameters.Release();
     m_jumpParameters.Release();
     m_seedParameters.Release();
+    m_regionGateParameters.Release();
     m_denseFlowUav.Release();
     m_denseFlowView.Release();
     m_denseFlowTexture.Release();
     m_qualityUav.Release();
     m_qualityView.Release();
     m_qualityTexture.Release();
+    m_regionRejectUav.Release();
+    m_regionRejectView.Release();
+    m_regionRejectTexture.Release();
+    m_unsafeCellUav.Release();
+    m_unsafeCellView.Release();
+    m_unsafeCellTexture.Release();
     for (auto index = 0u; index < 2u; ++index) {
         m_seedUavs[index].Release();
         m_seedViews[index].Release();
@@ -208,6 +257,7 @@ void CNvidiaOpticalFlowDenseSynthesizer::Reset()
     m_warpShader.Release();
     m_denseShader.Release();
     m_jumpShader.Release();
+    m_regionGateShader.Release();
     m_seedShader.Release();
     m_frameWidth = m_frameHeight = m_flowWidth = m_flowHeight = 0;
 }
@@ -222,13 +272,16 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
     std::wstring& status)
 {
     if (!context || !previousFrame || !nextFrame || !forwardFlowBtoA || !backwardFlowAtoB || !output ||
-            !m_seedShader || !m_jumpShader || !m_denseShader || !m_warpShader || !m_qualityUav || !m_qualityView) {
+            !m_seedShader || !m_regionGateShader || !m_jumpShader || !m_denseShader || !m_warpShader ||
+            !m_qualityUav || !m_qualityView || !m_unsafeCellUav || !m_unsafeCellView ||
+            !m_regionRejectUav || !m_regionRejectView) {
         status = L"Dense NVOF synthesis resources are incomplete";
         return false;
     }
 
     const UINT zero[4] = {};
     context->ClearUnorderedAccessViewUint(m_qualityUav, zero);
+    context->ClearUnorderedAccessViewUint(m_regionRejectUav, zero);
 
     const SeedParameters seedValues = {
         m_flowWidth, m_flowHeight, 4.0f, 20.0f,
@@ -239,13 +292,30 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
     const std::array<ID3D11ShaderResourceView*, 2> seedInputs = {
         forwardFlowBtoA, backwardFlowAtoB,
     };
-    const std::array<ID3D11UnorderedAccessView*, 2> seedOutputs = {
-        m_seedUavs[0], m_qualityUav,
+    const std::array<ID3D11UnorderedAccessView*, 3> seedOutputs = {
+        m_seedUavs[0], m_qualityUav, m_unsafeCellUav,
     };
     context->CSSetShader(m_seedShader, nullptr, 0);
     context->CSSetConstantBuffers(0, 1, &seedBuffer);
     context->CSSetShaderResources(0, static_cast<UINT>(seedInputs.size()), seedInputs.data());
     context->CSSetUnorderedAccessViews(0, static_cast<UINT>(seedOutputs.size()), seedOutputs.data(), nullptr);
+    context->Dispatch((m_flowWidth + 7) / 8, (m_flowHeight + 7) / 8, 1);
+    UnbindCompute(context);
+
+    // A local catastrophic cluster can be visually unacceptable even when it
+    // occupies far less than the global 25% threshold. Reject the entire
+    // inserted midpoint rather than compositing real-frame patches locally.
+    const RegionGateParameters regionValues = {
+        m_flowWidth, m_flowHeight, 8u, 3u,
+    };
+    context->UpdateSubresource(m_regionGateParameters, 0, nullptr, &regionValues, 0, 0);
+    ID3D11Buffer* regionBuffer = m_regionGateParameters;
+    ID3D11ShaderResourceView* regionInput = m_unsafeCellView;
+    ID3D11UnorderedAccessView* regionOutput = m_regionRejectUav;
+    context->CSSetShader(m_regionGateShader, nullptr, 0);
+    context->CSSetConstantBuffers(0, 1, &regionBuffer);
+    context->CSSetShaderResources(0, 1, &regionInput);
+    context->CSSetUnorderedAccessViews(0, 1, &regionOutput, nullptr);
     context->Dispatch((m_flowWidth + 7) / 8, (m_flowHeight + 7) / 8, 1);
     UnbindCompute(context);
 
@@ -302,8 +372,8 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
     };
     context->UpdateSubresource(m_warpParameters, 0, nullptr, &warpValues, 0, 0);
     ID3D11Buffer* warpBuffer = m_warpParameters;
-    const std::array<ID3D11ShaderResourceView*, 4> warpInputs = {
-        previousFrame, nextFrame, m_denseFlowView, m_qualityView,
+    const std::array<ID3D11ShaderResourceView*, 5> warpInputs = {
+        previousFrame, nextFrame, m_denseFlowView, m_qualityView, m_regionRejectView,
     };
     ID3D11SamplerState* sampler = m_linearSampler;
     context->CSSetShader(m_warpShader, nullptr, 0);
