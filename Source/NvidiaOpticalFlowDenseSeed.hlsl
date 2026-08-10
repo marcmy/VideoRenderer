@@ -1,0 +1,56 @@
+Texture2D<int2> ForwardFlowBtoA : register(t0);
+Texture2D<int2> BackwardFlowAtoB : register(t1);
+RWTexture2D<uint> SeedMap : register(u0);
+
+cbuffer SeedParameters : register(b0)
+{
+    uint2 FlowSize;
+    float GridSize;
+    float ConsistencyThreshold;
+};
+
+static const uint InvalidSeed = 0xffffffffu;
+
+float2 LoadFlow(Texture2D<int2> flowTexture, int2 cell)
+{
+    cell = clamp(cell, int2(0, 0), int2(FlowSize) - 1);
+    return float2(flowTexture.Load(int3(cell, 0))) / 32.0;
+}
+
+float2 SampleFlow(Texture2D<int2> flowTexture, float2 pixel)
+{
+    float2 grid = pixel / GridSize;
+    int2 base = int2(floor(grid));
+    float2 f = frac(grid);
+
+    float2 v00 = LoadFlow(flowTexture, base);
+    float2 v10 = LoadFlow(flowTexture, base + int2(1, 0));
+    float2 v01 = LoadFlow(flowTexture, base + int2(0, 1));
+    float2 v11 = LoadFlow(flowTexture, base + int2(1, 1));
+    return lerp(lerp(v00, v10, f.x), lerp(v01, v11, f.x), f.y);
+}
+
+uint PackSeed(uint2 cell)
+{
+    return (cell.y << 16) | (cell.x & 0xffffu);
+}
+
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id.xy >= FlowSize)) return;
+
+    int2 cell = int2(id.xy);
+    float2 pixel = float2(cell) * GridSize;
+
+    float2 bToA = LoadFlow(ForwardFlowBtoA, cell);
+    float2 aToB = LoadFlow(BackwardFlowAtoB, cell);
+
+    float bToAError = length(bToA + SampleFlow(BackwardFlowAtoB, pixel + bToA));
+    float aToBError = length(aToB + SampleFlow(ForwardFlowBtoA, pixel + aToB));
+    float consistency = max(bToAError, aToBError);
+
+    SeedMap[id.xy] = consistency <= ConsistencyThreshold
+        ? PackSeed(id.xy)
+        : InvalidSeed;
+}
