@@ -72,8 +72,11 @@ void main(uint3 id : SV_DispatchThreadID)
             float2 cellDelta = grid - float2(cell);
             float spatialWeight = exp(-dot(cellDelta, cellDelta) / spatialDenom);
 
-            int2 cellPixel = clamp(int2(float2(cell) * GridSize), int2(0, 0), int2(FrameSize) - 1);
-            float3 colorDelta = guideColor - LoadFrameColor(cellPixel);
+            // The candidate motion belongs to the propagated valid seed, not to
+            // the invalid cell through which that seed happened to arrive. Guide
+            // motion-layer selection with the seed's actual source appearance.
+            int2 seedPixel = clamp(int2(float2(seed) * GridSize), int2(0, 0), int2(FrameSize) - 1);
+            float3 colorDelta = guideColor - LoadFrameColor(seedPixel);
             float colorWeight = exp(-dot(colorDelta, colorDelta) / colorDenom);
 
             float infillDistance = length(float2(seed) - float2(cell));
