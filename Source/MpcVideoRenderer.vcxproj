@@ -81,6 +81,7 @@
     <ClCompile Include="NvidiaMaxineVSR.cpp" />
     <ClCompile Include="NvidiaFrameInterpolation.cpp" />
     <ClCompile Include="NvidiaOpticalFlowCapture.cpp" />
+    <ClCompile Include="NvidiaOpticalFlowDenseSynthesizer.cpp" />
     <ClCompile Include="NvidiaOpticalFlowNative.cpp" />
     <ClCompile Include="NvidiaOpticalFlowSplatSynthesizer.cpp" />
     <ClCompile Include="PropPage.cpp" />
@@ -126,6 +127,7 @@
     <ClInclude Include="NvidiaMaxineVSR.h" />
     <ClInclude Include="NvidiaFrameInterpolation.h" />
     <ClInclude Include="NvidiaOpticalFlowCapture.h" />
+    <ClInclude Include="NvidiaOpticalFlowDenseSynthesizer.h" />
     <ClInclude Include="NvidiaOpticalFlowNative.h" />
     <ClInclude Include="NvidiaOpticalFlowSplatSynthesizer.h" />
     <ClInclude Include="PropPage.h" />

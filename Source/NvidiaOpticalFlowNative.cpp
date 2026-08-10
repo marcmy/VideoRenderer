@@ -8,6 +8,7 @@
 
 #include "stdafx.h"
 #include "NvidiaOpticalFlowNative.h"
+#include "NvidiaOpticalFlowDenseSynthesizer.h"
 #include "NvidiaOpticalFlowMidpointBytecode.h"
 #include "NvidiaOpticalFlowCapture.h"
 #include "Helper.h"
@@ -659,6 +660,7 @@ struct CNvidiaOpticalFlowNative::Impl
 	CComPtr<ID3D11ComputeShader> midpointShader;
 	CComPtr<ID3D11SamplerState> sampler;
 	CComPtr<ID3D11Buffer> parameters;
+	std::unique_ptr<CNvidiaOpticalFlowDenseSynthesizer> denseSynthesizer;
 	UINT width = 0;
 	UINT height = 0;
 	UINT flowWidth = 0;
@@ -736,6 +738,10 @@ struct CNvidiaOpticalFlowNative::Impl
 		midpointShader.Release();
 		sampler.Release();
 		parameters.Release();
+		if (denseSynthesizer) {
+			denseSynthesizer->Reset();
+			denseSynthesizer.reset();
+		}
 		multithread.Release();
 		context.Release();
 		device.Release();
@@ -932,6 +938,11 @@ struct CNvidiaOpticalFlowNative::Impl
 			return false;
 		}
 
+		denseSynthesizer = std::make_unique<CNvidiaOpticalFlowDenseSynthesizer>();
+		if (!denseSynthesizer->Initialize(device, width, height, flowWidth, flowHeight, status)) {
+			return false;
+		}
+
 		return true;
 	}
 
@@ -1048,7 +1059,7 @@ struct CNvidiaOpticalFlowNative::Impl
 		}
 
 		runtimeInfo = std::format(
-			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow; occlusion-aware inverse warp + exact cell-risk fallback; live cost disabled",
+			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow; validated jump-flood dense flow + edge-aware next-frame warp; live cost disabled",
 			apiMajor, apiMinor);
 		status = std::format(L"Native NVOF ready, {}x{}", width, height);
 		DLog(L"Native NVIDIA frame interpolation: {}", runtimeInfo);
@@ -1057,38 +1068,19 @@ struct CNvidiaOpticalFlowNative::Impl
 
 	bool DispatchMidpoint(const float midpointTime)
 	{
-		const ShaderParameters values = {
-			width, height, flowWidth, flowHeight,
-			midpointTime, static_cast<float>(FlowGridSize), {0.0f, 0.0f},
-		};
-		context->UpdateSubresource(parameters, 0, nullptr, &values, 0, 0);
-
-		const std::array<ID3D11ShaderResourceView*, 4> inputsViews = {
+		if (!denseSynthesizer) {
+			status = L"Native NVOF dense synthesizer is unavailable";
+			return false;
+		}
+		return denseSynthesizer->Dispatch(
+			context,
 			inputs[currentIndex].view,
 			inputs[writeIndex].view,
 			forwardFlow.view,
 			backwardFlow.view,
-		};
-		ID3D11UnorderedAccessView* output = outputUav;
-		ID3D11Buffer* constantBuffer = parameters;
-		ID3D11SamplerState* samplerState = sampler;
-		context->CSSetShader(midpointShader, nullptr, 0);
-		context->CSSetConstantBuffers(0, 1, &constantBuffer);
-		context->CSSetSamplers(0, 1, &samplerState);
-		context->CSSetShaderResources(0, static_cast<UINT>(inputsViews.size()), inputsViews.data());
-		context->CSSetUnorderedAccessViews(0, 1, &output, nullptr);
-		context->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
-
-		const std::array<ID3D11ShaderResourceView*, 4> nullViews = {};
-		ID3D11UnorderedAccessView* nullOutput = nullptr;
-		ID3D11Buffer* nullBuffer = nullptr;
-		ID3D11SamplerState* nullSampler = nullptr;
-		context->CSSetUnorderedAccessViews(0, 1, &nullOutput, nullptr);
-		context->CSSetShaderResources(0, static_cast<UINT>(nullViews.size()), nullViews.data());
-		context->CSSetConstantBuffers(0, 1, &nullBuffer);
-		context->CSSetSamplers(0, 1, &nullSampler);
-		context->CSSetShader(nullptr, nullptr, 0);
-		return true;
+			outputUav,
+			midpointTime,
+			status);
 	}
 
 	bool BeginInputFrame(ID3D11Texture2D** texture)
