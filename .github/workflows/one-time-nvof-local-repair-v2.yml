@@ -1,4 +1,5 @@
 name: One-time native NVOF local repair integration v2
+# Retry after strict-fxc loop-scope fix.
 
 on:
   push:
