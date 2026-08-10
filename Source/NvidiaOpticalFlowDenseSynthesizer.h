@@ -34,8 +34,10 @@ private:
         UINT flowHeight;
         float gridSize;
         float consistencyThreshold;
+        float motionThreshold;
+        float padding[3];
     };
-    static_assert(sizeof(SeedParameters) == 16);
+    static_assert(sizeof(SeedParameters) == 32);
 
     struct JumpParameters {
         UINT flowWidth;
@@ -60,10 +62,12 @@ private:
     struct WarpParameters {
         UINT frameWidth;
         UINT frameHeight;
+        UINT flowCellCount;
+        float repeatBadFraction;
         float midpointTime;
-        float padding;
+        float padding[3];
     };
-    static_assert(sizeof(WarpParameters) == 16);
+    static_assert(sizeof(WarpParameters) == 32);
 
     UINT m_frameWidth = 0;
     UINT m_frameHeight = 0;
@@ -78,6 +82,10 @@ private:
     CComPtr<ID3D11Texture2D> m_seedTextures[2];
     CComPtr<ID3D11ShaderResourceView> m_seedViews[2];
     CComPtr<ID3D11UnorderedAccessView> m_seedUavs[2];
+
+    CComPtr<ID3D11Texture2D> m_qualityTexture;
+    CComPtr<ID3D11ShaderResourceView> m_qualityView;
+    CComPtr<ID3D11UnorderedAccessView> m_qualityUav;
 
     CComPtr<ID3D11Texture2D> m_denseFlowTexture;
     CComPtr<ID3D11ShaderResourceView> m_denseFlowView;
