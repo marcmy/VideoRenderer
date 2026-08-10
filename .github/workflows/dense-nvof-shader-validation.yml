@@ -1,0 +1,58 @@
+name: Validate dense NVOF shaders
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - Source/NvidiaOpticalFlowDense*.hlsl
+      - Source/NvidiaOpticalFlowDense*Bytecode.h
+      - Source/NvidiaOpticalFlowDenseSynthesizer.cpp
+      - Source/NvidiaOpticalFlowDenseSynthesizer.h
+      - .github/workflows/dense-nvof-shader-validation.yml
+  pull_request:
+    paths:
+      - Source/NvidiaOpticalFlowDense*.hlsl
+      - Source/NvidiaOpticalFlowDense*Bytecode.h
+      - Source/NvidiaOpticalFlowDenseSynthesizer.cpp
+      - Source/NvidiaOpticalFlowDenseSynthesizer.h
+      - .github/workflows/dense-nvof-shader-validation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Compile and verify embedded SM5 bytecode
+        shell: pwsh
+        run: |
+          $sdkBin = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+          $fxc = Get-ChildItem $sdkBin -Filter fxc.exe -Recurse -File |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $fxc) { throw 'fxc.exe was not found in the Windows SDK.' }
+
+          New-Item -ItemType Directory -Force build\dense-nvof | Out-Null
+          $specs = @(
+            @{ Source='Source/NvidiaOpticalFlowDenseSeed.hlsl'; Header='Source/NvidiaOpticalFlowDenseSeedBytecode.h'; Name='g_NvofDenseSeedBytecode' },
+            @{ Source='Source/NvidiaOpticalFlowDenseJump.hlsl'; Header='Source/NvidiaOpticalFlowDenseJumpBytecode.h'; Name='g_NvofDenseJumpBytecode' },
+            @{ Source='Source/NvidiaOpticalFlowDenseUpsample.hlsl'; Header='Source/NvidiaOpticalFlowDenseUpsampleBytecode.h'; Name='g_NvofDenseUpsampleBytecode' },
+            @{ Source='Source/NvidiaOpticalFlowDenseWarp.hlsl'; Header='Source/NvidiaOpticalFlowDenseWarpBytecode.h'; Name='g_NvofDenseWarpBytecode' }
+          )
+
+          foreach ($spec in $specs) {
+            $generated = Join-Path 'build\dense-nvof' ([IO.Path]::GetFileName($spec.Header))
+            & $fxc.FullName /nologo /T cs_5_0 /E main /O3 /WX /Fh $generated /Vn $spec.Name $spec.Source
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            $expectedText = ([IO.File]::ReadAllText($spec.Header) -replace "`r`n", "`n")
+            $generatedText = ([IO.File]::ReadAllText($generated) -replace "`r`n", "`n")
+            if ($expectedText -ne $generatedText) {
+              throw "Committed bytecode is stale for $($spec.Source). Regenerate $($spec.Header)."
+            }
+            Write-Host "Verified $($spec.Source) -> $($spec.Header)"
+          }
