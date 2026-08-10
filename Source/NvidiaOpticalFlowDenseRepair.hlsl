@@ -36,11 +36,11 @@ void main(uint3 id : SV_DispatchThreadID)
     float flowDenom = max(2.0 * FlowSigma * FlowSigma, 1.0e-6);
 
     [loop]
-    for (int y = -int(FlowRadius); y <= int(FlowRadius); ++y) {
+    for (int fy = -int(FlowRadius); fy <= int(FlowRadius); ++fy) {
         [loop]
-        for (int x = -int(FlowRadius); x <= int(FlowRadius); ++x) {
-            float4 candidate = LoadCandidateClamped(center + int2(x, y));
-            float dist2 = float(x * x + y * y);
+        for (int fx = -int(FlowRadius); fx <= int(FlowRadius); ++fx) {
+            float4 candidate = LoadCandidateClamped(center + int2(fx, fy));
+            float dist2 = float(fx * fx + fy * fy);
             float spatialWeight = exp(-dist2 / flowDenom);
             float weight = spatialWeight * max(candidate.z, 1.0e-4);
             flowSum += candidate.xy * weight;
@@ -58,13 +58,13 @@ void main(uint3 id : SV_DispatchThreadID)
     float repairMask = 0.0;
     float maskDenom = max(2.0 * MaskSigma * MaskSigma, 1.0e-6);
     [loop]
-    for (int y = -int(MaskRadius); y <= int(MaskRadius); ++y) {
+    for (int my = -int(MaskRadius); my <= int(MaskRadius); ++my) {
         [loop]
-        for (int x = -int(MaskRadius); x <= int(MaskRadius); ++x) {
-            float catastrophic = LoadCatastrophic(center + int2(x, y));
+        for (int mx = -int(MaskRadius); mx <= int(MaskRadius); ++mx) {
+            float catastrophic = LoadCatastrophic(center + int2(mx, my));
             if (catastrophic <= 0.0) continue;
 
-            float distance = length(float2(x, y));
+            float distance = length(float2(mx, my));
             float outsideDilation = max(0.0, distance - MaskDilation);
             float feather = exp(
                 -(outsideDilation * outsideDilation) / maskDenom);
