@@ -34,7 +34,5 @@ void main(uint3 id : SV_DispatchThreadID)
     // Do not splice real-frame patches into the synthetic image. If a genuine
     // local cluster of catastrophic NVOF cells exists, reject the entire
     // inserted midpoint so spatial coherence is preserved.
-    if (unsafeCount >= MinUnsafeCells) {
-        InterlockedOr(RegionReject[uint2(0, 0)], 1u);
-    }
+    InterlockedMax(RegionReject[uint2(0, 0)], unsafeCount);
 }

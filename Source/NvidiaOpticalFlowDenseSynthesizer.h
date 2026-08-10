@@ -18,6 +18,7 @@ public:
     bool Initialize(ID3D11Device* device, UINT frameWidth, UINT frameHeight,
         UINT flowWidth, UINT flowHeight, std::wstring& status);
     void Reset();
+    std::wstring GetTelemetryText() const;
 
     bool Dispatch(ID3D11DeviceContext* context,
         ID3D11ShaderResourceView* previousFrame,
@@ -103,6 +104,15 @@ private:
     CComPtr<ID3D11Texture2D> m_regionRejectTexture;
     CComPtr<ID3D11ShaderResourceView> m_regionRejectView;
     CComPtr<ID3D11UnorderedAccessView> m_regionRejectUav;
+
+    static constexpr UINT TelemetrySlotCount = 3;
+    CComPtr<ID3D11Texture2D> m_qualityReadback[TelemetrySlotCount];
+    CComPtr<ID3D11Texture2D> m_regionReadback[TelemetrySlotCount];
+    bool m_telemetryPrimed[TelemetrySlotCount] = {};
+    UINT m_telemetryWriteIndex = 0;
+    UINT m_lastUnsafeCount = 0;
+    UINT m_lastMaxLocalUnsafe = 0;
+    bool m_haveTelemetry = false;
 
     CComPtr<ID3D11Texture2D> m_denseFlowTexture;
     CComPtr<ID3D11ShaderResourceView> m_denseFlowView;

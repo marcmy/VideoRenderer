@@ -845,9 +845,12 @@ struct CNvidiaOpticalFlowNative::Impl
 		outputReady = true;
 		currentIndex = writeIndex;
 		previousTimestamp = inputTimestamp;
+		const std::wstring telemetry = denseSynthesizer
+			? denseSynthesizer->GetTelemetryText()
+			: L"quality telemetry unavailable";
 		status = std::format(
-			L"Native NVOF active ({:.2f} ms submit, t={:.3f})",
-			processTimeMs, midpointTime);
+			L"Native NVOF active ({:.2f} ms submit, t={:.3f}); {}",
+			processTimeMs, midpointTime, telemetry);
 		Finish();
 		return true;
 	}

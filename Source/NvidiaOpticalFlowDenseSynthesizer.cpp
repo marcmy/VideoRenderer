@@ -176,6 +176,25 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Initialize(ID3D11Device* device,
         return false;
     }
 
+    D3D11_TEXTURE2D_DESC telemetryDesc = qualityDesc;
+    telemetryDesc.Usage = D3D11_USAGE_STAGING;
+    telemetryDesc.BindFlags = 0;
+    telemetryDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    for (UINT slot = 0; slot < TelemetrySlotCount; ++slot) {
+        hr = device->CreateTexture2D(&telemetryDesc, nullptr, &m_qualityReadback[slot]);
+        if (FAILED(hr)) {
+            status = std::format(L"CreateTexture2D(dense NVOF quality telemetry {}) failed ({})", slot, HR2Str(hr));
+            Reset();
+            return false;
+        }
+        hr = device->CreateTexture2D(&telemetryDesc, nullptr, &m_regionReadback[slot]);
+        if (FAILED(hr)) {
+            status = std::format(L"CreateTexture2D(dense NVOF regional telemetry {}) failed ({})", slot, HR2Str(hr));
+            Reset();
+            return false;
+        }
+    }
+
     D3D11_TEXTURE2D_DESC denseDesc = {};
     denseDesc.Width = frameWidth;
     denseDesc.Height = frameHeight;
@@ -246,6 +265,15 @@ void CNvidiaOpticalFlowDenseSynthesizer::Reset()
     m_regionRejectUav.Release();
     m_regionRejectView.Release();
     m_regionRejectTexture.Release();
+    for (UINT slot = 0; slot < TelemetrySlotCount; ++slot) {
+        m_qualityReadback[slot].Release();
+        m_regionReadback[slot].Release();
+        m_telemetryPrimed[slot] = false;
+    }
+    m_telemetryWriteIndex = 0;
+    m_lastUnsafeCount = 0;
+    m_lastMaxLocalUnsafe = 0;
+    m_haveTelemetry = false;
     m_unsafeCellUav.Release();
     m_unsafeCellView.Release();
     m_unsafeCellTexture.Release();
@@ -260,6 +288,21 @@ void CNvidiaOpticalFlowDenseSynthesizer::Reset()
     m_regionGateShader.Release();
     m_seedShader.Release();
     m_frameWidth = m_frameHeight = m_flowWidth = m_flowHeight = 0;
+}
+
+std::wstring CNvidiaOpticalFlowDenseSynthesizer::GetTelemetryText() const
+{
+    if (!m_haveTelemetry || !m_flowWidth || !m_flowHeight) {
+        return L"quality telemetry warming up";
+    }
+    const UINT cellCount = m_flowWidth * m_flowHeight;
+    const double badPercent = 100.0 * static_cast<double>(m_lastUnsafeCount) /
+        std::max(1u, cellCount);
+    return std::format(
+        L"bad {:.1f}% ({}/{}), worst7x7 {}/49, would8={}, would18={}",
+        badPercent, m_lastUnsafeCount, cellCount, m_lastMaxLocalUnsafe,
+        m_lastMaxLocalUnsafe >= 8 ? L"yes" : L"no",
+        m_lastMaxLocalUnsafe >= 18 ? L"yes" : L"no");
 }
 
 bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
@@ -309,7 +352,7 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
         // 18/49 (~36.7%) requires a genuinely dense catastrophic cluster.
         // The previous 8/49 threshold over-triggered on ordinary 23.976p
         // motion blur and effectively collapsed long stretches back to 24p.
-        m_flowWidth, m_flowHeight, 18u, 3u,
+        m_flowWidth, m_flowHeight, 0u, 3u,
     };
     context->UpdateSubresource(m_regionGateParameters, 0, nullptr, &regionValues, 0, 0);
     ID3D11Buffer* regionBuffer = m_regionGateParameters;
@@ -321,6 +364,33 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
     context->CSSetUnorderedAccessViews(0, 1, &regionOutput, nullptr);
     context->Dispatch((m_flowWidth + 7) / 8, (m_flowHeight + 7) / 8, 1);
     UnbindCompute(context);
+
+    // Async diagnostics: read a staging slot from three submissions ago with
+    // DO_NOT_WAIT, then queue current counters into that slot. Never stall.
+    const UINT telemetrySlot = m_telemetryWriteIndex;
+    if (m_telemetryPrimed[telemetrySlot]) {
+        D3D11_MAPPED_SUBRESOURCE qualityMapped = {};
+        const HRESULT qualityHr = context->Map(
+            m_qualityReadback[telemetrySlot], 0, D3D11_MAP_READ,
+            D3D11_MAP_FLAG_DO_NOT_WAIT, &qualityMapped);
+        if (SUCCEEDED(qualityHr)) {
+            D3D11_MAPPED_SUBRESOURCE regionMapped = {};
+            const HRESULT regionHr = context->Map(
+                m_regionReadback[telemetrySlot], 0, D3D11_MAP_READ,
+                D3D11_MAP_FLAG_DO_NOT_WAIT, &regionMapped);
+            if (SUCCEEDED(regionHr)) {
+                m_lastUnsafeCount = *static_cast<const UINT*>(qualityMapped.pData);
+                m_lastMaxLocalUnsafe = *static_cast<const UINT*>(regionMapped.pData);
+                m_haveTelemetry = true;
+                context->Unmap(m_regionReadback[telemetrySlot], 0);
+            }
+            context->Unmap(m_qualityReadback[telemetrySlot], 0);
+        }
+    }
+    context->CopyResource(m_qualityReadback[telemetrySlot], m_qualityTexture);
+    context->CopyResource(m_regionReadback[telemetrySlot], m_regionRejectTexture);
+    m_telemetryPrimed[telemetrySlot] = true;
+    m_telemetryWriteIndex = (telemetrySlot + 1) % TelemetrySlotCount;
 
     UINT jumpStep = 1;
     const UINT maxDimension = std::max(m_flowWidth, m_flowHeight);
@@ -375,8 +445,8 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
     };
     context->UpdateSubresource(m_warpParameters, 0, nullptr, &warpValues, 0, 0);
     ID3D11Buffer* warpBuffer = m_warpParameters;
-    const std::array<ID3D11ShaderResourceView*, 5> warpInputs = {
-        previousFrame, nextFrame, m_denseFlowView, m_qualityView, m_regionRejectView,
+    const std::array<ID3D11ShaderResourceView*, 4> warpInputs = {
+        previousFrame, nextFrame, m_denseFlowView, m_qualityView,
     };
     ID3D11SamplerState* sampler = m_linearSampler;
     context->CSSetShader(m_warpShader, nullptr, 0);
