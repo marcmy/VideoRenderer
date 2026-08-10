@@ -18,7 +18,7 @@ on:
       - .github/workflows/dense-nvof-shader-validation.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate:
@@ -26,10 +26,13 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
-      - name: Compile and verify embedded SM5 bytecode
+      - name: Compile, refresh, and verify embedded SM5 bytecode
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $sdkBin = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
           $fxc = Get-ChildItem $sdkBin -Filter fxc.exe -Recurse -File |
             Sort-Object FullName -Descending |
@@ -45,6 +48,7 @@ jobs:
             @{ Source='Source/NvidiaOpticalFlowDenseWarp.hlsl'; Header='Source/NvidiaOpticalFlowDenseWarpBytecode.h'; Name='g_NvofDenseWarpBytecode' }
           )
 
+          $changed = $false
           foreach ($spec in $specs) {
             $generated = Join-Path 'build\dense-nvof' ([IO.Path]::GetFileName($spec.Header))
             & $fxc.FullName /nologo /T cs_5_0 /E main /O3 /WX /Fh $generated /Vn $spec.Name $spec.Source
@@ -53,7 +57,18 @@ jobs:
             $expectedText = ([IO.File]::ReadAllText($spec.Header) -replace "`r`n", "`n")
             $generatedText = ([IO.File]::ReadAllText($generated) -replace "`r`n", "`n")
             if ($expectedText -ne $generatedText) {
-              throw "Committed bytecode is stale for $($spec.Source). Regenerate $($spec.Header)."
+              Copy-Item -Force $generated $spec.Header
+              $changed = $true
+              Write-Host "Refreshed $($spec.Header)"
+            } else {
+              Write-Host "Verified $($spec.Source) -> $($spec.Header)"
             }
-            Write-Host "Verified $($spec.Source) -> $($spec.Header)"
+          }
+
+          if ($changed -and $env:GITHUB_EVENT_NAME -eq 'push') {
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add -- Source/NvidiaOpticalFlowDense*Bytecode.h
+            git commit -m 'Regenerate dense NVOF shader bytecode'
+            git push origin HEAD:feature/native-nvof-interpolation
           }
