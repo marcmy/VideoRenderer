@@ -306,7 +306,10 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
     // occupies far less than the global 25% threshold. Reject the entire
     // inserted midpoint rather than compositing real-frame patches locally.
     const RegionGateParameters regionValues = {
-        m_flowWidth, m_flowHeight, 8u, 3u,
+        // 18/49 (~36.7%) requires a genuinely dense catastrophic cluster.
+        // The previous 8/49 threshold over-triggered on ordinary 23.976p
+        // motion blur and effectively collapsed long stretches back to 24p.
+        m_flowWidth, m_flowHeight, 18u, 3u,
     };
     context->UpdateSubresource(m_regionGateParameters, 0, nullptr, &regionValues, 0, 0);
     ID3D11Buffer* regionBuffer = m_regionGateParameters;
