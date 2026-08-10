@@ -43,14 +43,6 @@ for line in (
         raise RuntimeError(f'Project cleanup marker missing: {line!r}')
     p = p.replace(line, '', 1)
 proj.write_text(p, encoding='utf-8-sig')
-
-workflow = Path('.github/workflows/native-nvof-probe.yml')
-w = workflow.read_text(encoding='utf-8')
-block = '''            @{\n              Path = 'Source/NvidiaOpticalFlowNative.cpp'\n              Name = 'MidpointShader'\n              Output = 'NativeNvofProductionMidpoint'\n            },\n'''
-if block not in w:
-    raise RuntimeError('Legacy production midpoint HLSL validation block not found')
-w = w.replace(block, '', 1)
-workflow.write_text(w, encoding='utf-8')
 '@
 
 $py | python -
@@ -69,7 +61,7 @@ foreach ($path in $dead) {
 
 git config user.name 'github-actions[bot]'
 git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-git add -A Source .github/workflows/native-nvof-probe.yml
+git add -A Source
 git commit -m 'Remove abandoned native NVOF synthesis paths'
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 git push origin HEAD:feature/native-nvof-interpolation
