@@ -201,11 +201,6 @@ jobs:
 
           $specs = @(
             @{
-              Path = 'Source/NvidiaOpticalFlowNative.cpp'
-              Name = 'MidpointShader'
-              Output = 'NativeNvofProductionMidpoint'
-            },
-            @{
               Path = 'tools/native-nvof-probe/NativeNvofOcclusionAwareTest.cpp'
               Name = 'OcclusionAwareComputeShader'
               Output = 'NativeNvofOcclusionAware'
