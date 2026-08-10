@@ -1,0 +1,54 @@
+name: Native NVOF seed guidance correction
+
+on:
+  push:
+    branches:
+      - feature/native-nvof-interpolation
+    paths:
+      - .github/workflows/native-nvof-seed-guidance-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Correct image guidance to follow the actual flow seed
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'Source/NvidiaOpticalFlowDenseUpsample.hlsl'
+          $text = ([IO.File]::ReadAllText($path) -replace "`r`n", "`n")
+          $old = @'
+            int2 cellPixel = clamp(int2(float2(cell) * GridSize), int2(0, 0), int2(FrameSize) - 1);
+            float3 colorDelta = guideColor - LoadFrameColor(cellPixel);
+'@
+          $new = @'
+            // The candidate motion belongs to the propagated valid seed, not to
+            // the invalid cell through which that seed happened to arrive. Guide
+            // motion-layer selection with the seed's actual source appearance.
+            int2 seedPixel = clamp(int2(float2(seed) * GridSize), int2(0, 0), int2(FrameSize) - 1);
+            float3 colorDelta = guideColor - LoadFrameColor(seedPixel);
+'@
+          if (-not $text.Contains($old)) { throw 'Dense upsample color-guidance target not found.' }
+          $text = $text.Replace($old, $new)
+          [IO.File]::WriteAllText($path, $text)
+
+          $sdkBin = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+          $fxc = Get-ChildItem $sdkBin -Filter fxc.exe -Recurse -File |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $fxc) { throw 'fxc.exe was not found in the Windows SDK.' }
+          & $fxc.FullName /nologo /T cs_5_0 /E main /O3 /WX /Fh Source/NvidiaOpticalFlowDenseUpsampleBytecode.h /Vn g_NvofDenseUpsampleBytecode Source/NvidiaOpticalFlowDenseUpsample.hlsl
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- Source/NvidiaOpticalFlowDenseUpsample.hlsl Source/NvidiaOpticalFlowDenseUpsampleBytecode.h
+          git commit -m 'Guide dense NVOF infill by propagated seed appearance'
+          git push origin HEAD:feature/native-nvof-interpolation
