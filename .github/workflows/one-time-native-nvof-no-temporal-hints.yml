@@ -20,40 +20,16 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
-      - name: Disable temporal hints and expose global-repeat telemetry
+      - name: Disable temporal hints
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-
-          $nativePath = 'Source/NvidiaOpticalFlowNative.cpp'
-          $native = [IO.File]::ReadAllText($nativePath)
-          $oldHints = 'input.disableTemporalHints = hasExecutedFlow ? nvof::False : nvof::True;'
-          $newHints = 'input.disableTemporalHints = nvof::True;'
-          if (-not $native.Contains($oldHints)) { throw 'Expected temporal-hint line was not found.' }
-          $native = $native.Replace($oldHints, $newHints)
-          [IO.File]::WriteAllText($nativePath, $native, [Text.UTF8Encoding]::new($false))
-
-          $densePath = 'Source/NvidiaOpticalFlowDenseSynthesizer.cpp'
-          $dense = [IO.File]::ReadAllText($densePath)
-          $oldTelemetry = @'
-    return std::format(
-        L"bad {:.1f}% ({}/{}), worst7x7 {}/49, would8={}, would18={}",
-        badPercent, m_lastUnsafeCount, cellCount, m_lastMaxLocalUnsafe,
-        m_lastMaxLocalUnsafe >= 8 ? L"yes" : L"no",
-        m_lastMaxLocalUnsafe >= 18 ? L"yes" : L"no");
-'@
-          $newTelemetry = @'
-    return std::format(
-        L"globalRepeat={}, bad {:.1f}% ({}/{}), worst7x7 {}/49, would8={}, would18={}",
-        m_lastUnsafeCount * 4u >= cellCount ? L"YES" : L"no",
-        badPercent, m_lastUnsafeCount, cellCount, m_lastMaxLocalUnsafe,
-        m_lastMaxLocalUnsafe >= 8 ? L"yes" : L"no",
-        m_lastMaxLocalUnsafe >= 18 ? L"yes" : L"no");
-'@
-          if (-not $dense.Contains($oldTelemetry)) { throw 'Expected telemetry block was not found.' }
-          $dense = $dense.Replace($oldTelemetry, $newTelemetry)
-          [IO.File]::WriteAllText($densePath, $dense, [Text.UTF8Encoding]::new($false))
-
+          $path = 'Source/NvidiaOpticalFlowNative.cpp'
+          $text = [IO.File]::ReadAllText($path)
+          $old = 'input.disableTemporalHints = hasExecutedFlow ? nvof::False : nvof::True;'
+          $new = 'input.disableTemporalHints = nvof::True;'
+          if (-not $text.Contains($old)) { throw 'Expected temporal-hint line was not found.' }
+          [IO.File]::WriteAllText($path, $text.Replace($old, $new), [Text.UTF8Encoding]::new($false))
           .\build_mpcvr.cmd NoWait
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -70,7 +46,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- Source/NvidiaOpticalFlowNative.cpp Source/NvidiaOpticalFlowDenseSynthesizer.cpp
+          git add -- Source/NvidiaOpticalFlowNative.cpp
           git rm -- .github/workflows/one-time-native-nvof-no-temporal-hints.yml
           git commit -m 'Disable NVOF temporal hints for scene-cut diagnostic'
           git push origin HEAD:feature/native-nvof-interpolation
