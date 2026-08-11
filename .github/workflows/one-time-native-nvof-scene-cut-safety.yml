@@ -1,0 +1,68 @@
+name: One-time native NVOF scene-cut safety
+
+on:
+  push:
+    branches:
+      - feature/native-nvof-interpolation
+    paths:
+      - .github/workflows/one-time-native-nvof-scene-cut-safety.yml
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Patch scene-cut guard and high-motion fallback
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python .github/scripts/one-time-nvof-scene-cut-safety.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $sdkBin = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+          $fxc = Get-ChildItem $sdkBin -Filter fxc.exe -Recurse -File |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $fxc) { throw 'fxc.exe was not found in the Windows SDK.' }
+
+          & $fxc.FullName /nologo /T cs_5_0 /E main /O3 /WX /Fh Source/NvidiaOpticalFlowDenseSeedBytecode.h /Vn g_NvofDenseSeedBytecode Source/NvidiaOpticalFlowDenseSeed.hlsl
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $fxc.FullName /nologo /T cs_5_0 /E main /O3 /WX /Fh Source/NvidiaOpticalFlowDenseWarpBytecode.h /Vn g_NvofDenseWarpBytecode Source/NvidiaOpticalFlowDenseWarp.hlsl
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          .\build_mpcvr.cmd NoWait
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload MPCVR test package
+        uses: actions/upload-artifact@v7
+        with:
+          name: MPCVR native NVOF scene-cut safety test
+          path: _bin/MpcVideoRenderer*.zip
+          compression-level: 0
+
+      - name: Commit validated scene-cut safety
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- `
+            Source/NvidiaOpticalFlowDenseSeed.hlsl `
+            Source/NvidiaOpticalFlowDenseSeedBytecode.h `
+            Source/NvidiaOpticalFlowDenseWarp.hlsl `
+            Source/NvidiaOpticalFlowDenseWarpBytecode.h `
+            Source/NvidiaOpticalFlowDenseSynthesizer.h `
+            Source/NvidiaOpticalFlowDenseSynthesizer.cpp `
+            Source/NvidiaOpticalFlowNative.cpp
+          git rm -- .github/scripts/one-time-nvof-scene-cut-safety.py
+          git rm -- .github/workflows/one-time-native-nvof-scene-cut-safety.yml
+          git commit -m 'Add NVOF scene-cut guard and high-motion safety blend'
+          git push origin HEAD:feature/native-nvof-interpolation
