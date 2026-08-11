@@ -494,7 +494,7 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
     UnbindCompute(context);
 
     const WarpParameters warpValues = {
-        m_frameWidth, m_frameHeight, m_flowWidth * m_flowHeight, 0.25f,
+        m_frameWidth, m_frameHeight, m_flowWidth * m_flowHeight, 2.0f,
         midpointTime, 4.0f, {0.0f, 0.0f},
     };
     context->UpdateSubresource(m_warpParameters, 0, nullptr, &warpValues, 0, 0);
