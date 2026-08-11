@@ -26,35 +26,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           python .github/scripts/one-time-nvof-scene-cut-safety.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-          # fxc keeps for-loop control variables in the enclosing function scope.
-          $seedPath = 'Source/NvidiaOpticalFlowDenseSeed.hlsl'
-          $seed = [IO.File]::ReadAllText($seedPath)
-          $oldInit = @'
-    for (uint bin = 0u; bin < CutHistogramBins; ++bin) {
-        histA[bin] = 0u;
-        histB[bin] = 0u;
-    }
-'@
-          $newInit = @'
-    for (uint initBin = 0u; initBin < CutHistogramBins; ++initBin) {
-        histA[initBin] = 0u;
-        histB[initBin] = 0u;
-    }
-'@
-          $oldIntersect = @'
-    for (uint bin = 0u; bin < CutHistogramBins; ++bin) {
-        intersectionCount += min(histA[bin], histB[bin]);
-    }
-'@
-          $newIntersect = @'
-    for (uint histBin = 0u; histBin < CutHistogramBins; ++histBin) {
-        intersectionCount += min(histA[histBin], histB[histBin]);
-    }
-'@
-          if (-not $seed.Contains($oldInit) -or -not $seed.Contains($oldIntersect)) { throw 'Expected scene-cut histogram loops were not found.' }
-          $seed = $seed.Replace($oldInit, $newInit).Replace($oldIntersect, $newIntersect)
-          [IO.File]::WriteAllText($seedPath, $seed, [Text.UTF8Encoding]::new($false))
+          python .github/scripts/one-time-nvof-fxc-scope-fix.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           $sdkBin = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
           $fxc = Get-ChildItem $sdkBin -Filter fxc.exe -Recurse -File |
@@ -92,6 +65,7 @@ jobs:
             Source/NvidiaOpticalFlowDenseSynthesizer.cpp `
             Source/NvidiaOpticalFlowNative.cpp
           git rm -- .github/scripts/one-time-nvof-scene-cut-safety.py
+          git rm -- .github/scripts/one-time-nvof-fxc-scope-fix.py
           git rm -- .github/workflows/one-time-native-nvof-scene-cut-safety.yml
           git commit -m 'Add NVOF scene-cut guard and high-motion safety blend'
           git push origin HEAD:feature/native-nvof-interpolation
