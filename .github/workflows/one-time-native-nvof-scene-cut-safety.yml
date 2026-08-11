@@ -27,6 +27,35 @@ jobs:
           python .github/scripts/one-time-nvof-scene-cut-safety.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          # fxc keeps for-loop control variables in the enclosing function scope.
+          $seedPath = 'Source/NvidiaOpticalFlowDenseSeed.hlsl'
+          $seed = [IO.File]::ReadAllText($seedPath)
+          $oldInit = @'
+    for (uint bin = 0u; bin < CutHistogramBins; ++bin) {
+        histA[bin] = 0u;
+        histB[bin] = 0u;
+    }
+'@
+          $newInit = @'
+    for (uint initBin = 0u; initBin < CutHistogramBins; ++initBin) {
+        histA[initBin] = 0u;
+        histB[initBin] = 0u;
+    }
+'@
+          $oldIntersect = @'
+    for (uint bin = 0u; bin < CutHistogramBins; ++bin) {
+        intersectionCount += min(histA[bin], histB[bin]);
+    }
+'@
+          $newIntersect = @'
+    for (uint histBin = 0u; histBin < CutHistogramBins; ++histBin) {
+        intersectionCount += min(histA[histBin], histB[histBin]);
+    }
+'@
+          if (-not $seed.Contains($oldInit) -or -not $seed.Contains($oldIntersect)) { throw 'Expected scene-cut histogram loops were not found.' }
+          $seed = $seed.Replace($oldInit, $newInit).Replace($oldIntersect, $newIntersect)
+          [IO.File]::WriteAllText($seedPath, $seed, [Text.UTF8Encoding]::new($false))
+
           $sdkBin = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
           $fxc = Get-ChildItem $sdkBin -Filter fxc.exe -Recurse -File |
             Sort-Object FullName -Descending |
