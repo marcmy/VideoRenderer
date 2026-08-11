@@ -1,5 +1,7 @@
 Texture2D<int2> ForwardFlowBtoA : register(t0);
 Texture2D<int2> BackwardFlowAtoB : register(t1);
+Texture2D<float4> PreviousFrame : register(t2);
+Texture2D<float4> NextFrame : register(t3);
 RWTexture2D<uint> SeedMap : register(u0);
 RWTexture2D<uint> UnsafeCellCount : register(u1);
 RWTexture2D<uint> UnsafeCellMap : register(u2);
@@ -10,11 +12,22 @@ cbuffer SeedParameters : register(b0)
     uint2 FlowSize;
     float GridSize;
     float ConsistencyThreshold;
+
     float MotionThreshold;
-    float3 Padding;
+    uint2 FrameSize;
+    float CutHistogramThreshold;
+
+    float CutCorrelationThreshold;
+    float CutMadThreshold;
+    float2 Padding;
 };
 
 static const uint InvalidSeed = 0xffffffffu;
+static const uint SceneCutBit = 0x80000000u;
+static const uint CutSampleWidth = 32u;
+static const uint CutSampleHeight = 18u;
+static const uint CutHistogramBins = 16u;
+static const uint CutSampleCount = CutSampleWidth * CutSampleHeight;
 
 float2 LoadFlow(Texture2D<int2> flowTexture, int2 cell)
 {
@@ -40,9 +53,78 @@ uint PackSeed(uint2 cell)
     return (cell.y << 16) | (cell.x & 0xffffu);
 }
 
+uint SampleIntensity(Texture2D<float4> frame, uint2 pixel)
+{
+    float3 rgb = saturate(frame.Load(int3(pixel, 0)).rgb);
+    return (uint)round((rgb.r + rgb.g + rgb.b) * (255.0 / 3.0));
+}
+
+bool DetectSceneCut()
+{
+    uint histA[CutHistogramBins];
+    uint histB[CutHistogramBins];
+    [unroll]
+    for (uint initBin = 0u; initBin < CutHistogramBins; ++initBin) {
+        histA[initBin] = 0u;
+        histB[initBin] = 0u;
+    }
+
+    uint sumA = 0u;
+    uint sumB = 0u;
+    uint sumAA = 0u;
+    uint sumBB = 0u;
+    uint sumAB = 0u;
+    uint sumAbs = 0u;
+
+    [loop]
+    for (uint sy = 0u; sy < CutSampleHeight; ++sy) {
+        [loop]
+        for (uint sx = 0u; sx < CutSampleWidth; ++sx) {
+            uint2 pixel = uint2(
+                min(((2u * sx + 1u) * FrameSize.x) / (2u * CutSampleWidth), FrameSize.x - 1u),
+                min(((2u * sy + 1u) * FrameSize.y) / (2u * CutSampleHeight), FrameSize.y - 1u));
+            uint a = SampleIntensity(PreviousFrame, pixel);
+            uint b = SampleIntensity(NextFrame, pixel);
+            histA[min(a >> 4, CutHistogramBins - 1u)]++;
+            histB[min(b >> 4, CutHistogramBins - 1u)]++;
+            sumA += a;
+            sumB += b;
+            sumAA += a * a;
+            sumBB += b * b;
+            sumAB += a * b;
+            sumAbs += a > b ? a - b : b - a;
+        }
+    }
+
+    uint intersectionCount = 0u;
+    [unroll]
+    for (uint histBin = 0u; histBin < CutHistogramBins; ++histBin) {
+        intersectionCount += min(histA[histBin], histB[histBin]);
+    }
+
+    float n = float(CutSampleCount);
+    float histogramIntersection = float(intersectionCount) / n;
+    float mad = float(sumAbs) / (n * 255.0);
+    float covariance = n * float(sumAB) - float(sumA) * float(sumB);
+    float varianceA = max(n * float(sumAA) - float(sumA) * float(sumA), 0.0);
+    float varianceB = max(n * float(sumBB) - float(sumB) * float(sumB), 0.0);
+    float correlation = covariance / sqrt(max(varianceA * varianceB, 1.0));
+
+    // Conservative three-way classifier derived from the captured LOTR set.
+    // A true shot cut must simultaneously change the intensity distribution,
+    // destroy spatial correlation, and have substantial absolute image change.
+    return histogramIntersection < CutHistogramThreshold
+        && correlation < CutCorrelationThreshold
+        && mad > CutMadThreshold;
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
+    if (all(id.xy == uint2(0, 0)) && DetectSceneCut()) {
+        InterlockedOr(UnsafeCellCount[uint2(0, 0)], SceneCutBit);
+    }
+
     if (any(id.xy >= FlowSize)) return;
 
     int2 cell = int2(id.xy);

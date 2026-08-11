@@ -17,6 +17,9 @@ cbuffer WarpParameters : register(b0)
     float2 Padding;
 };
 
+static const uint SceneCutBit = 0x80000000u;
+static const uint UnsafeCountMask = 0x7fffffffu;
+
 float2 PixelToUv(float2 pixel)
 {
     return (pixel + 0.5) / float2(FrameSize);
@@ -46,15 +49,20 @@ void main(uint3 id : SV_DispatchThreadID)
 {
     if (any(id.xy >= FrameSize)) return;
 
-    uint unsafeCount = UnsafeCellCount.Load(int3(0, 0, 0));
+    uint packedQuality = UnsafeCellCount.Load(int3(0, 0, 0));
+    bool sceneCut = (packedQuality & SceneCutBit) != 0u;
+    uint unsafeCount = packedQuality & UnsafeCountMask;
     float unsafeFraction = float(unsafeCount) / max(1.0, float(FlowCellCount));
+    float2 target = float2(id.xy);
 
-    if (unsafeFraction >= RepeatBadFraction) {
-        OutputFrame[id.xy] = SampleFrame(PreviousFrame, float2(id.xy));
+    // Optical flow has no meaningful solution across an actual hard cut.
+    // Preserve source timing by holding the previous shot until the real B
+    // frame's timestamp rather than morphing unrelated camera angles.
+    if (sceneCut) {
+        OutputFrame[id.xy] = SampleFrame(PreviousFrame, target);
         return;
     }
 
-    float2 target = float2(id.xy);
     float2 source = target;
     float towardPrevious = 1.0 - MidpointTime;
 
@@ -66,11 +74,9 @@ void main(uint3 id : SV_DispatchThreadID)
 
     float4 current = SampleFrame(NextFrame, source);
 
-    // Local occlusion repair. The mask follows the source coordinate selected
-    // by the normal dense B-side warp, while the coherent A->B repair motion
-    // is evaluated in target coordinates. Symmetrically motion-compensating
-    // both real endpoints avoids the hard patch seams and severe crossfade
-    // blur of earlier local fallback experiments.
+    // Local occlusion repair. The mask follows both the source coordinate
+    // selected by the dense B-side warp and the target coordinate. The coherent
+    // A->B repair motion is evaluated in target coordinates.
     float repairMask = max(SampleRepair(source).z, SampleRepair(target).z);
     if (repairMask > 1.0e-4) {
         float2 repairMotion = SampleRepair(target).xy;
@@ -80,6 +86,19 @@ void main(uint3 id : SV_DispatchThreadID)
         float4 safeNext = SampleFrame(NextFrame, nextSource);
         float4 safe = lerp(safePrevious, safeNext, MidpointTime);
         current = lerp(current, safe, saturate(repairMask));
+    }
+
+    // When the flow field collapses over a large fraction of a *same shot*,
+    // progressively prefer an unwarped temporal midpoint over melted geometry.
+    // Unlike the old whole-frame repeat gate, this keeps a distinct midpoint
+    // and therefore preserves the doubled presentation cadence.
+    float safetyBlend = smoothstep(0.25, 0.40, unsafeFraction);
+    if (safetyBlend > 1.0e-4) {
+        float4 temporalMidpoint = lerp(
+            SampleFrame(PreviousFrame, target),
+            SampleFrame(NextFrame, target),
+            MidpointTime);
+        current = lerp(current, temporalMidpoint, safetyBlend);
     }
 
     OutputFrame[id.xy] = current;

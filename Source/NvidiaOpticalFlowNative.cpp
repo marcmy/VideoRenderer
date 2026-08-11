@@ -706,7 +706,7 @@ struct CNvidiaOpticalFlowNative::Impl
 		}
 
 		runtimeInfo = std::format(
-			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow (GPU grids: {}); validated jump-flood dense flow + edge-aware next-frame warp + frame quality gate; live cost disabled",
+			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow (GPU grids: {}); validated jump-flood dense flow + edge-aware next-frame warp + scene-cut guard + adaptive high-motion safety blend; live cost disabled",
 			apiMajor, apiMinor, JoinGridSizes(outputGridSizes));
 		status = std::format(L"Native NVOF ready, {}x{}", width, height);
 		DLog(L"Native NVIDIA frame interpolation: {}", runtimeInfo);

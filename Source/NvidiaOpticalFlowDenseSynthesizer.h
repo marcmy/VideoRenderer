@@ -36,9 +36,14 @@ private:
         float gridSize;
         float consistencyThreshold;
         float motionThreshold;
-        float padding[3];
+        UINT frameWidth;
+        UINT frameHeight;
+        float cutHistogramThreshold;
+        float cutCorrelationThreshold;
+        float cutMadThreshold;
+        float padding[2];
     };
-    static_assert(sizeof(SeedParameters) == 32);
+    static_assert(sizeof(SeedParameters) == 48);
 
     struct RepairParameters {
         UINT flowWidth;
@@ -129,6 +134,7 @@ private:
     bool m_telemetryPrimed[TelemetrySlotCount] = {};
     UINT m_telemetryWriteIndex = 0;
     UINT m_lastUnsafeCount = 0;
+    bool m_lastSceneCut = false;
     UINT m_lastMaxLocalUnsafe = 0;
     bool m_haveTelemetry = false;
 

@@ -307,6 +307,7 @@ void CNvidiaOpticalFlowDenseSynthesizer::Reset()
     }
     m_telemetryWriteIndex = 0;
     m_lastUnsafeCount = 0;
+    m_lastSceneCut = false;
     m_lastMaxLocalUnsafe = 0;
     m_haveTelemetry = false;
     m_unsafeCellUav.Release();
@@ -335,11 +336,15 @@ std::wstring CNvidiaOpticalFlowDenseSynthesizer::GetTelemetryText() const
         return L"quality telemetry warming up";
     }
     const UINT cellCount = m_flowWidth * m_flowHeight;
-    const double badPercent = 100.0 * static_cast<double>(m_lastUnsafeCount) /
+    const double unsafeFraction = static_cast<double>(m_lastUnsafeCount) /
         std::max(1u, cellCount);
+    const double badPercent = 100.0 * unsafeFraction;
+    const double blendT = std::clamp((unsafeFraction - 0.25) / 0.15, 0.0, 1.0);
+    const double safetyBlendPercent = 100.0 * blendT * blendT * (3.0 - 2.0 * blendT);
     return std::format(
-        L"bad {:.1f}% ({}/{}), worst7x7 {}/49, would8={}, would18={}",
-        badPercent, m_lastUnsafeCount, cellCount, m_lastMaxLocalUnsafe,
+        L"cut={}, bad {:.1f}% ({}/{}), safetyBlend {:.0f}%, worst7x7 {}/49, would8={}, would18={}",
+        m_lastSceneCut ? L"yes" : L"no",
+        badPercent, m_lastUnsafeCount, cellCount, safetyBlendPercent, m_lastMaxLocalUnsafe,
         m_lastMaxLocalUnsafe >= 8 ? L"yes" : L"no",
         m_lastMaxLocalUnsafe >= 18 ? L"yes" : L"no");
 }
@@ -368,12 +373,13 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
 
     const SeedParameters seedValues = {
         m_flowWidth, m_flowHeight, 4.0f, 20.0f,
-        20.0f, {0.0f, 0.0f, 0.0f},
+        20.0f, m_frameWidth, m_frameHeight, 0.86f,
+        0.15f, 0.055f, {0.0f, 0.0f},
     };
     context->UpdateSubresource(m_seedParameters, 0, nullptr, &seedValues, 0, 0);
     ID3D11Buffer* seedBuffer = m_seedParameters;
-    const std::array<ID3D11ShaderResourceView*, 2> seedInputs = {
-        forwardFlowBtoA, backwardFlowAtoB,
+    const std::array<ID3D11ShaderResourceView*, 4> seedInputs = {
+        forwardFlowBtoA, backwardFlowAtoB, previousFrame, nextFrame,
     };
     const std::array<ID3D11UnorderedAccessView*, 4> seedOutputs = {
         m_seedUavs[0], m_qualityUav, m_unsafeCellUav, m_repairUavs[0],
@@ -433,7 +439,9 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
                 m_regionReadback[telemetrySlot], 0, D3D11_MAP_READ,
                 D3D11_MAP_FLAG_DO_NOT_WAIT, &regionMapped);
             if (SUCCEEDED(regionHr)) {
-                m_lastUnsafeCount = *static_cast<const UINT*>(qualityMapped.pData);
+                const UINT packedQuality = *static_cast<const UINT*>(qualityMapped.pData);
+                m_lastSceneCut = (packedQuality & 0x80000000u) != 0u;
+                m_lastUnsafeCount = packedQuality & 0x7fffffffu;
                 m_lastMaxLocalUnsafe = *static_cast<const UINT*>(regionMapped.pData);
                 m_haveTelemetry = true;
                 context->Unmap(m_regionReadback[telemetrySlot], 0);
