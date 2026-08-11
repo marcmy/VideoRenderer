@@ -1,0 +1,54 @@
+name: One-time native NVOF no-global-repeat test
+
+on:
+  push:
+    branches:
+      - feature/native-nvof-interpolation
+    paths:
+      - .github/workflows/one-time-native-nvof-no-global-repeat.yml
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Disable whole-frame global repeat gate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'Source/NvidiaOpticalFlowDenseSynthesizer.cpp'
+          $text = [IO.File]::ReadAllText($path)
+          $old = 'm_frameWidth, m_frameHeight, m_flowWidth * m_flowHeight, 0.25f,'
+          $new = 'm_frameWidth, m_frameHeight, m_flowWidth * m_flowHeight, 2.0f,'
+          if (-not $text.Contains($old)) { throw 'Expected 25% global-repeat threshold was not found.' }
+          $text = $text.Replace($old, $new)
+          [IO.File]::WriteAllText($path, $text, [Text.UTF8Encoding]::new($false))
+
+          .\build_mpcvr.cmd NoWait
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload MPCVR test package
+        uses: actions/upload-artifact@v7
+        with:
+          name: MPCVR native NVOF no-global-repeat test
+          path: _bin/MpcVideoRenderer*.zip
+          compression-level: 0
+
+      - name: Commit validated diagnostic
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- Source/NvidiaOpticalFlowDenseSynthesizer.cpp
+          git rm -- .github/workflows/one-time-native-nvof-no-global-repeat.yml
+          git commit -m 'Disable native NVOF whole-frame repeat for diagnostic'
+          git push origin HEAD:feature/native-nvof-interpolation
