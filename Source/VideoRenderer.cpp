@@ -1823,6 +1823,12 @@ STDMETHODIMP CMpcVideoRenderer::Flt_GetInt64(LPCSTR field, __int64 *value)
 				| ((uint64_t)VER_BUILD << 16)
 				| ((uint64_t)REV_NUM);
 		return S_OK;
+	} else if (!strcmp(field, "originalVideoSize")) {
+		long width, height;
+		m_VideoProcessor->GetVideoSize(width, height);
+		*value = (static_cast<__int64>(width) << 32) | (static_cast<__int64>(height) & 0xFFFFFFFF);
+
+		return S_OK;
 	}
 
 	return E_INVALIDARG;
