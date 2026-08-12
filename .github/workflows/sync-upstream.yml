@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
+  # Temporary self-trigger so this conflict-resolution update runs immediately.
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/sync-upstream.yml
 
 permissions:
   contents: write
@@ -53,8 +59,65 @@ jobs:
 
           git merge --no-ff --no-edit -m "Merge Aleksoid1978/VideoRenderer upstream master ($shortSha)" upstream/master
           if ($LASTEXITCODE -ne 0) {
-            git merge --abort
-            throw 'Upstream merge produced conflicts and requires manual resolution.'
+            $conflicts = @(git diff --name-only --diff-filter=U)
+
+            # One-shot resolution for upstream b307eefa: upstream adds the
+            # originalVideoSize filter field while this fork has extensive
+            # unrelated changes in the same source file. Preserve our file and
+            # insert only that upstream API addition. Any other conflict still
+            # fails closed and requires review.
+            if ($upstreamSha -eq 'b307eefa3be54784f55fa216a9323eb77aecc466' -and
+                $conflicts.Count -eq 1 -and
+                $conflicts[0] -eq 'Source/VideoRenderer.cpp') {
+
+              git checkout --ours -- Source/VideoRenderer.cpp
+              if ($LASTEXITCODE -ne 0) {
+                git merge --abort
+                throw 'Could not restore the fork version of Source/VideoRenderer.cpp for conflict resolution.'
+              }
+
+              $path = 'Source/VideoRenderer.cpp'
+              $text = [System.IO.File]::ReadAllText($path)
+
+              if ($text -notmatch '"originalVideoSize"') {
+                $pattern = '(?ms)(STDMETHODIMP CMpcVideoRenderer::Flt_GetInt64\(LPCSTR field, __int64 \*value\)\r?\n\{\r?\n\tCheckPointer\(value, E_POINTER\);\r?\n\r?\n\tif \(!strcmp\(field, "version"\)\) \{\r?\n\t\t\*value  = \(\(uint64_t\)VER_MAJOR << 48\)\r?\n\t\t\t\t\| \(\(uint64_t\)VER_MINOR << 32\)\r?\n\t\t\t\t\| \(\(uint64_t\)VER_BUILD << 16\)\r?\n\t\t\t\t\| \(\(uint64_t\)REV_NUM\);\r?\n\t\treturn S_OK;\r?\n)(\t\}\r?\n\r?\n\treturn E_INVALIDARG;)'
+                $rx = [regex]::new($pattern)
+                $matches = $rx.Matches($text)
+                if ($matches.Count -ne 1) {
+                  git merge --abort
+                  throw "Expected exactly one Flt_GetInt64 version block, found $($matches.Count)."
+                }
+
+                $nl = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
+                $insert = "`t} else if (!strcmp(field, `"originalVideoSize`")) {$nl" +
+                          "`t`tlong width, height;$nl" +
+                          "`t`tm_VideoProcessor->GetVideoSize(width, height);$nl" +
+                          "`t`t*value = (static_cast<__int64>(width) << 32) | (static_cast<__int64>(height) & 0xFFFFFFFF);$nl$nl" +
+                          "`t`treturn S_OK;$nl"
+
+                $text = $rx.Replace($text, { param($m) $m.Groups[1].Value + $insert + $m.Groups[2].Value }, 1)
+                [System.IO.File]::WriteAllText($path, $text, [System.Text.UTF8Encoding]::new($false))
+              }
+
+              git add Source/VideoRenderer.cpp
+              if ($LASTEXITCODE -ne 0) {
+                git merge --abort
+                throw 'Could not stage the resolved Source/VideoRenderer.cpp.'
+              }
+
+              git commit --no-edit
+              if ($LASTEXITCODE -ne 0) {
+                git merge --abort
+                throw 'Could not create the resolved upstream merge commit.'
+              }
+
+              'Resolved the known upstream originalVideoSize conflict while preserving fork-specific renderer changes.' |
+                Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            }
+            else {
+              git merge --abort
+              throw "Upstream merge produced unsupported conflicts: $($conflicts -join ', ')"
+            }
           }
 
           git submodule sync --recursive
