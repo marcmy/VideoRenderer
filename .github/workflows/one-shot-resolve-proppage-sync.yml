@@ -1,0 +1,90 @@
+name: One-shot resolve PropPage upstream merge
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/one-shot-resolve-proppage-sync.yml'
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  resolve:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v7
+        with:
+          ref: master
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Merge exact upstream revision and resolve known conflict
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expectedUpstream = '8522e4ee1bc09235f24acc3a348dfa901e993790'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/Aleksoid1978/VideoRenderer.git
+          git fetch --no-tags upstream master
+          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch upstream master.' }
+
+          $actualUpstream = (git rev-parse upstream/master).Trim()
+          if ($actualUpstream -ne $expectedUpstream) {
+            throw "Upstream advanced from the reviewed revision ($expectedUpstream -> $actualUpstream); refusing an unreviewed conflict resolution."
+          }
+
+          git merge --no-ff --no-commit upstream/master
+          if ($LASTEXITCODE -ne 0) {
+            $conflicts = @(git diff --name-only --diff-filter=U)
+            if ($conflicts.Count -ne 1 -or $conflicts[0] -ne 'Source/PropPage.h') {
+              git merge --abort
+              throw "Unexpected merge conflict set: $($conflicts -join ', ')"
+            }
+
+            # The fork header already carries the reviewed upstream SetDirty(BOOL)
+            # semantics while retaining Maxine/frame-interpolation declarations.
+            # Keep it only for this exact reviewed upstream revision.
+            git checkout --ours -- Source/PropPage.h
+            git add Source/PropPage.h
+            $remaining = @(git diff --name-only --diff-filter=U)
+            if ($remaining.Count -ne 0) {
+              git merge --abort
+              throw "Unresolved conflicts remain: $($remaining -join ', ')"
+            }
+          }
+
+          git commit -m 'Merge Aleksoid1978/VideoRenderer upstream master (8522e4ee)'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not commit resolved upstream merge.' }
+
+          git submodule sync --recursive
+          git submodule update --init --recursive
+          if ($LASTEXITCODE -ne 0) { throw 'Could not update submodules after merge.' }
+
+      - name: Build resolved merge
+        shell: pwsh
+        run: |
+          .\build_mpcvr.cmd NoWait
+          if ($LASTEXITCODE -ne 0) { throw "Resolved upstream merge failed to build with exit code $LASTEXITCODE." }
+
+      - name: Remove one-shot workflow and push verified merge
+        shell: pwsh
+        run: |
+          git rm .github/workflows/one-shot-resolve-proppage-sync.yml
+          git commit -m 'ci: remove one-shot PropPage sync resolver'
+          git push origin HEAD:master
+          if ($LASTEXITCODE -ne 0) { throw 'Could not push the verified resolved merge.' }
+
+      - name: Dispatch terminal verification workflows
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run sync-upstream.yml --ref master --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { throw 'Could not dispatch Sync upstream verification.' }
+          gh workflow run main.yml --ref master --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { throw 'Could not dispatch rolling build verification.' }
