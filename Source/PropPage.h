@@ -55,11 +55,10 @@ private:
 	HRESULT OnConnect(IUnknown* pUnknown) override;
 	HRESULT OnDisconnect() override;
 	HRESULT OnActivate() override;
-	void SetDirty()
-	{
-		m_bDirty = TRUE;
+	void SetDirty(BOOL bDirty = TRUE) {
+		m_bDirty = bDirty;
 		if (m_pPageSite) {
-			m_pPageSite->OnStatusChange(PROPPAGESTATUS_DIRTY);
+			m_pPageSite->OnStatusChange(m_bDirty ? PROPPAGESTATUS_DIRTY : PROPPAGESTATUS_CLEAN);
 		}
 	}
 	INT_PTR OnReceiveMessage(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) override;
