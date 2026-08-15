@@ -47,10 +47,10 @@ public:
 	~CVRMainPPage();
 
 private:
-	void SetControls();
-	void EnableControls();
 	bool ShowMaxineSettings();
 	bool ShowFrameInterpolationSettings();
+	void SetControls();
+	void EnableControls();
 
 	HRESULT OnConnect(IUnknown* pUnknown) override;
 	HRESULT OnDisconnect() override;
