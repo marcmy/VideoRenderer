@@ -680,6 +680,8 @@ HRESULT CVRMainPPage::OnActivate()
 		L"'Flip' is more efficient, but 'Discard' may work\n"
 		"more correctly in some rare situations.");
 
+	SetDirty(FALSE);
+
 	return S_OK;
 }
 
@@ -922,6 +924,11 @@ INT_PTR CVRMainPPage::OnReceiveMessage(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 				SetDirty();
 				EnableControls();
 				return (LRESULT)1;
+			}
+		}
+		if (action == EN_CHANGE) {
+			if (nID == IDC_EDIT_DISPLAYMAX) {
+				SetDirty();
 			}
 		}
 	}
