@@ -1,0 +1,28 @@
+name: One-time revert NVOF cost confidence
+
+on:
+  push:
+    branches:
+      - feature/native-nvof-interpolation
+    paths:
+      - .github/workflows/one-time-revert-cost-confidence.yml
+
+permissions:
+  contents: write
+
+jobs:
+  revert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Revert cost-confidence experiment
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git revert --no-edit 5909137937e240ead86c65e7ce8e26572fb6faa5
+          git push origin HEAD:feature/native-nvof-interpolation
