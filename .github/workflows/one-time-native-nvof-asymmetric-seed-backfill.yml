@@ -1,9 +1,9 @@
 name: One-time native NVOF asymmetric seed backfill
 
 on:
-  push:
+  pull_request:
     branches:
-      - feature/native-nvof-interpolation
+      - master
     paths:
       - .github/workflows/one-time-native-nvof-asymmetric-seed-backfill.yml
 
