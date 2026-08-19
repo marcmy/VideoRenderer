@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - test/maxine-resize-debounce-nvof
+  pull_request:
+    branches:
+      - feature/native-nvof-interpolation
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
@@ -12,9 +16,10 @@ jobs:
   patch-build-commit:
     runs-on: windows-2022
     steps:
-      - name: Checkout repository
+      - name: Checkout test branch
         uses: actions/checkout@v7
         with:
+          ref: test/maxine-resize-debounce-nvof
           fetch-depth: 0
           submodules: recursive
 
@@ -178,13 +183,16 @@ void CDX11VideoProcessor::SetVideoRect(const CRect& videoRect)
           path: _bin/MpcVideoRenderer*.zip
           compression-level: 0
 
-      - name: Commit validated source and remove one-time workflow
+      - name: Commit validated source and clean one-time files
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           Remove-Item -LiteralPath '.github/workflows/one-time-maxine-resize-debounce.yml'
-          git add Source/DX11VideoProcessor.cpp Source/DX11VideoProcessor.h .github/workflows/one-time-maxine-resize-debounce.yml
+          if (Test-Path -LiteralPath 'one-time-maxine-resize-trigger.txt') {
+            Remove-Item -LiteralPath 'one-time-maxine-resize-trigger.txt'
+          }
+          git add Source/DX11VideoProcessor.cpp Source/DX11VideoProcessor.h .github/workflows/one-time-maxine-resize-debounce.yml one-time-maxine-resize-trigger.txt
           git commit -m 'Debounce Maxine match-output resize reloads'
           git push origin HEAD:test/maxine-resize-debounce-nvof
