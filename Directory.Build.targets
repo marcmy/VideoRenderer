@@ -1,0 +1,7 @@
+<Project>
+  <Target Name="ApplyMaxineResizeDebouncePatch"
+          BeforeTargets="PrepareForBuild"
+          Condition="'$(MSBuildProjectName)' == 'MpcVideoRenderer' and Exists('$(MSBuildThisFileDirectory)tools\MaxineResizeDebouncePatch.ps1')">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)tools\MaxineResizeDebouncePatch.ps1&quot;" />
+  </Target>
+</Project>
