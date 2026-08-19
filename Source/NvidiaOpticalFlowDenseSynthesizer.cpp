@@ -339,7 +339,7 @@ std::wstring CNvidiaOpticalFlowDenseSynthesizer::GetTelemetryText() const
     const double badPercent = 100.0 * static_cast<double>(m_lastUnsafeCount) /
         std::max(1u, cellCount);
     return std::format(
-        L"cut={}, bad {:.1f}% ({}/{}), guard=local-photo, worst7x7 {}/49, would8={}, would18={}",
+        L"cut={}, bad {:.1f}% ({}/{}), guard=local-photo, seeds=asym-backfill, worst7x7 {}/49, would8={}, would18={}",
         m_lastSceneCut ? L"yes" : L"no",
         badPercent, m_lastUnsafeCount, cellCount, m_lastMaxLocalUnsafe,
         m_lastMaxLocalUnsafe >= 8 ? L"yes" : L"no",
@@ -487,8 +487,8 @@ bool CNvidiaOpticalFlowDenseSynthesizer::Dispatch(ID3D11DeviceContext* context,
     };
     context->UpdateSubresource(m_denseParameters, 0, nullptr, &denseValues, 0, 0);
     ID3D11Buffer* denseBuffer = m_denseParameters;
-    const std::array<ID3D11ShaderResourceView*, 3> denseInputs = {
-        nextFrame, forwardFlowBtoA, m_seedViews[seedRead],
+    const std::array<ID3D11ShaderResourceView*, 4> denseInputs = {
+        nextFrame, forwardFlowBtoA, backwardFlowAtoB, m_seedViews[seedRead],
     };
     ID3D11UnorderedAccessView* denseOutput = m_denseFlowUav;
     context->CSSetShader(m_denseShader, nullptr, 0);

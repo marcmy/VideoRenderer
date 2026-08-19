@@ -12,7 +12,8 @@ static const uint InvalidSeed = 0xffffffffu;
 
 uint2 UnpackSeed(uint packed)
 {
-    return uint2(packed & 0xffffu, packed >> 16);
+    // Bit 31 marks an A->B-derived backfill seed; it is not part of Y.
+    return uint2(packed & 0xffffu, (packed >> 16) & 0x7fffu);
 }
 
 float SeedDistanceSquared(int2 cell, uint packed)

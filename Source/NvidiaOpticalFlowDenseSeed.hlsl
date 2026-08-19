@@ -48,9 +48,12 @@ float2 SampleFlow(Texture2D<int2> flowTexture, float2 pixel)
     return lerp(lerp(v00, v10, f.x), lerp(v01, v11, f.x), f.y);
 }
 
-uint PackSeed(uint2 cell)
+static const uint BackwardSeedBit = 0x80000000u;
+
+uint PackSeed(uint2 cell, bool useBackwardSeed)
 {
-    return (cell.y << 16) | (cell.x & 0xffffu);
+    uint packed = (cell.y << 16) | (cell.x & 0xffffu);
+    return useBackwardSeed ? (packed | BackwardSeedBit) : packed;
 }
 
 uint SampleIntensity(Texture2D<float4> frame, uint2 pixel)
@@ -154,7 +157,14 @@ void main(uint3 id : SV_DispatchThreadID)
     RepairCandidate[id.xy] = float4(
         repairMotion, repairConfidence, catastrophic ? 1.0 : 0.0);
 
-    SeedMap[id.xy] = consistency <= ConsistencyThreshold
-        ? PackSeed(id.xy)
+    // Preserve every trustworthy native B->A seed. If that direction fails
+    // its own round-trip check but A->B is still trustworthy, use the negated
+    // A->B vector as an asymmetric backfill seed instead of creating a large
+    // JFA hole. When both pass, prefer native B->A to preserve existing behavior.
+    bool forwardSeedValid = bToAError <= ConsistencyThreshold;
+    bool backwardSeedValid = aToBError <= ConsistencyThreshold;
+    bool useBackwardSeed = !forwardSeedValid && backwardSeedValid;
+    SeedMap[id.xy] = (forwardSeedValid || backwardSeedValid)
+        ? PackSeed(id.xy, useBackwardSeed)
         : InvalidSeed;
 }

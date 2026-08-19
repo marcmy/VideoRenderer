@@ -1,6 +1,7 @@
 Texture2D<float4> NextFrame : register(t0);
 Texture2D<int2> ForwardFlowBtoA : register(t1);
-Texture2D<uint> SeedMap : register(t2);
+Texture2D<int2> BackwardFlowAtoB : register(t2);
+Texture2D<uint> SeedMap : register(t3);
 RWTexture2D<float2> DenseFlow : register(u0);
 
 cbuffer DenseParameters : register(b0)
@@ -14,16 +15,36 @@ cbuffer DenseParameters : register(b0)
 };
 
 static const uint InvalidSeed = 0xffffffffu;
+static const uint BackwardSeedBit = 0x80000000u;
 
 uint2 UnpackSeed(uint packed)
 {
-    return uint2(packed & 0xffffu, packed >> 16);
+    return uint2(packed & 0xffffu, (packed >> 16) & 0x7fffu);
+}
+
+bool SeedUsesBackward(uint packed)
+{
+    return (packed & BackwardSeedBit) != 0u;
 }
 
 float2 LoadRawFlow(int2 cell)
 {
     cell = clamp(cell, int2(0, 0), int2(FlowSize) - 1);
     return float2(ForwardFlowBtoA.Load(int3(cell, 0))) / 32.0;
+}
+
+float2 LoadBackwardFlow(int2 cell)
+{
+    cell = clamp(cell, int2(0, 0), int2(FlowSize) - 1);
+    return float2(BackwardFlowAtoB.Load(int3(cell, 0))) / 32.0;
+}
+
+float2 LoadSeedFlow(uint packedSeed)
+{
+    int2 seed = int2(UnpackSeed(packedSeed));
+    return SeedUsesBackward(packedSeed)
+        ? -LoadBackwardFlow(seed)
+        : LoadRawFlow(seed);
 }
 
 float2 SampleRawFlow(float2 pixel)
@@ -83,7 +104,7 @@ void main(uint3 id : SV_DispatchThreadID)
             float infillWeight = exp(-infillDistance / infillScale);
             float weight = spatialWeight * colorWeight * infillWeight;
 
-            flowSum += LoadRawFlow(int2(seed)) * weight;
+            flowSum += LoadSeedFlow(packedSeed) * weight;
             weightSum += weight;
         }
     }
