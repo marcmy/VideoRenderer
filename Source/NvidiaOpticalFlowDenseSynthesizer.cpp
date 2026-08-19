@@ -336,15 +336,12 @@ std::wstring CNvidiaOpticalFlowDenseSynthesizer::GetTelemetryText() const
         return L"quality telemetry warming up";
     }
     const UINT cellCount = m_flowWidth * m_flowHeight;
-    const double unsafeFraction = static_cast<double>(m_lastUnsafeCount) /
+    const double badPercent = 100.0 * static_cast<double>(m_lastUnsafeCount) /
         std::max(1u, cellCount);
-    const double badPercent = 100.0 * unsafeFraction;
-    const double blendT = std::clamp((unsafeFraction - 0.25) / 0.15, 0.0, 1.0);
-    const double safetyBlendPercent = 100.0 * blendT * blendT * (3.0 - 2.0 * blendT);
     return std::format(
-        L"cut={}, bad {:.1f}% ({}/{}), safetyBlend {:.0f}%, worst7x7 {}/49, would8={}, would18={}",
+        L"cut={}, bad {:.1f}% ({}/{}), guard=local-photo, worst7x7 {}/49, would8={}, would18={}",
         m_lastSceneCut ? L"yes" : L"no",
-        badPercent, m_lastUnsafeCount, cellCount, safetyBlendPercent, m_lastMaxLocalUnsafe,
+        badPercent, m_lastUnsafeCount, cellCount, m_lastMaxLocalUnsafe,
         m_lastMaxLocalUnsafe >= 8 ? L"yes" : L"no",
         m_lastMaxLocalUnsafe >= 18 ? L"yes" : L"no");
 }
