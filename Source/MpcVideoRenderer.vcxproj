@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -50,7 +50,7 @@
       <ModuleDefinitionFile>MpcVideoRenderer.def</ModuleDefinitionFile>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
       <DelayLoadDLLs>d3d9.dll;dxva2.dll;dxgi.dll;d3d11.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
-    </Link>
+          </Link>
     <PreBuildEvent>
       <Command>..\update_revision.cmd</Command>
     </PreBuildEvent>
@@ -79,6 +79,9 @@
     <ClCompile Include="MediaSampleSideData.cpp" />
     <ClCompile Include="NvidiaMaxineVSR.cpp" />
     <ClCompile Include="NvidiaFrameInterpolation.cpp" />
+    <ClCompile Include="NvidiaOpticalFlowCapture.cpp" />
+    <ClCompile Include="NvidiaOpticalFlowDenseSynthesizer.cpp" />
+    <ClCompile Include="NvidiaOpticalFlowNative.cpp" />
     <ClCompile Include="PropPage.cpp" />
     <ClCompile Include="renbase2.cpp" />
     <ClCompile Include="Shaders.cpp" />
@@ -121,6 +124,9 @@
     <ClInclude Include="MediaSampleSideData.h" />
     <ClInclude Include="NvidiaMaxineVSR.h" />
     <ClInclude Include="NvidiaFrameInterpolation.h" />
+    <ClInclude Include="NvidiaOpticalFlowCapture.h" />
+    <ClInclude Include="NvidiaOpticalFlowDenseSynthesizer.h" />
+    <ClInclude Include="NvidiaOpticalFlowNative.h" />
     <ClInclude Include="PropPage.h" />
     <ClInclude Include="renbase2.h" />
     <ClInclude Include="resource.h" />
