@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/sync-upstream.yml'
 
 permissions:
   contents: write
@@ -53,8 +56,34 @@ jobs:
 
           git merge --no-ff --no-edit -m "Merge Aleksoid1978/VideoRenderer upstream master ($shortSha)" upstream/master
           if ($LASTEXITCODE -ne 0) {
-            git merge --abort
-            throw 'Upstream merge produced conflicts and requires manual resolution.'
+            $unmerged = @(git diff --name-only --diff-filter=U)
+            if ($upstreamSha -eq '77fd16e6e9b3e794b53da0253c6abfff990c16df' -and
+                $unmerged.Count -eq 1 -and
+                $unmerged[0] -eq 'Source/DX11VideoProcessor.cpp') {
+              git checkout --ours -- Source/DX11VideoProcessor.cpp
+              $path = 'Source/DX11VideoProcessor.cpp'
+              $text = Get-Content -Raw -Path $path
+              $old = "auto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled && (params.CDepth == 8 || !m_bACMEnabled))"
+              $new = "auto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled && m_InternalTexFmt == DXGI_FORMAT_B8G8R8A8_UNORM && (params.CDepth == 8 || !m_bACMEnabled))"
+              if (-not $text.Contains($old)) {
+                git merge --abort
+                throw 'Expected local SuperRes expression was not found; refusing automatic conflict resolution.'
+              }
+              $text = $text.Replace($old, $new)
+              [System.IO.File]::WriteAllText((Resolve-Path $path), $text, [System.Text.UTF8Encoding]::new($false))
+              git add -- Source/DX11VideoProcessor.cpp
+              git commit --no-edit
+              if ($LASTEXITCODE -ne 0) {
+                git merge --abort
+                throw 'Could not commit the guarded SuperRes conflict resolution.'
+              }
+              'Resolved the known upstream SuperRes conflict while preserving the fork Maxine exclusion.' |
+                Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            }
+            else {
+              git merge --abort
+              throw 'Upstream merge produced conflicts and requires manual resolution.'
+            }
           }
 
           git submodule sync --recursive
