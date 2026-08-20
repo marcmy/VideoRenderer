@@ -41,9 +41,191 @@ jobs:
           path: _bin/MpcVideoRenderer*.zip
           compression-level: 0
 
-  publish-maxine:
-    name: Publish latest Maxine build
+  package-unified:
+    name: Package unified setup
     needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download renderer artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: "MPC Video Renderer"
+          path: package-input
+
+      - name: Assemble and validate unified setup
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          renderer_package="$(find package-input -maxdepth 1 -type f -name 'MpcVideoRenderer*.zip' -print -quit)"
+          if [[ -z "$renderer_package" ]]; then
+            echo "No MPC Video Renderer package was found in the build artifact." >&2
+            exit 1
+          fi
+
+          work='package-work'
+          runtime_source="$work/runtime-source"
+          mkdir -p "$runtime_source"
+
+          # Prefer the latest unified package, then the legacy setup, then the
+          # legacy standalone Maxine assets. This carries forward the already
+          # verified runtime without storing NVIDIA binaries in the repository.
+          mkdir -p "$work/previous-unified"
+          if gh release download \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern 'MPCVR-Unified-Setup.zip' \
+              --dir "$work/previous-unified"; then
+            previous_unified="$(find "$work/previous-unified" -maxdepth 1 -type f -name 'MPCVR-Unified-Setup.zip' -print -quit)"
+            if [[ -n "$previous_unified" ]]; then
+              unzip -j "$previous_unified" \
+                'tools/UnifiedSetup/payload/MPCVR-Maxine-Runtime.zip' \
+                'tools/UnifiedSetup/payload/MPCVR-Maxine-Runtime.zip.sha256' \
+                -d "$runtime_source" || true
+            fi
+          fi
+
+          if [[ ! -f "$runtime_source/MPCVR-Maxine-Runtime.zip" \
+                || ! -f "$runtime_source/MPCVR-Maxine-Runtime.zip.sha256" ]]; then
+            mkdir -p "$work/previous-legacy"
+            if gh release download \
+                --repo "$GITHUB_REPOSITORY" \
+                --pattern 'MPCVR-Maxine-Setup.zip' \
+                --dir "$work/previous-legacy"; then
+              previous_legacy="$(find "$work/previous-legacy" -maxdepth 1 -type f -name 'MPCVR-Maxine-Setup.zip' -print -quit)"
+              if [[ -n "$previous_legacy" ]]; then
+                unzip -j "$previous_legacy" \
+                  'payload/MPCVR-Maxine-Runtime.zip' \
+                  'payload/MPCVR-Maxine-Runtime.zip.sha256' \
+                  -d "$runtime_source" || true
+              fi
+            fi
+          fi
+
+          if [[ ! -f "$runtime_source/MPCVR-Maxine-Runtime.zip" \
+                || ! -f "$runtime_source/MPCVR-Maxine-Runtime.zip.sha256" ]]; then
+            echo "No embedded Maxine runtime was found; trying standalone release assets."
+            gh release download \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern 'MPCVR-Maxine-Runtime.zip' \
+              --pattern 'MPCVR-Maxine-Runtime.zip.sha256' \
+              --dir "$runtime_source"
+          fi
+
+          runtime_zip="$runtime_source/MPCVR-Maxine-Runtime.zip"
+          runtime_checksum="$runtime_source/MPCVR-Maxine-Runtime.zip.sha256"
+          if [[ ! -f "$runtime_zip" || ! -f "$runtime_checksum" ]]; then
+            echo "A verified Maxine runtime bundle is required to package unified setup." >&2
+            exit 1
+          fi
+
+          expected="$(awk '{print tolower($1); exit}' "$runtime_checksum")"
+          actual="$(sha256sum "$runtime_zip" | awk '{print tolower($1)}')"
+          if [[ ! "$expected" =~ ^[a-f0-9]{64}$ || "$actual" != "$expected" ]]; then
+            echo "The carried Maxine runtime checksum did not verify." >&2
+            exit 1
+          fi
+          echo "Verified the carried Maxine runtime bundle: $actual"
+
+          root="$work/unified-root"
+          payload="$root/tools/UnifiedSetup/payload"
+          mkdir -p "$root/tools" "$payload"
+
+          cp -R tools/UnifiedSetup "$root/tools/"
+          cp -R tools/MaxineRuntimeInstaller "$root/tools/"
+          cp -R tools/KLiteMaxineUpdater "$root/tools/"
+          cp -R tools/nvoffruc "$root/tools/"
+          cp LICENSE.txt "$root/LICENSE.txt"
+          cp tools/UnifiedSetup/README.md "$root/README.md"
+
+          cp "$renderer_package" "$payload/MpcVideoRenderer-Maxine.zip"
+          cp "$runtime_zip" "$payload/MPCVR-Maxine-Runtime.zip"
+          cp "$runtime_checksum" "$payload/MPCVR-Maxine-Runtime.zip.sha256"
+
+          (
+            cd "$payload"
+            sha256sum \
+              MpcVideoRenderer-Maxine.zip \
+              MPCVR-Maxine-Runtime.zip \
+              > PAYLOAD-SHA256SUMS.txt
+          )
+
+          cat > "$root/MPCVR-Unified-Setup.cmd" <<'CMD'
+          @echo off
+          setlocal
+          call "%~dp0tools\UnifiedSetup\MPCVR-Unified-Setup.cmd" %*
+          exit /b %errorlevel%
+          CMD
+
+          cat > "$root/NVIDIA-OPTICAL-FLOW-SDK-NOT-INCLUDED.txt" <<'TXT'
+          NVIDIA's Optical Flow SDK is not redistributed in this package.
+
+          On first run, select the official Optical_Flow_SDK_5.0.7.zip when the
+          setup asks for it. The installer extracts only the required x64
+          NvOFFRUC runtime files, configures the runtime path, and keeps a
+          rollback snapshot.
+          TXT
+
+          mkdir -p package-output
+          (
+            cd "$root"
+            zip -r ../../package-output/MPCVR-Unified-Setup.zip .
+          )
+          (
+            cd package-output
+            sha256sum MPCVR-Unified-Setup.zip > MPCVR-Unified-Setup.zip.sha256
+          )
+
+          # Validate the public package structure and every embedded payload.
+          for required in \
+            'MPCVR-Unified-Setup.cmd' \
+            'README.md' \
+            'tools/UnifiedSetup/Start-MpcvrUnifiedSetup.ps1' \
+            'tools/UnifiedSetup/Install-MpcvrUnified.ps1' \
+            'tools/UnifiedSetup/Invoke-MpcvrAutoTune.ps1' \
+            'tools/UnifiedSetup/MpcvrSetup.RendererSettings.psm1' \
+            'tools/UnifiedSetup/MpcvrSetup.Recommendations.psm1' \
+            'tools/UnifiedSetup/payload/MpcVideoRenderer-Maxine.zip' \
+            'tools/UnifiedSetup/payload/MPCVR-Maxine-Runtime.zip' \
+            'tools/UnifiedSetup/payload/PAYLOAD-SHA256SUMS.txt' \
+            'tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1' \
+            'tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1' \
+            'tools/nvoffruc/Install-NvOFFRUCRuntime.ps1'; do
+            unzip -Z1 package-output/MPCVR-Unified-Setup.zip | grep -Fx "$required" >/dev/null || {
+              echo "Unified setup package is missing: $required" >&2
+              exit 1
+            }
+          done
+
+          verify_root="$work/verify"
+          mkdir -p "$verify_root"
+          unzip -q package-output/MPCVR-Unified-Setup.zip -d "$verify_root"
+          (
+            cd "$verify_root/tools/UnifiedSetup/payload"
+            sha256sum -c PAYLOAD-SHA256SUMS.txt
+          )
+
+      - name: Upload unified setup artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: "MPCVR Unified Setup"
+          path: |
+            package-output/MPCVR-Unified-Setup.zip
+            package-output/MPCVR-Unified-Setup.zip.sha256
+          compression-level: 0
+
+  publish-maxine:
+    name: Publish latest unified build
+    needs: [build, package-unified]
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master')
@@ -57,13 +239,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download build artifact
+      - name: Download renderer artifact
         uses: actions/download-artifact@v8
         with:
           name: "MPC Video Renderer"
           path: release
 
-      - name: Prepare release assets
+      - name: Download unified setup artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: "MPCVR Unified Setup"
+          path: release
+
+      - name: Prepare compatibility release assets
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -78,48 +266,22 @@ jobs:
           cp "$package" release/MpcVideoRenderer-Maxine.zip
 
           mkdir -p release/runtime-source
-
-          # New releases carry the runtime inside the previous unified setup.
-          # The first unified release can migrate from the old standalone assets.
-          mkdir -p release/previous-setup
-          if gh release download \
-              --repo "$GITHUB_REPOSITORY" \
-              --pattern 'MPCVR-Maxine-Setup.zip' \
-              --dir release/previous-setup; then
-            previous_setup="$(find release/previous-setup -maxdepth 1 -type f -name 'MPCVR-Maxine-Setup.zip' -print -quit)"
-            if [[ -n "$previous_setup" ]]; then
-              unzip -j "$previous_setup" \
-                'payload/MPCVR-Maxine-Runtime.zip' \
-                'payload/MPCVR-Maxine-Runtime.zip.sha256' \
-                -d release/runtime-source || true
-            fi
-          fi
-
-          if [[ ! -f release/runtime-source/MPCVR-Maxine-Runtime.zip \
-                || ! -f release/runtime-source/MPCVR-Maxine-Runtime.zip.sha256 ]]; then
-            echo "No embedded runtime was found; trying the legacy standalone release assets."
-            gh release download \
-              --repo "$GITHUB_REPOSITORY" \
-              --pattern 'MPCVR-Maxine-Runtime.zip' \
-              --pattern 'MPCVR-Maxine-Runtime.zip.sha256' \
-              --dir release/runtime-source
-          fi
+          unzip -j release/MPCVR-Unified-Setup.zip \
+            'tools/UnifiedSetup/payload/MPCVR-Maxine-Runtime.zip' \
+            'tools/UnifiedSetup/payload/MPCVR-Maxine-Runtime.zip.sha256' \
+            -d release/runtime-source
 
           runtime_zip='release/runtime-source/MPCVR-Maxine-Runtime.zip'
           runtime_checksum='release/runtime-source/MPCVR-Maxine-Runtime.zip.sha256'
-          if [[ ! -f "$runtime_zip" || ! -f "$runtime_checksum" ]]; then
-            echo "A verified Maxine runtime bundle is required to publish the unified setup." >&2
-            exit 1
-          fi
-
           expected="$(awk '{print tolower($1); exit}' "$runtime_checksum")"
           actual="$(sha256sum "$runtime_zip" | awk '{print tolower($1)}')"
           if [[ ! "$expected" =~ ^[a-f0-9]{64}$ || "$actual" != "$expected" ]]; then
-            echo "The carried Maxine runtime checksum did not verify." >&2
+            echo "The packaged Maxine runtime checksum did not verify." >&2
             exit 1
           fi
-          echo "Verified the carried Maxine runtime bundle: $actual"
 
+          # Retain the former Maxine-only setup for users and updater shortcuts
+          # that depend on the established package layout.
           setup_root='release/setup-root'
           payload_root="$setup_root/payload"
           mkdir -p "$payload_root"
@@ -127,7 +289,6 @@ jobs:
           cp tools/MaxineSetup/Install-MPCVR-Maxine.cmd "$setup_root/"
           cp tools/MaxineSetup/Install-MPCVR-Maxine.ps1 "$setup_root/"
           cp tools/MaxineSetup/README.md "$setup_root/README.md"
-
           cp tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 "$payload_root/"
           cp tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1 "$payload_root/"
           cp tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1 "$payload_root/"
@@ -142,7 +303,6 @@ jobs:
               MPCVR-Maxine-Runtime.zip \
               > PAYLOAD-SHA256SUMS.txt
           )
-
           (
             cd "$setup_root"
             zip -r ../MPCVR-Maxine-Setup.zip .
@@ -151,12 +311,12 @@ jobs:
           (
             cd release
             sha256sum \
+              MPCVR-Unified-Setup.zip \
               MPCVR-Maxine-Setup.zip \
               MpcVideoRenderer-Maxine.zip \
               > SHA256SUMS.txt
 
-            # Keep one tiny compatibility checksum so updater scripts installed
-            # by older releases continue working after the asset cleanup.
+            # Keep compatibility checksums for old updater shortcuts.
             sha256sum MpcVideoRenderer-Maxine.zip > MpcVideoRenderer-Maxine.zip.sha256
           )
 
@@ -167,26 +327,31 @@ jobs:
         run: |
           set -euo pipefail
           short_sha="${GITHUB_SHA:0:8}"
-          tag="maxine-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}-${short_sha}"
+          tag="unified-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}-${short_sha}"
           notes=$(cat <<EOF
-          Custom Maxine build from master commit ${GITHUB_SHA}.
+          Custom MPC Video Renderer unified build from master commit ${GITHUB_SHA}.
 
           Recommended download:
-          - MPCVR-Maxine-Setup.zip: one-click K-Lite setup containing the custom renderer, five-DLL Maxine runtime, environment-variable setup, and restore shortcut.
+          - MPCVR-Unified-Setup.zip: GUI-driven setup for MPCVR, NVIDIA Maxine, and NvOFFRUC with Automatic, Guided, and Advanced modes; transactional install/rollback; hardware inventory; profiles; live telemetry; local calibration; and safe recommendation/application tools.
 
-          Advanced/manual download:
+          NVIDIA Optical Flow SDK note:
+          - The SDK is not redistributed. Select the official Optical_Flow_SDK_5.0.7.zip during setup; the installer extracts and configures only the required runtime files.
+
+          Compatibility/manual downloads:
+          - MPCVR-Maxine-Setup.zip: previous Maxine-only one-click K-Lite setup.
           - MpcVideoRenderer-Maxine.zip: portable renderer files only.
 
-          SHA256SUMS.txt verifies both public ZIP files. The small per-renderer checksum remains only for compatibility with updater shortcuts installed by older releases.
+          SHA256SUMS.txt verifies all three public ZIP files. The small per-renderer checksum remains for compatibility with updater shortcuts installed by older releases.
           EOF
           )
 
           gh release create "$tag" \
+            release/MPCVR-Unified-Setup.zip \
             release/MPCVR-Maxine-Setup.zip \
             release/MpcVideoRenderer-Maxine.zip \
             release/SHA256SUMS.txt \
             release/MpcVideoRenderer-Maxine.zip.sha256 \
             --target "$GITHUB_SHA" \
-            --title "MPC Video Renderer Maxine build ${GITHUB_RUN_NUMBER}" \
+            --title "MPC Video Renderer unified build ${GITHUB_RUN_NUMBER}" \
             --notes "$notes" \
             --latest

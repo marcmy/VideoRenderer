@@ -1,0 +1,7 @@
+NVIDIA Optical Flow SDK is not redistributed in this package.
+
+Run MPCVR-Unified-Setup.cmd and click Install / Update.
+
+When frame interpolation is not already installed, setup opens NVIDIA's official secured Optical Flow SDK 5.0.7 page. Sign in to the free NVIDIA Developer Program and choose Accept & Download. Setup detects the finished ZIP in the Windows Downloads folder, validates and caches it, extracts the required runtime files, and continues automatically.
+
+Manual ZIP selection is only needed when the browser saves outside the configured Downloads folder, automatic detection times out, or an advanced/offline installation requires it.

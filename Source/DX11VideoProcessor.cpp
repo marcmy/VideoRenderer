@@ -3334,6 +3334,79 @@ HRESULT CDX11VideoProcessor::Render(int field, const REFERENCE_TIME frameStartTi
 		InitSwapChain(false);
 	}
 
+	{
+		MpcvrCalibrationTelemetrySnapshot telemetry = {};
+		const bool maxineEnabled = m_iMaxineOperation != MAXINE_OPERATION_Disabled;
+		const bool maxineActive = m_bMaxineVSRUsed;
+		const bool interpolationEnabled = m_iFrameInterpolationMode != FRUC_MODE_Disabled;
+		const double frameInterpolationMs = interpolationEnabled
+			? m_FrameInterpolation.GetLastProcessTimeMs()
+			: 0.0;
+		const bool interpolationActive = interpolationEnabled
+			&& frameInterpolationMs > 0.0
+			&& m_strFrameInterpolationStatus.rfind(L"Active", 0) == 0;
+
+		telemetry.flags = MpcvrCalibrationTelemetryFlags::RendererActive;
+		if (maxineEnabled) {
+			telemetry.flags |= MpcvrCalibrationTelemetryFlags::MaxineEnabled;
+		}
+		if (maxineActive) {
+			telemetry.flags |= MpcvrCalibrationTelemetryFlags::MaxineActive;
+		}
+		if (interpolationEnabled) {
+			telemetry.flags |= MpcvrCalibrationTelemetryFlags::FrameInterpolationEnabled;
+		}
+		if (interpolationActive) {
+			telemetry.flags |= MpcvrCalibrationTelemetryFlags::FrameInterpolationActive;
+		}
+		if (maxineActive && interpolationActive) {
+			telemetry.flags |= MpcvrCalibrationTelemetryFlags::CombinedActive;
+		}
+
+		telemetry.sourceWidth = m_srcRectWidth;
+		telemetry.sourceHeight = m_srcRectHeight;
+		telemetry.outputWidth = static_cast<uint32_t>(std::max(0, m_windowRect.Width()));
+		telemetry.outputHeight = static_cast<uint32_t>(std::max(0, m_windowRect.Height()));
+		telemetry.frames = m_pFilter->m_FrameStats.GetFrames();
+		telemetry.droppedFrames = m_pFilter->m_DrawStats.m_dropped;
+		telemetry.skippedFrames = m_RenderStats.dropped2;
+		telemetry.failedFrames = m_RenderStats.failed;
+
+		const double sourceFpsRaw = m_pFilter->m_FrameStats.GetAverageFps();
+		const double drawFpsRaw = m_pFilter->m_DrawStats.GetAverageFps();
+		telemetry.sourceFps = std::isfinite(sourceFpsRaw) && sourceFpsRaw > 0.0 ? sourceFpsRaw : 0.0;
+		telemetry.targetOutputFps = telemetry.sourceFps * (interpolationEnabled ? 2.0 : 1.0);
+		telemetry.measuredDrawFps = std::isfinite(drawFpsRaw) && drawFpsRaw > 0.0 ? drawFpsRaw : 0.0;
+
+		const bool ranVSR = maxineActive && m_iMaxineResolvedMode >= 0;
+		const bool ranDenoise = maxineActive && m_strMaxinePipeline.find(L"Denoise") != std::wstring::npos;
+		const bool ranDeblur = maxineActive && m_strMaxinePipeline.find(L"Deblur") != std::wstring::npos;
+		telemetry.maxineVsrMilliseconds = ranVSR ? m_MaxineVSR.GetLastProcessTimeMs() : 0.0;
+		telemetry.maxineDenoiseMilliseconds = ranDenoise ? m_MaxineDenoise.GetLastProcessTimeMs() : 0.0;
+		telemetry.maxineDeblurMilliseconds = ranDeblur ? m_MaxineDeblur.GetLastProcessTimeMs() : 0.0;
+		telemetry.maxineTotalMilliseconds = telemetry.maxineVsrMilliseconds
+			+ telemetry.maxineDenoiseMilliseconds
+			+ telemetry.maxineDeblurMilliseconds;
+		telemetry.frameInterpolationMilliseconds = frameInterpolationMs;
+		telemetry.combinedProcessingMilliseconds = telemetry.maxineTotalMilliseconds
+			+ telemetry.frameInterpolationMilliseconds;
+		telemetry.sourceFrameBudgetMilliseconds = telemetry.sourceFps > 0.0
+			? 1000.0 / telemetry.sourceFps
+			: 0.0;
+		telemetry.timingHeadroomMilliseconds = telemetry.sourceFrameBudgetMilliseconds > 0.0
+			? telemetry.sourceFrameBudgetMilliseconds - telemetry.combinedProcessingMilliseconds
+			: 0.0;
+
+		telemetry.maxineOperation = m_iMaxineOperation;
+		telemetry.maxineQuality = m_iMaxineQuality;
+		telemetry.maxineScale = m_iMaxineScale;
+		telemetry.maxineOversample = m_iMaxineOversample;
+		telemetry.frameInterpolationMode = m_iFrameInterpolationMode;
+		telemetry.frameInterpolationSourceLimit = m_iFrameInterpolationSourceLimit;
+		telemetry.frameInterpolationMaxOutput = m_iFrameInterpolationMaxOutput;
+		m_CalibrationTelemetry.Publish(telemetry);
+	}
+
 	return hr;
 }
 

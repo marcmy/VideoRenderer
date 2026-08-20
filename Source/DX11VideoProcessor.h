@@ -30,6 +30,7 @@
 #include "D3D11VP.h"
 #include "NvidiaMaxineVSR.h"
 #include "NvidiaFrameInterpolation.h"
+#include "MpcvrCalibrationTelemetry.h"
 #include "D3DUtil/D3D11Font.h"
 #include "D3DUtil/D3D11Geometry.h"
 #include "VideoProcessor.h"
@@ -239,6 +240,7 @@ private:
 	uint64_t m_FrameInterpolationPendingGeneration = 0;
 	std::wstring m_strFrameInterpolationStatus = L"Disabled";
 	CNvidiaFrameInterpolation m_FrameInterpolation;
+	CMpcvrCalibrationTelemetry m_CalibrationTelemetry;
 
 	bool m_bVPRTXVideoHDR = false;
 	bool m_bVPUseRTXVideoHDR = false;
