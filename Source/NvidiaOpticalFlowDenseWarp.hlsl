@@ -140,14 +140,17 @@ void main(uint3 id : SV_DispatchThreadID)
     // symmetrically warped endpoints agree. The topology guard can also invoke
     // this smoother repair field outside the old catastrophic mask when the
     // dense mapping itself is folding or stretching.
-    float repairMask = max(SampleRepair(source).z, SampleRepair(target).z);
+    float4 repairAtSource = SampleRepair(source);
+    float4 repairAtTarget = SampleRepair(target);
+    float repairMask = max(repairAtSource.z, repairAtTarget.z);
+    float unsupportedMask = max(repairAtSource.w, repairAtTarget.w);
     float repairPhotoError = densePhotoError;
     float repairTopologyReject = 1.0;
     float repairTrust = 0.0;
     float repairBlend = 0.0;
     float2 repairMotion = 0.0;
     if (repairMask > 1.0e-4 || denseTopologyReject > 1.0e-4) {
-        repairMotion = SampleRepair(target).xy;
+        repairMotion = repairAtTarget.xy;
         float2 previousSource = target - MidpointTime * repairMotion;
         float2 nextSource = target + (1.0 - MidpointTime) * repairMotion;
         float4 safePrevious = SampleFrame(PreviousFrame, previousSource);
@@ -163,11 +166,12 @@ void main(uint3 id : SV_DispatchThreadID)
     }
 
     // If BOTH available motion explanations are locally implausible, quarantine
-    // only that region with an unwarped temporal midpoint. This trades a small
-    // patch of ghost/blur for melted geometry without collapsing the entire
-    // frame back to source cadence. Motion disagreement is used only when there
-    // is also some image-domain disagreement, avoiding false rejection of the
-    // high-motion but visually coherent correspondences seen in the LOTR set.
+    // only that region with an unwarped temporal midpoint. In addition to the
+    // previous photo/topology tests, explicitly reject regions where NEITHER
+    // native NVOF direction passed its own round-trip check. Those cells have no
+    // trustworthy seed at all; letting JFA fabricate a dense vector there was
+    // the dominant source of the remaining liquid geometry in the latest
+    // motion-blurred Chamber captures.
     float bestPhotoError = min(densePhotoError, repairPhotoError);
     float photoReject = smoothstep(0.035, 0.10, bestPhotoError);
     float motionDisagreement = length(repairMotion + denseMotion);
@@ -175,7 +179,9 @@ void main(uint3 id : SV_DispatchThreadID)
         * smoothstep(0.015, 0.05, bestPhotoError);
     float oldLocalFallback = repairMask * max(photoReject, disagreementReject);
     float unresolvedTopology = denseTopologyReject * (1.0 - repairTrust);
-    float localFallback = saturate(max(oldLocalFallback, unresolvedTopology));
+    float localFallback = saturate(max(
+        unsupportedMask,
+        max(oldLocalFallback, unresolvedTopology)));
     if (localFallback > 1.0e-4) {
         float4 temporalMidpoint = lerp(
             SampleFrame(PreviousFrame, target),
