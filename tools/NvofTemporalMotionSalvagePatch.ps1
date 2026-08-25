@@ -14,10 +14,7 @@ if ($text.Contains('float LocalTemporalChange(int2 cell)') -and
     exit 0
 }
 
-$insertNeedle = @'
-static const uint BackwardSeedBit = 0x80000000u;
-'@
-
+$insertNeedle = 'static const uint BackwardSeedBit = 0x80000000u;'
 $insertReplacement = @'
 float TemporalChangeAtCell(int2 cell)
 {
@@ -49,15 +46,9 @@ static const uint BackwardSeedBit = 0x80000000u;
 if (-not $text.Contains($insertNeedle)) {
     throw 'Could not locate NVOF salvage helper insertion point.'
 }
-$text = $text.Replace($insertNeedle, $insertReplacement)
+$text = $text.Replace($insertNeedle, $insertReplacement.TrimEnd())
 
-$gateNeedle = @'
-    bool forwardSalvage = neitherConsistencyValid
-        && previousPixelInBounds
-        && bToAPhotoError <= 0.025
-        && ForwardMidpointNearlyRigid(cell);
-'@
-
+$gatePattern = '(?ms)^    bool forwardSalvage = neitherConsistencyValid\n\s*&& previousPixelInBounds\n\s*&& bToAPhotoError <= 0\.025\n\s*&& ForwardMidpointNearlyRigid\(cell\);'
 $gateReplacement = @'
     float localTemporalChange = neitherConsistencyValid
         ? LocalTemporalChange(cell)
@@ -74,10 +65,11 @@ $gateReplacement = @'
         && ForwardMidpointNearlyRigid(cell);
 '@
 
-if (-not $text.Contains($gateNeedle)) {
-    throw 'Could not locate conservative forward-salvage gate.'
+$matches = [regex]::Matches($text, $gatePattern)
+if ($matches.Count -ne 1) {
+    throw "Expected exactly one conservative forward-salvage gate, found $($matches.Count)."
 }
-$text = $text.Replace($gateNeedle, $gateReplacement)
+$text = [regex]::Replace($text, $gatePattern, $gateReplacement.TrimEnd(), 1)
 
 [IO.File]::WriteAllText($path, $text, [Text.UTF8Encoding]::new($false))
 Write-Host 'Applied NVOF local temporal-motion salvage gate (5-point MAD >= 0.030).'
