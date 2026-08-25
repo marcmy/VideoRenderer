@@ -16,6 +16,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: build-videorenderer-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-2022
@@ -41,11 +45,11 @@ jobs:
           if-no-files-found: error
 
   publish-maxine:
-    name: Publish latest Maxine build
+    name: Package Maxine K-Lite setup
     needs: build
     if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
-      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master')
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/test/maxine-resize-debounce-nvof')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -153,7 +157,18 @@ jobs:
             sha256sum MpcVideoRenderer-Maxine.zip > MpcVideoRenderer-Maxine.zip.sha256
           )
 
+      - name: Upload K-Lite installer artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: "MPCVR Maxine K-Lite Setup"
+          path: |
+            release/MPCVR-Maxine-Setup.zip
+            release/SHA256SUMS.txt
+          compression-level: 0
+          if-no-files-found: error
+
       - name: Publish immutable release
+        if: github.ref == 'refs/heads/master'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
