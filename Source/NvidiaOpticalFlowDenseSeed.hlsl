@@ -26,7 +26,6 @@ static const uint InvalidSeed = 0xffffffffu;
 static const uint SceneCutBit = 0x80000000u;
 static const uint CutSampleWidth = 32u;
 static const uint CutSampleHeight = 18u;
-static const uint CutHistogramBins = 16u;
 static const uint CutSampleCount = CutSampleWidth * CutSampleHeight;
 
 float2 LoadFlow(Texture2D<int2> flowTexture, int2 cell)
@@ -64,14 +63,6 @@ uint SampleIntensity(Texture2D<float4> frame, uint2 pixel)
 
 bool DetectSceneCut()
 {
-    uint histA[CutHistogramBins];
-    uint histB[CutHistogramBins];
-    [unroll]
-    for (uint initBin = 0u; initBin < CutHistogramBins; ++initBin) {
-        histA[initBin] = 0u;
-        histB[initBin] = 0u;
-    }
-
     uint sumA = 0u;
     uint sumB = 0u;
     uint sumAA = 0u;
@@ -88,8 +79,6 @@ bool DetectSceneCut()
                 min(((2u * sy + 1u) * FrameSize.y) / (2u * CutSampleHeight), FrameSize.y - 1u));
             uint a = SampleIntensity(PreviousFrame, pixel);
             uint b = SampleIntensity(NextFrame, pixel);
-            histA[min(a >> 4, CutHistogramBins - 1u)]++;
-            histB[min(b >> 4, CutHistogramBins - 1u)]++;
             sumA += a;
             sumB += b;
             sumAA += a * a;
@@ -99,25 +88,18 @@ bool DetectSceneCut()
         }
     }
 
-    uint intersectionCount = 0u;
-    [unroll]
-    for (uint histBin = 0u; histBin < CutHistogramBins; ++histBin) {
-        intersectionCount += min(histA[histBin], histB[histBin]);
-    }
-
     float n = float(CutSampleCount);
-    float histogramIntersection = float(intersectionCount) / n;
     float mad = float(sumAbs) / (n * 255.0);
     float covariance = n * float(sumAB) - float(sumA) * float(sumB);
     float varianceA = max(n * float(sumAA) - float(sumA) * float(sumA), 0.0);
     float varianceB = max(n * float(sumBB) - float(sumB) * float(sumB), 0.0);
     float correlation = covariance / sqrt(max(varianceA * varianceB, 1.0));
 
-    // Conservative three-way classifier derived from the captured LOTR set.
-    // A true shot cut must simultaneously change the intensity distribution,
-    // destroy spatial correlation, and have substantial absolute image change.
-    return histogramIntersection < CutHistogramThreshold
-        && correlation < CutCorrelationThreshold
+    // The expanded Chamber-of-Mazarbul capture corpus showed that dark cuts
+    // can retain nearly the same coarse intensity histogram. Spatial
+    // decorrelation plus substantial absolute image change separated all
+    // captured hard cuts from the same-shot fast-motion examples cleanly.
+    return correlation < CutCorrelationThreshold
         && mad > CutMadThreshold;
 }
 
