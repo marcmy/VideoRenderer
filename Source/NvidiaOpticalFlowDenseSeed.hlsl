@@ -129,6 +129,10 @@ void main(uint3 id : SV_DispatchThreadID)
         InterlockedAdd(UnsafeCellCount[uint2(0, 0)], 1u);
     }
 
+    bool forwardSeedValid = bToAError <= ConsistencyThreshold;
+    bool backwardSeedValid = aToBError <= ConsistencyThreshold;
+    bool unsupported = !forwardSeedValid && !backwardSeedValid;
+
     // Build a local-repair motion candidate in a common A->B orientation.
     // Occlusions are strongly asymmetric: keep the direction whose own
     // round-trip check is more trustworthy instead of discarding both.
@@ -136,15 +140,19 @@ void main(uint3 id : SV_DispatchThreadID)
     float2 repairMotion = useAtoB ? aToB : -bToA;
     float repairError = min(aToBError, bToAError);
     float repairConfidence = exp(-min(repairError, 80.0) / 10.0);
+
+    // Pack two exact small-integer flags into W for the repair pass:
+    // bit 0 = old catastrophic-region mask; bit 1 = neither NVOF direction
+    // passed its own round-trip consistency test. The latter identifies cells
+    // where JFA would otherwise be inventing motion with no trustworthy seed.
+    float repairFlags = (catastrophic ? 1.0 : 0.0) + (unsupported ? 2.0 : 0.0);
     RepairCandidate[id.xy] = float4(
-        repairMotion, repairConfidence, catastrophic ? 1.0 : 0.0);
+        repairMotion, repairConfidence, repairFlags);
 
     // Preserve every trustworthy native B->A seed. If that direction fails
     // its own round-trip check but A->B is still trustworthy, use the negated
     // A->B vector as an asymmetric backfill seed instead of creating a large
     // JFA hole. When both pass, prefer native B->A to preserve existing behavior.
-    bool forwardSeedValid = bToAError <= ConsistencyThreshold;
-    bool backwardSeedValid = aToBError <= ConsistencyThreshold;
     bool useBackwardSeed = !forwardSeedValid && backwardSeedValid;
     SeedMap[id.xy] = (forwardSeedValid || backwardSeedValid)
         ? PackSeed(id.xy, useBackwardSeed)
