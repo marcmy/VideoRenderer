@@ -35,6 +35,11 @@ $shaders = @(
         Symbol = 'g_NvofDenseSeedBytecode'
     },
     @{
+        Source = 'NvidiaOpticalFlowDenseRepair.hlsl'
+        Header = 'NvidiaOpticalFlowDenseRepairBytecode.h'
+        Symbol = 'g_NvofDenseRepairBytecode'
+    },
+    @{
         Source = 'NvidiaOpticalFlowDenseWarp.hlsl'
         Header = 'NvidiaOpticalFlowDenseWarpBytecode.h'
         Symbol = 'g_NvofDenseWarpBytecode'
@@ -51,4 +56,4 @@ foreach ($shader in $shaders) {
     }
 }
 
-Write-Host 'Regenerated native NVOF scene-cut/topology-guard shader bytecode.'
+Write-Host 'Regenerated native NVOF scene-cut/topology/unsupported-fallback shader bytecode.'
