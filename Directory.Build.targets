@@ -4,4 +4,10 @@
           Condition="'$(MSBuildProjectName)' == 'MpcVideoRenderer' and Exists('$(MSBuildThisFileDirectory)tools\MaxineResizeDebouncePatch.ps1')">
     <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)tools\MaxineResizeDebouncePatch.ps1&quot;" />
   </Target>
+
+  <Target Name="RegenerateNvofTopologyGuardShaders"
+          BeforeTargets="PrepareForBuild"
+          Condition="'$(MSBuildProjectName)' == 'MpcVideoRenderer' and Exists('$(MSBuildThisFileDirectory)tools\RegenerateNvofTopologyShaders.ps1')">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)tools\RegenerateNvofTopologyShaders.ps1&quot;" />
+  </Target>
 </Project>
