@@ -21,7 +21,15 @@ float4 LoadCandidateClamped(int2 cell)
 float LoadCatastrophic(int2 cell)
 {
     if (any(cell < 0) || any(cell >= int2(FlowSize))) return 0.0;
-    return RepairCandidate.Load(int3(cell, 0)).w;
+    float encoded = round(RepairCandidate.Load(int3(cell, 0)).w);
+    return fmod(encoded, 2.0) >= 1.0 ? 1.0 : 0.0;
+}
+
+float LoadUnsupported(int2 cell)
+{
+    if (any(cell < 0) || any(cell >= int2(FlowSize))) return 0.0;
+    float encoded = round(RepairCandidate.Load(int3(cell, 0)).w);
+    return encoded >= 2.0 ? 1.0 : 0.0;
 }
 
 [numthreads(8, 8, 1)]
@@ -52,25 +60,37 @@ void main(uint3 id : SV_DispatchThreadID)
         ? flowSum / weightSum
         : LoadCandidateClamped(center).xy;
 
-    // The catastrophic map is in source/image coordinates. Build a soft
-    // coarse mask here; the warp shader later samples it at the resolved
-    // B-source coordinate so the repair follows the actual emitted artifact.
+    // Build two independently feathered coarse masks. Z retains the existing
+    // catastrophic-region repair mask. W marks regions where neither native
+    // NVOF direction passed its own consistency check, meaning the dense/JFA
+    // motion has no trustworthy source seed and should be treated as unsupported.
     float repairMask = 0.0;
+    float unsupportedMask = 0.0;
     float maskDenom = max(2.0 * MaskSigma * MaskSigma, 1.0e-6);
     [loop]
     for (int my = -int(MaskRadius); my <= int(MaskRadius); ++my) {
         [loop]
         for (int mx = -int(MaskRadius); mx <= int(MaskRadius); ++mx) {
-            float catastrophic = LoadCatastrophic(center + int2(mx, my));
-            if (catastrophic <= 0.0) continue;
+            int2 sampleCell = center + int2(mx, my);
+            float catastrophic = LoadCatastrophic(sampleCell);
+            float unsupported = LoadUnsupported(sampleCell);
+            if (catastrophic <= 0.0 && unsupported <= 0.0) continue;
 
             float distance = length(float2(mx, my));
             float outsideDilation = max(0.0, distance - MaskDilation);
             float feather = exp(
                 -(outsideDilation * outsideDilation) / maskDenom);
-            repairMask = max(repairMask, feather);
+            if (catastrophic > 0.0) {
+                repairMask = max(repairMask, feather);
+            }
+            if (unsupported > 0.0) {
+                unsupportedMask = max(unsupportedMask, feather);
+            }
         }
     }
 
-    RepairField[id.xy] = float4(repairMotion, saturate(repairMask), 0.0);
+    RepairField[id.xy] = float4(
+        repairMotion,
+        saturate(repairMask),
+        saturate(unsupportedMask));
 }
