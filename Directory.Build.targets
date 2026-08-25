@@ -5,8 +5,14 @@
     <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)tools\MaxineResizeDebouncePatch.ps1&quot;" />
   </Target>
 
+  <Target Name="ApplyNvofTemporalMotionSalvagePatch"
+          Condition="'$(MSBuildProjectName)' == 'MpcVideoRenderer' and Exists('$(MSBuildThisFileDirectory)tools\NvofTemporalMotionSalvagePatch.ps1')">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)tools\NvofTemporalMotionSalvagePatch.ps1&quot;" />
+  </Target>
+
   <Target Name="RegenerateNvofTopologyGuardShaders"
           BeforeTargets="PrepareForBuild"
+          DependsOnTargets="ApplyNvofTemporalMotionSalvagePatch"
           Condition="'$(MSBuildProjectName)' == 'MpcVideoRenderer' and Exists('$(MSBuildThisFileDirectory)tools\RegenerateNvofTopologyShaders.ps1')">
     <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)tools\RegenerateNvofTopologyShaders.ps1&quot;" />
   </Target>
