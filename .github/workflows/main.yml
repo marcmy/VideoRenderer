@@ -5,13 +5,11 @@ on:
     paths-ignore:
       - '**.txt'
       - '**.md'
-      - '**.cmd'
       - '**.vcxproj.filters'
   pull_request:
     paths-ignore:
       - '**.txt'
       - '**.md'
-      - '**.cmd'
       - '**.vcxproj.filters'
   workflow_dispatch:
 
@@ -40,6 +38,7 @@ jobs:
           name: "MPC Video Renderer"
           path: _bin/MpcVideoRenderer*.zip
           compression-level: 0
+          if-no-files-found: error
 
   publish-maxine:
     name: Publish latest Maxine build
