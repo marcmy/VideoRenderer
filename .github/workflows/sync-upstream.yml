@@ -1,8 +1,11 @@
 name: Sync upstream
 
 on:
-  schedule:
-    - cron: '17 */6 * * *'
+  push:
+    branches:
+      - test/maxine-resize-debounce-nvof
+    paths:
+      - '.github/workflows/sync-upstream.yml'
   workflow_dispatch:
 
 permissions:
@@ -10,7 +13,7 @@ permissions:
   actions: write
 
 concurrency:
-  group: upstream-sync
+  group: upstream-sync-test-maxine-nvof
   cancel-in-progress: false
 
 jobs:
@@ -18,10 +21,10 @@ jobs:
     runs-on: windows-2022
 
     steps:
-      - name: Checkout master
+      - name: Checkout test Maxine/NVOF branch
         uses: actions/checkout@v7
         with:
-          ref: master
+          ref: test/maxine-resize-debounce-nvof
           fetch-depth: 0
           submodules: recursive
 
@@ -51,10 +54,13 @@ jobs:
           $upstreamSha = (git rev-parse upstream/master).Trim()
           $shortSha = $upstreamSha.Substring(0, 8)
 
-          git merge --no-ff --no-edit -m "Merge Aleksoid1978/VideoRenderer upstream master ($shortSha)" upstream/master
+          # This branch intentionally carries extensive custom renderer work.
+          # Prefer upstream only for genuinely conflicting hunks while preserving
+          # all non-conflicting Maxine/NVOF changes from the branch.
+          git merge --no-ff --no-edit -X theirs -m "Merge Aleksoid1978/VideoRenderer upstream master ($shortSha)" upstream/master
           if ($LASTEXITCODE -ne 0) {
             git merge --abort
-            throw 'Upstream merge produced conflicts and requires manual resolution.'
+            throw 'Upstream merge still produced unresolved conflicts and requires manual resolution.'
           }
 
           git submodule sync --recursive
@@ -77,32 +83,21 @@ jobs:
         run: |
           .\build_mpcvr.cmd NoWait
           if ($LASTEXITCODE -ne 0) {
-            throw "Merged source failed to build with exit code $LASTEXITCODE. Master was not updated."
+            throw "Merged source failed to build with exit code $LASTEXITCODE. The test branch was not updated."
           }
 
       - name: Push verified merge
         if: steps.merge.outputs.changed == 'true'
         shell: pwsh
         run: |
-          git push origin HEAD:master
+          git push origin HEAD:test/maxine-resize-debounce-nvof
           if ($LASTEXITCODE -ne 0) {
-            throw 'Could not push the verified upstream merge to master. A newer master commit may have arrived during the run.'
-          }
-
-      - name: Dispatch rolling build
-        if: steps.merge.outputs.changed == 'true'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh workflow run main.yml --ref master --repo $env:GITHUB_REPOSITORY
-          if ($LASTEXITCODE -ne 0) {
-            throw 'The upstream merge was pushed, but the rolling master build could not be dispatched.'
+            throw 'Could not push the verified upstream merge to the test branch. A newer branch commit may have arrived during the run.'
           }
 
       - name: Record result
         if: steps.merge.outputs.changed == 'true'
         shell: pwsh
         run: |
-          'The verified merge was pushed to master and a fresh rolling Maxine build was dispatched.' |
+          'The verified upstream merge was pushed to test/maxine-resize-debounce-nvof. Its normal build workflow will package a fresh K-Lite setup artifact.' |
             Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
