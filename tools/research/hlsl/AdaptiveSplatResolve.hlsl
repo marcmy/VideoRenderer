@@ -1,8 +1,7 @@
 StructuredBuffer<int> SplatAccum : register(t0);
 Texture2D<uint> PackedCellMetadata : register(t1);
 
-RWTexture2D<float4> ResolvedPrevious : register(u0);
-RWTexture2D<float4> ResolvedNext : register(u1);
+RWTexture2DArray<float4> ResolvedSplat : register(u0);
 
 cbuffer ResolveParameters : register(b0)
 {
@@ -41,6 +40,8 @@ void main(uint3 id : SV_DispatchThreadID)
         (inBoundsBtoA ? qBtoA : 0.0)
         + (inBoundsAtoB ? qAtoB : 0.0));
 
-    ResolvedPrevious[id.xy] = float4(previous.xy, previous.z, combinedQ);
-    ResolvedNext[id.xy] = float4(next.xy, next.z, 0.0);
+    // Slice 0 = previous/A side, slice 1 = next/B side.
+    // Live resource format is DXGI_FORMAT_R16G16B16A16_FLOAT.
+    ResolvedSplat[uint3(id.xy, 0u)] = float4(previous.xy, previous.z, combinedQ);
+    ResolvedSplat[uint3(id.xy, 1u)] = float4(next.xy, next.z, 0.0);
 }
