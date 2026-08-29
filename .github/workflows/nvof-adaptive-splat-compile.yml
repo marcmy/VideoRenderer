@@ -48,6 +48,8 @@ jobs:
           $out = Join-Path $env:RUNNER_TEMP 'adaptive-splat-sm5'
           New-Item -ItemType Directory -Path $out -Force | Out-Null
           $shaders = @(
+            'tools\research\hlsl\AdaptiveSeedMetadataProbe.hlsl',
+            'tools\research\hlsl\AdaptivePackedRegionGateProbe.hlsl',
             'tools\research\hlsl\AdaptiveSplatScatter.hlsl',
             'tools\research\hlsl\AdaptiveSplatResolve.hlsl',
             'tools\research\hlsl\AdaptiveSplatWarpProbe.hlsl'
