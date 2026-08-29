@@ -18,6 +18,9 @@ cbuffer WarpProbeParameters : register(b0)
     float2 Padding;
 };
 
+static const uint SceneCutBit = 0x80000000u;
+static const float SupportedMidpointEpsilon = 1.0e-4;
+
 float2 PixelUv(float2 pixel)
 {
     return (pixel + 0.5) / float2(FrameSize);
@@ -47,39 +50,66 @@ float FieldAuthority()
         100.0 * float(badCount) / float(interiorCount));
 }
 
+float4 ChannelMedian(float4 a, float4 b, float4 c)
+{
+    float4 lo = min(a, min(b, c));
+    float4 hi = max(a, max(b, c));
+    return a + b + c - lo - hi;
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
     if (any(id.xy >= FrameSize)) return;
 
     float2 pixel = float2(id.xy);
+    float2 frameUv = PixelUv(pixel);
+    float4 previous = PreviousFrame.SampleLevel(LinearClamp, frameUv, 0.0);
+    float4 next = NextFrame.SampleLevel(LinearClamp, frameUv, 0.0);
+
+    if ((PackedQuality.Load(int3(0, 0, 0)) & SceneCutBit) != 0u) {
+        OutputFrame[id.xy] = previous;
+        return;
+    }
+
+    // Stand-in golden reconstruction for compile/resource-layout proof. The
+    // production patch will append the adaptive median to the existing golden
+    // Warp result rather than replace the golden logic with this probe.
+    float2 dense = DenseFlow.SampleLevel(LinearClamp, frameUv, 0.0);
+    float4 denseCandidate = NextFrame.SampleLevel(
+        LinearClamp, PixelUv(pixel - 0.5 * dense), 0.0);
+    float4 repair = RepairField.SampleLevel(LinearClamp, CoarseUv(pixel), 0.0);
+    float4 repairCandidate = PreviousFrame.SampleLevel(
+        LinearClamp, PixelUv(pixel - 0.5 * repair.xy), 0.0);
+    float4 golden = lerp(denseCandidate, repairCandidate, saturate(repair.z));
+
+    // Build #2 adaptive path is midpoint-only by overflow proof. Any other
+    // phase leaves the existing golden reconstruction untouched.
+    if (abs(MidpointTime - 0.5) > SupportedMidpointEpsilon) {
+        OutputFrame[id.xy] = golden;
+        return;
+    }
+
     float2 uv = CoarseUv(pixel);
     float4 mapA = ResolvedSplat.SampleLevel(LinearClamp, float3(uv, 0.0), 0.0);
     float4 mapB = ResolvedSplat.SampleLevel(LinearClamp, float3(uv, 1.0), 0.0);
-
-    float4 temporal = lerp(
-        PreviousFrame.SampleLevel(LinearClamp, PixelUv(pixel), 0.0),
-        NextFrame.SampleLevel(LinearClamp, PixelUv(pixel), 0.0),
-        MidpointTime);
+    float4 temporal = 0.5 * (previous + next);
 
     float4 warpedA = PreviousFrame.SampleLevel(
         LinearClamp, PixelUv(pixel + mapA.xy), 0.0);
     float4 warpedB = NextFrame.SampleLevel(
         LinearClamp, PixelUv(pixel + mapB.xy), 0.0);
 
-    float t = saturate(MidpointTime);
-    float wa = (1.0 - t) * pow(max(mapA.z, 1.0e-8), 3.0);
-    float wb = t * pow(max(mapB.z, 1.0e-8), 3.0);
+    float wa = pow(max(mapA.z, 1.0e-8), 3.0);
+    float wb = pow(max(mapB.z, 1.0e-8), 3.0);
     float denom = wa + wb;
     float4 alternate = denom > 1.0e-7
         ? (warpedA * wa + warpedB * wb) / denom
         : temporal;
 
-    // Compile probe only: use temporal as the stand-in 'golden' hypothesis.
-    float4 robust = temporal + alternate - temporal;
+    float4 robust = ChannelMedian(golden, alternate, temporal);
     float localRisk = SmoothstepScalar(1200.0, 2400.0, mapA.w)
         * SmoothstepScalar(0.03, 0.22, max(mapA.z, mapB.z));
-    float phaseEnvelope = 4.0 * t * (1.0 - t);
-    float alpha = min(localRisk, 0.60) * FieldAuthority() * phaseEnvelope;
-    OutputFrame[id.xy] = lerp(temporal, robust, alpha);
+    float alpha = min(localRisk, 0.60) * FieldAuthority();
+    OutputFrame[id.xy] = lerp(golden, robust, alpha);
 }
