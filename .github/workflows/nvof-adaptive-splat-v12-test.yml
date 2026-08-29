@@ -1,0 +1,134 @@
+name: NVOF Adaptive Splat V1.2 Experimental Build
+
+on:
+  push:
+    branches:
+      - research/nvof-adaptive-splat-v12
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nvof-adaptive-splat-v12-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout frozen-baseline experiment branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Apply golden salvage plus adaptive-splat V1.2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\tools\NvofTemporalMotionSalvagePatch.ps1
+          python .\tools\NvofAdaptiveSplatV12Patch.py
+          if ($LASTEXITCODE -ne 0) {
+            throw "NvofAdaptiveSplatV12Patch.py failed with exit code $LASTEXITCODE"
+          }
+          & .\tools\RegenerateNvofAdaptiveSplatV12Shaders.ps1
+          git diff --check
+          git status --short
+
+      - name: Build MPC Video Renderer
+        shell: pwsh
+        run: |
+          .\build_mpcvr.cmd NoWait
+          if ($LASTEXITCODE -ne 0) {
+            throw "build_mpcvr.cmd failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Package one-click K-Lite test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Join-Path $PWD 'release'
+          $root = Join-Path $release 'MPCVR-NVOF-Adaptive-Splat-V12-Test'
+          $payload = Join-Path $root 'payload'
+          New-Item -ItemType Directory -Path $payload -Force | Out-Null
+
+          $x86 = Join-Path $PWD '_bin\Filter_x86\MpcVideoRenderer.ax'
+          $x64 = Join-Path $PWD '_bin\Filter_x64\MpcVideoRenderer64.ax'
+          foreach ($path in @($x86, $x64)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing built renderer: $path"
+            }
+          }
+
+          Copy-Item -LiteralPath $x86 -Destination (Join-Path $payload 'MpcVideoRenderer.ax') -Force
+          Copy-Item -LiteralPath $x64 -Destination (Join-Path $payload 'MpcVideoRenderer64.ax') -Force
+          Copy-Item -LiteralPath '.\tools\NvofAdaptiveSplatV12Test\Install-Adaptive-Splat-V12.cmd' -Destination $root -Force
+          Copy-Item -LiteralPath '.\tools\NvofAdaptiveSplatV12Test\Restore-Golden.cmd' -Destination $root -Force
+          Copy-Item -LiteralPath '.\tools\NvofAdaptiveSplatV12Test\Install-Adaptive-Splat-V12.ps1' -Destination $root -Force
+
+          $readme = @"
+          MPCVR Native-NVOF Adaptive Splat V1.2 experimental build
+          =========================================================
+
+          Branch: $env:GITHUB_REF_NAME
+          Commit: $env:GITHUB_SHA
+
+          Test change:
+          - Starts from the frozen golden native-NVOF renderer and preserves its
+            dense flow, repair, topology, hard-cut, and temporal fallback path.
+          - Retains the golden local temporal-motion salvage gate.
+          - Adds a clean-room coarse adaptive midpoint-splat hypothesis.
+          - Seed packs directional q/error/in-bounds metadata and a 4%-trimmed
+            q>=1600 field occupancy count.
+          - Two extra flow-grid dispatches perform 2x2 fixed-point scatter and
+            FP16 two-slice resolve; there is no extra full-resolution pass.
+          - Warp computes the golden result first, then only at t=0.5 applies a
+            bounded channelwise median(golden, splat, temporal) vote.
+          - Field authority ramps from 15% to 25%; local q ramps 1200 to 2400;
+            support ramps .03 to .22; robust authority is capped at .60.
+          - Hard cuts and non-midpoint phases remain golden-only.
+          - Telemetry contains: guard=local-photo+adaptive-splat-v12
+
+          Install:
+          1. Close MPC-HC.
+          2. Run Install-Adaptive-Splat-V12.cmd.
+          3. Accept the administrator prompt.
+          4. Restart MPC-HC and test normally.
+
+          Roll back:
+          - Close MPC-HC and run Restore-Golden.cmd.
+          - The installer preserves the renderer binaries that were installed
+            before your first adaptive-splat V1.2 test in:
+              %ProgramData%\MPCVR-Adaptive-Splat-V12-Backup
+          - No regsvr32 or filter registration changes are made.
+          "@
+          [IO.File]::WriteAllText((Join-Path $root 'README.txt'), $readme, [Text.UTF8Encoding]::new($false))
+
+          $payloadHashes = @()
+          foreach ($name in @('MpcVideoRenderer.ax', 'MpcVideoRenderer64.ax')) {
+            $hash = (Get-FileHash -LiteralPath (Join-Path $payload $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            $payloadHashes += "$hash  $name"
+          }
+          [IO.File]::WriteAllLines((Join-Path $root 'PAYLOAD-SHA256SUMS.txt'), $payloadHashes, [Text.UTF8Encoding]::new($false))
+
+          $zip = Join-Path $release 'MPCVR-NVOF-Adaptive-Splat-V12-Test.zip'
+          if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+          Compress-Archive -Path (Join-Path $root '*') -DestinationPath $zip -CompressionLevel Optimal
+
+          $zipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText(
+            (Join-Path $release 'MPCVR-NVOF-Adaptive-Splat-V12-Test.zip.sha256'),
+            "$zipHash  MPCVR-NVOF-Adaptive-Splat-V12-Test.zip`n",
+            [Text.UTF8Encoding]::new($false))
+
+      - name: Upload adaptive-splat V1.2 test package
+        uses: actions/upload-artifact@v7
+        with:
+          name: MPCVR-NVOF-Adaptive-Splat-V12-Test
+          path: |
+            release/MPCVR-NVOF-Adaptive-Splat-V12-Test.zip
+            release/MPCVR-NVOF-Adaptive-Splat-V12-Test.zip.sha256
+          compression-level: 0
+          if-no-files-found: error
