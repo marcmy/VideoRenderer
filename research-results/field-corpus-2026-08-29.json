@@ -1,0 +1,21 @@
+[
+  {"name":"bilbo","field":0.745,"cut":false},
+  {"name":"022518","field":7.679,"cut":false},
+  {"name":"234854","field":8.079,"cut":false},
+  {"name":"013339","field":9.429,"cut":false},
+  {"name":"234826","field":12.798,"cut":false},
+  {"name":"234955","field":16.661,"cut":false},
+  {"name":"013416","field":18.531,"cut":false},
+  {"name":"022550","field":20.367,"cut":false},
+  {"name":"022539","field":23.394,"cut":false},
+  {"name":"001431","field":27.738,"cut":false},
+  {"name":"000820","field":27.871,"cut":false},
+  {"name":"020950","field":28.053,"cut":false},
+  {"name":"235102","field":29.403,"cut":false},
+  {"name":"234925","field":30.489,"cut":false},
+  {"name":"022530","field":33.597,"cut":false},
+  {"name":"021001","field":34.785,"cut":false},
+  {"name":"000620","field":37.653,"cut":true,"corr":0.1119,"mad":0.08446},
+  {"name":"001406","field":42.204,"cut":true,"corr":0.09031,"mad":0.12006},
+  {"name":"000853","field":51.060,"cut":true,"corr":0.06906,"mad":0.06772}
+]
