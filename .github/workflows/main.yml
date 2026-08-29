@@ -5,13 +5,11 @@ on:
     paths-ignore:
       - '**.txt'
       - '**.md'
-      - '**.cmd'
       - '**.vcxproj.filters'
   pull_request:
     paths-ignore:
       - '**.txt'
       - '**.md'
-      - '**.cmd'
       - '**.vcxproj.filters'
   workflow_dispatch:
 
@@ -24,7 +22,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
@@ -40,6 +38,7 @@ jobs:
           name: "MPC Video Renderer"
           path: _bin/MpcVideoRenderer*.zip
           compression-level: 0
+          if-no-files-found: error
 
   package-unified:
     name: Package unified setup
@@ -235,7 +234,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
