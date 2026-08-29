@@ -1,0 +1,21 @@
+[
+  {"name":"bilbo","mean":0.77,"min":0.74,"max":0.79,"span":0.05,"authority_min":0.000,"authority_max":0.000},
+  {"name":"022518","mean":7.74,"min":7.59,"max":7.94,"span":0.35,"authority_min":0.000,"authority_max":0.000},
+  {"name":"234854","mean":8.32,"min":8.08,"max":8.67,"span":0.59,"authority_min":0.000,"authority_max":0.000},
+  {"name":"013339","mean":9.50,"min":9.35,"max":9.65,"span":0.29,"authority_min":0.000,"authority_max":0.000},
+  {"name":"234826","mean":12.89,"min":12.70,"max":13.13,"span":0.43,"authority_min":0.000,"authority_max":0.000},
+  {"name":"234955","mean":16.80,"min":16.56,"max":17.28,"span":0.72,"authority_min":0.065,"authority_max":0.132},
+  {"name":"013416","mean":18.67,"min":18.53,"max":18.89,"span":0.36,"authority_min":0.286,"authority_max":0.336},
+  {"name":"022550","mean":20.52,"min":20.28,"max":20.84,"span":0.56,"authority_min":0.542,"authority_max":0.624},
+  {"name":"022539","mean":23.39,"min":23.22,"max":23.66,"span":0.44,"authority_min":0.916,"authority_max":0.951},
+  {"name":"001431","mean":27.87,"min":27.71,"max":28.06,"span":0.35,"authority_min":1.000,"authority_max":1.000},
+  {"name":"020950","mean":28.14,"min":27.91,"max":28.49,"span":0.58,"authority_min":1.000,"authority_max":1.000},
+  {"name":"000820","mean":28.15,"min":27.87,"max":28.45,"span":0.58,"authority_min":1.000,"authority_max":1.000},
+  {"name":"235102","mean":29.43,"min":29.37,"max":29.55,"span":0.18,"authority_min":1.000,"authority_max":1.000},
+  {"name":"234925","mean":30.62,"min":30.40,"max":30.85,"span":0.45,"authority_min":1.000,"authority_max":1.000},
+  {"name":"022530","mean":33.85,"min":33.60,"max":34.03,"span":0.44,"authority_min":1.000,"authority_max":1.000},
+  {"name":"021001","mean":34.80,"min":34.66,"max":34.94,"span":0.29,"authority_min":1.000,"authority_max":1.000},
+  {"name":"000620_cut","mean":37.72,"min":37.53,"max":37.87,"span":0.34,"authority_min":1.000,"authority_max":1.000},
+  {"name":"001406_cut","mean":42.50,"min":42.20,"max":42.82,"span":0.62,"authority_min":1.000,"authority_max":1.000},
+  {"name":"000853_cut","mean":51.71,"min":51.06,"max":52.33,"span":1.27,"authority_min":1.000,"authority_max":1.000}
+]
