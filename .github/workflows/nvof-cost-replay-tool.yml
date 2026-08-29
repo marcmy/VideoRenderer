@@ -8,6 +8,8 @@ on:
       - 'tools/native-nvof-probe/NativeNvofCostReplay.cpp'
       - 'tools/native-nvof-probe/NativeNvofApi.h'
       - 'tools/native-nvof-probe/Run-NvofCostReplay.cmd'
+      - 'tools/native-nvof-probe/Run-All-NvofCostReplay.cmd'
+      - 'tools/native-nvof-probe/Run-All-NvofCostReplay.ps1'
       - '.github/workflows/nvof-cost-replay-tool.yml'
   workflow_dispatch:
 
@@ -57,6 +59,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $root = Join-Path $PWD 'release\NVOF-Cost-Replay'
           Copy-Item -LiteralPath '.\tools\native-nvof-probe\Run-NvofCostReplay.cmd' -Destination $root -Force
+          Copy-Item -LiteralPath '.\tools\native-nvof-probe\Run-All-NvofCostReplay.cmd' -Destination $root -Force
+          Copy-Item -LiteralPath '.\tools\native-nvof-probe\Run-All-NvofCostReplay.ps1' -Destination $root -Force
 
           $readme = @"
           NVOF Offline Hardware-Cost Replay
@@ -64,7 +68,7 @@ jobs:
 
           Purpose
           -------
-          Re-run one existing MPCVR diagnostic frame pair through a completely
+          Re-run existing MPCVR diagnostic frame pairs through a completely
           separate, standalone NVOF session with 8-bit output cost enabled.
           This does NOT enable hardware cost inside MPC-HC and does not modify
           MPC Video Renderer, K-Lite, the registry, or any installed files.
@@ -74,17 +78,23 @@ jobs:
           - Windows x64
           - NVIDIA GPU with Optical Flow support (Turing or newer)
           - Current NVIDIA display driver exposing nvofapi64.dll
-          - Existing MPCVR capture folder containing frame-A.bmp + frame-B.bmp
+          - Existing MPCVR capture folder(s) containing frame-A.bmp + frame-B.bmp
 
-          Usage
-          -----
-          Easiest: drag a capture folder onto Run-NvofCostReplay.cmd.
-          You can also run the .cmd and paste the capture-folder path.
+          One capture
+          -----------
+          Drag a capture folder onto Run-NvofCostReplay.cmd, or run the .cmd and
+          paste the capture-folder path.
 
-          The tool creates a new subfolder inside the capture directory named:
+          All captures under one root
+          ---------------------------
+          Drag the root folder containing your capture folders onto
+          Run-All-NvofCostReplay.cmd. The batch runner recursively finds every
+          directory containing frame-A.bmp + frame-B.bmp and runs them in turn.
+
+          Each capture receives a new subfolder:
             nvof-cost-replay-YYYYMMDD-HHMMSS
 
-          It writes:
+          Per-capture output:
           - flow-forward-B-to-A-s10.5.bin
           - flow-backward-A-to-B-s10.5.bin
           - cost-forward-B-to-A-r8.bin
@@ -93,10 +103,15 @@ jobs:
           - cost-backward-A-to-B.bmp
           - replay-summary.txt
 
-          The summary also compares replay flow against the original capture's
-          flow binaries when they are present. That tells us whether the fresh
-          cost-enabled session reproduced the original live NVOF flow closely
-          enough for the cost map to be a valid classifier calibration source.
+          The batch runner additionally creates one compact analysis ZIP in the
+          selected root folder. It contains the raw flow/cost binaries and text
+          summaries, but omits the large grayscale BMPs. That ZIP is the useful
+          artifact to send back for corpus analysis.
+
+          The summary compares replay flow against the original capture's flow
+          binaries when present. This tells us whether the fresh cost-enabled
+          session reproduced the original live NVOF flow closely enough for the
+          cost map to be a valid classifier-calibration source.
 
           Important
           ---------
