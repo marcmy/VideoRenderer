@@ -1,0 +1,73 @@
+name: NVOF Adaptive Splat SM5 Compile Proof
+
+on:
+  push:
+    branches:
+      - research/svp4-interpolation-archaeology
+    paths:
+      - 'tools/research/hlsl/**'
+      - '.github/workflows/nvof-adaptive-splat-compile.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nvof-adaptive-splat-compile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout archaeology branch
+        uses: actions/checkout@v7
+
+      - name: Locate fxc and compile SM5 research shaders
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $fxc = Get-Command fxc.exe -ErrorAction SilentlyContinue
+          if (-not $fxc) {
+            $kits = @(
+              (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'),
+              (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\8.1\bin')
+            ) | Where-Object { Test-Path $_ }
+            foreach ($kit in $kits) {
+              $candidate = Get-ChildItem -LiteralPath $kit -Filter fxc.exe -File -Recurse -ErrorAction SilentlyContinue |
+                Sort-Object FullName -Descending |
+                Select-Object -First 1
+              if ($candidate) { $fxc = $candidate; break }
+            }
+          }
+          if (-not $fxc) { throw 'fxc.exe not found on windows-2022 runner.' }
+          $fxcPath = if ($fxc.Source) { $fxc.Source } else { $fxc.FullName }
+          Write-Host "Using fxc: $fxcPath"
+
+          $out = Join-Path $env:RUNNER_TEMP 'adaptive-splat-sm5'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $shaders = @(
+            'tools\research\hlsl\AdaptiveSplatScatter.hlsl',
+            'tools\research\hlsl\AdaptiveSplatResolve.hlsl'
+          )
+          foreach ($shader in $shaders) {
+            $name = [IO.Path]::GetFileNameWithoutExtension($shader)
+            Write-Host "Compiling $shader"
+            & $fxcPath /nologo /T cs_5_0 /E main /WX /O3 \
+              /Fo (Join-Path $out "$name.cso") \
+              /Fc (Join-Path $out "$name.asm") \
+              $shader
+            if ($LASTEXITCODE -ne 0) {
+              throw "fxc failed for $shader with exit code $LASTEXITCODE"
+            }
+          }
+
+          Get-ChildItem -LiteralPath $out | Format-Table Name,Length
+
+      - name: Upload compile proof
+        uses: actions/upload-artifact@v7
+        with:
+          name: nvof-adaptive-splat-sm5-compile-proof
+          path: ${{ runner.temp }}/adaptive-splat-sm5/*
+          if-no-files-found: error
