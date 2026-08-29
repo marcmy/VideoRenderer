@@ -23,7 +23,6 @@
 #include <Mferror.h>
 #include <Mfidl.h>
 #include <optional>
-#include <limits>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -2134,8 +2133,7 @@ HRESULT CDX11VideoProcessor::InitializeD3D11VP(const FmtConvParams_t& params, co
 		return hr;
 	}
 
-	auto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled && m_InternalTexFmt == DXGI_FORMAT_B8G8R8A8_UNORM && (params.CDepth == 8 || !m_bACMEnabled))
-		? m_iVPSuperRes : SUPERRES_Disable;
+	auto superRes = (m_bVPScaling && m_InternalTexFmt == DXGI_FORMAT_B8G8R8A8_UNORM && (params.CDepth == 8 || !m_bACMEnabled)) ? m_iVPSuperRes : SUPERRES_Disable;
 	m_bVPUseSuperRes = (m_D3D11VP.SetSuperRes(superRes) == S_OK);
 
 	auto rtxHDR = m_bVPRTXVideoHDR && m_bHdrPassthroughSupport && m_bHdrPassthrough && m_iTexFormat != TEXFMT_8INT && !SourceIsHDR();
@@ -2911,33 +2909,24 @@ HRESULT CDX11VideoProcessor::CopySample(IMediaSample* pSample)
 				int lower_index = -1, upper_index = -1;
 				float closest_lower_dist = 1.0f, closest_upper_dist = 1.0f;
 				bool level2Present = false;
-				uint16_t max_target_max_pq = std::numeric_limits<uint16_t>::max();
 
 				for (uint32_t i = 0; i < LAV_DOVI_MAX_EXTENSIONS; ++i) {
 					if (pDOVIMetadata->Extensions[i].level == 2) {
 						level2Present = true;
 
 						auto& Level2 = pDOVIMetadata->Extensions[i].Level2;
-
-						if (!m_bHdrPassthroughSupport) {
-							if (Level2.target_max_pq < max_target_max_pq) {
-								max_target_max_pq = Level2.target_max_pq;
-								upper_index = i;
+						float target_pq = Level2.target_max_pq / 4095.0f;
+						if (target_pq <= display_pq) {
+							float dist = display_pq - target_pq;
+							if (dist < closest_lower_dist) {
+								closest_lower_dist = dist;
+								lower_index = i;
 							}
 						} else {
-							float target_pq = Level2.target_max_pq / 4095.0f;
-							if (target_pq <= display_pq) {
-								float dist = display_pq - target_pq;
-								if (dist < closest_lower_dist) {
-									closest_lower_dist = dist;
-									lower_index = i;
-								}
-							} else {
-								float dist = target_pq - display_pq;
-								if (dist < closest_upper_dist) {
-									closest_upper_dist = dist;
-									upper_index = i;
-								}
+							float dist = target_pq - display_pq;
+							if (dist < closest_upper_dist) {
+								closest_upper_dist = dist;
+								upper_index = i;
 							}
 						}
 					}

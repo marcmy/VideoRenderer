@@ -18,7 +18,6 @@ enum mp_csp {
     MP_CSP_RGB,
     MP_CSP_XYZ,
     MP_CSP_YCGCO,
-    MP_CSP_FCC_,
     MP_CSP_COUNT
 };
 
