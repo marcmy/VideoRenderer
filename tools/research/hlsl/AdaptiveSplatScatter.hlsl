@@ -16,6 +16,7 @@ cbuffer SplatParameters : register(b0)
 static const uint SceneCutBit = 0x80000000u;
 static const uint FieldCountShift = 6u;
 static const float WeightScale = 60.0;
+static const float SupportedMidpointEpsilon = 1.0e-4;
 
 float2 LoadFlow(Texture2D<int2> tex, uint2 cell)
 {
@@ -45,21 +46,27 @@ float FieldAuthority()
 }
 
 void ScatterDirection(uint2 sourceCell, float2 flow, uint errorQ, uint qQ,
-    bool endpointInBounds, float phase, uint accumulatorOffset)
+    bool endpointInBounds, uint accumulatorOffset)
 {
-    if (!endpointInBounds || errorQ > 10u || phase <= 0.0) {
+    if (!endpointInBounds || errorQ > 10u) {
         return;
     }
+
+    // Build #2 is intentionally midpoint-only. The signed-32-bit accumulator
+    // overflow proof assumes a 0.5 projection scale. The current renderer
+    // scheduler requests exactly t=0.5; any future arbitrary-phase scheduler
+    // must use a separately proven accumulator scale/representation.
+    static const float Phase = 0.5;
 
     float errorPx = float(errorQ * 2u);
     float q = float(qQ * 8u);
     float confidence = exp(-min(errorPx, 40.0) / 8.0)
         * exp(-min(q, 8000.0) / 1200.0);
 
-    float2 targetCell = float2(sourceCell) + phase * flow / GridSize;
+    float2 targetCell = float2(sourceCell) + Phase * flow / GridSize;
     int2 baseCell = int2(floor(targetCell));
     float2 fracCell = frac(targetCell);
-    float2 inverseDisplacement = -phase * flow;
+    float2 inverseDisplacement = -Phase * flow;
 
     [unroll]
     for (uint oy = 0u; oy < 2u; ++oy) {
@@ -91,10 +98,9 @@ void main(uint3 id : SV_DispatchThreadID)
 {
     if (any(id.xy >= FlowSize)) return;
 
-    float fieldAuthority = FieldAuthority();
-    float t = saturate(MidpointTime);
-    float phaseEnvelope = 4.0 * t * (1.0 - t);
-    if (fieldAuthority <= 0.0 || phaseEnvelope <= 0.0) return;
+    // Golden-only behavior for any phase other than the proven midpoint path.
+    if (abs(MidpointTime - 0.5) > SupportedMidpointEpsilon) return;
+    if (FieldAuthority() <= 0.0) return;
 
     uint packed = PackedCellMetadata.Load(int3(id.xy, 0));
     uint qBtoA = packed & 0x3ffu;
@@ -105,7 +111,7 @@ void main(uint3 id : SV_DispatchThreadID)
     bool inBoundsAtoB = (packed & (1u << 29u)) != 0u;
 
     ScatterDirection(id.xy, LoadFlow(BackwardFlowAtoB, id.xy),
-        errAtoB, qAtoB, inBoundsAtoB, t, 0u);
+        errAtoB, qAtoB, inBoundsAtoB, 0u);
     ScatterDirection(id.xy, LoadFlow(ForwardFlowBtoA, id.xy),
-        errBtoA, qBtoA, inBoundsBtoA, 1.0 - t, 3u);
+        errBtoA, qBtoA, inBoundsBtoA, 3u);
 }
