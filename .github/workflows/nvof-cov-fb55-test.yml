@@ -1,0 +1,150 @@
+name: NVOF COV-FB55 Experimental Build
+
+on:
+  push:
+    branches:
+      - research/nvof-coverage-fallback-test
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nvof-cov-fb55-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout frozen-baseline experiment branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Apply golden salvage plus COV-FB55 experiment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\tools\NvofTemporalMotionSalvagePatch.ps1
+
+          # PowerShell here-strings use the platform newline on Windows while the
+          # experiment patch intentionally normalizes source files to LF. Teach
+          # its exact-match helper to normalize its own multiline needles too.
+          $coveragePatch = '.\tools\NvofCoverageFallbackPatch.ps1'
+          $patchLines = @(Get-Content -LiteralPath $coveragePatch)
+          $signature = 'function Replace-Exact([string]$Text, [string]$Needle, [string]$Replacement, [string]$Label) {'
+          $signatureIndex = [Array]::IndexOf($patchLines, $signature)
+          if ($signatureIndex -lt 0) {
+            throw 'Could not locate Replace-Exact in the COV-FB55 patcher.'
+          }
+          if (-not ($patchLines -contains '    $Needle = $Needle.Replace("`r`n", "`n")')) {
+            $before = @($patchLines[0..$signatureIndex])
+            $after = @($patchLines[($signatureIndex + 1)..($patchLines.Count - 1)])
+            $patchLines = @(
+              $before
+              '    $Needle = $Needle.Replace("`r`n", "`n")'
+              '    $Replacement = $Replacement.Replace("`r`n", "`n")'
+              $after
+            )
+            [IO.File]::WriteAllLines(
+              (Resolve-Path -LiteralPath $coveragePatch),
+              $patchLines,
+              [Text.UTF8Encoding]::new($false))
+          }
+
+          & $coveragePatch
+          & .\tools\NvofCoverageScalarAtomicFix.ps1
+          & .\tools\RegenerateNvofTopologyShaders.ps1
+          git diff --check
+          git status --short
+
+      - name: Build MPC Video Renderer
+        shell: pwsh
+        run: |
+          .\build_mpcvr.cmd NoWait
+          if ($LASTEXITCODE -ne 0) {
+            throw "build_mpcvr.cmd failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Package one-click K-Lite test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Join-Path $PWD 'release'
+          $root = Join-Path $release 'MPCVR-NVOF-COV-FB55-Test'
+          $payload = Join-Path $root 'payload'
+          New-Item -ItemType Directory -Path $payload -Force | Out-Null
+
+          $x86 = Join-Path $PWD '_bin\Filter_x86\MpcVideoRenderer.ax'
+          $x64 = Join-Path $PWD '_bin\Filter_x64\MpcVideoRenderer64.ax'
+          foreach ($path in @($x86, $x64)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing built renderer: $path"
+            }
+          }
+
+          Copy-Item -LiteralPath $x86 -Destination (Join-Path $payload 'MpcVideoRenderer.ax') -Force
+          Copy-Item -LiteralPath $x64 -Destination (Join-Path $payload 'MpcVideoRenderer64.ax') -Force
+          Copy-Item -LiteralPath '.\tools\NvofCoverageFallbackTest\Install-COV-FB55.cmd' -Destination $root -Force
+          Copy-Item -LiteralPath '.\tools\NvofCoverageFallbackTest\Restore-Golden.cmd' -Destination $root -Force
+          Copy-Item -LiteralPath '.\tools\NvofCoverageFallbackTest\Install-COV-FB55.ps1' -Destination $root -Force
+
+          $readme = @"
+          MPCVR Native-NVOF COV-FB55 experimental build
+          =================================================
+
+          Branch: $env:GITHUB_REF_NAME
+          Commit: $env:GITHUB_SHA
+
+          Test change:
+          - Preserves the frozen golden interpolation/repair/topology pipeline.
+          - Adds directional A/B coverage ownership evidence.
+          - Only inside the existing unsupported temporal-fallback core, biases
+            the fallback by at most 5 percentage points (55/45 instead of 50/50).
+          - Successful motion-compensated interpolation is left unchanged.
+          - Telemetry label contains: guard=local-photo+covfb55
+
+          Install:
+          1. Close MPC-HC.
+          2. Run Install-COV-FB55.cmd.
+          3. Accept the administrator prompt.
+          4. Restart MPC-HC and test normally.
+
+          Roll back:
+          - Close MPC-HC and run Restore-Golden.cmd.
+          - The installer preserves the renderer binaries that were installed
+            before your first COV-FB55 test in:
+              %ProgramData%\MPCVR-COV-FB55-Backup
+          - No regsvr32 or filter registration changes are made.
+          "@
+          [IO.File]::WriteAllText((Join-Path $root 'README.txt'), $readme, [Text.UTF8Encoding]::new($false))
+
+          $payloadHashes = @()
+          foreach ($name in @('MpcVideoRenderer.ax', 'MpcVideoRenderer64.ax')) {
+            $hash = (Get-FileHash -LiteralPath (Join-Path $payload $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            $payloadHashes += "$hash  $name"
+          }
+          [IO.File]::WriteAllLines((Join-Path $root 'PAYLOAD-SHA256SUMS.txt'), $payloadHashes, [Text.UTF8Encoding]::new($false))
+
+          $zip = Join-Path $release 'MPCVR-NVOF-COV-FB55-Test.zip'
+          if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+          Compress-Archive -Path (Join-Path $root '*') -DestinationPath $zip -CompressionLevel Optimal
+
+          $zipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText(
+            (Join-Path $release 'MPCVR-NVOF-COV-FB55-Test.zip.sha256'),
+            "$zipHash  MPCVR-NVOF-COV-FB55-Test.zip`n",
+            [Text.UTF8Encoding]::new($false))
+
+      - name: Upload COV-FB55 test package
+        uses: actions/upload-artifact@v7
+        with:
+          name: MPCVR-NVOF-COV-FB55-Test
+          path: |
+            release/MPCVR-NVOF-COV-FB55-Test.zip
+            release/MPCVR-NVOF-COV-FB55-Test.zip.sha256
+          compression-level: 0
+          if-no-files-found: error
