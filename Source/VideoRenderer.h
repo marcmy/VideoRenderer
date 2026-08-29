@@ -22,6 +22,9 @@
 
 #include <mfidl.h>
 #include <dxva2api.h>
+#include <atomic>
+#include <deque>
+#include <mutex>
 #include <thread>
 #include "renbase2.h"
 #include "IVideoRenderer.h"
@@ -131,6 +134,27 @@ private:
 	CSize m_videoSize, m_videoAspectRatio;
 
 	HRESULT Init(const bool bCreateWindow);
+	HRESULT WaitForStreamTime(REFERENCE_TIME streamTime);
+
+	struct FrameInterpolationPresentation {
+		UINT sourceSurface = UINT_MAX;
+		REFERENCE_TIME streamTime = INVALID_TIME;
+		REFERENCE_TIME graphStart = 0;
+		CComPtr<IReferenceClock> clock;
+		uint64_t generation = 0;
+	};
+	std::mutex m_FrameInterpolationPresenterMutex;
+	std::deque<FrameInterpolationPresentation> m_FrameInterpolationPresenterQueue;
+	std::thread m_FrameInterpolationPresenterThread;
+	CAMEvent m_FrameInterpolationPresenterWake;
+	std::atomic_bool m_bStopFrameInterpolationPresenter = false;
+	std::atomic<uint64_t> m_FrameInterpolationPresenterGeneration = 0;
+
+	void FrameInterpolationPresenter();
+	bool WaitForFrameInterpolationTime(const FrameInterpolationPresentation& frame);
+	bool QueueFrameInterpolationSource(UINT sourceSurface, REFERENCE_TIME streamTime);
+	void ResetFrameInterpolationPresenterQueue();
+	void StopFrameInterpolationPresenter();
 
 	std::atomic_bool m_bDisplayModeChanging = false;
 

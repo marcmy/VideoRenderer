@@ -1,0 +1,187 @@
+name: Validate Maxine setup
+
+on:
+  push:
+    paths:
+      - 'tools/MaxineRuntimeInstaller/**'
+      - 'tools/KLiteMaxineUpdater/**'
+      - 'tools/MaxineSetup/**'
+      - '.github/workflows/validate-maxine-runtime-installer.yml'
+      - '.github/workflows/main.yml'
+  pull_request:
+    paths:
+      - 'tools/MaxineRuntimeInstaller/**'
+      - 'tools/KLiteMaxineUpdater/**'
+      - 'tools/MaxineSetup/**'
+      - '.github/workflows/validate-maxine-runtime-installer.yml'
+      - '.github/workflows/main.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Parse scripts with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $scripts = @(
+            'tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1',
+            'tools/MaxineRuntimeInstaller/Export-MPCVRMaxineRuntime.ps1',
+            'tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1',
+            'tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1',
+            'tools/MaxineSetup/Install-MPCVR-Maxine.ps1'
+          )
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path -LiteralPath $script),
+              [ref]$tokens,
+              [ref]$errors)
+            if ($errors.Count) {
+              $errors | Format-List | Out-String | Write-Error
+              throw "Windows PowerShell could not parse $script"
+            }
+          }
+
+      - name: Run built-in runtime validation with both PowerShell hosts
+        shell: powershell
+        run: |
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
+            tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 -ValidateOnly -NoPause
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          pwsh.exe -NoLogo -NoProfile -File `
+            tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 -ValidateOnly -NoPause
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Export slim runtime candidate with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $testRoot = Join-Path $env:RUNNER_TEMP 'maxine-runtime-test'
+          $sourceRoot = Join-Path $testRoot 'source'
+          $outputRoot = Join-Path $testRoot 'exported'
+          New-Item -ItemType Directory -Path $sourceRoot -Force | Out-Null
+
+          $required = @(
+            'NVCVImage.dll',
+            'NVVideoEffects.dll',
+            'nvngxruntime.dll',
+            'nvngx_vsr.dll',
+            'nvVFXVideoSuperRes.dll'
+          )
+          foreach ($file in $required) {
+            Set-Content -LiteralPath (Join-Path $sourceRoot $file) -Value "mock $file" -Encoding ASCII
+          }
+          foreach ($file in @('nvinfer_10.dll', 'nppif64_12.dll', 'nvinfer_plugin_10.dll')) {
+            Set-Content -LiteralPath (Join-Path $sourceRoot $file) -Value "optional $file" -Encoding ASCII
+          }
+          Set-Content -LiteralPath (Join-Path $sourceRoot 'LICENSE.txt') -Value 'mock license' -Encoding ASCII
+
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
+            tools/MaxineRuntimeInstaller/Export-MPCVRMaxineRuntime.ps1 `
+            -SourcePath $sourceRoot `
+            -OutputDirectory $outputRoot `
+            -NoPause
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $archive = Join-Path $outputRoot 'MPCVR-Maxine-Runtime.zip'
+          $checksum = Join-Path $outputRoot 'MPCVR-Maxine-Runtime.zip.sha256'
+          if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) { throw 'Exporter did not create the archive.' }
+          if (-not (Test-Path -LiteralPath $checksum -PathType Leaf)) { throw 'Exporter did not create the checksum.' }
+
+          $inspectRoot = Join-Path $testRoot 'inspect'
+          Expand-Archive -LiteralPath $archive -DestinationPath $inspectRoot -Force
+          $runtime = Join-Path $inspectRoot 'MPCVR-Maxine-Runtime\nvvfx\libs'
+          foreach ($file in $required + @('LICENSE.txt')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $runtime $file) -PathType Leaf)) {
+              throw "Slim bundle is missing $file"
+            }
+          }
+          foreach ($file in @('nvinfer_10.dll', 'nppif64_12.dll', 'nvinfer_plugin_10.dll')) {
+            if (Test-Path -LiteralPath (Join-Path $runtime $file) -PathType Leaf) {
+              throw "Slim bundle unexpectedly contains $file"
+            }
+          }
+
+          $manifest = Get-Content -LiteralPath (Join-Path $inspectRoot 'MPCVR-Maxine-Runtime\runtime-manifest.json') -Raw | ConvertFrom-Json
+          if ($manifest.Profile -ne 'CoreFiveFiles') { throw "Unexpected export profile: $($manifest.Profile)" }
+          if ($manifest.Files.Count -ne 6) { throw "Unexpected packaged file count: $($manifest.Files.Count)" }
+          if ($manifest.ExcludedFiles.Count -ne 3) { throw "Unexpected excluded file count: $($manifest.ExcludedFiles.Count)" }
+
+      - name: Install exported slim candidate with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $testRoot = Join-Path $env:RUNNER_TEMP 'maxine-runtime-test'
+          $archive = Join-Path $testRoot 'exported\MPCVR-Maxine-Runtime.zip'
+          $installRoot = Join-Path $testRoot 'installed'
+
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
+            tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 `
+            -RuntimeArchive $archive `
+            -InstallRoot $installRoot `
+            -SkipEnvironmentUpdate `
+            -NoPause
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $runtime = Join-Path $installRoot 'nvvfx\libs'
+          foreach ($file in @(
+            'NVCVImage.dll',
+            'NVVideoEffects.dll',
+            'nvngxruntime.dll',
+            'nvngx_vsr.dll',
+            'nvVFXVideoSuperRes.dll',
+            'LICENSE.txt'
+          )) {
+            if (-not (Test-Path -LiteralPath (Join-Path $runtime $file) -PathType Leaf)) {
+              throw "Installed slim runtime is missing $file"
+            }
+          }
+
+      - name: Validate assembled one-click setup with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $testRoot = Join-Path $env:RUNNER_TEMP 'maxine-runtime-test'
+          $setupRoot = Join-Path $testRoot 'setup'
+          $payloadRoot = Join-Path $setupRoot 'payload'
+          $rendererSource = Join-Path $testRoot 'renderer-source'
+          New-Item -ItemType Directory -Path $payloadRoot -Force | Out-Null
+          New-Item -ItemType Directory -Path $rendererSource -Force | Out-Null
+
+          Copy-Item tools/MaxineSetup/Install-MPCVR-Maxine.ps1 $setupRoot
+          Copy-Item tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 $payloadRoot
+          Copy-Item tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1 $payloadRoot
+          Copy-Item tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1 $payloadRoot
+          Copy-Item (Join-Path $testRoot 'exported\MPCVR-Maxine-Runtime.zip') $payloadRoot
+          Copy-Item (Join-Path $testRoot 'exported\MPCVR-Maxine-Runtime.zip.sha256') $payloadRoot
+
+          Set-Content -LiteralPath (Join-Path $rendererSource 'MpcVideoRenderer.ax') -Value 'mock x86 renderer' -Encoding ASCII
+          Set-Content -LiteralPath (Join-Path $rendererSource 'MpcVideoRenderer64.ax') -Value 'mock x64 renderer' -Encoding ASCII
+          $rendererArchive = Join-Path $payloadRoot 'MpcVideoRenderer-Maxine.zip'
+          Compress-Archive -Path (Join-Path $rendererSource '*') -DestinationPath $rendererArchive
+
+          Push-Location $payloadRoot
+          try {
+            $rendererHash = (Get-FileHash -LiteralPath 'MpcVideoRenderer-Maxine.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
+            $runtimeHash = (Get-FileHash -LiteralPath 'MPCVR-Maxine-Runtime.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
+            @(
+              "$rendererHash  MpcVideoRenderer-Maxine.zip",
+              "$runtimeHash  MPCVR-Maxine-Runtime.zip"
+            ) | Set-Content -LiteralPath 'PAYLOAD-SHA256SUMS.txt' -Encoding ASCII
+          }
+          finally {
+            Pop-Location
+          }
+
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
+            (Join-Path $setupRoot 'Install-MPCVR-Maxine.ps1') `
+            -ValidateOnly `
+            -NoPause
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -46,6 +46,24 @@
 #define OPT_DoubleFrateDeint               L"DoubleFramerateDeinterlace"
 #define OPT_VPScaling                      L"VPScaling"
 #define OPT_VPSuperResolution              L"VPSuperResolution"
+// Legacy Maxine keys are kept for migration from the original four-control UI.
+#define OPT_MaxineVideoSuperResolution      L"MaxineVideoSuperResolution"
+#define OPT_MaxineVideoSuperResolutionScale L"MaxineVideoSuperResolutionScale"
+#define OPT_MaxineOperation                 L"MaxineOperation"
+#define OPT_MaxineSourceMode                L"MaxineSourceMode"
+#define OPT_MaxineQuality                   L"MaxineQuality"
+#define OPT_MaxineOutputOversample          L"MaxineOutputOversample"
+#define OPT_MaxineSourceLimit               L"MaxineSourceLimit"
+#define OPT_MaxineVideoDenoise              L"MaxineVideoDenoise"
+#define OPT_MaxineVideoDeblur               L"MaxineVideoDeblur"
+#define OPT_MaxinePipeline                  L"MaxinePipeline"
+#define OPT_MaxineGPU                       L"MaxineGPU"
+#define OPT_MaxineAutoBitrate               L"MaxineAutoBitrateMbps"
+#define OPT_FRUCMode                        L"FrameInterpolationMode"
+#define OPT_FRUCSourceLimit                 L"FrameInterpolationSourceLimit"
+#define OPT_FRUCMaxOutput                   L"FrameInterpolationMaxOutput"
+#define OPT_FRUCGPU                         L"FrameInterpolationGPU"
+#define OPT_FRUCFallback                    L"FrameInterpolationFallback"
 #define OPT_VPRTXVideoHDR                  L"VPRTXVideoHDR"
 #define OPT_ChromaUpsampling               L"ChromaUpsampling"
 #define OPT_Upscaling                      L"Upscaling"
@@ -208,6 +226,77 @@ CMpcVideoRenderer::CMpcVideoRenderer(LPUNKNOWN pUnk, HRESULT* phr)
 			m_Sets.iVPSuperRes = discard<int>(dw, SUPERRES_Disable, 0, SUPERRES_COUNT-1);
 		}
 #ifdef _WIN64
+		const bool hasMaxineOperation = ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineOperation, dw);
+		if (hasMaxineOperation) {
+			m_Sets.iMaxineOperation = discard<int>(dw, MAXINE_OPERATION_Disabled, 0, MAXINE_OPERATION_COUNT - 1);
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineSourceMode, dw)) {
+			m_Sets.iMaxineSourceMode = discard<int>(dw, MAXINE_SOURCE_Auto, 0, MAXINE_SOURCE_COUNT - 1);
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineQuality, dw)) {
+			m_Sets.iMaxineQuality = discard<int>(dw, MAXINE_QUALITY_High, MAXINE_QUALITY_Low, MAXINE_QUALITY_Ultra);
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoSuperResolutionScale, dw)) {
+			// Version 1 stored literal multipliers 2 and 4. Version 2 stores percent.
+			if (dw == 2) dw = MAXINE_SCALE_2X;
+			if (dw == 4) dw = MAXINE_SCALE_4X;
+			if (dw == MAXINE_SCALE_MatchOutput || dw == MAXINE_SCALE_4_3X || dw == MAXINE_SCALE_1_5X
+					|| dw == MAXINE_SCALE_2X || dw == MAXINE_SCALE_3X || dw == MAXINE_SCALE_4X) {
+				m_Sets.iMaxineScale = static_cast<int>(dw);
+			}
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineOutputOversample, dw)) {
+			switch (dw) {
+			case MAXINE_OVERSAMPLE_Off:
+			case MAXINE_OVERSAMPLE_4_3X:
+			case MAXINE_OVERSAMPLE_1_5X:
+			case MAXINE_OVERSAMPLE_2X:
+				m_Sets.iMaxineOversample = static_cast<int>(dw);
+				break;
+			}
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineSourceLimit, dw)) {
+			m_Sets.iMaxineSourceLimit = discard<int>(dw, SUPERRES_1080p, 0, SUPERRES_COUNT - 1);
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoDenoise, dw)) {
+			m_Sets.iMaxineDenoise = discard<int>(dw, MAXINE_FILTER_Off, 0, MAXINE_FILTER_COUNT - 1);
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoDeblur, dw)) {
+			m_Sets.iMaxineDeblur = discard<int>(dw, MAXINE_FILTER_Off, 0, MAXINE_FILTER_COUNT - 1);
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxinePipeline, dw)) {
+			m_Sets.iMaxinePipeline = discard<int>(dw, MAXINE_PIPELINE_UpscaleDenoiseDeblur, 0, MAXINE_PIPELINE_COUNT - 1);
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineGPU, dw)) {
+			if (dw == MAXDWORD) {
+				m_Sets.iMaxineGPU = MAXINE_GPU_Auto;
+			}
+			else if (dw <= 7) {
+				m_Sets.iMaxineGPU = static_cast<int>(dw);
+			}
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineAutoBitrate, dw)) {
+			m_Sets.iMaxineAutoBitrate = discard<int>(dw, MAXINE_AUTO_BITRATE_DEF,
+				MAXINE_AUTO_BITRATE_MIN, MAXINE_AUTO_BITRATE_MAX);
+		}
+
+
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCMode, dw)) { m_Sets.iFrameInterpolationMode = discard<int>(dw, FRUC_MODE_Disabled, 0, FRUC_MODE_COUNT - 1); }
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCSourceLimit, dw)) { m_Sets.iFrameInterpolationSourceLimit = discard<int>(dw, FRUC_SOURCE_LIMIT_1080p, 0, FRUC_SOURCE_LIMIT_COUNT - 1); }
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCMaxOutput, dw) && (dw == FRUC_MAX_OUTPUT_60 || dw == FRUC_MAX_OUTPUT_120 || dw == FRUC_MAX_OUTPUT_240)) { m_Sets.iFrameInterpolationMaxOutput = static_cast<int>(dw); }
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCGPU, dw)) { if (dw == MAXDWORD) m_Sets.iFrameInterpolationGPU = FRUC_GPU_Auto; else if (dw <= 7) m_Sets.iFrameInterpolationGPU = static_cast<int>(dw); }
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_FRUCFallback, dw)) { m_Sets.bFrameInterpolationFallback = !!dw; }
+
+		if (!hasMaxineOperation && ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineVideoSuperResolution, dw)) {
+			// Migrate the original Off/Low/Medium/High/Ultra selector.
+			const int legacyQuality = discard<int>(dw, 0, 0, 4);
+			if (legacyQuality > 0) {
+				m_Sets.iMaxineOperation = MAXINE_OPERATION_Upscale;
+				m_Sets.iMaxineSourceMode = MAXINE_SOURCE_Standard;
+				m_Sets.iMaxineQuality = legacyQuality;
+				m_Sets.iMaxineSourceLimit = m_Sets.iVPSuperRes;
+			}
+		}
 		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_VPRTXVideoHDR, dw)) {
 			m_Sets.bVPRTXVideoHDR = !!dw;
 		}
@@ -304,6 +393,10 @@ CMpcVideoRenderer::CMpcVideoRenderer(LPUNKNOWN pUnk, HRESULT* phr)
 
 	*phr = hr;
 
+	if (SUCCEEDED(hr)) {
+		m_FrameInterpolationPresenterThread = std::thread(&CMpcVideoRenderer::FrameInterpolationPresenter, this);
+	}
+
 	return;
 }
 
@@ -311,6 +404,7 @@ CMpcVideoRenderer::~CMpcVideoRenderer()
 {
 	DLog(L"CMpcVideoRenderer::~CMpcVideoRenderer()");
 
+	StopFrameInterpolationPresenter();
 	UnregisterClassW(g_szClassName, g_hInst);
 
 	if (m_hWndParentMain) {
@@ -334,6 +428,7 @@ void CMpcVideoRenderer::NewSegment(REFERENCE_TIME startTime)
 {
 	DLog(L"CMpcVideoRenderer::NewSegment()");
 
+	ResetFrameInterpolationPresenterQueue();
 	m_rtStartTime = startTime;
 }
 
@@ -342,6 +437,10 @@ HRESULT CMpcVideoRenderer::BeginFlush()
 	DLog(L"CMpcVideoRenderer::BeginFlush()");
 
 	m_bFlushing = true;
+	if (m_VideoProcessor) {
+		m_VideoProcessor->CancelFrameInterpolationSubmission();
+	}
+	ResetFrameInterpolationPresenterQueue();
 	return __super::BeginFlush();
 }
 
@@ -514,6 +613,230 @@ HRESULT CMpcVideoRenderer::DoRenderSample(IMediaSample* pSample)
 	return hr;
 }
 
+HRESULT CMpcVideoRenderer::WaitForStreamTime(const REFERENCE_TIME streamTime)
+{
+	CancelNotification();
+
+	if (!m_pClock) {
+		return S_OK;
+	}
+
+	CRefTime currentTime;
+	HRESULT hr = m_pClock->GetTime((REFERENCE_TIME*)&currentTime);
+	if (FAILED(hr)) {
+		return hr;
+	}
+	if (m_tStart + streamTime <= currentTime) {
+		return S_OK;
+	}
+
+	m_RenderEvent.Reset();
+	hr = m_pClock->AdviseTime(
+		(REFERENCE_TIME)m_tStart, streamTime,
+		(HEVENT)(HANDLE)m_RenderEvent, &m_dwAdvise);
+	if (FAILED(hr)) {
+		return hr;
+	}
+	return WaitForRenderTime();
+}
+
+
+bool CMpcVideoRenderer::QueueFrameInterpolationSource(const UINT sourceSurface, const REFERENCE_TIME streamTime)
+{
+	if (sourceSurface == UINT_MAX || streamTime == INVALID_TIME) {
+		return false;
+	}
+
+	CComPtr<IReferenceClock> clock;
+	REFERENCE_TIME graphStart = 0;
+	const uint64_t generation = m_FrameInterpolationPresenterGeneration.load();
+	{
+		// Snapshot all graph-timing state on the receive thread. The presenter
+		// must never take m_InterfaceLock: DirectShow seek/flush already enters
+		// the renderer with m_InterfaceLock and m_RendererLock held. Capture the
+		// generation before taking the lock so a sample that was blocked by a
+		// flush cannot be queued into the new segment afterward.
+		CAutoLock cVideoLock(&m_InterfaceLock);
+		if (m_State != State_Running || m_bFlushing
+				|| generation != m_FrameInterpolationPresenterGeneration.load()) {
+			return false;
+		}
+		clock = m_pClock;
+		graphStart = static_cast<REFERENCE_TIME>(m_tStart);
+	}
+
+	bool queued = false;
+	{
+		std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
+		if (!m_bStopFrameInterpolationPresenter.load()
+				&& generation == m_FrameInterpolationPresenterGeneration.load()) {
+			m_FrameInterpolationPresenterQueue.push_back({
+				sourceSurface,
+				streamTime,
+				graphStart,
+				clock,
+				generation
+			});
+			queued = true;
+		}
+	}
+
+	if (queued) {
+		m_FrameInterpolationPresenterWake.Set();
+	}
+	return queued;
+}
+
+void CMpcVideoRenderer::ResetFrameInterpolationPresenterQueue()
+{
+	m_FrameInterpolationPresenterGeneration.fetch_add(1);
+
+	std::deque<FrameInterpolationPresentation> staleFrames;
+	{
+		std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
+		staleFrames.swap(m_FrameInterpolationPresenterQueue);
+	}
+	m_FrameInterpolationPresenterWake.Set();
+
+	if (m_VideoProcessor && !staleFrames.empty()) {
+		CAutoLock cRendererLock(&m_RendererLock);
+		for (const auto& frame : staleFrames) {
+			m_VideoProcessor->ReleaseFrameInterpolationSource(frame.sourceSurface);
+		}
+	}
+}
+
+void CMpcVideoRenderer::StopFrameInterpolationPresenter()
+{
+	if (m_bStopFrameInterpolationPresenter.exchange(true)) {
+		return;
+	}
+
+	m_FrameInterpolationPresenterGeneration.fetch_add(1);
+	m_FrameInterpolationPresenterWake.Set();
+	if (m_FrameInterpolationPresenterThread.joinable()) {
+		m_FrameInterpolationPresenterThread.join();
+	}
+
+	std::deque<FrameInterpolationPresentation> staleFrames;
+	{
+		std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
+		staleFrames.swap(m_FrameInterpolationPresenterQueue);
+	}
+	if (m_VideoProcessor && !staleFrames.empty()) {
+		CAutoLock cRendererLock(&m_RendererLock);
+		for (const auto& frame : staleFrames) {
+			m_VideoProcessor->ReleaseFrameInterpolationSource(frame.sourceSurface);
+		}
+	}
+}
+
+bool CMpcVideoRenderer::WaitForFrameInterpolationTime(const FrameInterpolationPresentation& frame)
+{
+	if (!frame.clock) {
+		return true;
+	}
+
+	// Avoid IReferenceClock::AdviseTime/Unadvise on the presenter thread.
+	// Unadvise can overlap DirectShow's flush/seek transition and wedge the
+	// graph. A private timer remains immediately cancellable by queue reset.
+	const HANDLE timer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+	if (!timer) {
+		return false;
+	}
+
+	bool due = false;
+	for (;;) {
+		if (m_bStopFrameInterpolationPresenter.load()
+				|| frame.generation != m_FrameInterpolationPresenterGeneration.load()) {
+			break;
+		}
+
+		REFERENCE_TIME currentTime = 0;
+		if (FAILED(frame.clock->GetTime(&currentTime))) {
+			break;
+		}
+
+		const REFERENCE_TIME remaining = frame.graphStart + frame.streamTime - currentTime;
+		if (remaining <= 0) {
+			due = true;
+			break;
+		}
+
+		LARGE_INTEGER relativeDueTime = {};
+		relativeDueTime.QuadPart = -remaining;
+		if (!SetWaitableTimer(timer, &relativeDueTime, 0, nullptr, nullptr, FALSE)) {
+			break;
+		}
+
+		HANDLE waitObjects[] = {
+			(HANDLE)m_FrameInterpolationPresenterWake,
+			timer,
+		};
+		const DWORD waitResult = WaitForMultipleObjects(2, waitObjects, FALSE, INFINITE);
+		CancelWaitableTimer(timer);
+		if (waitResult == WAIT_OBJECT_0) {
+			continue;
+		}
+		if (waitResult != WAIT_OBJECT_0 + 1) {
+			break;
+		}
+		// Re-read the graph clock after the timer fires to tolerate drift.
+	}
+
+	CloseHandle(timer);
+	return due;
+}
+
+void CMpcVideoRenderer::FrameInterpolationPresenter()
+{
+	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+
+	while (!m_bStopFrameInterpolationPresenter.load()) {
+		FrameInterpolationPresentation frame;
+		bool haveFrame = false;
+		{
+			std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
+			if (!m_FrameInterpolationPresenterQueue.empty()) {
+				frame = m_FrameInterpolationPresenterQueue.front();
+				m_FrameInterpolationPresenterQueue.pop_front();
+				haveFrame = true;
+			}
+		}
+
+		if (!haveFrame) {
+			m_FrameInterpolationPresenterWake.Wait();
+			continue;
+		}
+
+		const bool due = WaitForFrameInterpolationTime(frame);
+		bool rendered = false;
+		{
+			// Only serialize with D3D11 work. Never acquire m_InterfaceLock on
+			// the presenter thread; seek/flush already owns that lock.
+			CAutoLock cRendererLock(&m_RendererLock);
+			if (due
+					&& !m_bStopFrameInterpolationPresenter.load()
+					&& frame.generation == m_FrameInterpolationPresenterGeneration.load()
+					&& m_VideoProcessor) {
+				const HRESULT hr = m_VideoProcessor->RenderFrameInterpolationSource(
+					frame.sourceSurface, frame.streamTime);
+				rendered = hr == S_OK;
+				if (rendered) {
+					m_bValidBuffer = true;
+				}
+			}
+			if (m_VideoProcessor) {
+				m_VideoProcessor->ReleaseFrameInterpolationSource(frame.sourceSurface);
+			}
+		}
+
+		if (!rendered && due && !m_bStopFrameInterpolationPresenter.load()) {
+			DLog(L"Frame-interpolation source presentation was skipped");
+		}
+	}
+}
+
 HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 {
 	// override CBaseRenderer::Receive() for the implementation of the search during the pause
@@ -559,13 +882,91 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 		DoRenderSample(m_pMediaSample);
 	}
 
-	// Having set an advise link with the clock we sit and wait. We may be
-	// awoken by the clock firing or by a state change. The rendering call
-	// will lock the critical section and check we can still render the data
+	REFERENCE_TIME interpolationTime = INVALID_TIME;
+	REFERENCE_TIME requestedMidpoint = INVALID_TIME;
+	REFERENCE_TIME currentFrameTime = INVALID_TIME;
+	UINT sourceSurface = UINT_MAX;
+	bool frameInterpolationPrepared = false;
+	bool sourceQueued = false;
+	bool renderInterpolation = false;
 
-	hr = WaitForRenderTime();
-	if (FAILED(hr)) {
+	if (m_State == State_Running && m_VideoProcessor->Type() == VP_DX11) {
+		// DirectShow's BeginFlush holds m_InterfaceLock and m_RendererLock while
+		// waiting for m_bInReceive to clear. Temporarily advertise that Receive
+		// is inactive before entering either graph lock, then revalidate state
+		// under m_InterfaceLock and mark it active again. This is the same safe
+		// transition used by CBaseRenderer::Receive().
 		m_bInReceive = FALSE;
+		{
+			CAutoLock cVideoLock(&m_InterfaceLock);
+			if (m_State != State_Running || m_bFlushing) {
+				return NOERROR;
+			}
+
+			m_bInReceive = TRUE;
+			frameInterpolationPrepared = m_VideoProcessor->PrepareFrameInterpolation(
+				m_pMediaSample, currentFrameTime, requestedMidpoint, sourceSurface);
+			if (frameInterpolationPrepared) {
+				// Preserve and queue the source while the interface lock prevents a
+				// flush from splitting preparation from its presentation metadata.
+				CancelNotification();
+				sourceQueued = QueueFrameInterpolationSource(sourceSurface, currentFrameTime);
+			}
+		}
+	}
+
+	if (frameInterpolationPrepared) {
+		// NvOFFRUC remains synchronous, but this phase intentionally owns no
+		// DirectShow graph locks. BeginFlush can invalidate the generation and
+		// wait until we mark Receive inactive below without forming a lock cycle.
+		const bool interpolationSubmitted = m_VideoProcessor->SubmitFrameInterpolation(
+			currentFrameTime, requestedMidpoint, interpolationTime);
+
+		if (interpolationSubmitted
+				&& interpolationTime != INVALID_TIME
+				&& m_State == State_Running) {
+			hr = WaitForStreamTime(interpolationTime);
+			renderInterpolation = SUCCEEDED(hr);
+		}
+		else {
+			hr = S_OK; // first frame warms up, or FRUC failed and source-only fallback remains queued
+		}
+	}
+	else {
+		// Keep the original notification installed by PrepareReceive().
+		hr = WaitForRenderTime();
+	}
+	if (FAILED(hr) && !frameInterpolationPrepared) {
+		m_bInReceive = FALSE;
+		return NOERROR;
+	}
+
+	if (frameInterpolationPrepared) {
+		// Never enter either graph lock while DirectShow considers Receive active.
+		// A concurrent flush can now finish its wait, release the locks, and leave
+		// this final phase to discard stale work under the normal lock order.
+		m_bInReceive = FALSE;
+
+		CAutoLock cVideoLock(&m_InterfaceLock);
+		CAutoLock cRendererLock(&m_RendererLock);
+		if (!sourceQueued && sourceSurface != UINT_MAX && m_VideoProcessor) {
+			m_VideoProcessor->ReleaseFrameInterpolationSource(sourceSurface);
+		}
+
+		if (m_State == State_Stopped) {
+			return NOERROR;
+		}
+
+		if (renderInterpolation && m_State == State_Running && !m_bFlushing && m_VideoProcessor) {
+			const HRESULT renderHr = m_VideoProcessor->RenderFrameInterpolation(interpolationTime);
+			if (renderHr == S_OK) {
+				m_bValidBuffer = true;
+			}
+		}
+
+		ClearPendingSample();
+		SendEndOfStream();
+		CancelNotification();
 		return NOERROR;
 	}
 
@@ -620,6 +1021,9 @@ void CMpcVideoRenderer::OnDisplayModeChange(const bool bReset/* = false*/)
 		return;
 	}
 
+	if (bReset) {
+		ResetFrameInterpolationPresenterQueue();
+	}
 	m_bDisplayModeChanging = true;
 
 	if (bReset && !m_VideoProcessor->IsInit()) {
@@ -637,6 +1041,7 @@ void CMpcVideoRenderer::OnWindowMove()
 	if (GetActive()) {
 		const HMONITOR hMon = MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST);
 		if (hMon != m_hMon) {
+			ResetFrameInterpolationPresenterQueue();
 			if (m_Sets.bReinitByDisplay) {
 				CAutoLock cRendererLock(&m_RendererLock);
 
@@ -708,6 +1113,7 @@ STDMETHODIMP CMpcVideoRenderer::Pause()
 	DLog(L"CMpcVideoRenderer::Pause()");
 
 	m_filterState = State_Paused;
+	ResetFrameInterpolationPresenterQueue();
 
 	return CBaseVideoRenderer2::Pause();
 }
@@ -718,6 +1124,7 @@ STDMETHODIMP CMpcVideoRenderer::Stop()
 
 	m_filterState = State_Stopped;
 	m_bValidBuffer = false;
+	ResetFrameInterpolationPresenterQueue();
 
 	{
 		CAutoLock cRendererLock(&m_RendererLock);
@@ -1255,6 +1662,16 @@ STDMETHODIMP_(void) CMpcVideoRenderer::GetSettings(Settings_t& setings)
 
 STDMETHODIMP_(void) CMpcVideoRenderer::SetSettings(const Settings_t& setings)
 {
+	const bool frameInterpolationChanged =
+		setings.iFrameInterpolationMode != m_Sets.iFrameInterpolationMode
+		|| setings.iFrameInterpolationSourceLimit != m_Sets.iFrameInterpolationSourceLimit
+		|| setings.iFrameInterpolationMaxOutput != m_Sets.iFrameInterpolationMaxOutput
+		|| setings.iFrameInterpolationGPU != m_Sets.iFrameInterpolationGPU
+		|| setings.bFrameInterpolationFallback != m_Sets.bFrameInterpolationFallback;
+	if (frameInterpolationChanged) {
+		ResetFrameInterpolationPresenterQueue();
+	}
+
 	CAutoLock cRendererLock(&m_RendererLock);
 
 	m_Sets = setings;
@@ -1287,7 +1704,24 @@ STDMETHODIMP CMpcVideoRenderer::SaveSettings()
 		key.SetDWORDValue(OPT_VPScaling,           m_Sets.bVPScaling);
 		key.SetDWORDValue(OPT_VPSuperResolution,   m_Sets.iVPSuperRes);
 #ifdef _WIN64
-		key.SetDWORDValue(OPT_VPRTXVideoHDR,       m_Sets.bVPRTXVideoHDR);
+		key.SetDWORDValue(OPT_MaxineOperation,                 m_Sets.iMaxineOperation);
+		key.SetDWORDValue(OPT_MaxineSourceMode,                m_Sets.iMaxineSourceMode);
+		key.SetDWORDValue(OPT_MaxineQuality,                   m_Sets.iMaxineQuality);
+		key.SetDWORDValue(OPT_MaxineVideoSuperResolutionScale, m_Sets.iMaxineScale);
+		key.SetDWORDValue(OPT_MaxineOutputOversample,          m_Sets.iMaxineOversample);
+		key.SetDWORDValue(OPT_MaxineSourceLimit,               m_Sets.iMaxineSourceLimit);
+		key.SetDWORDValue(OPT_MaxineVideoDenoise,              m_Sets.iMaxineDenoise);
+		key.SetDWORDValue(OPT_MaxineVideoDeblur,               m_Sets.iMaxineDeblur);
+		key.SetDWORDValue(OPT_MaxinePipeline,                  m_Sets.iMaxinePipeline);
+		key.SetDWORDValue(OPT_MaxineGPU,                       static_cast<DWORD>(m_Sets.iMaxineGPU));
+		key.SetDWORDValue(OPT_MaxineAutoBitrate,               m_Sets.iMaxineAutoBitrate);
+
+		key.SetDWORDValue(OPT_FRUCMode,                        m_Sets.iFrameInterpolationMode);
+		key.SetDWORDValue(OPT_FRUCSourceLimit,                 m_Sets.iFrameInterpolationSourceLimit);
+		key.SetDWORDValue(OPT_FRUCMaxOutput,                   m_Sets.iFrameInterpolationMaxOutput);
+		key.SetDWORDValue(OPT_FRUCGPU,                         static_cast<DWORD>(m_Sets.iFrameInterpolationGPU));
+		key.SetDWORDValue(OPT_FRUCFallback,                    m_Sets.bFrameInterpolationFallback);
+		key.SetDWORDValue(OPT_VPRTXVideoHDR,                   m_Sets.bVPRTXVideoHDR);
 #endif
 		key.SetDWORDValue(OPT_ChromaUpsampling,    m_Sets.iChromaScaling);
 		key.SetDWORDValue(OPT_Upscaling,           m_Sets.iUpscaling);

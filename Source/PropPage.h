@@ -1,5 +1,5 @@
-/*
- * (C) 2018-2026 see Authors.txt
+﻿/*
+ * (C) 2018-2025 see Authors.txt
  *
  * This file is part of MPC-BE.
  *
@@ -22,6 +22,13 @@
 
 #include "IVideoRenderer.h"
 
+namespace {
+void PopulateMaxineCombo(
+	HWND hwnd,
+	int id,
+	std::initializer_list<std::pair<LPCWSTR, LONG_PTR>> items);
+}
+
 // CVRMainPPage
 
 class __declspec(uuid("DA46D181-07D6-441D-B314-019AEB10148A"))
@@ -41,6 +48,8 @@ public:
 	~CVRMainPPage();
 
 private:
+	bool ShowMaxineSettings();
+	bool ShowFrameInterpolationSettings();
 	void SetControls();
 	void EnableControls();
 

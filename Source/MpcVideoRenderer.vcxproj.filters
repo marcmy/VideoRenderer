@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Source Files">
@@ -103,6 +103,12 @@
       <Filter>Utils</Filter>
     </ClCompile>
     <ClCompile Include="MediaSampleSideData.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="NvidiaMaxineVSR.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="NvidiaFrameInterpolation.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="SubPic\SubPicQueueImpl.cpp">
@@ -216,6 +222,12 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="MediaSampleSideData.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="NvidiaMaxineVSR.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="NvidiaFrameInterpolation.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Utils\gpu_memcpy_sse4.h">

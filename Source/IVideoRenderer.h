@@ -1,4 +1,4 @@
-/*
+﻿/*
  * (C) 2018-2026 see Authors.txt
  *
  * This file is part of MPC-BE.
@@ -43,6 +43,92 @@ enum :int {
 	SUPERRES_1440p,
 	SUPERRES_COUNT
 };
+
+enum :int {
+	MAXINE_OPERATION_Disabled = 0,
+	MAXINE_OPERATION_Upscale,
+	MAXINE_OPERATION_Denoise,
+	MAXINE_OPERATION_Deblur,
+	MAXINE_OPERATION_COUNT
+};
+
+enum :int {
+	MAXINE_SOURCE_Auto = 0,
+	MAXINE_SOURCE_Standard,
+	MAXINE_SOURCE_HighBitrate,
+	MAXINE_SOURCE_Bicubic,
+	MAXINE_SOURCE_COUNT
+};
+
+enum :int {
+	MAXINE_QUALITY_Low = 1,
+	MAXINE_QUALITY_Medium,
+	MAXINE_QUALITY_High,
+	MAXINE_QUALITY_Ultra,
+};
+
+enum :int {
+	MAXINE_SCALE_MatchOutput = 0,
+	MAXINE_SCALE_4_3X = 133,
+	MAXINE_SCALE_1_5X = 150,
+	MAXINE_SCALE_2X = 200,
+	MAXINE_SCALE_3X = 300,
+	MAXINE_SCALE_4X = 400,
+};
+
+enum :int {
+	MAXINE_OVERSAMPLE_Off = 100,
+	MAXINE_OVERSAMPLE_4_3X = 133,
+	MAXINE_OVERSAMPLE_1_5X = 150,
+	MAXINE_OVERSAMPLE_2X = 200,
+};
+
+enum :int {
+	MAXINE_FILTER_Off = 0,
+	MAXINE_FILTER_Low,
+	MAXINE_FILTER_Medium,
+	MAXINE_FILTER_High,
+	MAXINE_FILTER_Ultra,
+	MAXINE_FILTER_COUNT
+};
+
+enum :int {
+	MAXINE_PIPELINE_UpscaleDenoiseDeblur = 0,
+	MAXINE_PIPELINE_UpscaleDeblurDenoise,
+	MAXINE_PIPELINE_DenoiseDeblurUpscale,
+	MAXINE_PIPELINE_DeblurDenoiseUpscale,
+	MAXINE_PIPELINE_DenoiseUpscaleDeblur,
+	MAXINE_PIPELINE_DeblurUpscaleDenoise,
+	MAXINE_PIPELINE_COUNT
+};
+
+constexpr inline int MAXINE_GPU_Auto = -1;
+constexpr inline int MAXINE_AUTO_BITRATE_DEF = 20;
+constexpr inline int MAXINE_AUTO_BITRATE_MIN = 1;
+constexpr inline int MAXINE_AUTO_BITRATE_MAX = 1000;
+
+
+enum :int {
+	FRUC_MODE_Disabled = 0,
+	FRUC_MODE_Double,
+	FRUC_MODE_COUNT
+};
+
+enum :int {
+	FRUC_SOURCE_LIMIT_720p = 0,
+	FRUC_SOURCE_LIMIT_1080p,
+	FRUC_SOURCE_LIMIT_1440p,
+	FRUC_SOURCE_LIMIT_2160p,
+	FRUC_SOURCE_LIMIT_COUNT
+};
+
+enum :int {
+	FRUC_MAX_OUTPUT_60 = 60,
+	FRUC_MAX_OUTPUT_120 = 120,
+	FRUC_MAX_OUTPUT_240 = 240,
+};
+
+constexpr inline int FRUC_GPU_Auto = -1;
 
 enum :int {
 	CHROMA_Nearest = 0,
@@ -132,6 +218,22 @@ struct Settings_t {
 	bool bHdrLocalToneMapping;
 	int  iHdrLocalToneMappingType;
 	int iHdrDisplayMaxNits;
+	int iMaxineOperation;
+	int iMaxineSourceMode;
+	int iMaxineQuality;
+	int iMaxineScale;
+	int iMaxineOversample;
+	int iMaxineSourceLimit;
+	int iMaxineDenoise;
+	int iMaxineDeblur;
+	int iMaxinePipeline;
+	int iMaxineGPU;
+	int iMaxineAutoBitrate;
+	int iFrameInterpolationMode;
+	int iFrameInterpolationSourceLimit;
+	int iFrameInterpolationMaxOutput;
+	int iFrameInterpolationGPU;
+	bool bFrameInterpolationFallback;
 
 	Settings_t() {
 		SetDefault();
@@ -182,6 +284,22 @@ struct Settings_t {
 		bConvertToSdr                   = true;
 		iHdrOsdBrightness               = 0;
 		iSDRDisplayNits                 = SDR_NITS_DEF;
+		iMaxineOperation                = MAXINE_OPERATION_Disabled;
+		iMaxineSourceMode               = MAXINE_SOURCE_Auto;
+		iMaxineQuality                  = MAXINE_QUALITY_High;
+		iMaxineScale                    = MAXINE_SCALE_MatchOutput;
+		iMaxineOversample               = MAXINE_OVERSAMPLE_Off;
+		iMaxineSourceLimit              = SUPERRES_1080p;
+		iMaxineDenoise                  = MAXINE_FILTER_Off;
+		iMaxineDeblur                   = MAXINE_FILTER_Off;
+		iMaxinePipeline                 = MAXINE_PIPELINE_UpscaleDenoiseDeblur;
+		iMaxineGPU                      = MAXINE_GPU_Auto;
+		iMaxineAutoBitrate              = MAXINE_AUTO_BITRATE_DEF;
+		iFrameInterpolationMode         = FRUC_MODE_Disabled;
+		iFrameInterpolationSourceLimit  = FRUC_SOURCE_LIMIT_1080p;
+		iFrameInterpolationMaxOutput    = FRUC_MAX_OUTPUT_60;
+		iFrameInterpolationGPU          = FRUC_GPU_Auto;
+		bFrameInterpolationFallback     = true;
 	}
 };
 

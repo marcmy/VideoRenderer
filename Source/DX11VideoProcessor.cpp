@@ -24,6 +24,9 @@
 #include <Mfidl.h>
 #include <optional>
 #include <limits>
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include "Helper.h"
 #include "Times.h"
 #include "resource.h"
@@ -109,6 +112,119 @@ static const ScalingShaderResId s_Downscaling11ResIDs[DOWNSCALE_COUNT] = {
 	{IDF_PS_11_CONVOL_BICUBIC15_X, IDF_PS_11_CONVOL_BICUBIC15_Y, L"Bicubic sharp"},
 	{IDF_PS_11_CONVOL_LANCZOS_X,   IDF_PS_11_CONVOL_LANCZOS_Y,   L"Lanczos"      }
 };
+
+enum class MaxinePass {
+	Upscale,
+	Denoise,
+	Deblur,
+};
+
+static const wchar_t* MaxineQualityToString(const int quality)
+{
+	switch (quality) {
+	case MAXINE_QUALITY_Low:    return L"Low";
+	case MAXINE_QUALITY_Medium: return L"Medium";
+	case MAXINE_QUALITY_High:   return L"High";
+	case MAXINE_QUALITY_Ultra:  return L"Ultra";
+	default:                    return L"Unknown";
+	}
+}
+
+static const wchar_t* MaxineFilterToString(const int quality)
+{
+	return quality == MAXINE_FILTER_Off ? L"Off" : MaxineQualityToString(quality);
+}
+
+static const wchar_t* MaxineOperationToString(const int operation)
+{
+	switch (operation) {
+	case MAXINE_OPERATION_Upscale: return L"Upscale";
+	case MAXINE_OPERATION_Denoise: return L"Denoise only";
+	case MAXINE_OPERATION_Deblur:  return L"Deblur only";
+	default:                       return L"Disabled";
+	}
+}
+
+static int NormalizeMaxineOversample(const int oversample)
+{
+	switch (oversample) {
+	case MAXINE_OVERSAMPLE_4_3X:
+	case MAXINE_OVERSAMPLE_1_5X:
+	case MAXINE_OVERSAMPLE_2X:
+		return oversample;
+	default:
+		return MAXINE_OVERSAMPLE_Off;
+	}
+}
+
+static const wchar_t* MaxineOversampleToString(const int oversample)
+{
+	switch (NormalizeMaxineOversample(oversample)) {
+	case MAXINE_OVERSAMPLE_4_3X: return L"1.33x";
+	case MAXINE_OVERSAMPLE_1_5X: return L"1.5x";
+	case MAXINE_OVERSAMPLE_2X:   return L"2x";
+	default:                     return L"Off";
+	}
+}
+
+static const wchar_t* MaxineModeToString(const int mode)
+{
+	switch (mode) {
+	case 0:  return L"Bicubic";
+	case 1:  return L"Standard Low";
+	case 2:  return L"Standard Medium";
+	case 3:  return L"Standard High";
+	case 4:  return L"Standard Ultra";
+	case 8:  return L"Denoise Low";
+	case 9:  return L"Denoise Medium";
+	case 10: return L"Denoise High";
+	case 11: return L"Denoise Ultra";
+	case 12: return L"Deblur Low";
+	case 13: return L"Deblur Medium";
+	case 14: return L"Deblur High";
+	case 15: return L"Deblur Ultra";
+	case 16: return L"High bitrate Low";
+	case 17: return L"High bitrate Medium";
+	case 18: return L"High bitrate High";
+	case 19: return L"High bitrate Ultra";
+	default: return L"None";
+	}
+}
+
+static std::array<MaxinePass, 3> GetMaxinePassOrder(const int pipeline)
+{
+	switch (pipeline) {
+	case MAXINE_PIPELINE_UpscaleDeblurDenoise:
+		return {MaxinePass::Upscale, MaxinePass::Deblur, MaxinePass::Denoise};
+	case MAXINE_PIPELINE_DenoiseDeblurUpscale:
+		return {MaxinePass::Denoise, MaxinePass::Deblur, MaxinePass::Upscale};
+	case MAXINE_PIPELINE_DeblurDenoiseUpscale:
+		return {MaxinePass::Deblur, MaxinePass::Denoise, MaxinePass::Upscale};
+	case MAXINE_PIPELINE_DenoiseUpscaleDeblur:
+		return {MaxinePass::Denoise, MaxinePass::Upscale, MaxinePass::Deblur};
+	case MAXINE_PIPELINE_DeblurUpscaleDenoise:
+		return {MaxinePass::Deblur, MaxinePass::Upscale, MaxinePass::Denoise};
+	default:
+		return {MaxinePass::Upscale, MaxinePass::Denoise, MaxinePass::Deblur};
+	}
+}
+
+static bool SourceMatchesSuperResLimit(const UINT width, const UINT height, const int limit)
+{
+	auto CheckDimension = [width, height](const UINT maxWidth, const UINT maxHeight) {
+		return width >= height
+			? width <= maxWidth && height <= maxHeight
+			: height <= maxWidth && width <= maxHeight;
+	};
+
+	switch (limit) {
+	case SUPERRES_SD:    return CheckDimension(1024u, 576u);
+	case SUPERRES_720p:  return CheckDimension(1280u, 720u);
+	case SUPERRES_1080p: return CheckDimension(2048u, 1088u);
+	case SUPERRES_1440p: return CheckDimension(2560u, 1440u);
+	default:             return false;
+	}
+}
 
 const UINT dither_size = 32;
 
@@ -390,6 +506,22 @@ CDX11VideoProcessor::CDX11VideoProcessor(CMpcVideoRenderer* pFilter, const Setti
 	m_bDeintDouble         = config.bDeintDouble;
 	m_bVPScaling           = config.bVPScaling;
 	m_iVPSuperRes          = config.iVPSuperRes;
+	m_iMaxineOperation     = config.iMaxineOperation;
+	m_iMaxineSourceMode    = config.iMaxineSourceMode;
+	m_iMaxineQuality       = config.iMaxineQuality;
+	m_iMaxineScale         = config.iMaxineScale;
+	m_iMaxineOversample    = config.iMaxineOversample;
+	m_iMaxineSourceLimit   = config.iMaxineSourceLimit;
+	m_iMaxineDenoise       = config.iMaxineDenoise;
+	m_iMaxineDeblur        = config.iMaxineDeblur;
+	m_iMaxinePipeline      = config.iMaxinePipeline;
+	m_iMaxineGPU           = config.iMaxineGPU;
+	m_iMaxineAutoBitrate   = config.iMaxineAutoBitrate;
+	m_iFrameInterpolationMode = config.iFrameInterpolationMode;
+	m_iFrameInterpolationSourceLimit = config.iFrameInterpolationSourceLimit;
+	m_iFrameInterpolationMaxOutput = config.iFrameInterpolationMaxOutput;
+	m_iFrameInterpolationGPU = config.iFrameInterpolationGPU;
+	m_bFrameInterpolationFallback = config.bFrameInterpolationFallback;
 	m_bVPRTXVideoHDR       = config.bVPRTXVideoHDR;
 	m_iChromaScaling       = config.iChromaScaling;
 	m_iUpscaling           = config.iUpscaling;
@@ -661,6 +793,20 @@ void CDX11VideoProcessor::ReleaseVP()
 		m_pDeviceContext->ClearState();
 	}
 
+	ResetFrameInterpolation();
+	m_MaxineVSR.Reset();
+	m_MaxineDenoise.Reset();
+	m_MaxineDeblur.Reset();
+	m_bMaxineVSRUsed = false;
+	m_MaxineVSRSize = CSize(0, 0);
+	m_iMaxineResolvedMode = -1;
+	m_strMaxinePipeline.clear();
+	m_strMaxineRuntimeInfo.clear();
+	m_TexMaxineInput.Release();
+	m_TexMaxineVSR.Release();
+	m_TexMaxineDenoise.Release();
+	m_TexMaxineDeblur.Release();
+	m_TexFrameInterpolationInput.Release();
 	m_TexSrcVideo.Release();
 	m_TexConvertOutput.Release();
 	m_TexResize.Release();
@@ -1767,6 +1913,7 @@ BOOL CDX11VideoProcessor::InitMediaType(const CMediaType* pmt)
 		}
 		m_bInterlaced = (vih2->dwInterlaceFlags & AMINTERLACE_IsInterlaced);
 		m_rtAvgTimePerFrame = vih2->AvgTimePerFrame;
+		m_dwSourceBitRate = vih2->dwBitRate;
 	}
 	else if (pmt->formattype == FORMAT_VideoInfo) {
 		const VIDEOINFOHEADER* vih = (VIDEOINFOHEADER*)pmt->pbFormat;
@@ -1776,6 +1923,7 @@ BOOL CDX11VideoProcessor::InitMediaType(const CMediaType* pmt)
 		m_srcAspectRatioY = 0;
 		m_bInterlaced = 0;
 		m_rtAvgTimePerFrame = vih->AvgTimePerFrame;
+		m_dwSourceBitRate = vih->dwBitRate;
 	}
 	else {
 		return FALSE;
@@ -1986,7 +2134,8 @@ HRESULT CDX11VideoProcessor::InitializeD3D11VP(const FmtConvParams_t& params, co
 		return hr;
 	}
 
-	auto superRes = (m_bVPScaling && m_InternalTexFmt == DXGI_FORMAT_B8G8R8A8_UNORM && (params.CDepth == 8 || !m_bACMEnabled)) ? m_iVPSuperRes : SUPERRES_Disable;
+	auto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled && m_InternalTexFmt == DXGI_FORMAT_B8G8R8A8_UNORM && (params.CDepth == 8 || !m_bACMEnabled))
+		? m_iVPSuperRes : SUPERRES_Disable;
 	m_bVPUseSuperRes = (m_D3D11VP.SetSuperRes(superRes) == S_OK);
 
 	auto rtxHDR = m_bVPRTXVideoHDR && m_bHdrPassthroughSupport && m_bHdrPassthrough && m_iTexFormat != TEXFMT_8INT && !SourceIsHDR();
@@ -2141,6 +2290,371 @@ BOOL CDX11VideoProcessor::GetAlignmentSize(const CMediaType& mt, SIZE& Size)
 	return FALSE;
 }
 
+bool CDX11VideoProcessor::IsFrameInterpolationEligible(const REFERENCE_TIME frameDuration)
+{
+#ifdef _WIN64
+	if (m_iFrameInterpolationMode != FRUC_MODE_Double) {
+		m_strFrameInterpolationStatus = L"Disabled";
+		return false;
+	}
+	if (m_VendorId != PCIV_NVIDIA) {
+		m_strFrameInterpolationStatus = L"Requires an NVIDIA GPU";
+		return false;
+	}
+	if (m_iFrameInterpolationGPU != FRUC_GPU_Auto
+			&& static_cast<UINT>(m_iFrameInterpolationGPU) != m_nCurrentAdapter) {
+		m_strFrameInterpolationStatus = L"The selected GPU is not the renderer adapter";
+		return false;
+	}
+	if (m_bInterlaced) {
+		m_strFrameInterpolationStatus = L"Interlaced input is not supported";
+		return false;
+	}
+	if (SourceIsHDR()) {
+		m_strFrameInterpolationStatus = L"HDR input is not supported yet";
+		return false;
+	}
+	if (frameDuration <= 0) {
+		m_strFrameInterpolationStatus = L"The source frame duration is unavailable";
+		return false;
+	}
+
+	auto Fits = [this](const UINT maxWidth, const UINT maxHeight) {
+		return m_srcRectWidth >= m_srcRectHeight
+			? m_srcRectWidth <= maxWidth && m_srcRectHeight <= maxHeight
+			: m_srcRectHeight <= maxWidth && m_srcRectWidth <= maxHeight;
+	};
+	bool sourceAllowed = false;
+	switch (m_iFrameInterpolationSourceLimit) {
+	case FRUC_SOURCE_LIMIT_720p:  sourceAllowed = Fits(1280, 720); break;
+	case FRUC_SOURCE_LIMIT_1080p: sourceAllowed = Fits(1920, 1080); break;
+	case FRUC_SOURCE_LIMIT_1440p: sourceAllowed = Fits(2560, 1440); break;
+	case FRUC_SOURCE_LIMIT_2160p: sourceAllowed = Fits(3840, 2160); break;
+	}
+	if (!sourceAllowed) {
+		m_strFrameInterpolationStatus = L"Source exceeds the configured resolution limit";
+		return false;
+	}
+
+	const double outputRate = 2.0 * static_cast<double>(UNITS) / static_cast<double>(frameDuration);
+	if (outputRate > static_cast<double>(m_iFrameInterpolationMaxOutput) + 0.01) {
+		m_strFrameInterpolationStatus = std::format(L"Doubled rate {:.2f} fps exceeds the {} fps limit",
+			outputRate, m_iFrameInterpolationMaxOutput);
+		return false;
+	}
+	if (m_windowRect.Width() <= 0 || m_windowRect.Height() <= 0) {
+		m_strFrameInterpolationStatus = L"Waiting for a valid output size";
+		return false;
+	}
+	return true;
+#else
+	UNREFERENCED_PARAMETER(frameDuration);
+	m_strFrameInterpolationStatus = L"Requires a 64-bit build";
+	return false;
+#endif
+}
+
+void CDX11VideoProcessor::ResetFrameInterpolation()
+{
+	m_FrameInterpolationGeneration.fetch_add(1);
+	m_FrameInterpolation.Reset();
+	m_bFrameInterpolationPrepared = false;
+	m_bFrameInterpolationOutputReady = false;
+	m_bFrameInterpolationRepeated = false;
+	m_rtFrameInterpolationPrepared = INVALID_TIME;
+	m_rtFrameInterpolationMidpoint = INVALID_TIME;
+	m_rtFrameInterpolationLastInput = INVALID_TIME;
+	m_pFrameInterpolationTexture = nullptr;
+	m_pFrameInterpolationView = nullptr;
+	m_TexFrameInterpolationInput.Release();
+	for (auto& surface : m_FrameInterpolationPresentationSurfaces) {
+		if (!surface.inUse) {
+			surface.texture.Release();
+		}
+	}
+	m_strFrameInterpolationStatus = m_iFrameInterpolationMode == FRUC_MODE_Disabled
+		? L"Disabled" : L"Waiting for frames";
+}
+
+bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFERENCE_TIME& sourceTime,
+	REFERENCE_TIME& requestedMidpoint, UINT& sourceSurface)
+{
+	sourceTime = INVALID_TIME;
+	requestedMidpoint = INVALID_TIME;
+	sourceSurface = UINT_MAX;
+#ifdef _WIN64
+	if (!pSample) {
+		return false;
+	}
+
+	REFERENCE_TIME rtStart = 0, rtEnd = 0;
+	if (FAILED(pSample->GetTime(&rtStart, &rtEnd))) {
+		rtStart = m_pFilter->m_FrameStats.GeTimestamp();
+	}
+	sourceTime = rtStart;
+	const REFERENCE_TIME frameDuration = m_pFilter->m_FrameStats.GetAverageFrameDuration();
+
+	// All D3D11 immediate-context work stays serialized with presentation.
+	// NvOFFRUC itself is submitted separately after the source frame has been
+	// queued, so the presenter can display that source while CUDA is working.
+	CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
+
+	if (!m_pDevice || !m_pDeviceContext || !m_pDXGISwapChain1) {
+		return false;
+	}
+	if (!IsFrameInterpolationEligible(frameDuration)) {
+		if (m_bFrameInterpolationPrepared || m_rtFrameInterpolationLastInput != INVALID_TIME) {
+			ResetFrameInterpolation();
+		}
+		return false;
+	}
+
+	if (m_rtFrameInterpolationLastInput != INVALID_TIME
+			&& (rtStart <= m_rtFrameInterpolationLastInput
+				|| rtStart - m_rtFrameInterpolationLastInput > frameDuration * 4)) {
+		ResetFrameInterpolation();
+	}
+
+	const UINT outputWidth = static_cast<UINT>(m_windowRect.Width());
+	const UINT outputHeight = static_cast<UINT>(m_windowRect.Height());
+	if (!m_FrameInterpolation.Initialize(m_pDevice, outputWidth, outputHeight)) {
+		m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
+		return false;
+	}
+
+	m_rtStart = rtStart;
+	HRESULT hr = CopySample(pSample);
+	if (FAILED(hr)) {
+		m_strFrameInterpolationStatus = L"Could not prepare the source frame";
+		return false;
+	}
+
+	// Render the complete source pipeline, including Maxine, into a normal
+	// D3D11 texture before acquiring NvOFFRUC's shared keyed-mutex input.
+	// Holding the FRUC input transaction open while Maxine maps/unmaps its own
+	// D3D11 resources can force the two independent CUDA interop stacks into
+	// pathological device-wide serialization (observed as roughly 1 fps).
+	hr = m_TexFrameInterpolationInput.CheckCreate(m_pDevice,
+		DXGI_FORMAT_R8G8B8A8_UNORM, outputWidth, outputHeight,
+		Tex2D_DefaultShaderRTarget);
+	if (SUCCEEDED(hr)) {
+		CComPtr<ID3D11RenderTargetView> stagingRenderTargetView;
+		hr = m_pDevice->CreateRenderTargetView(
+			m_TexFrameInterpolationInput.pTexture, nullptr, &stagingRenderTargetView);
+		if (SUCCEEDED(hr)) {
+			const FLOAT clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+			m_pDeviceContext->ClearRenderTargetView(stagingRenderTargetView, clearColor);
+			hr = Process(m_TexFrameInterpolationInput.pTexture,
+				m_srcRect, m_videoRect, false);
+		}
+	}
+	if (FAILED(hr)) {
+		m_strFrameInterpolationStatus = L"Could not render the processed frame for interpolation";
+		return false;
+	}
+
+	UINT freeSurface = UINT_MAX;
+	for (UINT i = 0; i < FrameInterpolationSurfaceCount; ++i) {
+		if (!m_FrameInterpolationPresentationSurfaces[i].inUse) {
+			freeSurface = i;
+			break;
+		}
+	}
+	if (freeSurface == UINT_MAX) {
+		m_strFrameInterpolationStatus = L"Frame-interpolation presentation queue is full";
+		return false;
+	}
+
+	auto& surface = m_FrameInterpolationPresentationSurfaces[freeSurface];
+	HRESULT copyHr = surface.texture.CheckCreate(m_pDevice,
+		m_TexFrameInterpolationInput.desc.Format,
+		m_TexFrameInterpolationInput.desc.Width,
+		m_TexFrameInterpolationInput.desc.Height, Tex2D_DefaultShader);
+	if (FAILED(copyHr)) {
+		m_strFrameInterpolationStatus = L"Could not preserve the source frame for asynchronous presentation";
+		return false;
+	}
+
+	ID3D11Texture2D* inputTexture = nullptr;
+	if (!m_FrameInterpolation.BeginInputFrame(&inputTexture)) {
+		m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
+		return false;
+	}
+
+	// Keep the keyed-mutex transaction as short as possible: only the two
+	// device-local copies and a flush needed to publish the source to FRUC and
+	// the asynchronous presenter. Maxine has already completely finished.
+	m_pDeviceContext->CopyResource(inputTexture, m_TexFrameInterpolationInput.pTexture);
+	m_pDeviceContext->CopyResource(surface.texture.pTexture,
+		m_TexFrameInterpolationInput.pTexture);
+	m_pDeviceContext->Flush();
+	surface.inUse = true;
+	sourceSurface = freeSurface;
+
+	requestedMidpoint = m_rtFrameInterpolationLastInput == INVALID_TIME
+		? rtStart - frameDuration / 2
+		: m_rtFrameInterpolationLastInput + (rtStart - m_rtFrameInterpolationLastInput) / 2;
+	m_FrameInterpolationPendingGeneration = m_FrameInterpolationGeneration.load();
+	return true;
+#else
+	UNREFERENCED_PARAMETER(pSample);
+	return false;
+#endif
+}
+
+void CDX11VideoProcessor::CancelFrameInterpolationSubmission()
+{
+	// CRendererInputPin::BeginFlush holds m_RendererLock while the base
+	// renderer waits for Receive() to return. Invalidate any in-flight FRUC
+	// submission without touching the synchronous NVIDIA API. The receive
+	// thread will discard the result before entering its final locked phase.
+	m_FrameInterpolationGeneration.fetch_add(1, std::memory_order_acq_rel);
+}
+
+bool CDX11VideoProcessor::SubmitFrameInterpolation(const REFERENCE_TIME sourceTime,
+	const REFERENCE_TIME requestedMidpoint, REFERENCE_TIME& midpointTime)
+{
+	midpointTime = INVALID_TIME;
+#ifdef _WIN64
+	const uint64_t submissionGeneration = m_FrameInterpolationPendingGeneration;
+	bool outputReady = false;
+	bool repeated = false;
+	if (!m_FrameInterpolation.SubmitInputFrame(
+			static_cast<double>(sourceTime) / static_cast<double>(UNITS),
+			static_cast<double>(requestedMidpoint) / static_cast<double>(UNITS),
+			outputReady, repeated)) {
+		return false;
+	}
+
+	// Do not acquire DirectShow's renderer lock while m_bInReceive is true.
+	// BeginFlush owns that lock while it waits for Receive() to finish, so even
+	// a generation check immediately before locking still has a check/lock race.
+	if (submissionGeneration != m_FrameInterpolationGeneration.load(std::memory_order_acquire)) {
+		return false;
+	}
+
+	m_bFrameInterpolationPrepared = false;
+	m_bFrameInterpolationOutputReady = outputReady && (!repeated || m_bFrameInterpolationFallback);
+	m_bFrameInterpolationRepeated = repeated;
+	m_rtFrameInterpolationPrepared = INVALID_TIME;
+	m_rtFrameInterpolationMidpoint = requestedMidpoint;
+	m_rtFrameInterpolationLastInput = sourceTime;
+
+	// Catch a flush that began while the result fields were being published.
+	// Reset/teardown cannot proceed until Receive clears m_bInReceive, and the
+	// final renderer-locked phase validates this generation again before use.
+	if (submissionGeneration != m_FrameInterpolationGeneration.load(std::memory_order_acquire)) {
+		m_bFrameInterpolationOutputReady = false;
+		m_rtFrameInterpolationMidpoint = INVALID_TIME;
+		return false;
+	}
+
+	if (m_bFrameInterpolationOutputReady) {
+		midpointTime = requestedMidpoint;
+	}
+	return true;
+#else
+	UNREFERENCED_PARAMETER(sourceTime);
+	UNREFERENCED_PARAMETER(requestedMidpoint);
+	return false;
+#endif
+}
+
+HRESULT CDX11VideoProcessor::RenderPreparedFrame(const bool interpolated, const REFERENCE_TIME frameStartTime)
+{
+#ifdef _WIN64
+	ID3D11Texture2D* texture = nullptr;
+	ID3D11ShaderResourceView* view = nullptr;
+	const bool acquired = interpolated
+		? m_FrameInterpolation.AcquireInterpolatedFrame(&texture, &view)
+		: m_FrameInterpolation.AcquireCurrentFrame(&texture, &view);
+	if (!acquired) {
+		m_strFrameInterpolationStatus = m_FrameInterpolation.GetStatus();
+		return E_FAIL;
+	}
+
+	m_pFrameInterpolationTexture = texture;
+	m_pFrameInterpolationView = view;
+	m_rtStart = frameStartTime;
+	const HRESULT hr = Render(interpolated ? 0 : 1, frameStartTime);
+	m_pFrameInterpolationTexture = nullptr;
+	m_pFrameInterpolationView = nullptr;
+	if (interpolated) {
+		m_FrameInterpolation.ReleaseInterpolatedFrame();
+	}
+	else {
+		m_FrameInterpolation.ReleaseCurrentFrame();
+	}
+	return hr;
+#else
+	UNREFERENCED_PARAMETER(interpolated);
+	UNREFERENCED_PARAMETER(frameStartTime);
+	return E_NOTIMPL;
+#endif
+}
+
+HRESULT CDX11VideoProcessor::RenderFrameInterpolation(const REFERENCE_TIME frameStartTime)
+{
+	// A seek may invalidate the result after NvOFFRUC returns but before the
+	// receive thread enters its final renderer-locked phase. Never render that
+	// stale midpoint into the new segment.
+	if (m_FrameInterpolationPendingGeneration != m_FrameInterpolationGeneration.load(std::memory_order_acquire)
+			|| !m_bFrameInterpolationOutputReady
+			|| frameStartTime != m_rtFrameInterpolationMidpoint) {
+		m_bFrameInterpolationOutputReady = false;
+		return S_FALSE;
+	}
+
+	m_strFrameInterpolationStatus = std::format(L"{}; pipelined source presentation",
+		m_FrameInterpolation.GetStatus());
+	const HRESULT hr = RenderPreparedFrame(true, frameStartTime);
+	if (SUCCEEDED(hr)) {
+		m_pFilter->m_DrawStats.Add(GetPreciseTick());
+	}
+	m_bFrameInterpolationOutputReady = false;
+	return hr;
+}
+
+
+HRESULT CDX11VideoProcessor::RenderFrameInterpolationSource(UINT sourceSurface, const REFERENCE_TIME frameStartTime)
+{
+#ifdef _WIN64
+	if (sourceSurface >= FrameInterpolationSurfaceCount) {
+		return E_INVALIDARG;
+	}
+	auto& surface = m_FrameInterpolationPresentationSurfaces[sourceSurface];
+	if (!surface.inUse || !surface.texture.pTexture || !surface.texture.pShaderResource) {
+		return S_FALSE;
+	}
+
+	m_pFrameInterpolationTexture = surface.texture.pTexture;
+	m_pFrameInterpolationView = surface.texture.pShaderResource;
+	m_rtStart = frameStartTime;
+	const HRESULT hr = Render(1, frameStartTime);
+	m_pFrameInterpolationTexture = nullptr;
+	m_pFrameInterpolationView = nullptr;
+	if (SUCCEEDED(hr)) {
+		m_pFilter->m_DrawStats.Add(GetPreciseTick());
+	}
+	return hr;
+#else
+	UNREFERENCED_PARAMETER(sourceSurface);
+	UNREFERENCED_PARAMETER(frameStartTime);
+	return E_NOTIMPL;
+#endif
+}
+
+void CDX11VideoProcessor::ReleaseFrameInterpolationSource(UINT sourceSurface)
+{
+#ifdef _WIN64
+	if (sourceSurface < FrameInterpolationSurfaceCount) {
+		m_FrameInterpolationPresentationSurfaces[sourceSurface].inUse = false;
+	}
+#else
+	UNREFERENCED_PARAMETER(sourceSurface);
+#endif
+}
+
 HRESULT CDX11VideoProcessor::ProcessSample(IMediaSample* pSample)
 {
 	REFERENCE_TIME rtStart, rtEnd;
@@ -2153,14 +2667,25 @@ HRESULT CDX11VideoProcessor::ProcessSample(IMediaSample* pSample)
 	m_rtStart = rtStart;
 	CRefTime rtClock(rtStart);
 
-	HRESULT hr = CopySample(pSample);
-	if (FAILED(hr)) {
-		m_RenderStats.failed++;
-		return hr;
+	HRESULT hr = S_OK;
+	if (m_bFrameInterpolationPrepared && rtStart == m_rtFrameInterpolationPrepared) {
+		hr = RenderPreparedFrame(false, rtStart);
+		m_bFrameInterpolationPrepared = false;
+		m_rtFrameInterpolationPrepared = INVALID_TIME;
 	}
+	else {
+		if (m_bFrameInterpolationPrepared) {
+			ResetFrameInterpolation();
+		}
+		hr = CopySample(pSample);
+		if (FAILED(hr)) {
+			m_RenderStats.failed++;
+			return hr;
+		}
 
-	// always Render(1) a frame after CopySample()
-	hr = Render(1, rtStart);
+		// always Render(1) a frame after CopySample()
+		hr = Render(1, rtStart);
+	}
 	m_pFilter->m_DrawStats.Add(GetPreciseTick());
 	if (m_pFilter->m_filterState == State_Running) {
 		m_pFilter->StreamTime(rtClock);
@@ -2876,17 +3401,180 @@ HRESULT CDX11VideoProcessor::FillBlack()
 	return hr;
 }
 
+unsigned CDX11VideoProcessor::ResolveMaxineUpscaleMode() const
+{
+	const unsigned quality = static_cast<unsigned>(std::clamp(m_iMaxineQuality,
+		static_cast<int>(MAXINE_QUALITY_Low), static_cast<int>(MAXINE_QUALITY_Ultra)));
+
+	switch (m_iMaxineSourceMode) {
+	case MAXINE_SOURCE_Bicubic:
+		return 0;
+	case MAXINE_SOURCE_HighBitrate:
+		return 15u + quality;
+	case MAXINE_SOURCE_Auto:
+		if (m_dwSourceBitRate > 0
+				&& static_cast<unsigned long long>(m_dwSourceBitRate)
+					>= static_cast<unsigned long long>(m_iMaxineAutoBitrate) * 1000000ull) {
+			return 15u + quality;
+		}
+		[[fallthrough]];
+	default:
+		return quality;
+	}
+}
+
+bool CDX11VideoProcessor::GetMaxineVSRTargetSize(const CRect& dstRect, CSize& targetSize, bool& upscaleNeeded)
+{
+	targetSize = CSize(0, 0);
+	upscaleNeeded = false;
+	m_bMaxineOversampleClamped = false;
+
+#ifdef _WIN64
+	if (m_iMaxineOperation == MAXINE_OPERATION_Disabled) {
+		m_strMaxineVSRStatus = L"Disabled";
+		return false;
+	}
+	if (m_VendorId != PCIV_NVIDIA) {
+		m_strMaxineVSRStatus = L"Requires an NVIDIA GPU";
+		return false;
+	}
+	if (!m_srcRectWidth || !m_srcRectHeight) {
+		m_strMaxineVSRStatus = L"Waiting for source dimensions";
+		return false;
+	}
+	if (m_iMaxineSourceLimit == SUPERRES_Disable) {
+		m_strMaxineVSRStatus = L"Maxine source limit is disabled";
+		return false;
+	}
+	if (!SourceMatchesSuperResLimit(m_srcRectWidth, m_srcRectHeight, m_iMaxineSourceLimit)) {
+		m_strMaxineVSRStatus = L"Source exceeds the selected Maxine limit";
+		return false;
+	}
+	if (SourceIsHDR()) {
+		m_strMaxineVSRStatus = L"HDR input is not supported yet";
+		return false;
+	}
+	if (m_bVPUseRTXVideoHDR) {
+		m_strMaxineVSRStatus = L"Disable RTX Video HDR to use Maxine";
+		return false;
+	}
+
+	if (m_iMaxineOperation == MAXINE_OPERATION_Denoise) {
+		if (m_iMaxineDenoise == MAXINE_FILTER_Off) {
+			m_strMaxineVSRStatus = L"Denoise-only operation has no selected strength";
+			return false;
+		}
+		targetSize = CSize(m_srcRectWidth, m_srcRectHeight);
+		m_strMaxineVSRStatus = L"Eligible for same-resolution denoise";
+		return true;
+	}
+	if (m_iMaxineOperation == MAXINE_OPERATION_Deblur) {
+		if (m_iMaxineDeblur == MAXINE_FILTER_Off) {
+			m_strMaxineVSRStatus = L"Deblur-only operation has no selected strength";
+			return false;
+		}
+		targetSize = CSize(m_srcRectWidth, m_srcRectHeight);
+		m_strMaxineVSRStatus = L"Eligible for same-resolution deblur";
+		return true;
+	}
+
+	unsigned long long targetWidth = 0;
+	unsigned long long targetHeight = 0;
+	if (m_iMaxineScale == MAXINE_SCALE_MatchOutput) {
+		int dstWidth = dstRect.Width();
+		int dstHeight = dstRect.Height();
+		if (m_iRotation == 90 || m_iRotation == 270) {
+			std::swap(dstWidth, dstHeight);
+		}
+		if (dstWidth <= 0 || dstHeight <= 0) {
+			m_strMaxineVSRStatus = L"Invalid player output size";
+			return false;
+		}
+
+		const int oversample = NormalizeMaxineOversample(m_iMaxineOversample);
+		targetWidth = (static_cast<unsigned long long>(dstWidth) * oversample + 50ull) / 100ull;
+		targetHeight = (static_cast<unsigned long long>(dstHeight) * oversample + 50ull) / 100ull;
+
+		const unsigned long long maxWidth = static_cast<unsigned long long>(m_srcRectWidth) * 4ull;
+		const unsigned long long maxHeight = static_cast<unsigned long long>(m_srcRectHeight) * 4ull;
+		if (targetWidth > maxWidth || targetHeight > maxHeight) {
+			const long double scaleX = static_cast<long double>(maxWidth) / targetWidth;
+			const long double scaleY = static_cast<long double>(maxHeight) / targetHeight;
+			const long double scale = std::min(scaleX, scaleY);
+			targetWidth = std::min(maxWidth, std::max<unsigned long long>(m_srcRectWidth,
+				static_cast<unsigned long long>(std::llround(targetWidth * scale))));
+			targetHeight = std::min(maxHeight, std::max<unsigned long long>(m_srcRectHeight,
+				static_cast<unsigned long long>(std::llround(targetHeight * scale))));
+			m_bMaxineOversampleClamped = true;
+		}
+	}
+	else {
+		const int scale = m_iMaxineScale;
+		if (scale != MAXINE_SCALE_4_3X && scale != MAXINE_SCALE_1_5X
+				&& scale != MAXINE_SCALE_2X && scale != MAXINE_SCALE_3X && scale != MAXINE_SCALE_4X) {
+			m_strMaxineVSRStatus = L"Invalid Maxine output-size setting";
+			return false;
+		}
+		targetWidth = (static_cast<unsigned long long>(m_srcRectWidth) * scale + 50ull) / 100ull;
+		targetHeight = (static_cast<unsigned long long>(m_srcRectHeight) * scale + 50ull) / 100ull;
+	}
+
+	if (targetWidth > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION
+			|| targetHeight > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) {
+		m_strMaxineVSRStatus = L"Selected Maxine output exceeds the D3D11 texture-size limit";
+		return false;
+	}
+
+	upscaleNeeded = targetWidth > m_srcRectWidth || targetHeight > m_srcRectHeight;
+	if (!upscaleNeeded) {
+		targetWidth = m_srcRectWidth;
+		targetHeight = m_srcRectHeight;
+		if (m_iMaxineDenoise == MAXINE_FILTER_Off && m_iMaxineDeblur == MAXINE_FILTER_Off) {
+			m_strMaxineVSRStatus = L"Player output does not require upscaling";
+			return false;
+		}
+	}
+
+	targetSize = CSize(static_cast<int>(targetWidth), static_cast<int>(targetHeight));
+	m_strMaxineVSRStatus = upscaleNeeded ? L"Eligible for Maxine upscaling" : L"Eligible for cleanup passes";
+	return true;
+#else
+	UNREFERENCED_PARAMETER(dstRect);
+	m_strMaxineVSRStatus = L"Requires a 64-bit build";
+	return false;
+#endif
+}
+
 void CDX11VideoProcessor::UpdateTexures()
 {
 	if (!m_srcWidth || !m_srcHeight) {
 		return;
 	}
 
+	// D3D11 textures registered with CUDA must be unregistered before the
+	// renderer releases or recreates them.
+	m_MaxineVSR.Reset();
+	m_MaxineDenoise.Reset();
+	m_MaxineDeblur.Reset();
+	m_bMaxineVSRUsed = false;
+	m_MaxineVSRSize = CSize(0, 0);
+	m_iMaxineResolvedMode = -1;
+	m_strMaxinePipeline.clear();
+	m_strMaxineRuntimeInfo.clear();
+	m_TexMaxineInput.Release();
+	m_TexMaxineVSR.Release();
+	m_TexMaxineDenoise.Release();
+	m_TexMaxineDeblur.Release();
+
 	// TODO: try making w and h a multiple of 128.
 	HRESULT hr = S_OK;
+	CSize maxineTargetSize;
+	bool maxineUpscaleNeeded = false;
+	const bool canUseMaxineVSR = GetMaxineVSRTargetSize(m_videoRect, maxineTargetSize, maxineUpscaleNeeded);
+	UNREFERENCED_PARAMETER(maxineUpscaleNeeded);
 
 	if (m_D3D11VP.IsReady()) {
-		if (m_bVPScaling) {
+		if (m_bVPScaling && !canUseMaxineVSR) {
 			CSize texsize = m_videoRect.Size();
 			hr = m_TexConvertOutput.CheckCreate(m_pDevice, m_D3D11OutputFmt, texsize.cx, texsize.cy, Tex2D_DefaultShaderRTarget);
 			if (FAILED(hr)) {
@@ -3294,6 +3982,16 @@ void CDX11VideoProcessor::DrawSubtitles(ID3D11Texture2D* pRenderTarget)
 
 HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect& srcRect, const CRect& dstRect, const bool second)
 {
+	if (m_pFrameInterpolationTexture && m_pFrameInterpolationView) {
+		Tex2D_t prepared;
+		prepared.pTexture = m_pFrameInterpolationTexture;
+		prepared.pShaderResource = m_pFrameInterpolationView;
+		m_pFrameInterpolationTexture->GetDesc(&prepared.desc);
+		const CRect fullRect(0, 0, prepared.desc.Width, prepared.desc.Height);
+		return TextureCopyRect(prepared, pRenderTarget, fullRect, fullRect,
+			m_pPS_Simple, nullptr, 0, false);
+	}
+
 	HRESULT hr = S_OK;
 	m_bDitherUsed = false;
 	int rotation = m_iRotation;
@@ -3302,10 +4000,13 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 	Tex2D_t* pInputTexture = nullptr;
 
 	const UINT numSteps = GetPostScaleSteps();
+	CSize maxineTargetSize;
+	bool maxineUpscaleNeeded = false;
+	const bool canUseMaxineVSR = GetMaxineVSRTargetSize(dstRect, maxineTargetSize, maxineUpscaleNeeded);
 
 	if (m_D3D11VP.IsReady()) {
 		if (!(m_iSwapEffect == SWAPEFFECT_Discard && (m_VendorId == PCIV_AMDATI || m_VendorId == PCIV_INTEL))) {
-			const bool bNeedShaderTransform =
+			const bool bNeedShaderTransform = canUseMaxineVSR ||
 				(m_TexConvertOutput.desc.Width != dstRect.Width() || m_TexConvertOutput.desc.Height != dstRect.Height() || m_bFlip
 				|| dstRect.right > m_windowRect.right || dstRect.bottom > m_windowRect.bottom)
 				|| (m_bHdrPassthroughSupport && (m_bHdrPassthrough || m_bHdrLocalToneMapping)); // At least on Nvidia we can sometimes get the "D3D11: Removing Device" error here when HDR Passthrough.
@@ -3318,10 +4019,17 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 		}
 
 		CRect rect(0, 0, m_TexConvertOutput.desc.Width, m_TexConvertOutput.desc.Height);
+		const bool deferRotationForMaxine = canUseMaxineVSR && m_iRotation != 0;
+		if (deferRotationForMaxine) {
+			m_D3D11VP.SetRotation(D3D11_VIDEO_PROCESSOR_ROTATION_IDENTITY);
+		}
 		hr = D3D11VPPass(m_TexConvertOutput.pTexture, rSrc, rect, second);
+		if (deferRotationForMaxine) {
+			m_D3D11VP.SetRotation(static_cast<D3D11_VIDEO_PROCESSOR_ROTATION>(m_iRotation / 90));
+		}
 		pInputTexture = &m_TexConvertOutput;
 		rSrc = rect;
-		rotation = 0;
+		rotation = deferRotationForMaxine ? m_iRotation : 0;
 	}
 	else if (m_PSConvColorData.bEnable) {
 		ConvertColorPass(m_TexConvertOutput.pTexture);
@@ -3330,6 +4038,129 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 	}
 	else {
 		pInputTexture = &m_TexSrcVideo;
+	}
+
+	m_bMaxineVSRUsed = false;
+	m_MaxineVSRSize = CSize(0, 0);
+	m_iMaxineResolvedMode = -1;
+	m_strMaxinePipeline.clear();
+	if (canUseMaxineVSR) {
+		const CRect inputRect(0, 0, m_srcRectWidth, m_srcRectHeight);
+		const HRESULT inputCreateHr = m_TexMaxineInput.CheckCreate(m_pDevice,
+			DXGI_FORMAT_B8G8R8A8_UNORM, m_srcRectWidth, m_srcRectHeight, Tex2D_DefaultShaderRTarget);
+
+		if (FAILED(inputCreateHr)) {
+			m_strMaxineVSRStatus = L"Could not create the BGRA8 Maxine input texture";
+		}
+		else if (!pInputTexture->pShaderResource) {
+			m_strMaxineVSRStatus = L"The source texture cannot be sampled";
+		}
+		else {
+			const HRESULT copyHr = TextureCopyRect(*pInputTexture, m_TexMaxineInput.pTexture,
+				rSrc, inputRect, m_pPS_Simple, nullptr, 0, false);
+			if (FAILED(copyHr)) {
+				m_strMaxineVSRStatus = L"Could not convert the source to BGRA8";
+			}
+			else {
+				Tex2D_t* pMaxineResult = &m_TexMaxineInput;
+				CSize currentSize(m_srcRectWidth, m_srcRectHeight);
+				bool passesOk = true;
+				bool ranPass = false;
+
+				auto AppendPassName = [&](const wchar_t* name) {
+					if (!m_strMaxinePipeline.empty()) {
+						m_strMaxinePipeline.append(L" -> ");
+					}
+					m_strMaxinePipeline.append(name);
+				};
+
+				auto RunPass = [&](const MaxinePass pass) {
+					Tex2D_t* pOutput = nullptr;
+					CNvidiaMaxineVSR* pEffect = nullptr;
+					CSize outputSize = currentSize;
+					unsigned mode = 0;
+					const wchar_t* passName = nullptr;
+
+					switch (pass) {
+					case MaxinePass::Upscale:
+						if (m_iMaxineOperation != MAXINE_OPERATION_Upscale || !maxineUpscaleNeeded) {
+							return true;
+						}
+						pOutput = &m_TexMaxineVSR;
+						pEffect = &m_MaxineVSR;
+						outputSize = maxineTargetSize;
+						mode = ResolveMaxineUpscaleMode();
+						m_iMaxineResolvedMode = static_cast<int>(mode);
+						passName = L"Upscale";
+						break;
+					case MaxinePass::Denoise:
+						if (m_iMaxineDenoise == MAXINE_FILTER_Off
+								|| (m_iMaxineOperation != MAXINE_OPERATION_Upscale
+									&& m_iMaxineOperation != MAXINE_OPERATION_Denoise)) {
+							return true;
+						}
+						pOutput = &m_TexMaxineDenoise;
+						pEffect = &m_MaxineDenoise;
+						mode = 7u + static_cast<unsigned>(m_iMaxineDenoise);
+						passName = L"Denoise";
+						break;
+					case MaxinePass::Deblur:
+						if (m_iMaxineDeblur == MAXINE_FILTER_Off
+								|| (m_iMaxineOperation != MAXINE_OPERATION_Upscale
+									&& m_iMaxineOperation != MAXINE_OPERATION_Deblur)) {
+							return true;
+						}
+						pOutput = &m_TexMaxineDeblur;
+						pEffect = &m_MaxineDeblur;
+						mode = 11u + static_cast<unsigned>(m_iMaxineDeblur);
+						passName = L"Deblur";
+						break;
+					}
+
+					const HRESULT createHr = pOutput->CheckCreate(m_pDevice, DXGI_FORMAT_B8G8R8A8_UNORM,
+						outputSize.cx, outputSize.cy, Tex2D_DefaultShaderRTarget);
+					if (FAILED(createHr)) {
+						m_strMaxineVSRStatus = std::format(L"Could not create the Maxine {} texture", passName);
+						return false;
+					}
+					if (!pEffect->Process(m_pDeviceContext, pMaxineResult->pTexture,
+							pOutput->pTexture, mode, m_iMaxineGPU)) {
+						m_strMaxineVSRStatus = std::format(L"{} failed: {}", passName, pEffect->GetStatus());
+						return false;
+					}
+
+					pMaxineResult = pOutput;
+					currentSize = outputSize;
+					ranPass = true;
+					AppendPassName(passName);
+					if (m_strMaxineRuntimeInfo.empty()) {
+						m_strMaxineRuntimeInfo = pEffect->GetRuntimeInfo();
+					}
+					return true;
+				};
+
+				if (m_iMaxineOperation == MAXINE_OPERATION_Upscale) {
+					for (const MaxinePass pass : GetMaxinePassOrder(m_iMaxinePipeline)) {
+						if (!RunPass(pass)) {
+							passesOk = false;
+							break;
+						}
+					}
+				}
+				else {
+					passesOk = RunPass(m_iMaxineOperation == MAXINE_OPERATION_Denoise
+						? MaxinePass::Denoise : MaxinePass::Deblur);
+				}
+
+				if (passesOk && ranPass) {
+					pInputTexture = pMaxineResult;
+					rSrc.SetRect(0, 0, currentSize.cx, currentSize.cy);
+					m_bMaxineVSRUsed = true;
+					m_MaxineVSRSize = currentSize;
+					m_strMaxineVSRStatus = L"Active";
+				}
+			}
+		}
 	}
 
 	if (numSteps) {
@@ -3437,11 +4268,22 @@ void CDX11VideoProcessor::SetVideoRect(const CRect& videoRect)
 {
 	m_videoRect = videoRect;
 	UpdateRenderRect();
-	UpdateTexures();
+
+	// Fixed Maxine scales do not need texture recreation for presentation-only
+	// zoom changes. Match-output mode intentionally follows the player size.
+	CSize maxineTargetSize;
+	bool maxineUpscaleNeeded = false;
+	if (m_iMaxineScale == MAXINE_SCALE_MatchOutput
+			|| !GetMaxineVSRTargetSize(m_videoRect, maxineTargetSize, maxineUpscaleNeeded)) {
+		UpdateTexures();
+	}
 }
 
 HRESULT CDX11VideoProcessor::SetWindowRect(const CRect& windowRect)
 {
+	if (m_windowRect.Size() != windowRect.Size()) {
+		ResetFrameInterpolation();
+	}
 	m_windowRect = windowRect;
 	UpdateRenderRect();
 
@@ -3821,6 +4663,8 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 	bool changeNumTextures       = false;
 	bool changeResizeStats       = false;
 	bool changeSuperRes          = false;
+	bool changeMaxineVSR         = false;
+	bool changeFrameInterpolation = false;
 	bool changeRTXVideoHDR       = false;
 	bool changeLuminanceParams   = false;
 
@@ -3948,6 +4792,46 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 	if (config.iVPSuperRes != m_iVPSuperRes) {
 		m_iVPSuperRes = config.iVPSuperRes;
 		changeSuperRes = true;
+		changeTextures = true;
+	}
+
+	if (config.iMaxineOperation != m_iMaxineOperation
+			|| config.iMaxineSourceMode != m_iMaxineSourceMode
+			|| config.iMaxineQuality != m_iMaxineQuality
+			|| config.iMaxineScale != m_iMaxineScale
+			|| config.iMaxineOversample != m_iMaxineOversample
+			|| config.iMaxineSourceLimit != m_iMaxineSourceLimit
+			|| config.iMaxineDenoise != m_iMaxineDenoise
+			|| config.iMaxineDeblur != m_iMaxineDeblur
+			|| config.iMaxinePipeline != m_iMaxinePipeline
+			|| config.iMaxineGPU != m_iMaxineGPU
+			|| config.iMaxineAutoBitrate != m_iMaxineAutoBitrate) {
+		m_iMaxineOperation = config.iMaxineOperation;
+		m_iMaxineSourceMode = config.iMaxineSourceMode;
+		m_iMaxineQuality = config.iMaxineQuality;
+		m_iMaxineScale = config.iMaxineScale;
+		m_iMaxineOversample = config.iMaxineOversample;
+		m_iMaxineSourceLimit = config.iMaxineSourceLimit;
+		m_iMaxineDenoise = config.iMaxineDenoise;
+		m_iMaxineDeblur = config.iMaxineDeblur;
+		m_iMaxinePipeline = config.iMaxinePipeline;
+		m_iMaxineGPU = config.iMaxineGPU;
+		m_iMaxineAutoBitrate = config.iMaxineAutoBitrate;
+		changeMaxineVSR = true;
+		changeTextures = true;
+	}
+
+	if (config.iFrameInterpolationMode != m_iFrameInterpolationMode
+			|| config.iFrameInterpolationSourceLimit != m_iFrameInterpolationSourceLimit
+			|| config.iFrameInterpolationMaxOutput != m_iFrameInterpolationMaxOutput
+			|| config.iFrameInterpolationGPU != m_iFrameInterpolationGPU
+			|| config.bFrameInterpolationFallback != m_bFrameInterpolationFallback) {
+		m_iFrameInterpolationMode = config.iFrameInterpolationMode;
+		m_iFrameInterpolationSourceLimit = config.iFrameInterpolationSourceLimit;
+		m_iFrameInterpolationMaxOutput = config.iFrameInterpolationMaxOutput;
+		m_iFrameInterpolationGPU = config.iFrameInterpolationGPU;
+		m_bFrameInterpolationFallback = config.bFrameInterpolationFallback;
+		changeFrameInterpolation = true;
 	}
 
 	if (config.bVPRTXVideoHDR != m_bVPRTXVideoHDR) {
@@ -4051,8 +4935,13 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 		UpdateStatsByDisplay();
 	}
 
-	if (changeSuperRes) {
-		auto superRes = (m_bVPScaling && (m_srcParams.CDepth == 8 || !m_bACMEnabled)) ? m_iVPSuperRes : SUPERRES_Disable;
+	if (changeFrameInterpolation) {
+		ResetFrameInterpolation();
+	}
+
+	if (changeSuperRes || changeMaxineVSR) {
+		auto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled
+				&& (m_srcParams.CDepth == 8 || !m_bACMEnabled)) ? m_iVPSuperRes : SUPERRES_Disable;
 		m_bVPUseSuperRes = (m_D3D11VP.SetSuperRes(superRes) == S_OK);
 	}
 
@@ -4083,6 +4972,8 @@ void CDX11VideoProcessor::SetStereo3dTransform(int value)
 
 void CDX11VideoProcessor::Flush()
 {
+	ResetFrameInterpolation();
+
 	if (m_D3D11VP.IsReady()) {
 		m_D3D11VP.ResetFrameOrder();
 	}
@@ -4385,7 +5276,7 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 	}
 
 	std::wstring str;
-	str.reserve(700);
+	str.reserve(900);
 	str.assign(m_strStatsHeader);
 	str.append(m_strStatsDispInfo);
 	str += std::format(L"\nGraph. Adapter: {}", m_strAdapterDescription);
@@ -4412,12 +5303,16 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 		str += std::format(L"\nScaling       : {}x{} -> {}x{}", m_srcRectWidth, m_srcRectHeight, dstW, dstH);
 	}
 	if (m_srcRectWidth != dstW || m_srcRectHeight != dstH) {
-		if (m_D3D11VP.IsReady() && m_bVPScaling && !m_bVPScalingUseShaders) {
+		if (m_bMaxineVSRUsed) {
+			str.append(L" NVIDIA Maxine VSR");
+		}
+		else if (m_D3D11VP.IsReady() && m_bVPScaling && !m_bVPScalingUseShaders) {
 			str.append(L" D3D11");
 			if (m_bVPUseSuperRes && m_srcRectWidth < dstW && m_srcRectHeight < dstH) {
 				str.append(L" SuperResolution*");
 			}
-		} else {
+		}
+		else {
 			str += L' ';
 			if (m_strShaderX) {
 				str.append(m_strShaderX);
@@ -4425,9 +5320,56 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 					str += L'/';
 					str.append(m_strShaderY);
 				}
-			} else if (m_strShaderY) {
+			}
+			else if (m_strShaderY) {
 				str.append(m_strShaderY);
 			}
+		}
+	}
+	if (m_bMaxineVSRUsed) {
+		const bool ranVSR = m_iMaxineResolvedMode >= 0;
+		const bool ranDenoise = m_strMaxinePipeline.find(L"Denoise") != std::wstring::npos;
+		const bool ranDeblur = m_strMaxinePipeline.find(L"Deblur") != std::wstring::npos;
+		const double vsrMs = ranVSR ? m_MaxineVSR.GetLastProcessTimeMs() : 0.0;
+		const double denoiseMs = ranDenoise ? m_MaxineDenoise.GetLastProcessTimeMs() : 0.0;
+		const double deblurMs = ranDeblur ? m_MaxineDeblur.GetLastProcessTimeMs() : 0.0;
+		const double totalMs = vsrMs + denoiseMs + deblurMs;
+		const std::wstring gpuLabel = m_iMaxineGPU == MAXINE_GPU_Auto
+			? std::wstring(L"Auto")
+			: std::to_wstring(m_iMaxineGPU);
+		str += std::format(L"\nMaxine       : {}, {}x{} -> {}x{}",
+			MaxineOperationToString(m_iMaxineOperation),
+			m_srcRectWidth, m_srcRectHeight, m_MaxineVSRSize.cx, m_MaxineVSRSize.cy);
+		if (ranVSR) {
+			str += std::format(L", {}", MaxineModeToString(m_iMaxineResolvedMode));
+		}
+		str += std::format(L"\nMaxine pipe  : {} ({:.2f} ms total, VSR {:.2f}, DN {:.2f}, DB {:.2f})",
+			m_strMaxinePipeline, totalMs, vsrMs, denoiseMs, deblurMs);
+		str += std::format(L"\nMaxine config: quality {}, denoise {}, deblur {}, GPU {}",
+			MaxineQualityToString(m_iMaxineQuality), MaxineFilterToString(m_iMaxineDenoise),
+			MaxineFilterToString(m_iMaxineDeblur), gpuLabel);
+		if (m_iMaxineScale == MAXINE_SCALE_MatchOutput) {
+			str += std::format(L", output oversampling {}", MaxineOversampleToString(m_iMaxineOversample));
+			if (m_bMaxineOversampleClamped) {
+				str.append(L" (clamped to 4x source limit)");
+			}
+		}
+		if (m_dwSourceBitRate) {
+			str += std::format(L", source {:.1f} Mbps", m_dwSourceBitRate / 1000000.0);
+		}
+		if (!m_strMaxineRuntimeInfo.empty()) {
+			str += std::format(L"\nMaxine runtime: {}", m_strMaxineRuntimeInfo);
+		}
+	}
+	else if (m_iMaxineOperation != MAXINE_OPERATION_Disabled) {
+		str += std::format(L"\nMaxine       : not used ({})", m_strMaxineVSRStatus);
+	}
+
+	if (m_iFrameInterpolationMode != FRUC_MODE_Disabled) {
+		str += std::format(L"\nFrame interp : {}", m_strFrameInterpolationStatus);
+		const auto& runtimeInfo = m_FrameInterpolation.GetRuntimeInfo();
+		if (!runtimeInfo.empty()) {
+			str += std::format(L"\nFRUC runtime : {}", runtimeInfo);
 		}
 	}
 

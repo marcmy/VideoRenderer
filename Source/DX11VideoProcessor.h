@@ -28,11 +28,14 @@
 #include "IVideoRenderer.h"
 #include "DX11Helper.h"
 #include "D3D11VP.h"
+#include "NvidiaMaxineVSR.h"
+#include "NvidiaFrameInterpolation.h"
 #include "D3DUtil/D3D11Font.h"
 #include "D3DUtil/D3D11Geometry.h"
 #include "VideoProcessor.h"
 #include "SubPic/DX11SubPic.h"
 
+#include <array>
 #include <atomic>
 
 #define TEST_SHADER 0
@@ -69,6 +72,14 @@ private:
 
 	Tex11Video_t m_TexSrcVideo; // for copy of frame
 	Tex2D_t m_TexConvertOutput;
+	Tex2D_t m_TexMaxineInput;
+	Tex2D_t m_TexMaxineVSR;
+	Tex2D_t m_TexMaxineDenoise;
+	Tex2D_t m_TexMaxineDeblur;
+	// Regular D3D11 staging target for the fully processed source frame.
+	// Maxine must finish before the NvOFFRUC keyed-mutex input transaction
+	// begins, otherwise the two CUDA/D3D11 interop stacks can serialize.
+	Tex2D_t m_TexFrameInterpolationInput;
 	Tex2D_t m_TexResize;        // for intermediate result of two-pass resize
 	CTex2DRing m_TexsPostScale;
 	Tex2D_t m_TexDither;
@@ -181,6 +192,53 @@ private:
 
 	int m_iVPSuperRes = SUPERRES_Disable;
 	bool m_bVPUseSuperRes = false; // but it is not exactly
+
+	int m_iMaxineOperation = MAXINE_OPERATION_Disabled;
+	int m_iMaxineSourceMode = MAXINE_SOURCE_Auto;
+	int m_iMaxineQuality = MAXINE_QUALITY_High;
+	int m_iMaxineScale = MAXINE_SCALE_MatchOutput;
+	int m_iMaxineOversample = MAXINE_OVERSAMPLE_Off;
+	int m_iMaxineSourceLimit = SUPERRES_1080p;
+	int m_iMaxineDenoise = MAXINE_FILTER_Off;
+	int m_iMaxineDeblur = MAXINE_FILTER_Off;
+	int m_iMaxinePipeline = MAXINE_PIPELINE_UpscaleDenoiseDeblur;
+	int m_iMaxineGPU = MAXINE_GPU_Auto;
+	int m_iMaxineAutoBitrate = MAXINE_AUTO_BITRATE_DEF;
+	DWORD m_dwSourceBitRate = 0;
+	bool m_bMaxineVSRUsed = false;
+	CSize m_MaxineVSRSize;
+	int m_iMaxineResolvedMode = -1;
+	bool m_bMaxineOversampleClamped = false;
+	std::wstring m_strMaxineVSRStatus = L"Disabled";
+	std::wstring m_strMaxinePipeline;
+	std::wstring m_strMaxineRuntimeInfo;
+	CNvidiaMaxineVSR m_MaxineVSR;
+	CNvidiaMaxineVSR m_MaxineDenoise;
+	CNvidiaMaxineVSR m_MaxineDeblur;
+
+	int m_iFrameInterpolationMode = FRUC_MODE_Disabled;
+	int m_iFrameInterpolationSourceLimit = FRUC_SOURCE_LIMIT_1080p;
+	int m_iFrameInterpolationMaxOutput = FRUC_MAX_OUTPUT_60;
+	int m_iFrameInterpolationGPU = FRUC_GPU_Auto;
+	bool m_bFrameInterpolationFallback = true;
+	bool m_bFrameInterpolationPrepared = false;
+	bool m_bFrameInterpolationOutputReady = false;
+	bool m_bFrameInterpolationRepeated = false;
+	REFERENCE_TIME m_rtFrameInterpolationPrepared = INVALID_TIME;
+	REFERENCE_TIME m_rtFrameInterpolationMidpoint = INVALID_TIME;
+	REFERENCE_TIME m_rtFrameInterpolationLastInput = INVALID_TIME;
+	ID3D11Texture2D* m_pFrameInterpolationTexture = nullptr;
+	ID3D11ShaderResourceView* m_pFrameInterpolationView = nullptr;
+	struct FrameInterpolationPresentationSurface {
+		Tex2D_t texture;
+		bool inUse = false;
+	};
+	static constexpr UINT FrameInterpolationSurfaceCount = 4;
+	std::array<FrameInterpolationPresentationSurface, FrameInterpolationSurfaceCount> m_FrameInterpolationPresentationSurfaces;
+	std::atomic_uint64_t m_FrameInterpolationGeneration = 0;
+	uint64_t m_FrameInterpolationPendingGeneration = 0;
+	std::wstring m_strFrameInterpolationStatus = L"Disabled";
+	CNvidiaFrameInterpolation m_FrameInterpolation;
 
 	bool m_bVPRTXVideoHDR = false;
 	bool m_bVPUseRTXVideoHDR = false;
@@ -308,6 +366,14 @@ public:
 	BOOL GetAlignmentSize(const CMediaType& mt, SIZE& Size) override;
 
 	HRESULT ProcessSample(IMediaSample* pSample) override;
+	bool PrepareFrameInterpolation(IMediaSample* pSample, REFERENCE_TIME& sourceTime,
+		REFERENCE_TIME& requestedMidpoint, UINT& sourceSurface) override;
+	bool SubmitFrameInterpolation(REFERENCE_TIME sourceTime, REFERENCE_TIME requestedMidpoint,
+		REFERENCE_TIME& midpointTime) override;
+	void CancelFrameInterpolationSubmission() override;
+	HRESULT RenderFrameInterpolation(const REFERENCE_TIME frameStartTime) override;
+	HRESULT RenderFrameInterpolationSource(UINT sourceSurface, const REFERENCE_TIME frameStartTime) override;
+	void ReleaseFrameInterpolationSource(UINT sourceSurface) override;
 	HRESULT CopySample(IMediaSample* pSample);
 	// Render: 1 - render first fied or progressive frame, 2 - render second fied, 0 or other - forced repeat of render.
 	HRESULT Render(int field, const REFERENCE_TIME frameStartTime) override;
@@ -341,6 +407,11 @@ public:
 	void SwitchFullScreen(bool set) override;
 
 private:
+	bool IsFrameInterpolationEligible(REFERENCE_TIME frameDuration);
+	HRESULT RenderPreparedFrame(const bool interpolated, const REFERENCE_TIME frameStartTime);
+	void ResetFrameInterpolation();
+	bool GetMaxineVSRTargetSize(const CRect& dstRect, CSize& targetSize, bool& upscaleNeeded);
+	unsigned ResolveMaxineUpscaleMode() const;
 	void UpdateTexures();
 	void UpdatePostScaleTexures();
 	void UpdateUpscalingShaders();
