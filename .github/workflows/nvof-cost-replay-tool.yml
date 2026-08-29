@@ -1,0 +1,128 @@
+name: NVOF Offline Hardware-Cost Replay Tool
+
+on:
+  push:
+    branches:
+      - research/svp4-interpolation-archaeology
+    paths:
+      - 'tools/native-nvof-probe/NativeNvofCostReplay.cpp'
+      - 'tools/native-nvof-probe/NativeNvofApi.h'
+      - 'tools/native-nvof-probe/Run-NvofCostReplay.cmd'
+      - '.github/workflows/nvof-cost-replay-tool.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nvof-cost-replay-tool-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout archaeology branch
+        uses: actions/checkout@v7
+
+      - name: Build x64 standalone cost replay tool
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path -LiteralPath $vswhere)) {
+            throw "vswhere.exe not found: $vswhere"
+          }
+          $vs = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
+          if (-not $vs) { throw 'Visual Studio C++ toolchain was not found.' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path -LiteralPath $vcvars)) { throw "vcvars64.bat not found: $vcvars" }
+
+          $release = Join-Path $PWD 'release\NVOF-Cost-Replay'
+          New-Item -ItemType Directory -Path $release -Force | Out-Null
+          $source = Join-Path $PWD 'tools\native-nvof-probe\NativeNvofCostReplay.cpp'
+          $exe = Join-Path $release 'NativeNvofCostReplay.exe'
+          $compile = 'call "{0}" >nul && cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /DUNICODE /D_UNICODE "{1}" /Fe:"{2}" /link d3d11.lib dxgi.lib' -f $vcvars, $source, $exe
+          cmd.exe /d /s /c $compile
+          if ($LASTEXITCODE -ne 0) {
+            throw "cl.exe failed with exit code $LASTEXITCODE"
+          }
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            throw 'NativeNvofCostReplay.exe was not produced.'
+          }
+
+      - name: Package replay utility
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $PWD 'release\NVOF-Cost-Replay'
+          Copy-Item -LiteralPath '.\tools\native-nvof-probe\Run-NvofCostReplay.cmd' -Destination $root -Force
+
+          $readme = @"
+          NVOF Offline Hardware-Cost Replay
+          =================================
+
+          Purpose
+          -------
+          Re-run one existing MPCVR diagnostic frame pair through a completely
+          separate, standalone NVOF session with 8-bit output cost enabled.
+          This does NOT enable hardware cost inside MPC-HC and does not modify
+          MPC Video Renderer, K-Lite, the registry, or any installed files.
+
+          Requirements
+          ------------
+          - Windows x64
+          - NVIDIA GPU with Optical Flow support (Turing or newer)
+          - Current NVIDIA display driver exposing nvofapi64.dll
+          - Existing MPCVR capture folder containing frame-A.bmp + frame-B.bmp
+
+          Usage
+          -----
+          Easiest: drag a capture folder onto Run-NvofCostReplay.cmd.
+          You can also run the .cmd and paste the capture-folder path.
+
+          The tool creates a new subfolder inside the capture directory named:
+            nvof-cost-replay-YYYYMMDD-HHMMSS
+
+          It writes:
+          - flow-forward-B-to-A-s10.5.bin
+          - flow-backward-A-to-B-s10.5.bin
+          - cost-forward-B-to-A-r8.bin
+          - cost-backward-A-to-B-r8.bin
+          - cost-forward-B-to-A.bmp
+          - cost-backward-A-to-B.bmp
+          - replay-summary.txt
+
+          The summary also compares replay flow against the original capture's
+          flow binaries when they are present. That tells us whether the fresh
+          cost-enabled session reproduced the original live NVOF flow closely
+          enough for the cost map to be a valid classifier calibration source.
+
+          Important
+          ---------
+          The standalone replay deliberately uses PerfSlow, 4x4 output grid,
+          bidirectional prediction, and disabled temporal hints to match the
+          renderer's independent-pair NVOF configuration as closely as possible.
+          Blocking GPU readback is intentional here because this is an offline
+          one-pair diagnostic tool, not a playback path.
+          "@
+          [IO.File]::WriteAllText((Join-Path $root 'README.txt'), $readme, [Text.UTF8Encoding]::new($false))
+
+          $hash = (Get-FileHash -LiteralPath (Join-Path $root 'NativeNvofCostReplay.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path $root 'SHA256.txt'), "$hash  NativeNvofCostReplay.exe`n", [Text.UTF8Encoding]::new($false))
+
+          $zip = Join-Path $PWD 'release\NVOF-Cost-Replay.zip'
+          if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+          Compress-Archive -Path (Join-Path $root '*') -DestinationPath $zip -CompressionLevel Optimal
+          $zipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path $PWD 'release\NVOF-Cost-Replay.zip.sha256'), "$zipHash  NVOF-Cost-Replay.zip`n", [Text.UTF8Encoding]::new($false))
+
+      - name: Upload replay utility
+        uses: actions/upload-artifact@v7
+        with:
+          name: NVOF-Cost-Replay
+          path: |
+            release/NVOF-Cost-Replay.zip
+            release/NVOF-Cost-Replay.zip.sha256
+          compression-level: 0
+          if-no-files-found: error
