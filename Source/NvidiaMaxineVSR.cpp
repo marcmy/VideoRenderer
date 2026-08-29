@@ -241,6 +241,8 @@ struct CNvidiaMaxineVSR::Impl
 	bool failed = false;
 	unsigned int sdkVersion = 0;
 	int selectedGPU = -1;
+	LUID effectAdapterLuid = {};
+	bool effectAdapterLuidValid = false;
 #endif
 
 	std::wstring status = L"Disabled";
@@ -269,6 +271,37 @@ struct CNvidiaMaxineVSR::Impl
 		DLog(L"NVIDIA Maxine VSR: {}", status);
 	}
 
+	bool GetAdapterLuid(ID3D11Texture2D* texture, LUID& adapterLuid)
+	{
+		if (!texture) {
+			return false;
+		}
+
+		CComPtr<ID3D11Device> device;
+		texture->GetDevice(&device);
+		if (!device) {
+			return false;
+		}
+
+		CComPtr<IDXGIDevice> dxgiDevice;
+		if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
+			return false;
+		}
+
+		CComPtr<IDXGIAdapter> adapter;
+		if (FAILED(dxgiDevice->GetAdapter(&adapter))) {
+			return false;
+		}
+
+		DXGI_ADAPTER_DESC desc = {};
+		if (FAILED(adapter->GetDesc(&desc))) {
+			return false;
+		}
+
+		adapterLuid = desc.AdapterLuid;
+		return true;
+	}
+
 	void ReleaseD3DImages()
 	{
 		if (NvCVImage_Dealloc) {
@@ -281,15 +314,20 @@ struct CNvidiaMaxineVSR::Impl
 		outputTexture = nullptr;
 	}
 
-	void ReleaseImages()
+	void ReleaseGpuImages()
 	{
-		ReleaseD3DImages();
 		if (NvCVImage_Dealloc) {
 			NvCVImage_Dealloc(&gpuInput);
 			NvCVImage_Dealloc(&gpuOutput);
 		}
 		gpuInput = {};
 		gpuOutput = {};
+	}
+
+	void ReleaseImages()
+	{
+		ReleaseD3DImages();
+		ReleaseGpuImages();
 	}
 
 	bool AttachD3DImages(ID3D11Texture2D* input, ID3D11Texture2D* output)
@@ -329,6 +367,29 @@ struct CNvidiaMaxineVSR::Impl
 		return true;
 	}
 
+	bool AllocateGpuImages()
+	{
+		ReleaseGpuImages();
+
+		NvCV_Status code = NvCVImage_Alloc(&gpuInput, d3dInput.width, d3dInput.height, d3dInput.pixelFormat,
+			NVCV_U8, NVCV_INTERLEAVED, NVCV_GPU, 32);
+		if (code != NVCV_SUCCESS) {
+			SetError(L"NvCVImage_Alloc(input)", code);
+			ReleaseGpuImages();
+			return false;
+		}
+
+		code = NvCVImage_Alloc(&gpuOutput, d3dOutput.width, d3dOutput.height, d3dOutput.pixelFormat,
+			NVCV_U8, NVCV_INTERLEAVED, NVCV_GPU, 32);
+		if (code != NVCV_SUCCESS) {
+			SetError(L"NvCVImage_Alloc(output)", code);
+			ReleaseGpuImages();
+			return false;
+		}
+
+		return true;
+	}
+
 	void ResetEffect()
 	{
 		if (effect && NvVFX_DestroyEffect) {
@@ -342,6 +403,8 @@ struct CNvidiaMaxineVSR::Impl
 		stream = nullptr;
 		quality = 0;
 		failed = false;
+		effectAdapterLuid = {};
+		effectAdapterLuidValid = false;
 	}
 
 	void UnloadRuntime()
@@ -533,23 +596,74 @@ struct CNvidiaMaxineVSR::Impl
 			return false;
 		}
 
-		D3D11_TEXTURE2D_DESC inputDesc = {};
-		D3D11_TEXTURE2D_DESC outputDesc = {};
-		input->GetDesc(&inputDesc);
-		output->GetDesc(&outputDesc);
+		LUID inputAdapterLuid = {};
+		const bool inputAdapterLuidValid = GetAdapterLuid(input, inputAdapterLuid);
+		const bool effectAdapterMatches = effect && effectAdapterLuidValid && inputAdapterLuidValid
+			&& effectAdapterLuid.HighPart == inputAdapterLuid.HighPart
+			&& effectAdapterLuid.LowPart == inputAdapterLuid.LowPart;
 
-		const bool effectMatches = effect
-			&& quality == requestedMode
-			&& gpuInput.width == inputDesc.Width
-			&& gpuInput.height == inputDesc.Height
-			&& gpuOutput.width == outputDesc.Width
-			&& gpuOutput.height == outputDesc.Height;
-
-		if (effectMatches) {
-			return AttachD3DImages(input, output);
+		if (effect && !effectAdapterMatches) {
+			// CUDA models/resources are GPU-specific. Check compatibility before
+			// registering the new D3D texture with CUDA interop.
+			ResetEffect();
 		}
 
-		ResetEffect();
+		if (effect) {
+			if (!AttachD3DImages(input, output)) {
+				ResetEffect();
+				failed = true;
+				return false;
+			}
+
+			const bool gpuImagesMatch = gpuInput.width == d3dInput.width
+				&& gpuInput.height == d3dInput.height
+				&& gpuInput.pixelFormat == d3dInput.pixelFormat
+				&& gpuOutput.width == d3dOutput.width
+				&& gpuOutput.height == d3dOutput.height
+				&& gpuOutput.pixelFormat == d3dOutput.pixelFormat;
+			const bool qualityMatches = quality == requestedMode;
+
+			if (gpuImagesMatch && qualityMatches) {
+				return true;
+			}
+
+			if (!gpuImagesMatch) {
+				if (!AllocateGpuImages()) {
+					ResetEffect();
+					failed = true;
+					return false;
+				}
+
+				NvCV_Status code = NvVFX_SetImage(effect, "SrcImage0", &gpuInput);
+				if (code == NVCV_SUCCESS) {
+					code = NvVFX_SetImage(effect, "DstImage0", &gpuOutput);
+				}
+				if (code != NVCV_SUCCESS) {
+					SetError(L"NvVFX_SetImage(dynamic resize)", code);
+					ResetEffect();
+				}
+			}
+
+			if (effect && !qualityMatches) {
+				const NvCV_Status code = NvVFX_SetU32(effect, "QualityLevel", requestedMode);
+				if (code != NVCV_SUCCESS) {
+					SetError(L"NvVFX_SetU32(QualityLevel)", code);
+					ResetEffect();
+				}
+			}
+
+			if (effect) {
+				// Current VideoSuperRes supports changing quality and dimensions
+				// between runs. The loaded neural model therefore survives media
+				// changes; only the GPU work buffers are resized/rebound as needed.
+				quality = requestedMode;
+				status = std::format(L"Active, quality {}", quality);
+				return true;
+			}
+
+			// Be conservative with an older/incompatible runtime: if it rejects
+			// dynamic rebinding, fall through to the original full effect build.
+		}
 
 		NvCV_Status code = NvVFX_CudaStreamCreate(&stream);
 		if (code != NVCV_SUCCESS) {
@@ -564,18 +678,7 @@ struct CNvidiaMaxineVSR::Impl
 			return false;
 		}
 
-		code = NvCVImage_Alloc(&gpuInput, d3dInput.width, d3dInput.height, d3dInput.pixelFormat,
-			NVCV_U8, NVCV_INTERLEAVED, NVCV_GPU, 32);
-		if (code != NVCV_SUCCESS) {
-			SetError(L"NvCVImage_Alloc(input)", code);
-			ResetEffect();
-			failed = true;
-			return false;
-		}
-		code = NvCVImage_Alloc(&gpuOutput, d3dOutput.width, d3dOutput.height, d3dOutput.pixelFormat,
-			NVCV_U8, NVCV_INTERLEAVED, NVCV_GPU, 32);
-		if (code != NVCV_SUCCESS) {
-			SetError(L"NvCVImage_Alloc(output)", code);
+		if (!AllocateGpuImages()) {
 			ResetEffect();
 			failed = true;
 			return false;
@@ -623,6 +726,8 @@ struct CNvidiaMaxineVSR::Impl
 		}
 
 		quality = requestedMode;
+		effectAdapterLuid = inputAdapterLuid;
+		effectAdapterLuidValid = inputAdapterLuidValid;
 		status = std::format(L"Active, quality {}", quality);
 		return true;
 	}
@@ -763,9 +868,18 @@ void CNvidiaMaxineVSR::Reset()
 	const bool runtimeLoadFailed = m_impl->runtimeAttempted && !m_impl->hNvVideoEffects;
 	const std::wstring runtimeError = runtimeLoadFailed ? m_impl->status : std::wstring();
 
-	m_impl->ResetEffect();
+	// A renderer/media reset only invalidates the D3D11 textures. Process()
+	// already detaches those CUDA interop wrappers after every successful pass,
+	// so keep the expensive VFX effect, CUDA stream and GPU work images cached.
+	// EnsureEffect() resizes/rebinds those work images dynamically and performs
+	// a hard rebuild only for a GPU/adapter transition or incompatible runtime.
+	m_impl->ReleaseD3DImages();
+	m_impl->failed = false;
 	m_impl->lastProcessTimeMs = 0.0;
-	if (m_impl->hNvVideoEffects) {
+	if (m_impl->effect) {
+		m_impl->status = std::format(L"Ready, mode {}", m_impl->quality);
+	}
+	else if (m_impl->hNvVideoEffects) {
 		m_impl->status = L"Runtime loaded";
 	}
 	else if (!runtimeError.empty()) {
