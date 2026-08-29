@@ -36,7 +36,7 @@ void main(uint3 id : SV_DispatchThreadID)
 
     // Seed has already finished writing the upper field-count bits. Preserve
     // those stable bits while atomically maximizing only the low telemetry bits.
-    uint packedNow = PackedRegionStats.Load(int3(0, 0, 0));
+    uint packedNow = PackedRegionStats[uint2(0, 0)];
     uint base = packedNow & ~LowTelemetryMask;
     uint candidate = base | min(unsafeCount, LowTelemetryMask);
     InterlockedMax(PackedRegionStats[uint2(0, 0)], candidate);
