@@ -596,63 +596,73 @@ struct CNvidiaMaxineVSR::Impl
 			return false;
 		}
 
-		if (!AttachD3DImages(input, output)) {
-			failed = true;
-			return false;
-		}
-
 		LUID inputAdapterLuid = {};
 		const bool inputAdapterLuidValid = GetAdapterLuid(input, inputAdapterLuid);
 		const bool effectAdapterMatches = effect && effectAdapterLuidValid && inputAdapterLuidValid
 			&& effectAdapterLuid.HighPart == inputAdapterLuid.HighPart
 			&& effectAdapterLuid.LowPart == inputAdapterLuid.LowPart;
 
-		if (effect && effectAdapterMatches) {
+		if (effect && !effectAdapterMatches) {
+			// CUDA models/resources are GPU-specific. Check compatibility before
+			// registering the new D3D texture with CUDA interop.
+			ResetEffect();
+		}
+
+		if (effect) {
+			if (!AttachD3DImages(input, output)) {
+				ResetEffect();
+				failed = true;
+				return false;
+			}
+
 			const bool gpuImagesMatch = gpuInput.width == d3dInput.width
 				&& gpuInput.height == d3dInput.height
 				&& gpuInput.pixelFormat == d3dInput.pixelFormat
 				&& gpuOutput.width == d3dOutput.width
 				&& gpuOutput.height == d3dOutput.height
 				&& gpuOutput.pixelFormat == d3dOutput.pixelFormat;
+			const bool qualityMatches = quality == requestedMode;
 
-			if (!gpuImagesMatch && !AllocateGpuImages()) {
-				ResetEffect();
-				failed = true;
-				return false;
+			if (gpuImagesMatch && qualityMatches) {
+				return true;
 			}
 
-			// VideoSuperRes supports changing quality and dimensions between runs.
-			// Rebind resized GPU buffers and update QualityLevel without calling
-			// NvVFX_Load again; NVIDIA's VSR sample likewise changes QualityLevel
-			// on an already-loaded effect before subsequent NvVFX_Run calls.
-			const std::array<std::pair<const wchar_t*, NvCV_Status>, 3> reconfigureResults = {{
-				{L"NvVFX_SetImage(input)", NvVFX_SetImage(effect, "SrcImage0", &gpuInput)},
-				{L"NvVFX_SetImage(output)", NvVFX_SetImage(effect, "DstImage0", &gpuOutput)},
-				{L"NvVFX_SetU32(QualityLevel)", NvVFX_SetU32(effect, "QualityLevel", requestedMode)},
-			}};
-			bool reconfigured = true;
-			for (const auto& [operation, result] : reconfigureResults) {
-				if (result != NVCV_SUCCESS) {
-					SetError(operation, result);
-					reconfigured = false;
-					break;
+			if (!gpuImagesMatch) {
+				if (!AllocateGpuImages()) {
+					ResetEffect();
+					failed = true;
+					return false;
+				}
+
+				NvCV_Status code = NvVFX_SetImage(effect, "SrcImage0", &gpuInput);
+				if (code == NVCV_SUCCESS) {
+					code = NvVFX_SetImage(effect, "DstImage0", &gpuOutput);
+				}
+				if (code != NVCV_SUCCESS) {
+					SetError(L"NvVFX_SetImage(dynamic resize)", code);
+					ResetEffect();
 				}
 			}
 
-			if (reconfigured) {
+			if (effect && !qualityMatches) {
+				const NvCV_Status code = NvVFX_SetU32(effect, "QualityLevel", requestedMode);
+				if (code != NVCV_SUCCESS) {
+					SetError(L"NvVFX_SetU32(QualityLevel)", code);
+					ResetEffect();
+				}
+			}
+
+			if (effect) {
+				// Current VideoSuperRes supports changing quality and dimensions
+				// between runs. The loaded neural model therefore survives media
+				// changes; only the GPU work buffers are resized/rebound as needed.
 				quality = requestedMode;
 				status = std::format(L"Active, quality {}", quality);
 				return true;
 			}
 
 			// Be conservative with an older/incompatible runtime: if it rejects
-			// dynamic rebinding, fall back to the original full effect rebuild.
-			ResetEffect();
-		}
-		else if (effect) {
-			// CUDA models/resources are GPU-specific. A D3D adapter transition
-			// must not reuse an effect created against the previous adapter.
-			ResetEffect();
+			// dynamic rebinding, fall through to the original full effect build.
 		}
 
 		NvCV_Status code = NvVFX_CudaStreamCreate(&stream);
