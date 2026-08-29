@@ -789,6 +789,7 @@ HRESULT GetShaderConvertColor(
 				"float4 DolbyVisionTrims(float4 color)\n"
 				"{\n"
 				"    color = pow((color * TrimSlope) + TrimOffset, TrimPower);\n"
+				"    color.rgb = max(color.rgb, 0.00001);\n"
 				"    float Y = 0.2627f * color.r + 0.6780f * color.g + 0.0593f * color.b;\n"
 				"    color = color * pow((1.0 + ChromaWeight) * color / Y, SaturationGain);\n"
 				"    return color;\n"
