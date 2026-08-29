@@ -241,6 +241,8 @@ struct CNvidiaMaxineVSR::Impl
 	bool failed = false;
 	unsigned int sdkVersion = 0;
 	int selectedGPU = -1;
+	LUID effectAdapterLuid = {};
+	bool effectAdapterLuidValid = false;
 #endif
 
 	std::wstring status = L"Disabled";
@@ -267,6 +269,37 @@ struct CNvidiaMaxineVSR::Impl
 			status = std::format(L"{} failed: {} ({})", operation, detail, code);
 		}
 		DLog(L"NVIDIA Maxine VSR: {}", status);
+	}
+
+	bool GetAdapterLuid(ID3D11Texture2D* texture, LUID& adapterLuid)
+	{
+		if (!texture) {
+			return false;
+		}
+
+		CComPtr<ID3D11Device> device;
+		texture->GetDevice(&device);
+		if (!device) {
+			return false;
+		}
+
+		CComPtr<IDXGIDevice> dxgiDevice;
+		if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
+			return false;
+		}
+
+		CComPtr<IDXGIAdapter> adapter;
+		if (FAILED(dxgiDevice->GetAdapter(&adapter))) {
+			return false;
+		}
+
+		DXGI_ADAPTER_DESC desc = {};
+		if (FAILED(adapter->GetDesc(&desc))) {
+			return false;
+		}
+
+		adapterLuid = desc.AdapterLuid;
+		return true;
 	}
 
 	void ReleaseD3DImages()
@@ -342,6 +375,8 @@ struct CNvidiaMaxineVSR::Impl
 		stream = nullptr;
 		quality = 0;
 		failed = false;
+		effectAdapterLuid = {};
+		effectAdapterLuidValid = false;
 	}
 
 	void UnloadRuntime()
@@ -538,7 +573,14 @@ struct CNvidiaMaxineVSR::Impl
 		input->GetDesc(&inputDesc);
 		output->GetDesc(&outputDesc);
 
+		LUID inputAdapterLuid = {};
+		const bool inputAdapterLuidValid = GetAdapterLuid(input, inputAdapterLuid);
+		const bool effectAdapterMatches = effectAdapterLuidValid && inputAdapterLuidValid
+			&& effectAdapterLuid.HighPart == inputAdapterLuid.HighPart
+			&& effectAdapterLuid.LowPart == inputAdapterLuid.LowPart;
+
 		const bool effectMatches = effect
+			&& effectAdapterMatches
 			&& quality == requestedMode
 			&& gpuInput.width == inputDesc.Width
 			&& gpuInput.height == inputDesc.Height
@@ -623,6 +665,8 @@ struct CNvidiaMaxineVSR::Impl
 		}
 
 		quality = requestedMode;
+		effectAdapterLuid = inputAdapterLuid;
+		effectAdapterLuidValid = inputAdapterLuidValid;
 		status = std::format(L"Active, quality {}", quality);
 		return true;
 	}
@@ -763,9 +807,18 @@ void CNvidiaMaxineVSR::Reset()
 	const bool runtimeLoadFailed = m_impl->runtimeAttempted && !m_impl->hNvVideoEffects;
 	const std::wstring runtimeError = runtimeLoadFailed ? m_impl->status : std::wstring();
 
-	m_impl->ResetEffect();
+	// A renderer/media reset only invalidates the D3D11 textures. Process()
+	// already detaches those CUDA interop wrappers after every successful pass,
+	// so keep the expensive VFX effect, CUDA stream and GPU work images cached.
+	// EnsureEffect() still performs a hard rebuild when mode, dimensions, GPU or
+	// D3D adapter no longer match.
+	m_impl->ReleaseD3DImages();
+	m_impl->failed = false;
 	m_impl->lastProcessTimeMs = 0.0;
-	if (m_impl->hNvVideoEffects) {
+	if (m_impl->effect) {
+		m_impl->status = std::format(L"Ready, mode {}", m_impl->quality);
+	}
+	else if (m_impl->hNvVideoEffects) {
 		m_impl->status = L"Runtime loaded";
 	}
 	else if (!runtimeError.empty()) {
