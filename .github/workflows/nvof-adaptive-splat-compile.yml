@@ -53,11 +53,10 @@ jobs:
           )
           foreach ($shader in $shaders) {
             $name = [IO.Path]::GetFileNameWithoutExtension($shader)
+            $cso = Join-Path $out "$name.cso"
+            $asm = Join-Path $out "$name.asm"
             Write-Host "Compiling $shader"
-            & $fxcPath /nologo /T cs_5_0 /E main /WX /O3 \
-              /Fo (Join-Path $out "$name.cso") \
-              /Fc (Join-Path $out "$name.asm") \
-              $shader
+            & $fxcPath /nologo /T cs_5_0 /E main /WX /O3 /Fo $cso /Fc $asm $shader
             if ($LASTEXITCODE -ne 0) {
               throw "fxc failed for $shader with exit code $LASTEXITCODE"
             }
