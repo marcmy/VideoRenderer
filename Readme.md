@@ -1,4 +1,4 @@
-# MPC Video Renderer
+# MPC Video Rendere
 
 MPC Video Renderer is a free and open-source DirectShow video renderer for Windows. It supports modern hardware decoding paths, high-quality scaling, HDR playback, subtitle and OSD composition, and several NVIDIA-specific video-processing features.
 
