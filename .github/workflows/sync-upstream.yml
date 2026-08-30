@@ -157,3 +157,5 @@ jobs:
         run: |
           'The verified merge was pushed to master and a fresh rolling Maxine build was dispatched.' |
             Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+# Trigger after push handler is registered.
