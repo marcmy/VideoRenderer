@@ -1,33 +1,16 @@
-# SVP4 interpolation archaeology — part 11: exact classifier denominator, dual cost, and NVOF source format
+# SVP4 interpolation archaeology — part 11: exact classifier, cost packing, and NVOF source geometry
 
 Date: 2026-08-29/30
 Branch: `research/svp4-interpolation-archaeology`
 Frozen baseline remains `baseline/nvof-temporal-motion-salvage` @ `54720e00b65dc698130430db6d2a86dc41237a91`.
 
-This continuation closes several remaining ambiguities around SVP's field-quality classifier and identifies another concrete difference between SVP's NVOF input path and MPCVR's native path.
+This note records the exact proprietary field-classifier behavior, open-svpflow's corroborating NVOF score packing, and the now-confirmed proprietary NVOF source-ratio constraints. It supersedes the earlier temporary assumption that effective grid 12 / source ratio 1/3 might be valid.
 
-## 1. Exact proprietary classifier loop
+## 1. Exact proprietary field classifier
 
-The classifier entry in the supplied `plugins64/svpflow2.dll` is around VA:
+The classifier in the supplied `plugins64/svpflow2.dll` is around VA `0x180005fe0`.
 
-```text
-0x180005fe0
-```
-
-The call site around `0x180011a98` supplies:
-
-```text
-blocks%       <- config +0x1fc
-blocks13%     <- config +0x200
-zero          <- config +0x204
-m1            <- config +0x208
-m2            <- config +0x20c
-scene         <- config +0x210
-luma gamma    <- config +0x218 (used before classifier)
-ignore        <- config +0x220
-```
-
-Stock defaults remain:
+Stock values passed by its caller are:
 
 ```text
 blocks   = 20
@@ -37,344 +20,234 @@ m1       = 1600
 m2       = 2800
 scene    = 4000
 ignore   = 0.04
-luma     = 1.5
+scene.luma = 1.5
 ```
 
-## 2. Exact border exclusion
-
-For grid width/height, the classifier computes:
+The outer border is:
 
 ```text
 borderX = trunc(width  * ignore)
 borderY = trunc(height * ignore)
 ```
 
-The binary constant involved in the minimum-border test is exactly:
+When `ignore > 0.01`, each is clamped to at least one cell.
+
+For every retained cell, the DLL computes integer:
 
 ```text
-0.01
+normalized = score24 * 255 / max(lumaMap[cell], 1)
 ```
 
-When `ignore > 0.01`, each border is clamped to at least one cell:
-
-```text
-borderX = max(borderX, 1)
-borderY = max(borderY, 1)
-```
-
-Cells are considered only when:
-
-```text
-borderX <= x <= width  - borderX - 1
-borderY <= y <= height - borderY - 1
-```
-
-Thus default `ignore=.04` excludes the outer ~4% of the motion grid and always excludes at least one cell on each edge.
-
-## 3. Exact normalized vector score
-
-For each interior cell the DLL loads the 24-bit vector score and computes:
-
-```text
-normalized = score * 255 / max(lumaMap[cell], 1)
-```
-
-The multiplication and division are integer operations in the proprietary implementation.
-
-This exactly corroborates the independently reconstructed open-svpflow scene classifier's normalization order.
-
-## 4. Exact zero-score denominator floor
-
-This was previously understood only approximately. The assembly now makes the denominator behavior exact.
-
-Before the loop the classifier computes:
+The low-score denominator exclusion is now exact:
 
 ```text
 zeroSkipLimit = floor(2 * fullGridCellCount / 3)
 ```
 
-`fullGridCellCount` is `width * height`, before border exclusion.
+A cell with `normalized < zero` is excluded from the denominator only while `zeroSkipped < zeroSkipLimit`. After that cap, additional low-score cells count in `considered` but not in any severity band. This prevents the denominator from collapsing to a tiny set of bad vectors.
 
-For an interior cell with:
-
-```text
-normalized < zero
-```
-
-SVP excludes that cell from the classifier denominator only while:
+Severity bands are exclusive:
 
 ```text
-zeroSkipped < zeroSkipLimit
+sceneCount : normalized >= scene
+m2Count    : m2 <= normalized < scene
+m1Count    : m1 <= normalized < m2
 ```
-
-After `zeroSkipLimit` low-score cells have been omitted, additional low-score interior cells increment the considered-cell denominator normally (but do not enter m1/m2/scene severity counts).
-
-Conceptually:
-
-```text
-considered = 0
-zeroSkipped = 0
-
-for each interior cell:
-    q = score*255/max(luma,1)
-
-    if q < zero and zeroSkipped < floor(2*fullGrid/3):
-        zeroSkipped += 1
-        continue
-
-    considered += 1
-    classify q into m1/m2/scene bands
-```
-
-This is the exact reason the denominator cannot collapse to only a tiny set of bad vectors: at most about two thirds of the full grid can be removed as near-zero-error vectors, leaving an effective denominator floor around one third of the full field (modulo the small ignored border).
-
-## 5. Exact severity/occupancy return logic
-
-Counts are exclusive severity bands:
-
-```text
-sceneCount : q >= scene
-m2Count    : m2 <= q < scene
-m1Count    : m1 <= q < m2
-```
-
-Ordinary required occupancy is integer:
-
-```text
-required = floor(blocks * considered / 100)
-```
-
-Return:
-
-```text
-if sceneCount >= required:
-    return 3
-
-if sceneCount + m2Count >= required:
-    return 2
-
-if sceneCount + m2Count + m1Count >= required:
-    return 1
-```
-
-If ordinary classification would be zero and `blocks13 > 0`, SVP computes:
-
-```text
-required13 = floor(blocks13 * considered / 100)
-```
-
-and returns the special class:
-
-```text
--1
-```
-
-when total m1+ occupancy reaches that lower threshold.
-
-Stock `blocks13=0` leaves this special lower threshold dormant.
-
-## 6. Exact luma-map construction before classification
-
-The helper immediately before the classifier is around:
-
-```text
-0x180005e60
-```
-
-For each cell it loads the luma byte stored with the previous-direction vector and the luma byte stored with the current-direction vector.
-
-The normalization denominator is:
-
-```text
-marker == 3 ? 510.0 : 255.0
-```
-
-The binary constants at `0x180056910` and `0x180056918` decode exactly to `255.0` and `510.0`.
 
 Then:
 
 ```text
+required = floor(blocks * considered / 100)
+
+sceneCount                         >= required -> class 3
+sceneCount + m2Count               >= required -> class 2
+sceneCount + m2Count + m1Count     >= required -> class 1
+```
+
+If ordinary classification is zero and `blocks13 > 0`, SVP computes `floor(blocks13 * considered / 100)` and can return the special class `-1`. Stock `blocks13=0` leaves that path dormant.
+
+## 2. Exact classifier luma map
+
+The helper immediately before the classifier combines the directional stored luma bytes:
+
+```text
+denom = marker == 3 ? 510.0 : 255.0
 v = (previousLuma + currentLuma) / denom
-lumaMap = trunc(pow(v, scene.luma) * 255)
+scaled = trunc(pow(v, scene.luma) * 255)
+if scaled < 21:
+    scaled = 20
+lumaMapByte = scaled & 0xff
 ```
 
-with default:
+The proprietary binary constants decode exactly to `255.0` and `510.0`; default `scene.luma` is `1.5`.
 
-```text
-scene.luma = 1.5
-```
+Open-svpflow independently reconstructs the same normalization order and the same low-byte luma behavior, so it is useful corroboration for the score/luma encoding. The proprietary DLL remains the authority for the more unusual denominator-floor and border behavior.
 
-The result has a floor of 20 before storing its low byte:
+## 3. Open-svpflow legacy R32 NVOF cost packing
 
-```text
-if result < 21:
-    result = 20
-lumaMapByte = result & 0xff
-```
+Open-svpflow explicitly requests NVIDIA's legacy 32-bit cost format (`NV_FORMAT_UINT`) and downloads one `u32` cost per NVOF cell.
 
-This behavior matches open-svpflow's independent `luma_byte()` reconstruction, including its byte wrapping rather than an ordinary saturating clamp above 255.
-
-## 7. How open-svpflow builds NVOF vector score/luma
-
-Open-svpflow explicitly requests NVIDIA's **legacy 32-bit cost** (`NV_FORMAT_UINT`) and downloads one `u32` cost value per NVOF cell.
-
-For each 4x4 source block:
+For each 4x4 NVOF input block it packs:
 
 ```text
 costShift = floor(2 * log2(max(scale,1)))
-raw1 = (cost << costShift) + ((sum4x4Luma & 0xFFF0) << 20)   // u32 arithmetic
+raw1 = (cost << costShift) + ((sum4x4Luma & 0xFFF0) << 20)  // u32 arithmetic
 score = raw1 & 0x00ffffff
 luma  = raw1 >> 24
 ```
 
-Thus, in the usual no-overflow case, the vector's luma byte is approximately the average 8-bit luma of its 4x4 NVOF input block while `score` carries the scale-adjusted legacy NVIDIA cost.
+In the normal no-overflow case, `luma` is approximately the 4x4 source-luma average and `score` carries the scale-adjusted legacy NVIDIA cost.
 
-The two directions use their respective input/reference frame luma when packing their vectors.
-
-## 8. Meaning of `scale` / `nvof_grid`
-
-Open-svpflow obtains:
+The exact classifier oracle preserving the proprietary integer behavior is committed as:
 
 ```text
-scale = originalVideoWidth / vectorSourceWidth
+tools/research/svp_exact_field_classifier.py
 ```
 
-The supplied SVP4 `script/generate.js` shows exactly how Manager creates that vector source:
+## 4. Proprietary NVOF source ratios are now proven
 
-Avisynth conceptually:
+A string embedded in the supplied proprietary `svpflow2.dll` states:
 
 ```text
-input_m8 = input_m8.BicubicResize(
-    input_m.width  / nvof_blk * 4,
-    input_m.height / nvof_blk * 4,
-    ...)
+SVSmoothFps/NVOF: 'vec_src' must be in [1/1,1/2,1/4,1/6,1/8] of the source size
 ```
 
-VapourSynth equivalently uses integer division and crops the source extent to a multiple of `nvof_blk`.
+A neighboring diagnostic states:
 
-Native NVOF still runs with a 4x4 output grid. `nvof_grid` therefore means the **effective full-resolution spacing** achieved by resizing the NVOF source first.
+```text
+SVSmoothFps/NVOF: minimal 4*4 blocks amount is 40*32
+```
 
-Approximate mapping:
+Therefore valid source scale factors are exactly:
 
-| nvof_grid | NVOF input size | integer scale | costShift | score cost multiplier |
+```text
+1, 2, 4, 6, 8
+```
+
+and the corresponding effective full-resolution motion grids are:
+
+```text
+4, 8, 16, 24, 32
+```
+
+**Effective grid 12 / source ratio 1/3 is not a valid proprietary SVP NVOF mode.** Earlier exploratory notes that included grid 12 are superseded by this binary evidence.
+
+## 5. Exact `nvof_grid` geometry
+
+The supplied `script/generate.js` crops the right/bottom source extent to a multiple of the requested effective grid and then creates the NVOF vector source at `4 / nvof_grid` of that cropped size.
+
+Conceptually:
+
+```text
+cropW  = sourceW - sourceW % nvof_grid
+cropH  = sourceH - sourceH % nvof_grid
+vecW   = cropW / nvof_grid * 4
+vecH   = cropH / nvof_grid * 4
+```
+
+NVIDIA Optical Flow itself still runs with native output grid 4 over that resized source.
+
+Correct scale/cost-shift mapping:
+
+| effective `nvof_grid` | vector source | scale | `costShift` | score-cost multiplier |
 |---:|---:|---:|---:|---:|
-| 4 | full | 1 | 0 | 1 |
-| 8 | 1/2 | 2 | 2 | 4 |
-| 12 | 1/3 | 3 | 3 | 8 |
+| 4  | 1/1 | 1 | 0 | 1 |
+| 8  | 1/2 | 2 | 2 | 4 |
 | 16 | 1/4 | 4 | 4 | 16 |
 | 24 | 1/6 | 6 | 5 | 32 |
 | 32 | 1/8 | 8 | 6 | 64 |
 
-The multiplier uses the power-of-two `costShift`; it is not simply `scale^2` for non-power-of-two scale values.
+The multiplier is SVP's packed-score compensation; it does not make a full-resolution NVOF run equivalent to actually running NVOF on the reduced source.
 
-Manager dynamically lowers `nvof_grid` when the reduced vector source would become too small:
+Manager dynamically lowers an oversized grid when the resulting NVOF source would violate its minimum dimensions. On the current ~1918x803 capture corpus, effective grid 32 would produce only about 100 source rows and therefore fails the `40x32` four-pixel-cell minimum; the natural maximum is effective grid 24.
 
-```text
-while grid > 4 and (dst_w/grid < 40 or dst_h/grid < 32):
-    32 -> 24
-    24 -> 16
-    otherwise grid /= 2
-```
+The installed archive does not contain a fixed active `profile.nvof_grid` value. Grid selection is profile/runtime state, not a fixed engine constant.
 
-The installed snapshot does not contain a fixed `profile.nvof_grid` default. The generator consumes the active profile value, so exact grid selection must be obtained from runtime/profile state or studied as a parameter sweep.
+## 6. NVOF input-format difference: MPCVR versus SVP
 
-## 9. Another concrete SVP-vs-MPCVR difference: NVOF input format
-
-The native MPCVR baseline feeds NVIDIA Optical Flow:
+Current native MPCVR feeds NVOF:
 
 ```text
 BGRA8
 ```
 
-The supplied SVP4 script explicitly constructs its NVOF vector source as:
+The supplied SVP script explicitly converts its vector source to:
 
 ```text
 YUV420P8
 ```
 
-Open-svpflow's NVOF implementation then uploads that source as:
+and open-svpflow uploads that source to NVIDIA as:
 
 ```text
 NV12
 ```
 
-Therefore even at the same SLOW quality preset and nominal 4x4 NVOF engine grid, the two implementations are not necessarily feeding identical image representations into the NVOF engine.
+This is a real implementation difference. It does not by itself prove NV12 is better, but it means identical NVOF quality/grid settings do not necessarily receive identical image representations.
 
-This does **not** prove NV12 is better than BGRA8. It establishes a concrete variable that should be measured.
+Potential effects to measure independently include RGB-to-luma conversion differences, chroma subsampling/noise suppression, downscale itself, and interactions between format and downscale.
 
-Potential mechanisms worth testing independently:
+## 7. Dual R8/R32 hardware-cost replay
 
-- direct luma input avoids driver RGB-to-luma conversion differences;
-- 4:2:0 chroma removes some high-frequency color detail/noise from the motion-estimation source;
-- the larger SVP effect may actually come from source downscale rather than the format itself;
-- format and downscale may interact.
+NVIDIA documents R8 as the newer bandwidth-efficient cost format and R32 as legacy, but does not publish a numeric conversion. We therefore do not assume that R8 is simply the low byte or a fixed shift of R32.
 
-Do not change MPCVR's production NVOF input format without a controlled standalone replay comparison.
-
-## 10. Dual R8/R32 replay utility
-
-Because NVIDIA documentation identifies `UINT` as legacy 32-bit cost and `UINT8` as the newer bandwidth-efficient format but does not publish a numeric conversion, the standalone replay utility has been extended with a dual-format experiment.
-
-New source:
+The standalone utility:
 
 ```text
 tools/native-nvof-probe/NativeNvofCostReplayDual.cpp
 ```
 
-The tool creates **separate NVOF sessions** for R8 and R32 to avoid cross-format session state contaminating the comparison.
+runs R8 and R32 in separate one-pair sessions and records:
 
-For each supported format it records:
-
-- forward/backward cost binaries;
-- forward/backward replay flow;
-- execution + blocking readback time;
+- format support;
 - cost mean/p50/p90/p99;
-- replay-flow difference from the original MPCVR capture.
-
-When both formats succeed it additionally records:
-
-- R8-vs-R32 flow difference;
-- Pearson correlation between cost maps;
-- affine least-squares `R32 ~= a*R8 + b`;
+- replay flow versus original MPCVR capture flow;
+- R8-versus-R32 flow difference;
+- Pearson cost correlation;
+- affine `R32 ~= a*R8+b` fit;
 - median nonzero `R32/R8` ratio;
-- best simple `min(R32 >> shift,255)` mapping over shifts 0..24;
-- exact-match rate and MAE of that best shift.
+- best simple `min(R32 >> shift,255)` mapping.
 
-Unsupported R32 is recorded as a result rather than making an otherwise-valid R8 replay fail.
+This compiles cleanly under MSVC C++20 `/W4 /WX`. Runtime support and numeric relationship still require the actual Turing driver.
 
-The dual utility compiles successfully under MSVC C++20 with `/W4 /WX` in the dedicated Windows CI workflow.
+## 8. Standalone input-format/effective-grid sweep
 
-## 11. Why a full-resolution R32 replay is not enough to emulate coarse SVP grids
-
-A critical caution:
+A second diagnostic deliberately keeps **NVOF output cost disabled** so it can study input geometry/format without repeating the historical Turing cost stalls:
 
 ```text
-full-resolution R32 cost * scale multiplier
+tools/native-nvof-probe/NativeNvofInputSweep.cpp
 ```
 
-is **not** equivalent to:
+It includes:
 
 ```text
-run NVOF on SVP's downscaled input, then scale that resulting cost
+bgra-native
+bgra/nv12 grid 4
+bgra/nv12 grid 8
+bgra/nv12 grid 16
+bgra/nv12 grid 24
+bgra/nv12 grid 32 when SVP minimum dimensions allow it
 ```
 
-Downscaling changes the motion-estimation problem itself and can change both vectors and raw NVIDIA costs.
+Each variant gets a fresh PerfSlow, grid4, bidirectional, temporal-hints-disabled session with cost disabled.
 
-Therefore, if cost/grid research proves useful, the correct next experiment is a standalone **input-grid sweep** that actually resizes the NVOF source and executes NVOF at those sizes. Do not fake coarse-grid SVP behavior by merely multiplying the full-resolution cost map.
+The NV12 approximation converts capture BGRA to BT.709 limited-range YUV420 **before** separately resizing the Y/U/V planes with Catmull-Rom bicubic, matching the ordering of the supplied VapourSynth script more closely than resizing RGB first. It remains an approximation because the diagnostic BMP has already passed through a video-to-RGB conversion and cannot recover the decoder's original YUV samples bit-for-bit.
 
-## 12. Current interpretation
+The tightened tool and recursive batch packaging compile successfully under MSVC `/W4 /WX`.
+
+## 9. Current interpretation
 
 The remaining SVP advantage increasingly looks cumulative rather than mysterious:
 
 ```text
-NVOF source representation (YUV420/NV12)
-+ optional source downscale / effective grid
-+ NVIDIA or image-domain vector quality
+SVP-like NVOF input representation (YUV420/NV12)
++ optional valid source downscale (1/1,1/2,1/4,1/6,1/8)
++ NVIDIA / image-domain vector-quality information
 + exact field-health classifier
 + cover/uncover ownership
 + robust algo13 median
 + nearest-endpoint artifact fallback
-+ optional neighboring-pair hypotheses
++ optional neighboring-frame-pair hypotheses
 ```
 
-MPCVR already has a strong golden reconstruction around its native full-resolution BGRA8 NVOF field. Build #2 Adaptive Splat V1.2 addresses the robust reconstruction/ownership side. The dual-cost and future input-grid/format probes now target the **motion-field / confidence side** without destabilizing live playback.
+MPCVR's frozen golden reconstruction is already strong around its full-resolution BGRA NVOF field. Adaptive Splat V1.2 targets the reconstruction/ownership side, while the dual-cost and input-format/grid probes isolate the remaining motion-field/confidence differences without destabilizing live playback.
