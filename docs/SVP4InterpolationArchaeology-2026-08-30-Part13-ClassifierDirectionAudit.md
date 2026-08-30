@@ -6,7 +6,7 @@ Frozen live baseline remains `baseline/nvof-temporal-motion-salvage` @ `54720e00
 
 This note records a reproducibility audit performed after Part 12. It supersedes the interpretation that the Part 12 **B->A class-1 gate** was a validated SVP-like Build #3 candidate.
 
-The modern 4x4 software-SAD confidence mechanism remains useful. The correction is about **which directional vector array SVP's global classifier scores, and what a class value is allowed to mean**.
+The modern 4x4 software-SAD confidence mechanism remains useful. The corrections are about **which directional vector array SVP's global classifier scores and how the resulting class participates in policy**.
 
 ## 1. Why the audit was necessary
 
@@ -38,7 +38,7 @@ Several implementation possibilities were tested without explaining the discrepa
 
 The Part 12 table should consequently be treated as a useful exploratory result, not a canonical numeric oracle.
 
-## 2. Exact proprietary classifier direction
+## 2. Proprietary classifier direction
 
 The proprietary `svpflow2.dll` classifier around VA `0x180005fe0` selects between two vector-array pointers in the bidirectional vector structure.
 
@@ -61,13 +61,13 @@ current  = run_direction(A, B)
 previous = run_direction(B, A)
 ```
 
-and its pair classifier explicitly does:
+and its pair classifier does:
 
 ```text
 classify(current, luma(previous + current))
 ```
 
-The combined binary and independent-source evidence therefore identifies the normal proprietary field-classification direction as **current A->B**, while both A->B and B->A luma contribute to normalization.
+The combined binary and independent-source evidence therefore identifies the normal field-classification direction as **current A->B**, while both A->B and B->A luma contribute to normalization.
 
 This matters because the MPCVR diagnostic filenames use the opposite naming convention:
 
@@ -104,37 +104,89 @@ The important consequence is immediate: the proprietary-current direction does *
 
 So there is no defensible basis for saying `class == 1` is the uniquely useful robust-reconstruction regime.
 
-## 4. `force13` is not ordinary class 1
+## 4. Corrected `force13` interpretation
 
-The classifier call site also resolves an earlier conceptual ambiguity.
+A deeper policy trace corrected an over-narrow initial reading of the classifier's special `-1` return.
 
-After the classifier returns, the proprietary path tests specifically for:
+There are **two separate mechanisms**:
+
+### 4.1 `blocks13` special result
+
+The exact classifier can return:
 
 ```text
-class == -1
+-1
 ```
 
-and sets the `force13` boolean from that comparison.
+through the separate `blocks13` occupancy threshold. The classifier wrapper exposes that condition through a separate boolean output and clips the ordinary returned class to nonnegative before later policy uses it.
 
-The exact classifier returns `-1` only through the separate `blocks13` occupancy threshold. Stock configuration has:
+Stock:
 
 ```text
 blocks13 = 0
 ```
 
-so the special force13 state is dormant under stock defaults.
+so this extra early threshold is dormant by default.
 
-Therefore this clean-room heuristic:
+### 4.2 `scene.force13` configuration
+
+`scene.force13` is a distinct option and defaults to:
 
 ```text
-ordinary class 1 -> enable robust median
+true
 ```
 
-was never an exact reproduction of SVP's `force13` mechanism. Ordinary classes 0/1/2 are instead inputs to the separate adaptive scene/algorithm policy.
+The supplied `override_list.txt` confirms the stock-facing value, and the proprietary binary stores/uses it independently of the `class == -1` signal.
 
-That distinction is now important enough that future research must not label an ordinary class-1 gate as `force13`.
+Open-svpflow's independently reconstructed policy makes the intended ordinary-class behavior explicit:
 
-## 5. Gate-matrix replay at qscale 1600
+```text
+if mode is SmoothFps/NVOF
+and scene_class is 1 or 2
+and requested algorithm >= 11
+and scene.force13 is true:
+    effective algorithm = 13
+```
+
+Therefore **ordinary classes 1 and 2 are both robust-algorithm territory when `scene.force13=true`**. The special `blocks13 -> -1` signal is an additional mechanism, not the sole meaning of `force13`.
+
+This changes the correct clean-room question from:
+
+```text
+Should class 1 enable robust median?
+```
+
+to:
+
+```text
+Can classes 1 and 2 safely use the robust algorithm-13 family when combined
+with the rest of SVP's scene-phase, ownership, and confidence policy?
+```
+
+## 5. `scene.adaptive=210` is a separate phase policy
+
+Another important correction is that `scene.adaptive` is not the algorithm selector.
+
+Open-svpflow decodes decimal digits independently:
+
+```text
+210 -> [-1, 0, 1]
+```
+
+for classes 0, 1, and 2 respectively. `-1` means no adaptive override. For scene mode 3 and interpolation ratios of at least 2x:
+
+```text
+class 0 -> ordinary phase unchanged
+class 1 -> scene-phase mode 0
+class 2 -> scene-phase mode 1
+class 3 -> handled separately as the worst/scene state
+```
+
+The scene-phase modes alter where synthetic output samples land relative to the real endpoints. Mode 1 biases the synthesized phase toward a real endpoint more aggressively than mode 0. This is a cadence/temporal-safety policy layered alongside `force13`, not a replacement for it.
+
+That separation explains why copying only `class == 1 -> median` was incomplete even before the direction audit.
+
+## 6. Gate-matrix replay at qscale 1600
 
 A new research tool is committed as:
 
@@ -142,7 +194,7 @@ A new research tool is committed as:
 tools/research/splat_candidate_v2_gate_matrix.py
 ```
 
-It keeps the Part 12 historical B->A class-1 gate for reproducibility and compares it against the now-correct directional interpretations:
+It keeps the Part 12 historical B->A class-1 gate for reproducibility and compares it against explicit current-direction interpretations:
 
 ```text
 historical-ba-class1
@@ -171,15 +223,17 @@ Selected `>4 LSB` modification rates at `qscale=1600`:
 | 020950 | 1.13% | 1.13% | 1.13% |
 | 021001 | 1.51% | 1.51% | 1.51% |
 
-No simple replacement gate wins this audit:
+The current `class in {1,2}` column is now the more relevant **force13-family** research condition, but it is still not a complete SVP policy replay because it lacks class-dependent scene-phase behavior and other synthesis/mask interactions.
 
-- current `class == 1` loses `022530` while adding `022550`, `234826`, and `001431`;
-- current `class in {1,2}` restores `022530` and the ~0.50% `013416` experiment, but also broadens support further;
-- requiring both directions to be class 1 rejects important class-2 cases by construction and still has no proprietary justification.
+It broadens support exactly where the corrected classifier says it should:
 
-The global class is therefore better treated as a **policy input**, not a one-bit permission gate.
+- restores `022530` despite it being class 2;
+- activates `013416` at ~0.50% >4 LSB;
+- also activates `022550`, `234826`, and `001431`.
 
-## 6. `013416` exposure-enhanced safety check
+So the direction correction does not kill robust median; it shows why **class-aware policy** is required before promotion.
+
+## 7. `013416` exposure-enhanced safety check
 
 The previously outstanding qscale-1600 exposure/difference inspection was completed for the `svp-current-class12` variant.
 
@@ -195,9 +249,9 @@ alpha > .05: 11.66%
 
 The x32 difference map is sparse and concentrated around existing motion/warp structures. Side-by-side gamma-lifted GOLD and OUT crops did **not** reveal a newly coherent stretched/liquid geometry structure comparable to the earlier failed broad raw-flow experiments.
 
-That is a useful local safety result, but it does not validate the global gate. `001431`, for example, receives ~1.18% >4-LSB changes from the actual current-direction class-1 gate and must be evaluated as part of any future policy.
+That is encouraging for the **local** modern-SAD + robust-median construction. It is not yet enough to validate the **global policy**. `001431`, for example, receives ~1.18% >4-LSB changes under the class1/2 family and needs equal scrutiny.
 
-## 7. What survives from Part 12
+## 8. What survives from Part 12
 
 The following findings remain useful:
 
@@ -206,24 +260,26 @@ The following findings remain useful:
 - qscale around 1600 remains a sensible local confidence-attenuation scale to investigate;
 - Adaptive Splat + channelwise median remains far safer than directly promoting raw vectors;
 - hardware cost should remain disabled in the live Turing renderer;
-- coverage/ownership, vector confidence, global field quality, and robust synthesis must remain separate signals.
+- coverage/ownership, vector confidence, global field quality, robust algorithm selection, and scene-phase policy must remain separate signals.
 
 What is superseded:
 
 - the Part 12 modern-SAD table as an exact numeric oracle for all captures;
 - the claim that its B->A class-1 pattern is the proprietary field classifier's natural Build #3 gate;
-- treating ordinary class 1 as equivalent to `force13`.
+- treating ordinary class 1 alone as the full `force13` policy.
 
-## 8. Revised next direction
+## 9. Revised next direction
 
-Do **not** create a live Build #3 from the current class gate.
+Do **not** create a live Build #3 from the old class-1 gate.
 
-The next useful archaeology target is now the policy layer after classification:
+The next offline target is a fuller policy replay:
 
-1. finish the exact `scene.adaptive = 210` mapping from classes 0/1/2 into synthesis behavior;
-2. distinguish that adaptive mapping from the special `blocks13 -> -1 -> force13` path;
-3. determine whether class 2 is primarily an algorithm-selection change, an artifact-mask-strength change, or both;
-4. keep modern SAD as a local vector-confidence attenuation term regardless of the global policy;
-5. only return to a live candidate after a policy replay preserves the Boromir improvements without unnecessarily activating the cleaner corpus.
+1. use the actual current A->B field classifier;
+2. treat classes 1 and 2 as eligible for algorithm-13-style robust reconstruction when `scene.force13=true`;
+3. reproduce the `scene.adaptive=210` class-dependent phase mapping separately;
+4. keep modern SAD as local vector-confidence attenuation rather than a global motion-trust switch;
+5. preserve coverage/ownership as an independent cue;
+6. compare the resulting policy on `022530`, `022539`, `022550`, `013416`, `001431`, ordinary-motion captures, and true cuts;
+7. only return to a live candidate if that complete policy preserves the Boromir gains without recreating cadence collapse or liquid geometry.
 
 The frozen baseline remains the live reference throughout this work.
