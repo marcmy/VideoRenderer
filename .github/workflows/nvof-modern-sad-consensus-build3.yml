@@ -1,0 +1,147 @@
+name: NVOF Modern SAD Consensus Build 3
+
+on:
+  push:
+    branches:
+      - build3/nvof-modern-sad-consensus
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nvof-modern-sad-consensus-build3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout Build 3 branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Apply frozen salvage, V1.2 mechanics, and Build 3 policy
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\tools\NvofTemporalMotionSalvagePatch.ps1
+          python .\tools\NvofAdaptiveSplatV12Patch.py
+          if ($LASTEXITCODE -ne 0) {
+            throw "NvofAdaptiveSplatV12Patch.py failed with exit code $LASTEXITCODE"
+          }
+          python .\tools\NvofModernSadConsensusPatch.py
+          if ($LASTEXITCODE -ne 0) {
+            throw "NvofModernSadConsensusPatch.py failed with exit code $LASTEXITCODE"
+          }
+          & .\tools\RegenerateNvofAdaptiveSplatV12Shaders.ps1
+          git diff --check
+          git status --short
+
+      - name: Build MPC Video Renderer
+        shell: pwsh
+        run: |
+          .\build_mpcvr.cmd NoWait
+          if ($LASTEXITCODE -ne 0) {
+            throw "build_mpcvr.cmd failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Package reversible K-Lite test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Join-Path $PWD 'release'
+          $root = Join-Path $release 'MPCVR-NVOF-Modern-SAD-Consensus-Build3'
+          $payload = Join-Path $root 'payload'
+          New-Item -ItemType Directory -Path $payload -Force | Out-Null
+
+          $x86 = Join-Path $PWD '_bin\Filter_x86\MpcVideoRenderer.ax'
+          $x64 = Join-Path $PWD '_bin\Filter_x64\MpcVideoRenderer64.ax'
+          foreach ($path in @($x86, $x64)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing built renderer: $path"
+            }
+          }
+
+          Copy-Item -LiteralPath $x86 -Destination (Join-Path $payload 'MpcVideoRenderer.ax') -Force
+          Copy-Item -LiteralPath $x64 -Destination (Join-Path $payload 'MpcVideoRenderer64.ax') -Force
+          Copy-Item -LiteralPath '.\tools\NvofModernSadConsensusTest\Install-Build3.cmd' -Destination $root -Force
+          Copy-Item -LiteralPath '.\tools\NvofModernSadConsensusTest\Restore-Golden.cmd' -Destination $root -Force
+          Copy-Item -LiteralPath '.\tools\NvofModernSadConsensusTest\Install-Build3.ps1' -Destination $root -Force
+
+          $readme = @"
+          MPCVR Native-NVOF Modern-SAD Consensus Build #3
+          =================================================
+
+          Branch: $env:GITHUB_REF_NAME
+          Commit: $env:GITHUB_SHA
+
+          Experimental change
+          -------------------
+          - Direct descendant of the frozen native-NVOF golden baseline.
+          - Preserves the golden dense-flow, repair, topology, hard-cut,
+            local-temporal salvage, and temporal-fallback behavior.
+          - Reuses the bounded Adaptive Splat V1.2 midpoint hypothesis mechanics.
+          - Does NOT enable NVIDIA NVOF output cost.
+          - Does NOT implement SVP adaptive phase or direct algorithm 13.
+          - Replaces V1.2's exploratory one-sample q proxy with reconstructed
+            modern 4x4 BT.709-limited luma SAD confidence in both directions.
+          - Uses pair-luma normalization with bidirectional denominator 510.
+          - Runs the reconstructed zero/m1/m2/scene field classifier independently
+            for B->A and A->B on the GPU.
+          - Global alternate authority requires both directions to classify as
+            ordinary unhealthy (class 1 or 2), then ramps with min directional
+            m1+ occupancy from 20% to 27%.
+          - A separate whole-frame MAD guard ramps authority down from .075 to
+            .095; class-3 fields and hard cuts receive zero alternate authority.
+          - Splat confidence qscale is 1600; local q authority ramps 1000..2200;
+            support ramps .03..22 and final local authority remains capped at .60.
+          - Exact-midpoint only. Non-midpoint phases remain golden-only.
+          - Live telemetry reports directional classes/m1 occupancy, dual m1,
+            source MAD, consensus gain, legacy bad-cell rate, and worst7x7.
+
+          Install
+          -------
+          1. Close MPC-HC.
+          2. Run Install-Build3.cmd.
+          3. Accept the administrator prompt.
+          4. Restart MPC-HC and test normally.
+
+          Roll back
+          ---------
+          - Close MPC-HC and run Restore-Golden.cmd.
+          - The installer preserves the renderer binaries present before the
+            first Build #3 test in:
+              %ProgramData%\MPCVR-Modern-SAD-Consensus-Build3-Backup
+          - No regsvr32 or filter-registration changes are made.
+          "@
+          [IO.File]::WriteAllText((Join-Path $root 'README.txt'), $readme, [Text.UTF8Encoding]::new($false))
+
+          $payloadHashes = @()
+          foreach ($name in @('MpcVideoRenderer.ax', 'MpcVideoRenderer64.ax')) {
+            $hash = (Get-FileHash -LiteralPath (Join-Path $payload $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            $payloadHashes += "$hash  $name"
+          }
+          [IO.File]::WriteAllLines((Join-Path $root 'PAYLOAD-SHA256SUMS.txt'), $payloadHashes, [Text.UTF8Encoding]::new($false))
+
+          $zip = Join-Path $release 'MPCVR-NVOF-Modern-SAD-Consensus-Build3.zip'
+          if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+          Compress-Archive -Path (Join-Path $root '*') -DestinationPath $zip -CompressionLevel Optimal
+          $zipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText(
+            (Join-Path $release 'MPCVR-NVOF-Modern-SAD-Consensus-Build3.zip.sha256'),
+            "$zipHash  MPCVR-NVOF-Modern-SAD-Consensus-Build3.zip`n",
+            [Text.UTF8Encoding]::new($false))
+
+      - name: Upload Build 3 test package
+        uses: actions/upload-artifact@v7
+        with:
+          name: MPCVR-NVOF-Modern-SAD-Consensus-Build3
+          path: |
+            release/MPCVR-NVOF-Modern-SAD-Consensus-Build3.zip
+            release/MPCVR-NVOF-Modern-SAD-Consensus-Build3.zip.sha256
+          compression-level: 0
+          if-no-files-found: error
