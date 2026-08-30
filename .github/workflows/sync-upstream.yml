@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/sync-upstream.yml'
 
 permissions:
   contents: write
@@ -63,33 +68,30 @@ jobs:
             git checkout --ours -- Source/DX11VideoProcessor.cpp
             $path = 'Source/DX11VideoProcessor.cpp'
             $text = [IO.File]::ReadAllText($path)
-            $old = @'
-	auto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled && m_InternalTexFmt == DXGI_FORMAT_B8G8R8A8_UNORM && (params.CDepth == 8 || !m_bACMEnabled))
-		? m_iVPSuperRes : SUPERRES_Disable;
-	m_bVPUseSuperRes = (m_D3D11VP.SetSuperRes(superRes) == S_OK);
-
-	auto rtxHDR = m_bVPRTXVideoHDR && m_bHdrPassthroughSupport && m_bHdrPassthrough && m_iTexFormat != TEXFMT_8INT && !SourceIsHDR();
-	m_bVPUseRTXVideoHDR = (m_D3D11VP.SetRTXVideoHDR(rtxHDR) == S_OK);
-'@
-            $new = @'
-	auto rtxHDR = m_bVPRTXVideoHDR && m_bHdrPassthroughSupport && m_bHdrPassthrough && m_iTexFormat != TEXFMT_8INT && !SourceIsHDR();
-	m_bVPUseRTXVideoHDR = (m_D3D11VP.SetRTXVideoHDR(rtxHDR) == S_OK);
-
-	auto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled
-			&& (m_InternalTexFmt == DXGI_FORMAT_B8G8R8A8_UNORM || m_bVPUseRTXVideoHDR)
-			&& (params.CDepth == 8 || !m_bACMEnabled)) ? m_iVPSuperRes : SUPERRES_Disable;
-	m_bVPUseSuperRes = (m_D3D11VP.SetSuperRes(superRes) == S_OK);
-'@
-            if (-not $text.Contains($old)) {
+            $lf = $text.Replace("`r`n", "`n")
+            $old = @(
+              "`tauto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled && m_InternalTexFmt == DXGI_FORMAT_B8G8R8A8_UNORM && (params.CDepth == 8 || !m_bACMEnabled))",
+              "`t`t? m_iVPSuperRes : SUPERRES_Disable;",
+              "`tm_bVPUseSuperRes = (m_D3D11VP.SetSuperRes(superRes) == S_OK);",
+              '',
+              "`tauto rtxHDR = m_bVPRTXVideoHDR && m_bHdrPassthroughSupport && m_bHdrPassthrough && m_iTexFormat != TEXFMT_8INT && !SourceIsHDR();",
+              "`tm_bVPUseRTXVideoHDR = (m_D3D11VP.SetRTXVideoHDR(rtxHDR) == S_OK);"
+            ) -join "`n"
+            $new = @(
+              "`tauto rtxHDR = m_bVPRTXVideoHDR && m_bHdrPassthroughSupport && m_bHdrPassthrough && m_iTexFormat != TEXFMT_8INT && !SourceIsHDR();",
+              "`tm_bVPUseRTXVideoHDR = (m_D3D11VP.SetRTXVideoHDR(rtxHDR) == S_OK);",
+              '',
+              "`tauto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled",
+              "`t`t`t&& (m_InternalTexFmt == DXGI_FORMAT_B8G8R8A8_UNORM || m_bVPUseRTXVideoHDR)",
+              "`t`t`t&& (params.CDepth == 8 || !m_bACMEnabled)) ? m_iVPSuperRes : SUPERRES_Disable;",
+              "`tm_bVPUseSuperRes = (m_D3D11VP.SetSuperRes(superRes) == S_OK);"
+            ) -join "`n"
+            if (-not $lf.Contains($old) -or $lf.IndexOf($old) -ne $lf.LastIndexOf($old)) {
               git merge --abort
-              throw 'Known fork-side Super Resolution/RTX HDR block was not found; refusing unsafe resolution.'
+              throw 'Known fork-side Super Resolution/RTX HDR block was not found exactly once; refusing unsafe resolution.'
             }
-            $resolved = $text.Replace($old, $new)
-            if ($resolved -eq $text) {
-              git merge --abort
-              throw 'Known conflict resolution produced no source change.'
-            }
-            [IO.File]::WriteAllText($path, $resolved, [Text.UTF8Encoding]::new($false))
+            $resolved = $lf.Replace($old, $new)
+            [IO.File]::WriteAllText($path, $resolved.Replace("`n", "`r`n"), [Text.UTF8Encoding]::new($false))
             git add Source/DX11VideoProcessor.cpp
             $remaining = @(git diff --name-only --diff-filter=U)
             if ($remaining.Count -ne 0) {
