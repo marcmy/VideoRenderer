@@ -74,6 +74,12 @@ try {
         foreach ($fileName in @(
             'cost-forward-B-to-A-r8.bin',
             'cost-backward-A-to-B-r8.bin',
+            'cost-forward-B-to-A-r32.bin',
+            'cost-backward-A-to-B-r32.bin',
+            'flow-forward-B-to-A-r8-s10.5.bin',
+            'flow-backward-A-to-B-r8-s10.5.bin',
+            'flow-forward-B-to-A-r32-s10.5.bin',
+            'flow-backward-A-to-B-r32-s10.5.bin',
             'flow-forward-B-to-A-s10.5.bin',
             'flow-backward-A-to-B-s10.5.bin',
             'replay-summary.txt'
@@ -86,7 +92,7 @@ try {
     }
 
     $batchSummary = @(
-        'NVOF hardware-cost replay batch'
+        'NVOF dual hardware-cost replay batch'
         "Root=$CaptureRoot"
         "Started=$($started.ToString('o'))"
         "Finished=$((Get-Date).ToString('o'))"
@@ -113,7 +119,7 @@ finally {
 Write-Host '============================================================' -ForegroundColor Green
 Write-Host "Finished $($results.Count) capture(s): $(($results | Where-Object ExitCode -eq 0).Count) succeeded, $(($results | Where-Object ExitCode -ne 0).Count) failed."
 Write-Host "Compact analysis bundle: $zip"
-Write-Host 'The full replay folders, including grayscale cost BMPs, remain beside each capture.'
+Write-Host 'The full replay folders remain beside each capture.'
 
 if (($results | Where-Object ExitCode -ne 0).Count -gt 0) {
     exit 1
