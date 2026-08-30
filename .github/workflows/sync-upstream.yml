@@ -4,11 +4,6 @@ on:
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
-  push:
-    branches:
-      - master
-    paths:
-      - '.github/workflows/sync-upstream.yml'
 
 permissions:
   contents: write
@@ -157,5 +152,3 @@ jobs:
         run: |
           'The verified merge was pushed to master and a fresh rolling Maxine build was dispatched.' |
             Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-
-# Trigger after push handler is registered.
