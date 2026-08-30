@@ -53,8 +53,54 @@ jobs:
 
           git merge --no-ff --no-edit -m "Merge Aleksoid1978/VideoRenderer upstream master ($shortSha)" upstream/master
           if ($LASTEXITCODE -ne 0) {
-            git merge --abort
-            throw 'Upstream merge produced conflicts and requires manual resolution.'
+            $knownUpstream = '95502cdb92ad3f4b3842acc4f0d8f58aeb799f3c'
+            $conflicts = @(git diff --name-only --diff-filter=U)
+            if ($upstreamSha -ne $knownUpstream -or $conflicts.Count -ne 1 -or $conflicts[0] -ne 'Source/DX11VideoProcessor.cpp') {
+              git merge --abort
+              throw "Upstream merge produced unexpected conflicts: $($conflicts -join ', ')"
+            }
+
+            git checkout --ours -- Source/DX11VideoProcessor.cpp
+            $path = 'Source/DX11VideoProcessor.cpp'
+            $text = [IO.File]::ReadAllText($path)
+            $old = @'
+	auto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled && m_InternalTexFmt == DXGI_FORMAT_B8G8R8A8_UNORM && (params.CDepth == 8 || !m_bACMEnabled))
+		? m_iVPSuperRes : SUPERRES_Disable;
+	m_bVPUseSuperRes = (m_D3D11VP.SetSuperRes(superRes) == S_OK);
+
+	auto rtxHDR = m_bVPRTXVideoHDR && m_bHdrPassthroughSupport && m_bHdrPassthrough && m_iTexFormat != TEXFMT_8INT && !SourceIsHDR();
+	m_bVPUseRTXVideoHDR = (m_D3D11VP.SetRTXVideoHDR(rtxHDR) == S_OK);
+'@
+            $new = @'
+	auto rtxHDR = m_bVPRTXVideoHDR && m_bHdrPassthroughSupport && m_bHdrPassthrough && m_iTexFormat != TEXFMT_8INT && !SourceIsHDR();
+	m_bVPUseRTXVideoHDR = (m_D3D11VP.SetRTXVideoHDR(rtxHDR) == S_OK);
+
+	auto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled
+			&& (m_InternalTexFmt == DXGI_FORMAT_B8G8R8A8_UNORM || m_bVPUseRTXVideoHDR)
+			&& (params.CDepth == 8 || !m_bACMEnabled)) ? m_iVPSuperRes : SUPERRES_Disable;
+	m_bVPUseSuperRes = (m_D3D11VP.SetSuperRes(superRes) == S_OK);
+'@
+            if (-not $text.Contains($old)) {
+              git merge --abort
+              throw 'Known fork-side Super Resolution/RTX HDR block was not found; refusing unsafe resolution.'
+            }
+            $resolved = $text.Replace($old, $new)
+            if ($resolved -eq $text) {
+              git merge --abort
+              throw 'Known conflict resolution produced no source change.'
+            }
+            [IO.File]::WriteAllText($path, $resolved, [Text.UTF8Encoding]::new($false))
+            git add Source/DX11VideoProcessor.cpp
+            $remaining = @(git diff --name-only --diff-filter=U)
+            if ($remaining.Count -ne 0) {
+              git merge --abort
+              throw "Unresolved conflicts remain: $($remaining -join ', ')"
+            }
+            git commit --no-edit
+            if ($LASTEXITCODE -ne 0) {
+              git merge --abort
+              throw 'Could not commit the exact upstream conflict resolution.'
+            }
           }
 
           git submodule sync --recursive
