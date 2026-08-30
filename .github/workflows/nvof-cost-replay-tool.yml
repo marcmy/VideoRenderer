@@ -6,6 +6,7 @@ on:
       - research/svp4-interpolation-archaeology
     paths:
       - 'tools/native-nvof-probe/NativeNvofCostReplay.cpp'
+      - 'tools/native-nvof-probe/NativeNvofCostReplayDual.cpp'
       - 'tools/native-nvof-probe/NativeNvofApi.h'
       - 'tools/native-nvof-probe/Run-NvofCostReplay.cmd'
       - 'tools/native-nvof-probe/Run-All-NvofCostReplay.cmd'
@@ -27,7 +28,7 @@ jobs:
       - name: Checkout archaeology branch
         uses: actions/checkout@v7
 
-      - name: Build x64 standalone cost replay tool
+      - name: Build x64 standalone dual-cost replay tool
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -42,7 +43,7 @@ jobs:
 
           $release = Join-Path $PWD 'release\NVOF-Cost-Replay'
           New-Item -ItemType Directory -Path $release -Force | Out-Null
-          $source = Join-Path $PWD 'tools\native-nvof-probe\NativeNvofCostReplay.cpp'
+          $source = Join-Path $PWD 'tools\native-nvof-probe\NativeNvofCostReplayDual.cpp'
           $exe = Join-Path $release 'NativeNvofCostReplay.exe'
           $compile = 'call "{0}" >nul && cl.exe /nologo /std:c++20 /EHsc /O2 /W4 /WX /DUNICODE /D_UNICODE "{1}" /Fe:"{2}" /link d3d11.lib dxgi.lib' -f $vcvars, $source, $exe
           cmd.exe /d /s /c $compile
@@ -63,20 +64,24 @@ jobs:
           Copy-Item -LiteralPath '.\tools\native-nvof-probe\Run-All-NvofCostReplay.ps1' -Destination $root -Force
 
           $readme = @"
-          NVOF Offline Hardware-Cost Replay
-          =================================
+          NVOF Offline Hardware-Cost Replay — dual R8/R32
+          =================================================
 
           Purpose
           -------
-          Re-run existing MPCVR diagnostic frame pairs through a completely
-          separate, standalone NVOF session with 8-bit output cost enabled.
+          Re-run existing MPCVR diagnostic frame pairs through completely
+          separate, standalone NVOF sessions with output cost enabled. The tool
+          tests modern R8 cost and legacy R32 cost in separate sessions so their
+          numeric relationship and any format-dependent flow changes can be
+          measured directly on the installed NVIDIA driver.
+
           This does NOT enable hardware cost inside MPC-HC and does not modify
-          MPC Video Renderer, K-Lite, the registry, or any installed files.
+          MPC Video Renderer, K-Lite, the registry, or installed files.
 
           Requirements
           ------------
           - Windows x64
-          - NVIDIA GPU with Optical Flow support (Turing or newer)
+          - NVIDIA GPU with Optical Flow support
           - Current NVIDIA display driver exposing nvofapi64.dll
           - Existing MPCVR capture folder(s) containing frame-A.bmp + frame-B.bmp
 
@@ -94,32 +99,28 @@ jobs:
           Each capture receives a new subfolder:
             nvof-cost-replay-YYYYMMDD-HHMMSS
 
-          Per-capture output:
-          - flow-forward-B-to-A-s10.5.bin
-          - flow-backward-A-to-B-s10.5.bin
-          - cost-forward-B-to-A-r8.bin
-          - cost-backward-A-to-B-r8.bin
-          - cost-forward-B-to-A.bmp
-          - cost-backward-A-to-B.bmp
+          Per-capture output, when the corresponding format is supported:
+          - cost-forward-B-to-A-r8.bin / cost-backward-A-to-B-r8.bin
+          - cost-forward-B-to-A-r32.bin / cost-backward-A-to-B-r32.bin
+          - format-specific replay flow binaries for R8 and R32
           - replay-summary.txt
 
-          The batch runner additionally creates one compact analysis ZIP in the
-          selected root folder. It contains the raw flow/cost binaries and text
-          summaries, but omits the large grayscale BMPs. That ZIP is the useful
-          artifact to send back for corpus analysis.
+          The summary reports format support, cost percentiles, replay-vs-live
+          flow differences, R8-vs-R32 flow differences, Pearson correlation,
+          affine R32-from-R8 fit, median nonzero ratio, and the best simple
+          right-shift mapping from legacy R32 to R8.
 
-          The summary compares replay flow against the original capture's flow
-          binaries when present. This tells us whether the fresh cost-enabled
-          session reproduced the original live NVOF flow closely enough for the
-          cost map to be a valid classifier-calibration source.
+          The batch runner creates one compact analysis ZIP in the selected root
+          folder containing the raw binaries and summaries. Send that ZIP back
+          for corpus analysis.
 
           Important
           ---------
-          The standalone replay deliberately uses PerfSlow, 4x4 output grid,
-          bidirectional prediction, and disabled temporal hints to match the
-          renderer's independent-pair NVOF configuration as closely as possible.
-          Blocking GPU readback is intentional here because this is an offline
-          one-pair diagnostic tool, not a playback path.
+          Each cost format is tested in its own NVOF session. Both use PerfSlow,
+          4x4 output grid, bidirectional prediction, and disabled temporal hints.
+          Blocking readback is intentional because this is an offline diagnostic,
+          never a playback path. Unsupported R32 is recorded rather than treated
+          as a failure if R8 succeeds.
           "@
           [IO.File]::WriteAllText((Join-Path $root 'README.txt'), $readme, [Text.UTF8Encoding]::new($false))
 
