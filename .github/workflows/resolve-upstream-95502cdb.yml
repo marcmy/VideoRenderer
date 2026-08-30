@@ -118,3 +118,5 @@ jobs:
         run: |
           gh workflow run main.yml --ref master --repo $env:GITHUB_REPOSITORY
           if ($LASTEXITCODE -ne 0) { throw 'Resolved merge was pushed, but rolling build dispatch failed.' }
+
+# One-off trigger commit after workflow registration.
