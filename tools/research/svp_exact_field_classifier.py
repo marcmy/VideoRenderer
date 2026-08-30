@@ -161,8 +161,12 @@ def pack_nvof_direction(cost_r32: np.ndarray, luma_plane: np.ndarray,
 
 
 def build_pair_luma(previous_luma: np.ndarray, current_luma: np.ndarray,
-                    marker: int = 4, gamma: float = 1.5) -> np.ndarray:
-    """Reproduce the DLL helper at ~0x180005e60."""
+                    marker: int = 3, gamma: float = 1.5) -> np.ndarray:
+    """Reproduce the DLL helper at ~0x180005e60.
+
+    `marker` is the NVOF direction-flags field. Normal bidirectional NVOF uses
+    value 3, selecting the 510 denominator. Other values select 255.
+    """
     previous = np.asarray(previous_luma, dtype=np.uint8)
     current = np.asarray(current_luma, dtype=np.uint8)
     if previous.shape != current.shape:
@@ -181,7 +185,7 @@ def build_pair_luma(previous_luma: np.ndarray, current_luma: np.ndarray,
 
 def classify_nvof_pair(previous_cost: np.ndarray, current_cost: np.ndarray,
                        previous_y: np.ndarray, current_y: np.ndarray,
-                       scale: int = 1, marker: int = 4, gamma: float = 1.5,
+                       scale: int = 1, marker: int = 3, gamma: float = 1.5,
                        thresholds: Thresholds = Thresholds()) -> Classification:
     _, previous_luma = pack_nvof_direction(previous_cost, previous_y, scale)
     current_score, current_luma = pack_nvof_direction(current_cost, current_y, scale)
