@@ -150,4 +150,101 @@ write("NvidiaMaxineVSR.cpp", cpp)
 
 # Warm the exact configured Maxine pass chain once media/device/output geometry
 # is established, before the first sample reaches the playback/render path.
-dx = read("DX11VideoProcessor.cpp")n
+dx = read("DX11VideoProcessor.cpp")
+old_init_success = """\tif (SUCCEEDED(hr)) {\n\t\tUpdateBitmapShader();\n\t\tUpdateTexures();\n\t\tUpdatePostScaleTexures();\n\t\tUpdateStatsStatic();\n\n\t\tm_pFilter->m_inputMT = *pmt;\n\n\t\treturn TRUE;\n\t}\n"""
+new_init_success = r'''	if (SUCCEEDED(hr)) {
+		UpdateBitmapShader();
+		UpdateTexures();
+
+#ifdef _WIN64
+		// Maxine normally creates/loads the VideoSuperRes effect lazily from the
+		// first displayed frame. NvVFX_Load and the first NvVFX_Run can take long
+		// enough to freeze several seconds of initial playback. Warm the exact
+		// configured pass chain while the media type is being initialized instead.
+		CSize warmTargetSize;
+		bool warmUpscaleNeeded = false;
+		if (GetMaxineVSRTargetSize(m_videoRect, warmTargetSize, warmUpscaleNeeded)) {
+			CSize warmCurrentSize(m_srcRectWidth, m_srcRectHeight);
+
+			auto WarmPass = [&](const MaxinePass pass) -> bool {
+				CNvidiaMaxineVSR* effect = nullptr;
+				CSize outputSize = warmCurrentSize;
+				unsigned mode = 0;
+				const wchar_t* passName = nullptr;
+
+				switch (pass) {
+				case MaxinePass::Upscale:
+					if (m_iMaxineOperation != MAXINE_OPERATION_Upscale || !warmUpscaleNeeded) {
+						return true;
+					}
+					effect = &m_MaxineVSR;
+					outputSize = warmTargetSize;
+					mode = ResolveMaxineUpscaleMode();
+					passName = L"Upscale";
+					break;
+				case MaxinePass::Denoise:
+					if (m_iMaxineDenoise == MAXINE_FILTER_Off
+							|| (m_iMaxineOperation != MAXINE_OPERATION_Upscale
+								&& m_iMaxineOperation != MAXINE_OPERATION_Denoise)) {
+						return true;
+					}
+					effect = &m_MaxineDenoise;
+					mode = 7u + static_cast<unsigned>(m_iMaxineDenoise);
+					passName = L"Denoise";
+					break;
+				case MaxinePass::Deblur:
+					if (m_iMaxineDeblur == MAXINE_FILTER_Off
+							|| (m_iMaxineOperation != MAXINE_OPERATION_Upscale
+								&& m_iMaxineOperation != MAXINE_OPERATION_Deblur)) {
+						return true;
+					}
+					effect = &m_MaxineDeblur;
+					mode = 11u + static_cast<unsigned>(m_iMaxineDeblur);
+					passName = L"Deblur";
+					break;
+				}
+
+				const bool ok = effect->WarmUp(
+					m_pDeviceContext,
+					static_cast<UINT>(warmCurrentSize.cx),
+					static_cast<UINT>(warmCurrentSize.cy),
+					static_cast<UINT>(outputSize.cx),
+					static_cast<UINT>(outputSize.cy),
+					mode,
+					m_iMaxineGPU);
+				DLog(L"NVIDIA Maxine {} cold-start warm-up: {} ({})",
+					passName, ok ? L"ready" : L"failed", effect->GetStatus());
+				if (ok) {
+					warmCurrentSize = outputSize;
+				}
+				return ok;
+			};
+
+			if (m_iMaxineOperation == MAXINE_OPERATION_Upscale) {
+				for (const MaxinePass pass : GetMaxinePassOrder(m_iMaxinePipeline)) {
+					if (!WarmPass(pass)) {
+						break;
+					}
+				}
+			}
+			else if (m_iMaxineOperation == MAXINE_OPERATION_Denoise) {
+				WarmPass(MaxinePass::Denoise);
+			}
+			else if (m_iMaxineOperation == MAXINE_OPERATION_Deblur) {
+				WarmPass(MaxinePass::Deblur);
+			}
+		}
+#endif
+
+		UpdatePostScaleTexures();
+		UpdateStatsStatic();
+
+		m_pFilter->m_inputMT = *pmt;
+
+		return TRUE;
+	}
+'''
+dx = replace_exact(dx, old_init_success, new_init_success, "InitMediaType Maxine cold-start warm-up")
+write("DX11VideoProcessor.cpp", dx)
+
+print("Applied Maxine cold-start prewarm patch.")
