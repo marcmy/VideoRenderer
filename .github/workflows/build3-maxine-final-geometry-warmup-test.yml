@@ -1,0 +1,122 @@
+name: Build3 Maxine Final Geometry Warmup Test
+
+on:
+  push:
+    branches:
+      - test/build3-maxine-final-geometry-warmup
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build3-maxine-final-geometry-warmup-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout test branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify latest-master ancestry
+        shell: pwsh
+        run: |
+          git merge-base --is-ancestor 0d759202bf101fe2cd23996fa944d1e02ba0b31a HEAD
+          if ($LASTEXITCODE -ne 0) { throw "Not based on expected latest master" }
+
+      - name: Apply Build 3 and Maxine warmups
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\tools\NvofTemporalMotionSalvagePatch.ps1
+          python .\tools\NvofAdaptiveSplatV12Patch.py
+          if ($LASTEXITCODE -ne 0) { throw "NvofAdaptiveSplatV12Patch.py failed" }
+          python .\tools\NvofModernSadConsensusPatch.py
+          if ($LASTEXITCODE -ne 0) { throw "NvofModernSadConsensusPatch.py failed" }
+          python .\tools\MaxineColdStartWarmupPatch.py
+          if ($LASTEXITCODE -ne 0) { throw "MaxineColdStartWarmupPatch.py failed" }
+          python .\tools\MaxineFinalGeometryWarmupPatch.py
+          if ($LASTEXITCODE -ne 0) { throw "MaxineFinalGeometryWarmupPatch.py failed" }
+          & .\tools\RegenerateNvofAdaptiveSplatV12Shaders.ps1
+          git diff --check
+          git status --short
+
+      - name: Build MPC Video Renderer
+        shell: pwsh
+        run: |
+          .\build_mpcvr.cmd NoWait
+          if ($LASTEXITCODE -ne 0) { throw "build_mpcvr.cmd failed with exit code $LASTEXITCODE" }
+
+      - name: Package reversible K-Lite test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Join-Path $PWD 'release'
+          $root = Join-Path $release 'MPCVR-Build3-Maxine-FinalGeometry-Warmup'
+          $payload = Join-Path $root 'payload'
+          New-Item -ItemType Directory -Path $payload -Force | Out-Null
+
+          $x86 = Join-Path $PWD '_bin\Filter_x86\MpcVideoRenderer.ax'
+          $x64 = Join-Path $PWD '_bin\Filter_x64\MpcVideoRenderer64.ax'
+          foreach ($path in @($x86, $x64)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing built renderer: $path" }
+          }
+
+          Copy-Item -LiteralPath $x86 -Destination (Join-Path $payload 'MpcVideoRenderer.ax') -Force
+          Copy-Item -LiteralPath $x64 -Destination (Join-Path $payload 'MpcVideoRenderer64.ax') -Force
+          Copy-Item -LiteralPath '.\tools\NvofModernSadConsensusTest\Install-Build3.cmd' -Destination $root -Force
+          Copy-Item -LiteralPath '.\tools\NvofModernSadConsensusTest\Restore-Golden.cmd' -Destination $root -Force
+          Copy-Item -LiteralPath '.\tools\NvofModernSadConsensusTest\Install-Build3.ps1' -Destination $root -Force
+
+          $readme = @"
+          MPCVR Build #3 - Maxine Final Geometry Warmup Test
+          ===================================================
+
+          Branch: $env:GITHUB_REF_NAME
+          Commit: $env:GITHUB_SHA
+          Master base: 0d759202bf101fe2cd23996fa944d1e02ba0b31a
+
+          Purpose
+          -------
+          - Latest-master native-NVOF Build #3.
+          - Includes the confirmed InitMediaType Maxine cold-start warmup.
+          - Adds a second idempotent warmup after Match Output's real video rectangle
+            is established by SetVideoRect().
+          - This targets files where media-init geometry differs from final playback
+            geometry, causing first-frame Maxine GPU image reallocation/warmup.
+
+          Test with the same files that still froze after the first warmup build.
+          Frame interpolation can remain disabled.
+
+          Roll back by closing MPC-HC and running Restore-Golden.cmd.
+          "@
+          [IO.File]::WriteAllText((Join-Path $root 'README.txt'), $readme, [Text.UTF8Encoding]::new($false))
+
+          $payloadHashes = @()
+          foreach ($name in @('MpcVideoRenderer.ax', 'MpcVideoRenderer64.ax')) {
+            $hash = (Get-FileHash -LiteralPath (Join-Path $payload $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            $payloadHashes += "$hash  $name"
+          }
+          [IO.File]::WriteAllLines((Join-Path $root 'PAYLOAD-SHA256SUMS.txt'), $payloadHashes, [Text.UTF8Encoding]::new($false))
+
+          $zip = Join-Path $release 'MPCVR-Build3-Maxine-FinalGeometry-Warmup.zip'
+          if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+          Compress-Archive -Path (Join-Path $root '*') -DestinationPath $zip -CompressionLevel Optimal
+          $zipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path $release 'MPCVR-Build3-Maxine-FinalGeometry-Warmup.zip.sha256'), "$zipHash  MPCVR-Build3-Maxine-FinalGeometry-Warmup.zip`n", [Text.UTF8Encoding]::new($false))
+
+      - name: Upload test package
+        uses: actions/upload-artifact@v7
+        with:
+          name: MPCVR-Build3-Maxine-FinalGeometry-Warmup
+          path: |
+            release/MPCVR-Build3-Maxine-FinalGeometry-Warmup.zip
+            release/MPCVR-Build3-Maxine-FinalGeometry-Warmup.zip.sha256
+          compression-level: 0
+          if-no-files-found: error
