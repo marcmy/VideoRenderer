@@ -1,0 +1,30 @@
+name: Unified setup validation
+
+on:
+  push:
+    paths:
+      - 'tools/UnifiedSetup/**'
+      - '.github/workflows/unified-setup.yml'
+  pull_request:
+    paths:
+      - 'tools/UnifiedSetup/**'
+      - '.github/workflows/unified-setup.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Validate PowerShell tooling
+        shell: powershell
+        run: |
+          Set-StrictMode -Version 2.0
+          $ErrorActionPreference = 'Stop'
+          .\tools\UnifiedSetup\Test-MpcvrUnifiedSetup.ps1

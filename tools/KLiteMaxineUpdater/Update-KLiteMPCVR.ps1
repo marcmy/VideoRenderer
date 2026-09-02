@@ -63,6 +63,18 @@ function Get-TargetDirectory {
     return $directory
 }
 
+function Get-AvailableTargets {
+    $available = [ordered]@{}
+    foreach ($fileName in $targets.Keys) {
+        $destination = $targets[$fileName]
+        $directory = Get-TargetDirectory -TargetPath $destination
+        if (Test-Path -LiteralPath $directory -PathType Container) {
+            $available[$fileName] = $destination
+        }
+    }
+    return $available
+}
+
 function Quote-ProcessArgument {
     param(
         [Parameter(Mandatory)]
@@ -167,7 +179,7 @@ if ($PSVersionTable.PSEdition -eq 'Desktop') {
         [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 }
 
-$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("MPCVR-Maxine-Updater-{0}" -f [guid]::NewGuid())
+$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("MPCVR-Unified-Updater-{0}" -f [guid]::NewGuid())
 $archivePath = Join-Path $tempRoot $assetName
 $checksumPath = Join-Path $tempRoot $checksumListName
 $extractPath = Join-Path $tempRoot 'extracted'
@@ -179,11 +191,15 @@ try {
         throw 'Close MPC-HC before updating MPC Video Renderer.'
     }
 
-    foreach ($destination in $targets.Values) {
-        $destinationDirectory = Get-TargetDirectory -TargetPath $destination
-        if (-not (Test-Path -LiteralPath $destinationDirectory -PathType Container)) {
-            throw "K-Lite destination directory was not found: $destinationDirectory"
-        }
+    $availableTargets = Get-AvailableTargets
+    if ($availableTargets.Count -eq 0) {
+        $expectedDirectories = @($targets.Values | ForEach-Object { Get-TargetDirectory -TargetPath $_ })
+        throw ('No supported K-Lite MPC-HC renderer directory was found. Checked: {0}' -f ($expectedDirectories -join '; '))
+    }
+
+    $skippedTargets = @($targets.Keys | Where-Object { -not $availableTargets.Contains($_) })
+    if ($skippedTargets.Count -gt 0) {
+        Write-Host ('Skipping absent K-Lite targets: {0}' -f ($skippedTargets -join ', ')) -ForegroundColor DarkGray
     }
 
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
@@ -193,10 +209,10 @@ try {
         $resolvedChecksum = (Resolve-Path -LiteralPath $ChecksumFile).Path
         Copy-Item -LiteralPath $resolvedArchive -Destination $archivePath -Force
         Copy-Item -LiteralPath $resolvedChecksum -Destination $checksumPath -Force
-        Write-Host 'Using the renderer package included with MPCVR Maxine Setup...'
+        Write-Host 'Using the renderer package included with MPCVR Unified Setup...'
     }
     else {
-        Write-Host 'Downloading the latest custom Maxine build...'
+        Write-Host 'Downloading the latest custom MPC Video Renderer build...'
         $archiveRequest = @{
             Uri = "$releaseBaseUrl/$assetName"
             OutFile = $archivePath
@@ -237,9 +253,9 @@ try {
 
     Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath -Force
 
-    foreach ($fileName in $targets.Keys) {
+    foreach ($fileName in $availableTargets.Keys) {
         $source = Join-Path $extractPath $fileName
-        $destination = $targets[$fileName]
+        $destination = $availableTargets[$fileName]
 
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
             throw "The renderer package does not contain $fileName."
@@ -256,8 +272,8 @@ try {
     }
 
     Write-Host
-    Write-Host 'Custom MPC Video Renderer restored successfully.' -ForegroundColor Green
-    $targets.Values | ForEach-Object {
+    Write-Host 'Custom MPC Video Renderer installed successfully.' -ForegroundColor Green
+    $availableTargets.Values | ForEach-Object {
         $item = Get-Item -LiteralPath $_
         [pscustomobject]@{
             File = $item.Name
