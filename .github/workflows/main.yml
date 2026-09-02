@@ -77,9 +77,6 @@ jobs:
           cp "$package" release/MpcVideoRenderer-Maxine.zip
 
           mkdir -p release/runtime-source
-
-          # New releases carry the runtime inside the previous unified setup.
-          # The first unified release can migrate from the old standalone assets.
           mkdir -p release/previous-setup
           if gh release download \
               --repo "$GITHUB_REPOSITORY" \
@@ -153,9 +150,6 @@ jobs:
               MPCVR-Maxine-Setup.zip \
               MpcVideoRenderer-Maxine.zip \
               > SHA256SUMS.txt
-
-            # Keep one tiny compatibility checksum so updater scripts installed
-            # by older releases continue working after the asset cleanup.
             sha256sum MpcVideoRenderer-Maxine.zip > MpcVideoRenderer-Maxine.zip.sha256
           )
 

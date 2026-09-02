@@ -2436,7 +2436,7 @@ bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFER
 	// D3D11 resources can force the two independent CUDA interop stacks into
 	// pathological device-wide serialization (observed as roughly 1 fps).
 	hr = m_TexFrameInterpolationInput.CheckCreate(m_pDevice,
-		DXGI_FORMAT_R8G8B8A8_UNORM, outputWidth, outputHeight,
+		DXGI_FORMAT_B8G8R8A8_UNORM, outputWidth, outputHeight,
 		Tex2D_DefaultShaderRTarget);
 	if (SUCCEEDED(hr)) {
 		CComPtr<ID3D11RenderTargetView> stagingRenderTargetView;
