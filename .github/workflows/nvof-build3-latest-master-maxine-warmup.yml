@@ -1,0 +1,134 @@
+name: NVOF Build 3 Latest Master + Maxine Warmup
+
+on:
+  push:
+    branches:
+      - build3/nvof-modern-sad-consensus-latest-master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nvof-build3-latest-master-maxine-warmup-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout latest-master Build 3 branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify latest-master ancestry
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git merge-base --is-ancestor 0d759202bf101fe2cd23996fa944d1e02ba0b31a HEAD
+          if ($LASTEXITCODE -ne 0) { throw "Build branch is not based on expected latest master 0d759202..." }
+
+      - name: Apply Build 3 policy and confirmed Maxine warmup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\tools\NvofTemporalMotionSalvagePatch.ps1
+          python .\tools\NvofAdaptiveSplatV12Patch.py
+          if ($LASTEXITCODE -ne 0) { throw "NvofAdaptiveSplatV12Patch.py failed" }
+          python .\tools\NvofModernSadConsensusPatch.py
+          if ($LASTEXITCODE -ne 0) { throw "NvofModernSadConsensusPatch.py failed" }
+          python .\tools\MaxineColdStartWarmupPatch.py
+          if ($LASTEXITCODE -ne 0) { throw "MaxineColdStartWarmupPatch.py failed" }
+          & .\tools\RegenerateNvofAdaptiveSplatV12Shaders.ps1
+          git diff --check
+          git status --short
+
+      - name: Build MPC Video Renderer
+        shell: pwsh
+        run: |
+          .\build_mpcvr.cmd NoWait
+          if ($LASTEXITCODE -ne 0) { throw "build_mpcvr.cmd failed with exit code $LASTEXITCODE" }
+
+      - name: Package reversible K-Lite replacement
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Join-Path $PWD 'release'
+          $root = Join-Path $release 'MPCVR-NVOF-Build3-LatestMaster-MaxineWarmup'
+          $payload = Join-Path $root 'payload'
+          New-Item -ItemType Directory -Path $payload -Force | Out-Null
+
+          $x86 = Join-Path $PWD '_bin\Filter_x86\MpcVideoRenderer.ax'
+          $x64 = Join-Path $PWD '_bin\Filter_x64\MpcVideoRenderer64.ax'
+          foreach ($path in @($x86, $x64)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing built renderer: $path" }
+          }
+
+          Copy-Item -LiteralPath $x86 -Destination (Join-Path $payload 'MpcVideoRenderer.ax') -Force
+          Copy-Item -LiteralPath $x64 -Destination (Join-Path $payload 'MpcVideoRenderer64.ax') -Force
+          Copy-Item -LiteralPath '.\tools\NvofModernSadConsensusTest\Install-Build3.cmd' -Destination $root -Force
+          Copy-Item -LiteralPath '.\tools\NvofModernSadConsensusTest\Restore-Golden.cmd' -Destination $root -Force
+          Copy-Item -LiteralPath '.\tools\NvofModernSadConsensusTest\Install-Build3.ps1' -Destination $root -Force
+
+          $readme = @"
+          MPCVR Native-NVOF Build #3 - Latest Master + Maxine Warmup
+          ===========================================================
+
+          Branch: $env:GITHUB_REF_NAME
+          Commit: $env:GITHUB_SHA
+          Master base: 0d759202bf101fe2cd23996fa944d1e02ba0b31a
+
+          Included
+          --------
+          - Current marcmy/VideoRenderer master as of 2026-09-02.
+          - Native NVIDIA Optical Flow Build #3 modern-SAD dual-direction consensus policy.
+          - Correct BGRA8 native-NVOF staging path retained.
+          - Live NVOF hardware cost output remains disabled.
+          - PR #38 Maxine effect/model preservation behavior.
+          - Confirmed Maxine cold-start warmup fix: NvVFX_Load and the first invisible
+            NvVFX_Run/CUDA-D3D interop warmup happen during media initialization,
+            before displayed playback begins.
+
+          K-Lite replacement
+          ------------------
+          1. Let K-Lite finish its MPC Video Renderer update first.
+          2. Close MPC-HC and any process using MPC Video Renderer.
+          3. Run Install-Build3.cmd and accept elevation.
+          4. The installer backs up the renderer binaries it finds before replacement.
+
+          Rollback
+          --------
+          Close MPC-HC and run Restore-Golden.cmd.
+          "@
+          [IO.File]::WriteAllText((Join-Path $root 'README.txt'), $readme, [Text.UTF8Encoding]::new($false))
+
+          [IO.File]::WriteAllText((Join-Path $root 'MASTER-BASE.txt'), "0d759202bf101fe2cd23996fa944d1e02ba0b31a`n", [Text.UTF8Encoding]::new($false))
+
+          $payloadHashes = @()
+          foreach ($name in @('MpcVideoRenderer.ax', 'MpcVideoRenderer64.ax')) {
+            $hash = (Get-FileHash -LiteralPath (Join-Path $payload $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            $payloadHashes += "$hash  $name"
+          }
+          [IO.File]::WriteAllLines((Join-Path $root 'PAYLOAD-SHA256SUMS.txt'), $payloadHashes, [Text.UTF8Encoding]::new($false))
+
+          $zip = Join-Path $release 'MPCVR-NVOF-Build3-LatestMaster-MaxineWarmup.zip'
+          if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+          Compress-Archive -Path (Join-Path $root '*') -DestinationPath $zip -CompressionLevel Optimal
+          $zipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText(
+            (Join-Path $release 'MPCVR-NVOF-Build3-LatestMaster-MaxineWarmup.zip.sha256'),
+            "$zipHash  MPCVR-NVOF-Build3-LatestMaster-MaxineWarmup.zip`n",
+            [Text.UTF8Encoding]::new($false))
+
+      - name: Upload replacement package
+        uses: actions/upload-artifact@v7
+        with:
+          name: MPCVR-NVOF-Build3-LatestMaster-MaxineWarmup
+          path: |
+            release/MPCVR-NVOF-Build3-LatestMaster-MaxineWarmup.zip
+            release/MPCVR-NVOF-Build3-LatestMaster-MaxineWarmup.zip.sha256
+          compression-level: 0
+          if-no-files-found: error
