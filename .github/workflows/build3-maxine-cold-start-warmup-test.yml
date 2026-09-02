@@ -1,0 +1,128 @@
+name: Build3 Maxine Cold Start Warmup Test
+
+on:
+  push:
+    branches:
+      - test/build3-maxine-cold-start-warmup
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build3-maxine-cold-start-warmup-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout test branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Apply Build 3 policy and Maxine warmup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\tools\NvofTemporalMotionSalvagePatch.ps1
+          python .\tools\NvofAdaptiveSplatV12Patch.py
+          if ($LASTEXITCODE -ne 0) { throw "NvofAdaptiveSplatV12Patch.py failed" }
+          python .\tools\NvofModernSadConsensusPatch.py
+          if ($LASTEXITCODE -ne 0) { throw "NvofModernSadConsensusPatch.py failed" }
+          python .\tools\MaxineColdStartWarmupPatch.py
+          if ($LASTEXITCODE -ne 0) { throw "MaxineColdStartWarmupPatch.py failed" }
+          & .\tools\RegenerateNvofAdaptiveSplatV12Shaders.ps1
+          git diff --check
+          git status --short
+
+      - name: Build MPC Video Renderer
+        shell: pwsh
+        run: |
+          .\build_mpcvr.cmd NoWait
+          if ($LASTEXITCODE -ne 0) { throw "build_mpcvr.cmd failed with exit code $LASTEXITCODE" }
+
+      - name: Package reversible K-Lite test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Join-Path $PWD 'release'
+          $root = Join-Path $release 'MPCVR-Build3-Maxine-ColdStart-Warmup'
+          $payload = Join-Path $root 'payload'
+          New-Item -ItemType Directory -Path $payload -Force | Out-Null
+
+          $x86 = Join-Path $PWD '_bin\Filter_x86\MpcVideoRenderer.ax'
+          $x64 = Join-Path $PWD '_bin\Filter_x64\MpcVideoRenderer64.ax'
+          foreach ($path in @($x86, $x64)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing built renderer: $path" }
+          }
+
+          Copy-Item -LiteralPath $x86 -Destination (Join-Path $payload 'MpcVideoRenderer.ax') -Force
+          Copy-Item -LiteralPath $x64 -Destination (Join-Path $payload 'MpcVideoRenderer64.ax') -Force
+          Copy-Item -LiteralPath '.\tools\NvofModernSadConsensusTest\Install-Build3.cmd' -Destination $root -Force
+          Copy-Item -LiteralPath '.\tools\NvofModernSadConsensusTest\Restore-Golden.cmd' -Destination $root -Force
+          Copy-Item -LiteralPath '.\tools\NvofModernSadConsensusTest\Install-Build3.ps1' -Destination $root -Force
+
+          $readme = @"
+          MPCVR Build #3 - Maxine Cold-Start Warmup Test
+          =================================================
+
+          Branch: $env:GITHUB_REF_NAME
+          Commit: $env:GITHUB_SHA
+
+          Purpose
+          -------
+          - Same native-NVOF Build #3 interpolation policy as the current test build.
+          - Adds a Maxine-only startup warmup experiment.
+          - During media initialization, each enabled Maxine pass is run once on
+            invisible temporary BGRA textures at its exact configured dimensions.
+          - This forces NvVFX_Load plus first NvVFX_Run / CUDA-D3D interop warmup
+            to complete before the first displayed video frames.
+          - The loaded Maxine effect, CUDA stream and GPU work buffers remain cached
+            for real playback through the existing PR #38 soft-reset behavior.
+          - Repeated media setup at identical adapter/mode/dimensions skips the warmup.
+          - Frame interpolation may remain disabled while testing this Maxine issue.
+
+          Test
+          ----
+          1. Close MPC-HC.
+          2. Run Install-Build3.cmd and accept elevation.
+          3. Start MPC-HC with Maxine enabled and frame interpolation disabled.
+          4. Open/play a video from a cold renderer start.
+          5. Check whether the first-seconds freezing/hitching is gone.
+          6. Rewind to the beginning and verify playback remains normal.
+
+          Roll back
+          ---------
+          Close MPC-HC and run Restore-Golden.cmd.
+          "@
+          [IO.File]::WriteAllText((Join-Path $root 'README.txt'), $readme, [Text.UTF8Encoding]::new($false))
+
+          $payloadHashes = @()
+          foreach ($name in @('MpcVideoRenderer.ax', 'MpcVideoRenderer64.ax')) {
+            $hash = (Get-FileHash -LiteralPath (Join-Path $payload $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+            $payloadHashes += "$hash  $name"
+          }
+          [IO.File]::WriteAllLines((Join-Path $root 'PAYLOAD-SHA256SUMS.txt'), $payloadHashes, [Text.UTF8Encoding]::new($false))
+
+          $zip = Join-Path $release 'MPCVR-Build3-Maxine-ColdStart-Warmup.zip'
+          if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+          Compress-Archive -Path (Join-Path $root '*') -DestinationPath $zip -CompressionLevel Optimal
+          $zipHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText(
+            (Join-Path $release 'MPCVR-Build3-Maxine-ColdStart-Warmup.zip.sha256'),
+            "$zipHash  MPCVR-Build3-Maxine-ColdStart-Warmup.zip`n",
+            [Text.UTF8Encoding]::new($false))
+
+      - name: Upload test package
+        uses: actions/upload-artifact@v7
+        with:
+          name: MPCVR-Build3-Maxine-ColdStart-Warmup
+          path: |
+            release/MPCVR-Build3-Maxine-ColdStart-Warmup.zip
+            release/MPCVR-Build3-Maxine-ColdStart-Warmup.zip.sha256
+          compression-level: 0
+          if-no-files-found: error
