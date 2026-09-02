@@ -2134,13 +2134,12 @@ HRESULT CDX11VideoProcessor::InitializeD3D11VP(const FmtConvParams_t& params, co
 		return hr;
 	}
 
+	auto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled && m_InternalTexFmt == DXGI_FORMAT_B8G8R8A8_UNORM && (params.CDepth == 8 || !m_bACMEnabled))
+		? m_iVPSuperRes : SUPERRES_Disable;
+	m_bVPUseSuperRes = (m_D3D11VP.SetSuperRes(superRes) == S_OK);
+
 	auto rtxHDR = m_bVPRTXVideoHDR && m_bHdrPassthroughSupport && m_bHdrPassthrough && m_iTexFormat != TEXFMT_8INT && !SourceIsHDR();
 	m_bVPUseRTXVideoHDR = (m_D3D11VP.SetRTXVideoHDR(rtxHDR) == S_OK);
-
-	auto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled
-			&& (m_InternalTexFmt == DXGI_FORMAT_B8G8R8A8_UNORM || m_bVPUseRTXVideoHDR)
-			&& (params.CDepth == 8 || !m_bACMEnabled)) ? m_iVPSuperRes : SUPERRES_Disable;
-	m_bVPUseSuperRes = (m_D3D11VP.SetSuperRes(superRes) == S_OK);
 
 	if ((m_bVPUseRTXVideoHDR && !m_pDXGISwapChain4)
 			|| (!m_bVPUseRTXVideoHDR && m_pDXGISwapChain4 && !SourceIsHDR())) {
@@ -2436,7 +2435,7 @@ bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFER
 	// D3D11 resources can force the two independent CUDA interop stacks into
 	// pathological device-wide serialization (observed as roughly 1 fps).
 	hr = m_TexFrameInterpolationInput.CheckCreate(m_pDevice,
-		DXGI_FORMAT_R8G8B8A8_UNORM, outputWidth, outputHeight,
+		DXGI_FORMAT_B8G8R8A8_UNORM, outputWidth, outputHeight,
 		Tex2D_DefaultShaderRTarget);
 	if (SUCCEEDED(hr)) {
 		CComPtr<ID3D11RenderTargetView> stagingRenderTargetView;
