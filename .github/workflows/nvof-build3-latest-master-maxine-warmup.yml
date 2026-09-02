@@ -1,4 +1,4 @@
-name: NVOF Build 3 Latest Master + Maxine Warmup
+name: NVOF Build 3 Latest Master + Maxine Two-Stage Warmup
 
 on:
   push:
@@ -31,7 +31,7 @@ jobs:
           git merge-base --is-ancestor 0d759202bf101fe2cd23996fa944d1e02ba0b31a HEAD
           if ($LASTEXITCODE -ne 0) { throw "Build branch is not based on expected latest master 0d759202..." }
 
-      - name: Apply Build 3 policy and confirmed Maxine warmup
+      - name: Apply Build 3 policy and confirmed Maxine warmups
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -42,6 +42,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "NvofModernSadConsensusPatch.py failed" }
           python .\tools\MaxineColdStartWarmupPatch.py
           if ($LASTEXITCODE -ne 0) { throw "MaxineColdStartWarmupPatch.py failed" }
+          python .\tools\MaxineFinalGeometryWarmupPatch.py
+          if ($LASTEXITCODE -ne 0) { throw "MaxineFinalGeometryWarmupPatch.py failed" }
           & .\tools\RegenerateNvofAdaptiveSplatV12Shaders.ps1
           git diff --check
           git status --short
@@ -74,8 +76,8 @@ jobs:
           Copy-Item -LiteralPath '.\tools\NvofModernSadConsensusTest\Install-Build3.ps1' -Destination $root -Force
 
           $readme = @"
-          MPCVR Native-NVOF Build #3 - Latest Master + Maxine Warmup
-          ===========================================================
+          MPCVR Native-NVOF Build #3 - Latest Master + Maxine Two-Stage Warmup
+          =====================================================================
 
           Branch: $env:GITHUB_REF_NAME
           Commit: $env:GITHUB_SHA
@@ -88,9 +90,13 @@ jobs:
           - Correct BGRA8 native-NVOF staging path retained.
           - Live NVOF hardware cost output remains disabled.
           - PR #38 Maxine effect/model preservation behavior.
-          - Confirmed Maxine cold-start warmup fix: NvVFX_Load and the first invisible
-            NvVFX_Run/CUDA-D3D interop warmup happen during media initialization,
-            before displayed playback begins.
+          - Confirmed Maxine cold-start warmup: NvVFX_Load and first invisible
+            NvVFX_Run/CUDA-D3D interop warmup occur during media initialization.
+          - Confirmed Match Output final-geometry warmup: if MPC-HC establishes a
+            different final video rectangle after media initialization, Maxine is
+            idempotently warmed again for the actual playback dimensions.
+          - Runtime-confirmed to eliminate startup freezing on the initial test file
+            and three additional files that still froze after the first-stage warmup.
 
           K-Lite replacement
           ------------------
