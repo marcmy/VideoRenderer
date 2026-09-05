@@ -864,7 +864,7 @@ HRESULT GetShaderConvertColor(
 			code.append(
 				"color = saturate(color);\n"
 				"color.rgb = HLGtoLinear(color.rgb);\n"
-				"color = LinearToST2084(color, 1000.0);\n"
+				"color = LinearToST2084(color, 10000.0);\n"
 			);
 		}
 
@@ -887,7 +887,7 @@ HRESULT GetShaderConvertColor(
 		code.append(
 			"color = saturate(color);\n"
 			"color.rgb = HLGtoLinear(color.rgb);\n"
-			"color = LinearToST2084(color, 1000.0);\n"
+			"color = LinearToST2084(color, 10000.0);\n"
 		);
 	}
 	else if (bBT2020Primaries) {
