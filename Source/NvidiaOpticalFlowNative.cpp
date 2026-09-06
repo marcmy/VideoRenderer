@@ -8,7 +8,7 @@
 
 #include "stdafx.h"
 #include "NvidiaOpticalFlowNative.h"
-#include "NvidiaOpticalFlowDenseSynthesizer.h"
+#include "NvidiaOpticalFlowSvpSynthesizer.h"
 #include "NvidiaOpticalFlowCapture.h"
 #include "Helper.h"
 
@@ -300,6 +300,13 @@ struct CNvidiaOpticalFlowNative::Impl
 	CComPtr<ID3D11DeviceContext> context;
 	CComPtr<ID3D11Multithread> multithread;
 	std::array<RegisteredSurface, 2> inputs;
+	std::array<RegisteredSurface, 2> nvofInputs;
+	CComPtr<ID3D11VideoDevice> videoDevice;
+	CComPtr<ID3D11VideoContext> videoContext;
+	CComPtr<ID3D11VideoProcessorEnumerator> videoProcessorEnum;
+	CComPtr<ID3D11VideoProcessor> videoProcessor;
+	std::array<CComPtr<ID3D11VideoProcessorInputView>, 2> conversionInputViews;
+	std::array<CComPtr<ID3D11VideoProcessorOutputView>, 2> conversionOutputViews;
 	RegisteredSurface forwardFlow;
 	RegisteredSurface backwardFlow;
 	RegisteredSurface forwardCost;
@@ -308,7 +315,7 @@ struct CNvidiaOpticalFlowNative::Impl
 	CComPtr<ID3D11Texture2D> outputTexture;
 	CComPtr<ID3D11ShaderResourceView> outputView;
 	CComPtr<ID3D11UnorderedAccessView> outputUav;
-	std::unique_ptr<CNvidiaOpticalFlowDenseSynthesizer> denseSynthesizer;
+	std::unique_ptr<CNvidiaOpticalFlowSvpSynthesizer> svpSynthesizer;
 	UINT width = 0;
 	UINT height = 0;
 	UINT flowWidth = 0;
@@ -370,10 +377,18 @@ struct CNvidiaOpticalFlowNative::Impl
 
 	void ResetUnlocked()
 	{
+		for (auto& view : conversionOutputViews) view.Release();
+		for (auto& view : conversionInputViews) view.Release();
+		videoProcessor.Release();
+		videoProcessorEnum.Release();
+		videoContext.Release();
+		videoDevice.Release();
 		Unregister(forwardCost);
 		Unregister(backwardCost);
 		Unregister(forwardFlow);
 		Unregister(backwardFlow);
+		Unregister(nvofInputs[0]);
+		Unregister(nvofInputs[1]);
 		Unregister(inputs[0]);
 		Unregister(inputs[1]);
 		if (session && api.destroy) {
@@ -383,9 +398,9 @@ struct CNvidiaOpticalFlowNative::Impl
 		outputUav.Release();
 		outputView.Release();
 		outputTexture.Release();
-		if (denseSynthesizer) {
-			denseSynthesizer->Reset();
-			denseSynthesizer.reset();
+		if (svpSynthesizer) {
+			svpSynthesizer->Reset();
+			svpSynthesizer.reset();
 		}
 		multithread.Release();
 		context.Release();
@@ -476,10 +491,133 @@ struct CNvidiaOpticalFlowNative::Impl
 			status = std::format(L"CreateShaderResourceView(native input) failed ({})", HR2Str(hr));
 			return false;
 		}
+		return true;
+	}
+
+	bool CreateNvofInputSurface(RegisteredSurface& surface)
+	{
+		D3D11_TEXTURE2D_DESC desc = {};
+		desc.Width = width;
+		desc.Height = height;
+		desc.MipLevels = 1;
+		desc.ArraySize = 1;
+		desc.Format = DXGI_FORMAT_NV12;
+		desc.SampleDesc.Count = 1;
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+		HRESULT hr = device->CreateTexture2D(&desc, nullptr, &surface.texture);
+		if (FAILED(hr)) {
+			status = std::format(L"CreateTexture2D(native NV12 input) failed ({})", HR2Str(hr));
+			return false;
+		}
+
+		D3D11_SHADER_RESOURCE_VIEW_DESC yDesc = {};
+		yDesc.Format = DXGI_FORMAT_R8_UNORM;
+		yDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+		yDesc.Texture2D.MostDetailedMip = 0;
+		yDesc.Texture2D.MipLevels = 1;
+		hr = device->CreateShaderResourceView(surface.texture, &yDesc, &surface.view);
+		if (FAILED(hr)) {
+			status = std::format(L"CreateShaderResourceView(native NV12 Y plane) failed ({})", HR2Str(hr));
+			return false;
+		}
+
 		const nvof::Status code = api.registerResourceD3D11(
 			session, surface.texture, &surface.nvofHandle);
 		if (code != nvof::Success) {
-			status = std::format(L"NvOFRegisterResourceD3D11(input) failed: {}", DriverError(code));
+			status = std::format(L"NvOFRegisterResourceD3D11(NV12 input) failed: {}", DriverError(code));
+			return false;
+		}
+		return true;
+	}
+
+	bool CreateNv12Converter()
+	{
+		HRESULT hr = device->QueryInterface(IID_PPV_ARGS(&videoDevice));
+		if (FAILED(hr)) {
+			status = std::format(L"QueryInterface(ID3D11VideoDevice) failed ({})", HR2Str(hr));
+			return false;
+		}
+		hr = context->QueryInterface(IID_PPV_ARGS(&videoContext));
+		if (FAILED(hr)) {
+			status = std::format(L"QueryInterface(ID3D11VideoContext) failed ({})", HR2Str(hr));
+			return false;
+		}
+
+		D3D11_VIDEO_PROCESSOR_CONTENT_DESC content = {};
+		content.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+		content.InputFrameRate = {1, 1};
+		content.InputWidth = width;
+		content.InputHeight = height;
+		content.OutputFrameRate = {1, 1};
+		content.OutputWidth = width;
+		content.OutputHeight = height;
+		content.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
+		hr = videoDevice->CreateVideoProcessorEnumerator(&content, &videoProcessorEnum);
+		if (FAILED(hr)) {
+			status = std::format(L"CreateVideoProcessorEnumerator(native NV12) failed ({})", HR2Str(hr));
+			return false;
+		}
+
+		UINT inputFlags = 0;
+		UINT outputFlags = 0;
+		if (FAILED(videoProcessorEnum->CheckVideoProcessorFormat(DXGI_FORMAT_B8G8R8A8_UNORM, &inputFlags)) ||
+				!(inputFlags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT) ||
+				FAILED(videoProcessorEnum->CheckVideoProcessorFormat(DXGI_FORMAT_NV12, &outputFlags)) ||
+				!(outputFlags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT)) {
+			status = L"D3D11 video processor cannot convert renderer BGRA8 to SVP-style NV12";
+			return false;
+		}
+
+		hr = videoDevice->CreateVideoProcessor(videoProcessorEnum, 0, &videoProcessor);
+		if (FAILED(hr)) {
+			status = std::format(L"CreateVideoProcessor(native NV12) failed ({})", HR2Str(hr));
+			return false;
+		}
+
+		for (UINT index = 0; index < 2; ++index) {
+			D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC inputDesc = {};
+			inputDesc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+			inputDesc.Texture2D.ArraySlice = 0;
+			hr = videoDevice->CreateVideoProcessorInputView(
+				inputs[index].texture, videoProcessorEnum, &inputDesc, &conversionInputViews[index]);
+			if (FAILED(hr)) {
+				status = std::format(L"CreateVideoProcessorInputView(native NV12 {}) failed ({})", index, HR2Str(hr));
+				return false;
+			}
+
+			D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC outputDesc = {};
+			outputDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+			outputDesc.Texture2D.MipSlice = 0;
+			hr = videoDevice->CreateVideoProcessorOutputView(
+				nvofInputs[index].texture, videoProcessorEnum, &outputDesc, &conversionOutputViews[index]);
+			if (FAILED(hr)) {
+				status = std::format(L"CreateVideoProcessorOutputView(native NV12 {}) failed ({})", index, HR2Str(hr));
+				return false;
+			}
+		}
+
+		RECT rect = {0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+		videoContext->VideoProcessorSetStreamFrameFormat(videoProcessor, 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+		videoContext->VideoProcessorSetStreamSourceRect(videoProcessor, 0, TRUE, &rect);
+		videoContext->VideoProcessorSetStreamDestRect(videoProcessor, 0, TRUE, &rect);
+		videoContext->VideoProcessorSetOutputTargetRect(videoProcessor, TRUE, &rect);
+		return true;
+	}
+
+	bool ConvertInputToNv12(const UINT index)
+	{
+		if (!videoContext || !videoProcessor || index >= 2 || !conversionInputViews[index] || !conversionOutputViews[index]) {
+			status = L"Native NV12 conversion resources are incomplete";
+			return false;
+		}
+		D3D11_VIDEO_PROCESSOR_STREAM stream = {};
+		stream.Enable = TRUE;
+		stream.pInputSurface = conversionInputViews[index];
+		const HRESULT hr = videoContext->VideoProcessorBlt(
+			videoProcessor, conversionOutputViews[index], 0, 1, &stream);
+		if (FAILED(hr)) {
+			status = std::format(L"VideoProcessorBlt(BGRA8->NV12) failed ({})", HR2Str(hr));
 			return false;
 		}
 		return true;
@@ -575,8 +713,8 @@ struct CNvidiaOpticalFlowNative::Impl
 		}
 
 
-		denseSynthesizer = std::make_unique<CNvidiaOpticalFlowDenseSynthesizer>();
-		if (!denseSynthesizer->Initialize(device, width, height, flowWidth, flowHeight, status)) {
+		svpSynthesizer = std::make_unique<CNvidiaOpticalFlowSvpSynthesizer>();
+		if (!svpSynthesizer->Initialize(device, width, height, flowWidth, flowHeight, status)) {
 			return false;
 		}
 
@@ -660,9 +798,9 @@ struct CNvidiaOpticalFlowNative::Impl
 				!QueryFormats(nvof::BufferUsageOutput, outputFormats)) {
 			return Fail(L"Could not query native NVOF D3D11 surface formats");
 		}
-		if (std::find(inputFormats.begin(), inputFormats.end(), DXGI_FORMAT_B8G8R8A8_UNORM) == inputFormats.end()) {
+		if (std::find(inputFormats.begin(), inputFormats.end(), DXGI_FORMAT_NV12) == inputFormats.end()) {
 			return Fail(std::format(
-				L"Native NVOF cannot consume the renderer BGRA8 surface; supported input formats: {}",
+				L"Native NVOF cannot consume the SVP-style NV12 surface; supported input formats: {}",
 				JoinFormats(inputFormats)));
 		}
 		if (std::find(outputFormats.begin(), outputFormats.end(), DXGI_FORMAT_R16G16_SINT) == outputFormats.end()) {
@@ -689,13 +827,15 @@ struct CNvidiaOpticalFlowNative::Impl
 		init.enableRoi = nvof::False;
 		init.predictionDirection = nvof::PredictionBoth;
 		init.enableGlobalFlow = nvof::False;
-		init.inputBufferFormat = nvof::BufferFormatAbgr8;
+		init.inputBufferFormat = nvof::BufferFormatNv12;
 		code = api.initialize(session, &init);
 		if (code != nvof::Success) {
 			return Fail(std::format(L"NvOFInit(native forward/backward) failed: {}", DriverError(code)));
 		}
 
 		if (!CreateInputSurface(inputs[0]) || !CreateInputSurface(inputs[1]) ||
+				!CreateNvofInputSurface(nvofInputs[0]) || !CreateNvofInputSurface(nvofInputs[1]) ||
+				!CreateNv12Converter() ||
 				!CreateFlowSurface(forwardFlow) || !CreateFlowSurface(backwardFlow) ||
 				(costCaptureEnabled && (!CreateCostSurface(forwardCost) || !CreateCostSurface(backwardCost))) ||
 				!CreateSynthesisResources()) {
@@ -706,7 +846,7 @@ struct CNvidiaOpticalFlowNative::Impl
 		}
 
 		runtimeInfo = std::format(
-			L"Driver NVOF {}.{}; D3D11; BGRA8; 4x4 bidirectional flow (GPU grids: {}); validated jump-flood dense flow + edge-aware next-frame warp + scene-cut guard + adaptive high-motion safety blend; live cost disabled",
+			L"Driver NVOF {}.{}; D3D11; SVP-faithful research path: NV12 input/Y-plane software-SAD classifier, PerfSlow, 4x4 bidirectional flow (GPU grids: {}), temporal hints off, stock algo21 + force13/adaptive210, direct 4x4 coverage warp; live cost disabled",
 			apiMajor, apiMinor, JoinGridSizes(outputGridSizes));
 		status = std::format(L"Native NVOF ready, {}x{}", width, height);
 		DLog(L"Native NVIDIA frame interpolation: {}", runtimeInfo);
@@ -715,14 +855,16 @@ struct CNvidiaOpticalFlowNative::Impl
 
 	bool DispatchMidpoint(const float midpointTime)
 	{
-		if (!denseSynthesizer) {
-			status = L"Native NVOF dense synthesizer is unavailable";
+		if (!svpSynthesizer) {
+			status = L"SVP-style native NVOF synthesizer is unavailable";
 			return false;
 		}
-		return denseSynthesizer->Dispatch(
+		return svpSynthesizer->Dispatch(
 			context,
 			inputs[currentIndex].view,
 			inputs[writeIndex].view,
+			nvofInputs[currentIndex].view,
+			nvofInputs[writeIndex].view,
 			forwardFlow.view,
 			backwardFlow.view,
 			outputUav,
@@ -766,6 +908,11 @@ struct CNvidiaOpticalFlowNative::Impl
 			if (inputTransaction.owns_lock()) inputTransaction.unlock();
 		};
 
+		if (!ConvertInputToNv12(writeIndex)) {
+			Finish();
+			return false;
+		}
+
 		if (!warmedUp) {
 			currentIndex = writeIndex;
 			warmedUp = true;
@@ -786,8 +933,8 @@ struct CNvidiaOpticalFlowNative::Impl
 			(outputTimestamp - previousTimestamp) / interval, 0.0, 1.0));
 
 		nvof::ExecuteInputParams input = {};
-		input.inputFrame = inputs[writeIndex].nvofHandle;
-		input.referenceFrame = inputs[currentIndex].nvofHandle;
+		input.inputFrame = nvofInputs[writeIndex].nvofHandle;
+		input.referenceFrame = nvofInputs[currentIndex].nvofHandle;
 		input.disableTemporalHints = nvof::True;
 		nvof::ExecuteOutputParams output = {};
 		output.outputBuffer = forwardFlow.nvofHandle;
@@ -845,8 +992,8 @@ struct CNvidiaOpticalFlowNative::Impl
 		outputReady = true;
 		currentIndex = writeIndex;
 		previousTimestamp = inputTimestamp;
-		const std::wstring telemetry = denseSynthesizer
-			? denseSynthesizer->GetTelemetryText()
+		const std::wstring telemetry = svpSynthesizer
+			? svpSynthesizer->GetTelemetryText()
 			: L"quality telemetry unavailable";
 		status = std::format(
 			L"Native NVOF active ({:.2f} ms submit, t={:.3f}); {}",

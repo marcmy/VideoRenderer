@@ -111,6 +111,9 @@
     <ClCompile Include="NvidiaFrameInterpolation.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="NvidiaOpticalFlowSvpSynthesizer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="SubPic\SubPicQueueImpl.cpp">
       <Filter>SubPic</Filter>
     </ClCompile>
@@ -210,6 +213,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="VideoProcessor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="NvidiaOpticalFlowSvpSynthesizer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Utils\StringUtil.h">
