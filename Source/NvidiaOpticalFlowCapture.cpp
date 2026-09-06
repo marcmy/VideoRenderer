@@ -347,7 +347,12 @@ bool CaptureNativeNvofFramePair(
 		metadata << L"frame_height=" << inputs.frameHeight << L"\n";
 		metadata << L"flow_width=" << inputs.flowWidth << L"\n";
 		metadata << L"flow_height=" << inputs.flowHeight << L"\n";
-		metadata << L"grid_size=4\n";
+		metadata << L"grid_size=" << inputs.effectiveGrid << L"\n";
+		metadata << L"native_nvof_grid=4\n";
+		metadata << L"source_scale=" << inputs.sourceScale << L"\n";
+		metadata << L"vector_precision=" << inputs.vectorPrecision << L"\n";
+		metadata << L"vector_source_width=" << inputs.vectorWidth << L"\n";
+		metadata << L"vector_source_height=" << inputs.vectorHeight << L"\n";
 		metadata << L"midpoint_time=" << inputs.midpointTime << L"\n";
 		metadata << L"timestamp_A=" << inputs.firstTimestamp << L"\n";
 		metadata << L"timestamp_B=" << inputs.secondTimestamp << L"\n";
@@ -355,7 +360,7 @@ bool CaptureNativeNvofFramePair(
 		metadata << L"frame_B_format=" << FormatName(second.format) << L"\n";
 		metadata << L"midpoint_format=" << FormatName(midpoint.format) << L"\n";
 		metadata << L"flow_format=R16G16_SINT\n";
-		metadata << L"flow_encoding=S10.5 little-endian int16 x,y; divide by 32 for pixels\n";
+		metadata << L"flow_encoding=S10.5 little-endian int16 x,y; divide by 32 for vector-source pixels, multiply by source_scale for full-frame pixels\n";
 		metadata << L"forward_direction=B_to_A\n";
 		metadata << L"backward_direction=A_to_B\n";
 		metadata << L"hardware_cost_present=" << (haveCost ? 1 : 0) << L"\n";

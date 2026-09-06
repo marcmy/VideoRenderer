@@ -8,7 +8,8 @@ cbuffer CoverageFinishParameters : register(b0)
 {
     uint2 FlowSize;
     uint CoverPercent;
-    uint Padding;
+    uint BlockSize;
+    uint4 Padding;
 };
 
 uint Window3x3(StructuredBuffer<uint> accum, int2 cell)
@@ -29,7 +30,7 @@ uint Window3x3(StructuredBuffer<uint> accum, int2 cell)
 
 uint FinishMask(uint sum)
 {
-    const uint area = 16u;
+    uint area = BlockSize * BlockSize;
     uint covered = sum >> 3;
     uint remaining = covered >= area ? 0u : area - covered;
     uint value = (remaining * CoverPercent * 256u) / (100u * area);

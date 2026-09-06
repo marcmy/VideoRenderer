@@ -1,10 +1,10 @@
 /*
  * SVP4-style native NVIDIA Optical Flow midpoint synthesis research path.
  *
- * This deliberately bypasses the Build 3 dense/JFA repair pipeline.  It uses
- * the native 4x4 NVOF fields directly, reproduces the proprietary modern
- * software-SAD scene classifier, and implements the stock algo21/force13
- * control path for MPCVR's 2x midpoint mode.
+ * This deliberately bypasses the Build 3 dense/JFA repair pipeline. It consumes
+ * native 4x4 NVOF fields generated from SVP-style reduced vec_src surfaces,
+ * reproduces the proprietary modern software-SAD classifier/packing geometry,
+ * and implements the recovered algo21/force13 midpoint research path.
  */
 
 #pragma once
@@ -17,7 +17,8 @@ class CNvidiaOpticalFlowSvpSynthesizer
 {
 public:
     bool Initialize(ID3D11Device* device, UINT frameWidth, UINT frameHeight,
-        UINT flowWidth, UINT flowHeight, std::wstring& status);
+        UINT vectorWidth, UINT vectorHeight, UINT flowWidth, UINT flowHeight,
+        UINT blockSize, UINT sourceScale, UINT vectorPrecision, std::wstring& status);
     void Reset();
 
     bool Dispatch(ID3D11DeviceContext* context,
@@ -37,11 +38,12 @@ private:
     struct ClassifyParameters {
         UINT flowWidth;
         UINT flowHeight;
-        UINT frameWidth;
-        UINT frameHeight;
+        UINT vectorWidth;
+        UINT vectorHeight;
         UINT borderX;
         UINT borderY;
-        UINT padding[2];
+        UINT sourceScale;
+        UINT padding;
     };
     static_assert(sizeof(ClassifyParameters) == 32);
 
@@ -56,31 +58,43 @@ private:
     struct CoverageScatterParameters {
         UINT flowWidth;
         UINT flowHeight;
-        UINT padding[2];
+        UINT blockSize;
+        UINT sourceScale;
+        UINT vectorPrecision;
+        UINT padding[3];
     };
-    static_assert(sizeof(CoverageScatterParameters) == 16);
+    static_assert(sizeof(CoverageScatterParameters) == 32);
 
     struct CoverageFinishParameters {
         UINT flowWidth;
         UINT flowHeight;
         UINT coverPercent;
-        UINT padding;
+        UINT blockSize;
+        UINT padding[4];
     };
-    static_assert(sizeof(CoverageFinishParameters) == 16);
+    static_assert(sizeof(CoverageFinishParameters) == 32);
 
     struct WarpParameters {
         UINT frameWidth;
         UINT frameHeight;
         UINT flowWidth;
         UINT flowHeight;
-        UINT padding[4];
+        UINT blockSize;
+        UINT sourceScale;
+        UINT vectorPrecision;
+        UINT padding;
     };
     static_assert(sizeof(WarpParameters) == 32);
 
     UINT m_frameWidth = 0;
     UINT m_frameHeight = 0;
+    UINT m_vectorWidth = 0;
+    UINT m_vectorHeight = 0;
     UINT m_flowWidth = 0;
     UINT m_flowHeight = 0;
+    UINT m_blockSize = 4;
+    UINT m_sourceScale = 1;
+    UINT m_vectorPrecision = 4;
 
     CComPtr<ID3D11ComputeShader> m_classifyShader;
     CComPtr<ID3D11ComputeShader> m_controlShader;

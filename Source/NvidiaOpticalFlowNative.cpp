@@ -211,6 +211,7 @@ constexpr wchar_t NvofModuleName[] = L"nvofapi.dll";
 #endif
 
 constexpr UINT FlowGridSize = 4;
+constexpr UINT RequestedSvpEffectiveGrid = 24;
 constexpr int CapsSupportedOutputGridSizes = 0;
 
 const wchar_t* StatusName(const nvof::Status status)
@@ -318,8 +319,15 @@ struct CNvidiaOpticalFlowNative::Impl
 	std::unique_ptr<CNvidiaOpticalFlowSvpSynthesizer> svpSynthesizer;
 	UINT width = 0;
 	UINT height = 0;
+	UINT cropWidth = 0;
+	UINT cropHeight = 0;
+	UINT vectorWidth = 0;
+	UINT vectorHeight = 0;
 	UINT flowWidth = 0;
 	UINT flowHeight = 0;
+	UINT effectiveGrid = 4;
+	UINT sourceScale = 1;
+	UINT vectorPrecision = 4;
 	unsigned writeIndex = 0;
 	unsigned currentIndex = 0;
 	bool warmedUp = false;
@@ -410,7 +418,11 @@ struct CNvidiaOpticalFlowNative::Impl
 			module = nullptr;
 		}
 		api = {};
-		width = height = flowWidth = flowHeight = 0;
+		width = height = cropWidth = cropHeight = vectorWidth = vectorHeight = 0;
+		flowWidth = flowHeight = 0;
+		effectiveGrid = 4;
+		sourceScale = 1;
+		vectorPrecision = 4;
 		writeIndex = currentIndex = 0;
 		warmedUp = outputValid = hasExecutedFlow = false;
 		havePreviousTimestamp = false;
@@ -497,8 +509,8 @@ struct CNvidiaOpticalFlowNative::Impl
 	bool CreateNvofInputSurface(RegisteredSurface& surface)
 	{
 		D3D11_TEXTURE2D_DESC desc = {};
-		desc.Width = width;
-		desc.Height = height;
+		desc.Width = vectorWidth;
+		desc.Height = vectorHeight;
 		desc.MipLevels = 1;
 		desc.ArraySize = 1;
 		desc.Format = DXGI_FORMAT_NV12;
@@ -550,8 +562,8 @@ struct CNvidiaOpticalFlowNative::Impl
 		content.InputWidth = width;
 		content.InputHeight = height;
 		content.OutputFrameRate = {1, 1};
-		content.OutputWidth = width;
-		content.OutputHeight = height;
+		content.OutputWidth = vectorWidth;
+		content.OutputHeight = vectorHeight;
 		content.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
 		hr = videoDevice->CreateVideoProcessorEnumerator(&content, &videoProcessorEnum);
 		if (FAILED(hr)) {
@@ -597,11 +609,12 @@ struct CNvidiaOpticalFlowNative::Impl
 			}
 		}
 
-		RECT rect = {0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+		RECT sourceRect = {0, 0, static_cast<LONG>(cropWidth), static_cast<LONG>(cropHeight)};
+		RECT vectorRect = {0, 0, static_cast<LONG>(vectorWidth), static_cast<LONG>(vectorHeight)};
 		videoContext->VideoProcessorSetStreamFrameFormat(videoProcessor, 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
-		videoContext->VideoProcessorSetStreamSourceRect(videoProcessor, 0, TRUE, &rect);
-		videoContext->VideoProcessorSetStreamDestRect(videoProcessor, 0, TRUE, &rect);
-		videoContext->VideoProcessorSetOutputTargetRect(videoProcessor, TRUE, &rect);
+		videoContext->VideoProcessorSetStreamSourceRect(videoProcessor, 0, TRUE, &sourceRect);
+		videoContext->VideoProcessorSetStreamDestRect(videoProcessor, 0, TRUE, &vectorRect);
+		videoContext->VideoProcessorSetOutputTargetRect(videoProcessor, TRUE, &vectorRect);
 		return true;
 	}
 
@@ -714,7 +727,8 @@ struct CNvidiaOpticalFlowNative::Impl
 
 
 		svpSynthesizer = std::make_unique<CNvidiaOpticalFlowSvpSynthesizer>();
-		if (!svpSynthesizer->Initialize(device, width, height, flowWidth, flowHeight, status)) {
+		if (!svpSynthesizer->Initialize(device, width, height, vectorWidth, vectorHeight,
+				flowWidth, flowHeight, effectiveGrid, sourceScale, vectorPrecision, status)) {
 			return false;
 		}
 
@@ -774,8 +788,27 @@ struct CNvidiaOpticalFlowNative::Impl
 
 		width = requestedWidth;
 		height = requestedHeight;
-		flowWidth = (width + FlowGridSize - 1) / FlowGridSize;
-		flowHeight = (height + FlowGridSize - 1) / FlowGridSize;
+
+		// Match SVP Manager's NVOF vec_src geometry. The user's active SVP
+		// profiles request nvof_grid=24; Manager lowers it only when the
+		// resulting native 4x4 field would be smaller than 40x32 cells.
+		effectiveGrid = RequestedSvpEffectiveGrid;
+		while (effectiveGrid > FlowGridSize &&
+				(width / effectiveGrid < 40 || height / effectiveGrid < 32)) {
+			if (effectiveGrid == 24) effectiveGrid = 16;
+			else effectiveGrid /= 2;
+		}
+		sourceScale = effectiveGrid / FlowGridSize;
+		vectorPrecision = sourceScale <= 2 ? 4 : 2;
+		cropWidth = width - (width % effectiveGrid);
+		cropHeight = height - (height % effectiveGrid);
+		vectorWidth = (cropWidth / effectiveGrid) * FlowGridSize;
+		vectorHeight = (cropHeight / effectiveGrid) * FlowGridSize;
+		flowWidth = vectorWidth / FlowGridSize;
+		flowHeight = vectorHeight / FlowGridSize;
+		if (!vectorWidth || !vectorHeight || !flowWidth || !flowHeight) {
+			return Fail(L"SVP grid-24 vector-source geometry collapsed to zero dimensions");
+		}
 
 		code = api.createOpticalFlowD3D11(device, context, &session);
 		if (code != nvof::Success || !session) {
@@ -815,8 +848,8 @@ struct CNvidiaOpticalFlowNative::Impl
 		costCaptureEnabled = false;
 
 		nvof::InitParams init = {};
-		init.width = width;
-		init.height = height;
+		init.width = vectorWidth;
+		init.height = vectorHeight;
 		init.outputGridSize = nvof::OutputGrid4;
 		init.hintGridSize = nvof::HintGridUndefined;
 		init.mode = nvof::ModeOpticalFlow;
@@ -846,8 +879,10 @@ struct CNvidiaOpticalFlowNative::Impl
 		}
 
 		runtimeInfo = std::format(
-			L"Driver NVOF {}.{}; D3D11; SVP-faithful research path: NV12 input/Y-plane software-SAD classifier, PerfSlow, 4x4 bidirectional flow (GPU grids: {}), temporal hints off, stock algo21 + force13/adaptive210, direct 4x4 coverage warp; live cost disabled",
-			apiMajor, apiMinor, JoinGridSizes(outputGridSizes));
+			L"Driver NVOF {}.{}; D3D11; SVP grid-{} vec_src test: {}x{} BGRA -> cropped {}x{} -> {}x{} NV12 (scale {}, precision {}), native 4x4 bidirectional PerfSlow flow ({}x{} cells; GPU grids: {}), software-SAD scale^2, temporal hints/cost off, stock algo21 + force13/adaptive210, effective-grid coverage/warp",
+			apiMajor, apiMinor, effectiveGrid, width, height, cropWidth, cropHeight,
+			vectorWidth, vectorHeight, sourceScale, vectorPrecision, flowWidth, flowHeight,
+			JoinGridSizes(outputGridSizes));
 		status = std::format(L"Native NVOF ready, {}x{}", width, height);
 		DLog(L"Native NVIDIA frame interpolation: {}", runtimeInfo);
 		return true;
@@ -971,6 +1006,11 @@ struct CNvidiaOpticalFlowNative::Impl
 			capture.frameHeight = height;
 			capture.flowWidth = flowWidth;
 			capture.flowHeight = flowHeight;
+			capture.effectiveGrid = effectiveGrid;
+			capture.sourceScale = sourceScale;
+			capture.vectorPrecision = vectorPrecision;
+			capture.vectorWidth = vectorWidth;
+			capture.vectorHeight = vectorHeight;
 			capture.midpointTime = midpointTime;
 			capture.firstTimestamp = previousTimestamp;
 			capture.secondTimestamp = inputTimestamp;

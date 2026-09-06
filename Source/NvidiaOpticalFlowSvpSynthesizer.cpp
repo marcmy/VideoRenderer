@@ -87,18 +87,27 @@ void UnbindCompute(ID3D11DeviceContext* context)
 
 bool CNvidiaOpticalFlowSvpSynthesizer::Initialize(ID3D11Device* device,
     const UINT frameWidth, const UINT frameHeight,
-    const UINT flowWidth, const UINT flowHeight, std::wstring& status)
+    const UINT vectorWidth, const UINT vectorHeight,
+    const UINT flowWidth, const UINT flowHeight,
+    const UINT blockSize, const UINT sourceScale, const UINT vectorPrecision,
+    std::wstring& status)
 {
     Reset();
-    if (!device || !frameWidth || !frameHeight || !flowWidth || !flowHeight) {
+    if (!device || !frameWidth || !frameHeight || !vectorWidth || !vectorHeight ||
+            !flowWidth || !flowHeight || !blockSize || !sourceScale || !vectorPrecision) {
         status = L"Invalid SVP-style NVOF synthesis dimensions or device";
         return false;
     }
 
     m_frameWidth = frameWidth;
     m_frameHeight = frameHeight;
+    m_vectorWidth = vectorWidth;
+    m_vectorHeight = vectorHeight;
     m_flowWidth = flowWidth;
     m_flowHeight = flowHeight;
+    m_blockSize = blockSize;
+    m_sourceScale = sourceScale;
+    m_vectorPrecision = vectorPrecision;
 
     if (!CreateShader(device, g_NvofSvpClassifyBytecode, sizeof(g_NvofSvpClassifyBytecode),
             m_classifyShader, status, L"SVP NVOF software-SAD classifier") ||
@@ -109,7 +118,7 @@ bool CNvidiaOpticalFlowSvpSynthesizer::Initialize(ID3D11Device* device,
         !CreateShader(device, g_NvofSvpCoverageFinishBytecode, sizeof(g_NvofSvpCoverageFinishBytecode),
             m_coverageFinishShader, status, L"SVP coverage finish") ||
         !CreateShader(device, g_NvofSvpWarpBytecode, sizeof(g_NvofSvpWarpBytecode),
-            m_warpShader, status, L"SVP direct 4x4 warp")) {
+            m_warpShader, status, L"SVP direct effective-grid warp")) {
         Reset();
         return false;
     }
@@ -223,7 +232,11 @@ void CNvidiaOpticalFlowSvpSynthesizer::Reset()
     m_coverageScatterShader.Release();
     m_controlShader.Release();
     m_classifyShader.Release();
-    m_frameWidth = m_frameHeight = m_flowWidth = m_flowHeight = 0;
+    m_frameWidth = m_frameHeight = m_vectorWidth = m_vectorHeight = 0;
+    m_flowWidth = m_flowHeight = 0;
+    m_blockSize = 4;
+    m_sourceScale = 1;
+    m_vectorPrecision = 4;
     m_lastClass = 0;
     m_lastPhase = 128;
     m_lastAlgorithm = 21;
@@ -271,8 +284,8 @@ bool CNvidiaOpticalFlowSvpSynthesizer::Dispatch(ID3D11DeviceContext* context,
     context->ClearUnorderedAccessViewUint(m_classCountersUav, zero);
 
     const ClassifyParameters classifyValues = {
-        m_flowWidth, m_flowHeight, m_frameWidth, m_frameHeight,
-        borderX, borderY, {},
+        m_flowWidth, m_flowHeight, m_vectorWidth, m_vectorHeight,
+        borderX, borderY, m_sourceScale, 0u,
     };
     context->UpdateSubresource(m_classifyParameters, 0, nullptr, &classifyValues, 0, 0);
     ID3D11Buffer* classifyBuffer = m_classifyParameters;
@@ -325,7 +338,9 @@ bool CNvidiaOpticalFlowSvpSynthesizer::Dispatch(ID3D11DeviceContext* context,
     for (UINT index = 0; index < 2; ++index) {
         context->ClearUnorderedAccessViewUint(m_coverageAccumUav[index], zero);
     }
-    const CoverageScatterParameters scatterValues = {m_flowWidth, m_flowHeight, {}};
+    const CoverageScatterParameters scatterValues = {
+        m_flowWidth, m_flowHeight, m_blockSize, m_sourceScale, m_vectorPrecision, {},
+    };
     context->UpdateSubresource(m_coverageScatterParameters, 0, nullptr, &scatterValues, 0, 0);
     ID3D11Buffer* scatterBuffer = m_coverageScatterParameters;
     const std::array<ID3D11ShaderResourceView*, 3> scatterInputs = {
@@ -342,7 +357,9 @@ bool CNvidiaOpticalFlowSvpSynthesizer::Dispatch(ID3D11DeviceContext* context,
     UnbindCompute(context);
 
     // SVP Manager uses mask.cover=80 for requested algorithms >=21.
-    const CoverageFinishParameters finishValues = {m_flowWidth, m_flowHeight, 80u, 0u};
+    const CoverageFinishParameters finishValues = {
+        m_flowWidth, m_flowHeight, 80u, m_blockSize, {},
+    };
     context->UpdateSubresource(m_coverageFinishParameters, 0, nullptr, &finishValues, 0, 0);
     ID3D11Buffer* finishBuffer = m_coverageFinishParameters;
     const std::array<ID3D11ShaderResourceView*, 2> finishInputs = {
@@ -358,7 +375,10 @@ bool CNvidiaOpticalFlowSvpSynthesizer::Dispatch(ID3D11DeviceContext* context,
     context->Dispatch((m_flowWidth + 7) / 8, (m_flowHeight + 7) / 8, 1);
     UnbindCompute(context);
 
-    const WarpParameters warpValues = {m_frameWidth, m_frameHeight, m_flowWidth, m_flowHeight, {}};
+    const WarpParameters warpValues = {
+        m_frameWidth, m_frameHeight, m_flowWidth, m_flowHeight,
+        m_blockSize, m_sourceScale, m_vectorPrecision, 0u,
+    };
     context->UpdateSubresource(m_warpParameters, 0, nullptr, &warpValues, 0, 0);
     ID3D11Buffer* warpBuffer = m_warpParameters;
     const std::array<ID3D11ShaderResourceView*, 7> warpInputs = {

@@ -8,41 +8,47 @@ RWStructuredBuffer<uint> AccumB : register(u1);
 cbuffer CoverageScatterParameters : register(b0)
 {
     uint2 FlowSize;
-    uint2 Padding;
+    uint BlockSize;
+    uint SourceScale;
+    uint VectorPrecision;
+    uint3 Padding;
 };
 
-int FloorDiv4(int value)
+int FloorDiv(int value, int divisor)
 {
-    return value >= 0 ? value / 4 : -((-value + 3) / 4);
+    return value >= 0 ? value / divisor : -((-value + divisor - 1) / divisor);
 }
 
 void AddPoint(RWStructuredBuffer<uint> accum, int x, int y, int weight)
 {
-    if (weight <= 0 || x < 0 || y < 0 || x >= (int)FlowSize.x || y >= (int)FlowSize.y) {
-        return;
-    }
+    if (weight <= 0 || x < 0 || y < 0 || x >= (int)FlowSize.x || y >= (int)FlowSize.y) return;
     uint ignored;
     InterlockedAdd(accum[(uint)y * FlowSize.x + (uint)x], (uint)weight, ignored);
 }
 
+int2 PackedFullResolutionMotion(int2 raw)
+{
+    // Proprietary reduced-source packing:
+    // packed = trunc(raw_S10.5 * scale * precision / 32).
+    return (raw * (int)(SourceScale * VectorPrecision)) / 32;
+}
+
 void Splat(RWStructuredBuffer<uint> accum, int2 raw, int2 cell, uint threshold)
 {
-    // SVP's packed NVOF direction stores raw SHORT2 / 8, marker=4.  Coverage
-    // applies phase as stored * phase / (marker * 256).
-    int2 stored = raw / 8;
-    int2 displacement = (stored * (int)threshold) / 1024;
-    int2 shifted = cell * 4 + displacement;
+    int2 packed = PackedFullResolutionMotion(raw);
+    int2 displacement = (packed * (int)threshold) / (int)(VectorPrecision * 256u);
+    int2 shifted = cell * (int)BlockSize + displacement;
 
-    int left = FloorDiv4(shifted.x);
-    int top = FloorDiv4(shifted.y);
+    int left = FloorDiv(shifted.x, (int)BlockSize);
+    int top = FloorDiv(shifted.y, (int)BlockSize);
     int right = left + 1;
     int bottom = top + 1;
-    int nextX = right * 4;
-    int nextY = bottom * 4;
+    int nextX = right * (int)BlockSize;
+    int nextY = bottom * (int)BlockSize;
     int leftWeight = nextX - shifted.x;
     int topWeight = nextY - shifted.y;
-    int rightWeight = shifted.x + 4 - nextX;
-    int bottomWeight = shifted.y + 4 - nextY;
+    int rightWeight = shifted.x + (int)BlockSize - nextX;
+    int bottomWeight = shifted.y + (int)BlockSize - nextY;
 
     AddPoint(accum, left, top, leftWeight * topWeight);
     AddPoint(accum, right, top, rightWeight * topWeight);
@@ -56,9 +62,6 @@ void main(uint3 id : SV_DispatchThreadID)
     if (any(id.xy >= FlowSize)) return;
     int2 cell = int2(id.xy);
     uint phase = Control[2];
-
-    // mask A is generated from the opposite A->B field at inverse phase;
-    // mask B is generated from the opposite B->A field at forward phase.
     Splat(AccumA, FlowAtoB.Load(int3(cell, 0)), cell, 256u - phase);
     Splat(AccumB, FlowBtoA.Load(int3(cell, 0)), cell, phase);
 }

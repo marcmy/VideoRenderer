@@ -100,6 +100,45 @@ def interp4_gpu(a: int, b: int, fraction: int) -> int:
     return trunc_div((4 - fraction) * a + fraction * b, 4)
 
 
+def svp_grid_geometry(width: int, height: int, requested_grid: int = 24) -> tuple[int, ...]:
+    grid = requested_grid
+    while grid > 4 and (width // grid < 40 or height // grid < 32):
+        grid = 16 if grid == 24 else grid // 2
+    scale = grid // 4
+    precision = 4 if scale <= 2 else 2
+    crop_width = width - width % grid
+    crop_height = height - height % grid
+    vector_width = crop_width // grid * 4
+    vector_height = crop_height // grid * 4
+    return (
+        grid, scale, precision, crop_width, crop_height,
+        vector_width, vector_height, vector_width // 4, vector_height // 4,
+    )
+
+
+def scaled_packed_motion_reference(raw_s10_5: int, scale: int) -> int:
+    precision = 4 if scale <= 2 else 2
+    packed = trunc_div(raw_s10_5 * scale * precision, 32)
+    return trunc_div(packed, precision)
+
+
+def scaled_packed_motion_gpu(raw_s10_5: int, scale: int) -> int:
+    precision = 4 if scale <= 2 else 2
+    packed = trunc_div(raw_s10_5 * (scale * precision), 32)
+    return trunc_div(packed, precision)
+
+
+def interp_block_reference(a: int, b: int, fraction: int, block_size: int) -> int:
+    return trunc_div((block_size - fraction) * a + fraction * b, block_size)
+
+
+def interp_block_gpu(a: int, b: int, fraction: int, block_size: int) -> int:
+    return trunc_div((block_size - fraction) * a + fraction * b, block_size)
+
+
+def scaled_software_score(sad: int, scale: int) -> int:
+    return (sad * scale * scale) & 0x00FFFFFF
+
 def pair_luma_reference(total: int) -> int:
     value = int(math.pow(total / 510.0, 1.5) * 255.0)
     return max(value, 20)
@@ -206,11 +245,31 @@ def run(seed: int, classifier_cases: int, vector_cases: int) -> dict[str, int | 
         if classifier_reference(q) != classifier_gpu_aggregate(q):
             raise AssertionError("classifier aggregation mismatch")
 
+    expected_geometry = {
+        (1920, 1080): (24, 6, 2, 1920, 1080, 320, 180, 80, 45),
+        (1918, 803): (24, 6, 2, 1896, 792, 316, 132, 79, 33),
+        (1280, 720): (16, 4, 2, 1280, 720, 320, 180, 80, 45),
+        (640, 480): (8, 2, 4, 640, 480, 320, 240, 80, 60),
+        (320, 240): (4, 1, 4, 320, 240, 320, 240, 80, 60),
+    }
+    for dimensions, expected in expected_geometry.items():
+        actual = svp_grid_geometry(*dimensions)
+        if actual != expected:
+            raise AssertionError(("grid-geometry", dimensions, expected, actual))
+
+    for sad in (0, 1, 200, 1600, 2800, 4000, 4080):
+        for scale in (1, 2, 4, 6, 8):
+            if scaled_software_score(sad, scale) != ((sad * scale * scale) & 0x00FFFFFF):
+                raise AssertionError(("scaled-score", sad, scale))
+
     for _ in range(vector_cases):
         raw = rng.randint(-32768, 32767)
         phase = rng.randint(0, 256)
         if packed_motion_reference(raw, phase) != packed_motion_gpu(raw, phase):
             raise AssertionError((raw, phase))
+        for scale in (1, 2, 4, 6, 8):
+            if scaled_packed_motion_reference(raw, scale) != scaled_packed_motion_gpu(raw, scale):
+                raise AssertionError(("scaled-motion", raw, scale))
         a_motion = rng.randint(-1023, 1023)
         b_motion = rng.randint(-1023, 1023)
         fraction = rng.randrange(4)
@@ -218,6 +277,12 @@ def run(seed: int, classifier_cases: int, vector_cases: int) -> dict[str, int | 
             a_motion, b_motion, fraction
         ):
             raise AssertionError((a_motion, b_motion, fraction))
+        for block_size in (4, 8, 16, 24, 32):
+            block_fraction = rng.randrange(block_size)
+            if interp_block_reference(a_motion, b_motion, block_fraction, block_size) != interp_block_gpu(
+                a_motion, b_motion, block_fraction, block_size
+            ):
+                raise AssertionError(("block-interp", a_motion, b_motion, block_fraction, block_size))
         a = rng.randrange(256)
         b = rng.randrange(256)
         weight = rng.randrange(257)

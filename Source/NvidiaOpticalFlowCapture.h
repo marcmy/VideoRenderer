@@ -20,6 +20,11 @@ struct NativeNvofCaptureInputs
 	UINT frameHeight = 0;
 	UINT flowWidth = 0;
 	UINT flowHeight = 0;
+	UINT effectiveGrid = 4;
+	UINT sourceScale = 1;
+	UINT vectorPrecision = 4;
+	UINT vectorWidth = 0;
+	UINT vectorHeight = 0;
 	float midpointTime = 0.5f;
 	double firstTimestamp = 0.0;
 	double secondTimestamp = 0.0;

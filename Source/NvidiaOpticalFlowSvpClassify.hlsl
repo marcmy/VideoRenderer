@@ -8,15 +8,16 @@ RWStructuredBuffer<uint> Counters : register(u0);
 cbuffer ClassifyParameters : register(b0)
 {
     uint2 FlowSize;
-    uint2 FrameSize;
+    uint2 VectorFrameSize;
     uint BorderX;
     uint BorderY;
-    uint2 Padding;
+    uint SourceScale;
+    uint Padding;
 };
 
 uint LoadY(Texture2D<float> image, int2 p)
 {
-    p = clamp(p, int2(0, 0), int2(FrameSize) - 1);
+    p = clamp(p, int2(0, 0), int2(VectorFrameSize) - 1);
     return (uint)round(saturate(image.Load(int3(p, 0))) * 255.0);
 }
 
@@ -60,8 +61,8 @@ void main(uint3 id : SV_DispatchThreadID)
 
     int2 cell = int2(id.xy);
     int2 raw = CurrentFlowAtoB.Load(int3(cell, 0));
-    // NVOF SHORT2 is S10.5. Proprietary modern confidence uses an integer
-    // displacement truncated toward zero: raw / 32.
+    // NVOF SHORT2 is S10.5 in vector-source pixels. The proprietary software
+    // confidence stage evaluates the native 4x4 vector-source block directly.
     int2 displacement = raw / 32;
     int2 base = cell * 4;
 
@@ -70,13 +71,11 @@ void main(uint3 id : SV_DispatchThreadID)
     uint pairLuma = PairLumaLut.Load(int2(min(lumaA + lumaB, 510u), 0));
     pairLuma = max(pairLuma, 1u);
 
-    uint score = DirectionSad(base, displacement) & 0x00ffffffu;
+    // Reduced vec_src modes compensate the 4x4 SAD by scale^2 before the
+    // ordinary 24-bit score/luma normalization stage.
+    uint score = (DirectionSad(base, displacement) * SourceScale * SourceScale) & 0x00ffffffu;
     uint q = (score * 255u) / pairLuma;
 
-    // Exact classifier buckets. The CPU loop's "skip the first 2/3 zero
-    // blocks" is order-independent for classification because q<zero cells
-    // never contribute to the severity buckets. The control pass therefore
-    // reconstructs considered = interior - min(low, 2*full/3).
     if (q < 200u) InterlockedAdd(Counters[0], 1u);
     else if (q >= 4000u) InterlockedAdd(Counters[3], 1u);
     else if (q >= 2800u) InterlockedAdd(Counters[2], 1u);

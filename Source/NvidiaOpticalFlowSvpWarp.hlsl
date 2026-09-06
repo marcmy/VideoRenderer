@@ -12,16 +12,21 @@ cbuffer WarpParameters : register(b0)
 {
     uint2 FrameSize;
     uint2 FlowSize;
-    uint4 Padding;
+    uint BlockSize;
+    uint SourceScale;
+    uint VectorPrecision;
+    uint Padding;
 };
 
 int2 ClampVectorToFrame(int2 value, int2 cell)
 {
-    int2 pos = cell * 4;
+    int2 pos = cell * (int)BlockSize;
     if (value.x + pos.x < 0) value.x = -pos.x;
-    else if (value.x + pos.x + 4 > (int)FrameSize.x) value.x = max((int)FrameSize.x - 4 - pos.x, 0);
+    else if (value.x + pos.x + (int)BlockSize > (int)FrameSize.x)
+        value.x = max((int)FrameSize.x - (int)BlockSize - pos.x, 0);
     if (value.y + pos.y < 0) value.y = -pos.y;
-    else if (value.y + pos.y + 4 > (int)FrameSize.y) value.y = max((int)FrameSize.y - 4 - pos.y, 0);
+    else if (value.y + pos.y + (int)BlockSize > (int)FrameSize.y)
+        value.y = max((int)FrameSize.y - (int)BlockSize - pos.y, 0);
     return value;
 }
 
@@ -29,31 +34,30 @@ int2 MotionAt(Texture2D<int2> flow, int2 cell, uint threshold)
 {
     cell = clamp(cell, int2(0, 0), int2(FlowSize) - 1);
     int2 raw = flow.Load(int3(cell, 0));
-    // pack_vectors: raw / 8; renderer_vectors: packed / marker(4).
-    int2 motionVector = (raw / 8) / 4;
+    // Reduced-source NVOF vectors are packed exactly as reconstructed from
+    // SVPflow, then divided by the corresponding precision in the renderer.
+    int2 packed = (raw * (int)(SourceScale * VectorPrecision)) / 32;
+    int2 motionVector = packed / (int)VectorPrecision;
     motionVector = ClampVectorToFrame(motionVector, cell);
     return (motionVector * (int)threshold) / 256;
 }
 
 void GridPosition(uint2 pixel, out int2 baseCell, out int2 nextCell, out int2 fraction)
 {
-    int2 p = int2(pixel) - int2(2, 2); // SVP renderer origin = block / 2.
+    int2 p = int2(pixel) - int2((int)BlockSize / 2, (int)BlockSize / 2);
     baseCell = int2(0, 0);
     fraction = int2(0, 0);
-    if (p.x >= 0) { baseCell.x = p.x / 4; fraction.x = p.x % 4; }
-    if (p.y >= 0) { baseCell.y = p.y / 4; fraction.y = p.y % 4; }
+    if (p.x >= 0) { baseCell.x = p.x / (int)BlockSize; fraction.x = p.x % (int)BlockSize; }
+    if (p.y >= 0) { baseCell.y = p.y / (int)BlockSize; fraction.y = p.y % (int)BlockSize; }
     baseCell = clamp(baseCell, int2(0, 0), int2(FlowSize) - 1);
     nextCell = min(baseCell + 1, int2(FlowSize) - 1);
 }
 
-int Interp4(int a, int b, int fraction)
+int InterpBlock(int a, int b, int fraction)
 {
-    // SVP's block-4 CPU renderer takes the non-power-of-two interpolation
-    // path here because CPU_MAP[4] == -1.  That path uses signed integer
-    // division by the block width, which truncates toward zero.  Arithmetic
-    // right shift rounds negative values toward -infinity and therefore
-    // introduces a systematic -1 pixel bias in many negative-motion samples.
-    return ((4 - fraction) * a + fraction * b) / 4;
+    // Signed integer division intentionally preserves SVP's truncation toward
+    // zero for all supported effective grids (4/8/16/24/32).
+    return (((int)BlockSize - fraction) * a + fraction * b) / (int)BlockSize;
 }
 
 int2 InterpolateMotion(Texture2D<int2> flow, uint2 pixel, uint threshold)
@@ -64,9 +68,9 @@ int2 InterpolateMotion(Texture2D<int2> flow, uint2 pixel, uint threshold)
     int2 v10 = MotionAt(flow, int2(c1.x, c0.y), threshold);
     int2 v01 = MotionAt(flow, int2(c0.x, c1.y), threshold);
     int2 v11 = MotionAt(flow, c1, threshold);
-    int2 left = int2(Interp4(v00.x, v01.x, f.y), Interp4(v00.y, v01.y, f.y));
-    int2 right = int2(Interp4(v10.x, v11.x, f.y), Interp4(v10.y, v11.y, f.y));
-    return int2(Interp4(left.x, right.x, f.x), Interp4(left.y, right.y, f.x));
+    int2 left = int2(InterpBlock(v00.x, v01.x, f.y), InterpBlock(v00.y, v01.y, f.y));
+    int2 right = int2(InterpBlock(v10.x, v11.x, f.y), InterpBlock(v10.y, v11.y, f.y));
+    return int2(InterpBlock(left.x, right.x, f.x), InterpBlock(left.y, right.y, f.x));
 }
 
 uint MaskAt(StructuredBuffer<uint> mask, int2 cell)
@@ -83,9 +87,9 @@ uint InterpolateMask(StructuredBuffer<uint> mask, uint2 pixel)
     int a10 = (int)MaskAt(mask, int2(c1.x, c0.y));
     int a01 = (int)MaskAt(mask, int2(c0.x, c1.y));
     int a11 = (int)MaskAt(mask, c1);
-    int left = Interp4(a00, a01, f.y);
-    int right = Interp4(a10, a11, f.y);
-    return (uint)clamp(Interp4(left, right, f.x), 0, 255);
+    int left = InterpBlock(a00, a01, f.y);
+    int right = InterpBlock(a10, a11, f.y);
+    return (uint)clamp(InterpBlock(left, right, f.x), 0, 255);
 }
 
 uint4 LoadBytes(Texture2D<float4> frame, int2 p)
@@ -115,9 +119,7 @@ void main(uint3 id : SV_DispatchThreadID)
     uint4 currentA = LoadBytes(PreviousFrame, target);
     uint4 currentB = LoadBytes(NextFrame, target);
 
-    // Proprietary class-3/cut handling does not attempt optical-flow morphing.
     if (algorithm == 0u) {
-        // The recovered stock path chooses the later real frame at phase >= 128.
         OutputFrame[id.xy] = float4(phase < 128u ? currentA : currentB) / 255.0;
         return;
     }
@@ -135,8 +137,6 @@ void main(uint3 id : SV_DispatchThreadID)
         uint4 correctedB = Blend255(warpB, warpA, alphaB);
         result = Blend256(correctedA, correctedB, phase);
     } else {
-        // Current proprietary algo13 uses the area_blend-adjusted source mix
-        // (default 0.4) as the third member of its channel-wise median/clamp.
         float p = (float)phase / 256.0;
         float pMask = phase <= 126u ? p * 0.4 : 1.0 - (1.0 - p) * 0.4;
         uint4 temporal = (uint4)round(lerp(float4(currentA), float4(currentB), pMask));
