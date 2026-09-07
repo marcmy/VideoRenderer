@@ -879,7 +879,7 @@ struct CNvidiaOpticalFlowNative::Impl
 		}
 
 		runtimeInfo = std::format(
-			L"Driver NVOF {}.{}; D3D11; SVP grid-{} vec_src test: {}x{} BGRA -> cropped {}x{} -> {}x{} NV12 (scale {}, precision {}), native 4x4 bidirectional PerfSlow flow ({}x{} cells; GPU grids: {}), software-SAD scale^2, temporal hints/cost off, stock algo21 + force13/adaptive210, effective-grid coverage/warp",
+			L"Driver NVOF {}.{}; D3D11; SVP grid-{} vec_src test: {}x{} BGRA -> cropped {}x{} -> {}x{} NV12 (scale {}, precision {}), native 4x4 bidirectional PerfSlow flow ({}x{} cells; GPU grids: {}), software-SAD scale^2, temporal hints/cost off, active-profile shader13 + adaptive210, exact algo13 median, effective-grid warp",
 			apiMajor, apiMinor, effectiveGrid, width, height, cropWidth, cropHeight,
 			vectorWidth, vectorHeight, sourceScale, vectorPrecision, flowWidth, flowHeight,
 			JoinGridSizes(outputGridSizes));

@@ -137,9 +137,10 @@ void main(uint3 id : SV_DispatchThreadID)
         uint4 correctedB = Blend255(warpB, warpA, alphaB);
         result = Blend256(correctedA, correctedB, phase);
     } else {
-        float p = (float)phase / 256.0;
-        float pMask = phase <= 126u ? p * 0.4 : 1.0 - (1.0 - p) * 0.4;
-        uint4 temporal = (uint4)round(lerp(float4(currentA), float4(currentB), pMask));
+        // Recovered algorithm 13 is the per-channel median of the two
+        // phase-correct warped endpoint hypotheses and the ordinary temporal
+        // sample. clamp(temporal, min, max) is exactly that median.
+        uint4 temporal = Blend256(currentA, currentB, phase);
         result = clamp(temporal, min(warpA, warpB), max(warpA, warpB));
     }
 

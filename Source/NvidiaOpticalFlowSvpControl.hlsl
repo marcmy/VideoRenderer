@@ -10,7 +10,7 @@ cbuffer ControlParameters : register(b0)
 
 // Control layout:
 //   0 scene class (0..3)
-//   1 effective algorithm (0=cut/fallback, 13, 21)
+//   1 effective algorithm (0=cut/fallback, 13)
 //   2 phase (stock exact-2x adaptive: C0=128, C1=128, C2=64)
 //   3 considered cells
 //   4 zero-skipped cells
@@ -39,9 +39,9 @@ void main(uint3 id : SV_DispatchThreadID)
     else if (high >= required) sceneClass = 2u;
     else if (mid >= required) sceneClass = 1u;
 
-    // Stock requested algo=21, force13=true, adaptive=210. Class 3 is routed
-    // to the conservative cut path rather than ordinary optical-flow morphing.
-    uint algorithm = sceneClass >= 3u ? 0u : (sceneClass > 0u ? 13u : 21u);
+    // The active SVP profile requests fi_shader=13 with adaptive=210. Class 3
+    // remains on the separate conservative cut/fallback path.
+    uint algorithm = sceneClass >= 3u ? 0u : 13u;
     uint phase = sceneClass == 2u ? 64u : 128u;
 
     Control[0] = sceneClass;

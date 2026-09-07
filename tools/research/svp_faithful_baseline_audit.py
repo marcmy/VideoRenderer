@@ -226,6 +226,17 @@ def blend256(a: int, b: int, weight: int) -> int:
     return max(0, min(255, (a * (256 - weight) + b * weight) >> 8))
 
 
+def profile13_control(scene_class: int) -> tuple[int, int]:
+    algorithm = 0 if scene_class >= 3 else 13
+    phase = 64 if scene_class == 2 else 128
+    return algorithm, phase
+
+
+def algo13_channel(previous: int, next_: int, warp_a: int, warp_b: int, phase: int) -> int:
+    temporal = blend256(previous, next_, phase)
+    return max(min(warp_a, warp_b), min(temporal, max(warp_a, warp_b)))
+
+
 def run(seed: int, classifier_cases: int, vector_cases: int) -> dict[str, int | str]:
     rng = random.Random(seed)
     q_values = (0, 50, 199, 200, 900, 1599, 1600, 2799, 2800, 3999, 4000, 9000)
@@ -308,11 +319,35 @@ def run(seed: int, classifier_cases: int, vector_cases: int) -> dict[str, int | 
         ):
             raise AssertionError(("coverage", width, height, phase))
 
+    expected_profile13 = {
+        0: (13, 128),
+        1: (13, 128),
+        2: (13, 64),
+        3: (0, 128),
+    }
+    for scene_class, expected in expected_profile13.items():
+        if profile13_control(scene_class) != expected:
+            raise AssertionError(("profile13-control", scene_class, expected, profile13_control(scene_class)))
+
+    algo13_cases = 10000
+    for _ in range(algo13_cases):
+        previous = rng.randrange(256)
+        next_ = rng.randrange(256)
+        warp_a = rng.randrange(256)
+        warp_b = rng.randrange(256)
+        phase = rng.randrange(257)
+        temporal = blend256(previous, next_, phase)
+        expected = sorted((warp_a, warp_b, temporal))[1]
+        actual = algo13_channel(previous, next_, warp_a, warp_b, phase)
+        if actual != expected:
+            raise AssertionError(("algo13-median", previous, next_, warp_a, warp_b, phase, expected, actual))
+
     # Recovered class-3/cut path: phase < 128 -> A; phase >= 128 -> B.
     if ("A" if 127 < 128 else "B") != "A" or ("A" if 128 < 128 else "B") != "B":
         raise AssertionError("cut selection rule failure")
 
     return {
+        "algo13_cases": algo13_cases,
         "status": "pass",
         "seed": seed,
         "classifier_cases": classifier_cases,
