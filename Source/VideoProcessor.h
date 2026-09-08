@@ -263,6 +263,10 @@ public:
 
 	virtual void SwitchFullScreen(bool set) {};
 
+	DXVA2_ExtendedFormat inputFormat() const {
+		return m_decExFmt;
+	};
+
 protected:
 	inline bool SourceIsHDR10orHLG() {
 		return (m_decExFmt.VideoTransferFunction == MFVideoTransFunc_2084 && m_decExFmt.VideoTransferMatrix != DXVA2_VideoTransferMatrix_Unknown)
