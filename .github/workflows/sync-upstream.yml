@@ -1,6 +1,11 @@
 name: Sync upstream
 
 on:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/sync-upstream.yml
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
@@ -50,11 +55,69 @@ jobs:
 
           $upstreamSha = (git rev-parse upstream/master).Trim()
           $shortSha = $upstreamSha.Substring(0, 8)
+          $originalHead = (git rev-parse HEAD).Trim()
 
           git merge --no-ff --no-edit -m "Merge Aleksoid1978/VideoRenderer upstream master ($shortSha)" upstream/master
           if ($LASTEXITCODE -ne 0) {
-            git merge --abort
-            throw 'Upstream merge produced conflicts and requires manual resolution.'
+            $conflicts = @(git diff --name-only --diff-filter=U)
+            $knownConflict =
+              $originalHead -eq '73ef32e79ac09152b8cfa16ddea2b04303958d7f' -and
+              $conflicts.Count -eq 1 -and
+              $conflicts[0] -eq 'Source/VideoRenderer.cpp'
+
+            git merge-base --is-ancestor bb3f8ef27a3a3bb553a59bc1ed4abcb6aa970d02 upstream/master
+            $containsKnownUpstream = $LASTEXITCODE -eq 0
+
+            if ($knownConflict -and $containsKnownUpstream) {
+              git checkout --ours -- Source/VideoRenderer.cpp
+              if ($LASTEXITCODE -ne 0) {
+                throw 'Could not restore the fork side of the known VideoRenderer.cpp conflict.'
+              }
+
+              $path = 'Source/VideoRenderer.cpp'
+              $text = Get-Content -Raw -LiteralPath $path
+              $old = @'
+	else if (!strcmp(field, "yuvMatrix")) {
+		str = L"TV.709";
+		// TODO
+	}
+'@
+              $new = @'
+	else if (!strcmp(field, "yuvMatrix")) {
+		auto fmt = m_VideoProcessor->inputFormat();
+		if (fmt.value != 0) {
+			switch (fmt.VideoTransferMatrix) {
+				case DXVA2_VideoTransferMatrix_BT709: str = L"TV.709"; break;
+				case MFVideoTransferMatrix_BT2020_10: str = L"TV.2020"; break;
+				default: str = L"TV.601"; break;
+			}
+		} else {
+			str = L"TV.709";
+		}
+	}
+'@
+
+              if (-not $text.Contains($old)) {
+                throw 'The known yuvMatrix block no longer matches the expected fork source; refusing automatic conflict resolution.'
+              }
+
+              $text = $text.Replace($old, $new)
+              Set-Content -LiteralPath $path -Value $text -NoNewline -Encoding utf8
+              git add -- Source/VideoRenderer.cpp
+
+              $remaining = @(git diff --name-only --diff-filter=U)
+              if ($remaining.Count -ne 0) {
+                throw "Known conflict resolver left unresolved paths: $($remaining -join ', ')"
+              }
+
+              git commit --no-edit
+              if ($LASTEXITCODE -ne 0) {
+                throw 'Could not commit the resolved upstream merge.'
+              }
+            } else {
+              git merge --abort
+              throw 'Upstream merge produced conflicts and requires manual resolution.'
+            }
           }
 
           git submodule sync --recursive
