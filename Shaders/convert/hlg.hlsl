@@ -16,5 +16,5 @@ inline float3 HLGtoLinear(float3 rgb)
     float3 ootf_2020 = float3(0.2627, 0.6780, 0.0593);
     float ootf_ys = dot(ootf_2020, rgb);
     rgb *= 1000.0f * pow(ootf_ys, 0.2f);
-    return rgb; 
+    return rgb;
 }

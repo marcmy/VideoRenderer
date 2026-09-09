@@ -2173,15 +2173,14 @@ STDMETHODIMP CMpcVideoRenderer::GetString(LPCSTR field, LPWSTR* value, int* char
 		str = _CRT_WIDE(VERSION_STR);
 	}
 	else if (!strcmp(field, "yuvMatrix")) {
-		auto fmt = m_VideoProcessor->inputFormat();
-		if (fmt.value != 0) {
-			switch (fmt.VideoTransferMatrix) {
-				case DXVA2_VideoTransferMatrix_BT709: str = L"TV.709"; break;
-				case MFVideoTransferMatrix_BT2020_10: str = L"TV.2020"; break;
-				default: str = L"TV.601"; break;
-			}
-		} else {
-			str = L"TV.709";
+		auto exFmt = m_VideoProcessor->getSrcExFormat();
+
+		switch (exFmt.VideoTransferMatrix) {
+		default:
+		case DXVA2_VideoTransferMatrix_BT709: str = L"TV.709"; break;
+		case VIDEOTRANSFERMATRIX_FCC:
+		case DXVA2_VideoTransferMatrix_BT601: str = L"TV.601"; break;
+		case MFVideoTransferMatrix_BT2020_10: str = L"TV.2020"; break;
 		}
 	}
 
