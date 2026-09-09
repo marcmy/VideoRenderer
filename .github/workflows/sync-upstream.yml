@@ -61,15 +61,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             $conflicts = @(git diff --name-only --diff-filter=U)
 
-            git merge-base --is-ancestor 73ef32e79ac09152b8cfa16ddea2b04303958d7f $originalHead
+            $resolverBase = '94cec0788d03524ba8900859e3ccd901b0525e2f'
+            $expectedUpstream = 'fbe023199b9c9ebf78c730ff9b85288a29bcca3c'
+
+            git merge-base --is-ancestor $resolverBase $originalHead
             $forkLineageKnown = $LASTEXITCODE -eq 0
-            $resolverDelta = @(git diff --name-only 73ef32e79ac09152b8cfa16ddea2b04303958d7f..$originalHead)
+            $resolverDelta = @(git diff --name-only "$resolverBase..$originalHead")
             $onlyResolverChanges = @($resolverDelta | Where-Object { $_ -ne '.github/workflows/sync-upstream.yml' }).Count -eq 0
+            $upstreamMatches = $upstreamSha -eq $expectedUpstream
 
-            git merge-base --is-ancestor bb3f8ef27a3a3bb553a59bc1ed4abcb6aa970d02 upstream/master
-            $containsKnownUpstream = $LASTEXITCODE -eq 0
-
-            $knownConflict = $forkLineageKnown -and $onlyResolverChanges -and $containsKnownUpstream -and $conflicts.Count -eq 1 -and $conflicts[0] -eq 'Source/VideoRenderer.cpp'
+            $knownConflict = $forkLineageKnown -and $onlyResolverChanges -and $upstreamMatches -and $conflicts.Count -eq 1 -and $conflicts[0] -eq 'Source/VideoRenderer.cpp'
 
             if ($knownConflict) {
               git checkout --ours -- Source/VideoRenderer.cpp
@@ -82,12 +83,6 @@ jobs:
               $newline = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
               $old = @(
                 "`telse if (!strcmp(field, `"yuvMatrix`")) {",
-                "`t`tstr = L`"TV.709`";",
-                "`t`t// TODO",
-                "`t}"
-              ) -join $newline
-              $new = @(
-                "`telse if (!strcmp(field, `"yuvMatrix`")) {",
                 "`t`tauto fmt = m_VideoProcessor->inputFormat();",
                 "`t`tif (fmt.value != 0) {",
                 "`t`t`tswitch (fmt.VideoTransferMatrix) {",
@@ -97,6 +92,19 @@ jobs:
                 "`t`t`t}",
                 "`t`t} else {",
                 "`t`t`tstr = L`"TV.709`";",
+                "`t`t}",
+                "`t}"
+              ) -join $newline
+              $new = @(
+                "`telse if (!strcmp(field, `"yuvMatrix`")) {",
+                "`t`tauto exFmt = m_VideoProcessor->getSrcExFormat();",
+                "",
+                "`t`tswitch (exFmt.VideoTransferMatrix) {",
+                "`t`tdefault:",
+                "`t`tcase DXVA2_VideoTransferMatrix_BT709: str = L`"TV.709`"; break;",
+                "`t`tcase VIDEOTRANSFERMATRIX_FCC:",
+                "`t`tcase DXVA2_VideoTransferMatrix_BT601: str = L`"TV.601`"; break;",
+                "`t`tcase MFVideoTransferMatrix_BT2020_10: str = L`"TV.2020`"; break;",
                 "`t`t}",
                 "`t}"
               ) -join $newline
@@ -120,7 +128,7 @@ jobs:
               }
             } else {
               git merge --abort
-              throw 'Upstream merge produced conflicts outside the narrowly guarded known yuvMatrix case.'
+              throw 'Upstream merge produced conflicts outside the narrowly guarded known yuvMatrix API-update case.'
             }
           }
 
