@@ -61,66 +61,100 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             $conflicts = @(git diff --name-only --diff-filter=U)
 
-            git merge-base --is-ancestor 73ef32e79ac09152b8cfa16ddea2b04303958d7f $originalHead
-            $forkLineageKnown = $LASTEXITCODE -eq 0
-            $resolverDelta = @(git diff --name-only 73ef32e79ac09152b8cfa16ddea2b04303958d7f..$originalHead)
-            $onlyResolverChanges = @($resolverDelta | Where-Object { $_ -ne '.github/workflows/sync-upstream.yml' }).Count -eq 0
+            $windowProcConflict = $originalHead -eq '75f29085995b57aa83066d665a05e134b0766297' -and
+              $upstreamSha -eq '99f1be6ee54025c121b17b77da37dd50b9acf649' -and
+              $conflicts.Count -eq 1 -and $conflicts[0] -eq 'Source/VideoRenderer.cpp'
 
-            git merge-base --is-ancestor bb3f8ef27a3a3bb553a59bc1ed4abcb6aa970d02 upstream/master
-            $containsKnownUpstream = $LASTEXITCODE -eq 0
-
-            $knownConflict = $forkLineageKnown -and $onlyResolverChanges -and $containsKnownUpstream -and $conflicts.Count -eq 1 -and $conflicts[0] -eq 'Source/VideoRenderer.cpp'
-
-            if ($knownConflict) {
+            if ($windowProcConflict) {
               git checkout --ours -- Source/VideoRenderer.cpp
               if ($LASTEXITCODE -ne 0) {
-                throw 'Could not restore the fork side of the known VideoRenderer.cpp conflict.'
+                throw 'Could not restore the fork side of the known window-procedure conflict.'
               }
 
-              $path = 'Source/VideoRenderer.cpp'
-              $text = Get-Content -Raw -LiteralPath $path
-              $newline = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
-              $old = @(
-                "`telse if (!strcmp(field, `"yuvMatrix`")) {",
-                "`t`tstr = L`"TV.709`";",
-                "`t`t// TODO",
-                "`t}"
-              ) -join $newline
-              $new = @(
-                "`telse if (!strcmp(field, `"yuvMatrix`")) {",
-                "`t`tauto fmt = m_VideoProcessor->inputFormat();",
-                "`t`tif (fmt.value != 0) {",
-                "`t`t`tswitch (fmt.VideoTransferMatrix) {",
-                "`t`t`t`tcase DXVA2_VideoTransferMatrix_BT709: str = L`"TV.709`"; break;",
-                "`t`t`t`tcase MFVideoTransferMatrix_BT2020_10: str = L`"TV.2020`"; break;",
-                "`t`t`t`tdefault: str = L`"TV.601`"; break;",
-                "`t`t`t}",
-                "`t`t} else {",
-                "`t`t`tstr = L`"TV.709`";",
-                "`t`t}",
-                "`t}"
-              ) -join $newline
-
-              if (-not $text.Contains($old)) {
-                throw 'The known yuvMatrix block no longer matches the expected fork source; refusing automatic conflict resolution.'
+              $patchFile = Join-Path $env:RUNNER_TEMP 'upstream-window-proc.patch'
+              git diff fbe023199b9c9ebf78c730ff9b85288a29bcca3c 99f1be6ee54025c121b17b77da37dd50b9acf649 --output=$patchFile -- Source/VideoRenderer.cpp
+              if ($LASTEXITCODE -ne 0) {
+                throw 'Could not generate the known upstream window-procedure patch.'
               }
 
-              $text = $text.Replace($old, $new)
-              Set-Content -LiteralPath $path -Value $text -NoNewline -Encoding utf8
+              git apply --whitespace=nowarn $patchFile
+              if ($LASTEXITCODE -ne 0) {
+                throw 'The known upstream window-procedure patch no longer applies cleanly; refusing automatic conflict resolution.'
+              }
+
               git add -- Source/VideoRenderer.cpp
 
               $remaining = @(git diff --name-only --diff-filter=U)
               if ($remaining.Count -ne 0) {
-                throw "Known conflict resolver left unresolved paths: $($remaining -join ', ')"
+                throw "Known window-procedure resolver left unresolved paths: $($remaining -join ', ')"
               }
 
               git commit --no-edit
               if ($LASTEXITCODE -ne 0) {
-                throw 'Could not commit the resolved upstream merge.'
+                throw 'Could not commit the resolved upstream window-procedure merge.'
               }
             } else {
-              git merge --abort
-              throw 'Upstream merge produced conflicts outside the narrowly guarded known yuvMatrix case.'
+              git merge-base --is-ancestor 73ef32e79ac09152b8cfa16ddea2b04303958d7f $originalHead
+              $forkLineageKnown = $LASTEXITCODE -eq 0
+              $resolverDelta = @(git diff --name-only 73ef32e79ac09152b8cfa16ddea2b04303958d7f..$originalHead)
+              $onlyResolverChanges = @($resolverDelta | Where-Object { $_ -ne '.github/workflows/sync-upstream.yml' }).Count -eq 0
+
+              git merge-base --is-ancestor bb3f8ef27a3a3bb553a59bc1ed4abcb6aa970d02 upstream/master
+              $containsKnownUpstream = $LASTEXITCODE -eq 0
+
+              $knownConflict = $forkLineageKnown -and $onlyResolverChanges -and $containsKnownUpstream -and $conflicts.Count -eq 1 -and $conflicts[0] -eq 'Source/VideoRenderer.cpp'
+
+              if ($knownConflict) {
+                git checkout --ours -- Source/VideoRenderer.cpp
+                if ($LASTEXITCODE -ne 0) {
+                  throw 'Could not restore the fork side of the known VideoRenderer.cpp conflict.'
+                }
+
+                $path = 'Source/VideoRenderer.cpp'
+                $text = Get-Content -Raw -LiteralPath $path
+                $newline = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
+                $old = @(
+                  "`telse if (!strcmp(field, `"yuvMatrix`")) {",
+                  "`t`tstr = L`"TV.709`";",
+                  "`t`t// TODO",
+                  "`t}"
+                ) -join $newline
+                $new = @(
+                  "`telse if (!strcmp(field, `"yuvMatrix`")) {",
+                  "`t`tauto fmt = m_VideoProcessor->inputFormat();",
+                  "`t`tif (fmt.value != 0) {",
+                  "`t`t`tswitch (fmt.VideoTransferMatrix) {",
+                  "`t`t`t`tcase DXVA2_VideoTransferMatrix_BT709: str = L`"TV.709`"; break;",
+                  "`t`t`t`tcase MFVideoTransferMatrix_BT2020_10: str = L`"TV.2020`"; break;",
+                  "`t`t`t`tdefault: str = L`"TV.601`"; break;",
+                  "`t`t`t}",
+                  "`t`t} else {",
+                  "`t`t`tstr = L`"TV.709`";",
+                  "`t`t}",
+                  "`t}"
+                ) -join $newline
+
+                if (-not $text.Contains($old)) {
+                  throw 'The known yuvMatrix block no longer matches the expected fork source; refusing automatic conflict resolution.'
+                }
+
+                $text = $text.Replace($old, $new)
+                Set-Content -LiteralPath $path -Value $text -NoNewline -Encoding utf8
+                git add -- Source/VideoRenderer.cpp
+
+                $remaining = @(git diff --name-only --diff-filter=U)
+                if ($remaining.Count -ne 0) {
+                  throw "Known conflict resolver left unresolved paths: $($remaining -join ', ')"
+                }
+
+                git commit --no-edit
+                if ($LASTEXITCODE -ne 0) {
+                  throw 'Could not commit the resolved upstream merge.'
+                }
+              } else {
+                git merge --abort
+                throw 'Upstream merge produced conflicts outside the narrowly guarded known cases.'
+              }
             }
           }
 
