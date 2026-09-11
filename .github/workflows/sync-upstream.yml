@@ -61,7 +61,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             $conflicts = @(git diff --name-only --diff-filter=U)
 
-            $windowProcConflict = $originalHead -eq '75f29085995b57aa83066d665a05e134b0766297' -and
+            git merge-base --is-ancestor 75f29085995b57aa83066d665a05e134b0766297 $originalHead
+            $windowForkLineageKnown = $LASTEXITCODE -eq 0
+            $windowResolverDelta = @(git diff --name-only 75f29085995b57aa83066d665a05e134b0766297..$originalHead)
+            $onlyWindowResolverChanges = @($windowResolverDelta | Where-Object { $_ -ne '.github/workflows/sync-upstream.yml' }).Count -eq 0
+
+            $windowProcConflict = $windowForkLineageKnown -and $onlyWindowResolverChanges -and
               $upstreamSha -eq '99f1be6ee54025c121b17b77da37dd50b9acf649' -and
               $conflicts.Count -eq 1 -and $conflicts[0] -eq 'Source/VideoRenderer.cpp'
 
