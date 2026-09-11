@@ -96,24 +96,34 @@ LPCWSTR g_pszThis = L"This";
 static void RemoveParentWndProc(HWND hWnd)
 {
 	DLog(L"RemoveParentWndProc()");
-	auto pfnOldProc = (WNDPROC)GetPropW(hWnd, g_pszOldParentWndProc);
+	auto pfnOldProc = GetPropW(hWnd, g_pszOldParentWndProc);
 	if (pfnOldProc) {
-		SetWindowLongPtrW(hWnd, GWLP_WNDPROC, (LONG_PTR)pfnOldProc);
-		RemovePropW(hWnd, g_pszOldParentWndProc);
-		RemovePropW(hWnd, g_pszThis);
+		auto lpPreviousProc = SetWindowLongPtrW(hWnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(pfnOldProc));
+		if (lpPreviousProc != 0) {
+			RemovePropW(hWnd, g_pszOldParentWndProc);
+			RemovePropW(hWnd, g_pszThis);
+		} else {
+			ASSERT(false);
+		}
 	}
 }
 
 static LRESULT CALLBACK ParentWndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 {
-	auto pfnOldProc = (WNDPROC)GetPropW(hWnd, g_pszOldParentWndProc);
+	auto pfnOldProc = reinterpret_cast<WNDPROC>(GetPropW(hWnd, g_pszOldParentWndProc));
 	auto pThis = static_cast<CMpcVideoRenderer*>(GetPropW(hWnd, g_pszThis));
 
 	switch (Msg) {
 		case WM_DESTROY:
-			SetWindowLongPtrW(hWnd, GWLP_WNDPROC, (LONG_PTR)pfnOldProc);
-			RemovePropW(hWnd, g_pszOldParentWndProc);
-			RemovePropW(hWnd, g_pszThis);
+			if (pfnOldProc) {
+				auto lpPreviousProc = SetWindowLongPtrW(hWnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(pfnOldProc));
+				if (lpPreviousProc != 0) {
+					RemovePropW(hWnd, g_pszOldParentWndProc);
+					RemovePropW(hWnd, g_pszThis);
+				} else {
+					ASSERT(false);
+				}
+			}
 			break;
 		case WM_DISPLAYCHANGE:
 			DLog(L"ParentWndProc() - WM_DISPLAYCHANGE");
@@ -122,8 +132,10 @@ static LRESULT CALLBACK ParentWndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM
 		case WM_MOVE:
 			if (pThis->m_bExclusiveScreen) {
 				// I don't know why, but without this, the filter freezes when switching from fullscreen to window in DX9 mode.
-				SetWindowLongPtrW(hWnd, GWLP_WNDPROC, (LONG_PTR)pfnOldProc);
-				SetWindowLongPtrW(hWnd, GWLP_WNDPROC, (LONG_PTR)ParentWndProc);
+				if (pfnOldProc) {
+					SetWindowLongPtrW(hWnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(pfnOldProc));
+					SetWindowLongPtrW(hWnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ParentWndProc));
+				}
 			} else {
 				pThis->OnWindowMove();
 			}
@@ -147,6 +159,11 @@ static LRESULT CALLBACK ParentWndProc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM
 			}
 			break;
 */
+	}
+
+	if (!pfnOldProc || reinterpret_cast<LONG_PTR>(pfnOldProc) == reinterpret_cast<LONG_PTR>(ParentWndProc)) {
+		ASSERT(false);
+		return 0;
 	}
 
 	return CallWindowProcW(pfnOldProc, hWnd, Msg, wParam, lParam);
@@ -1419,7 +1436,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 			return DefWindowProcW(hwnd, uMsg, wParam, lParam);
 		}
 
-		SetWindowLongPtrW(hwnd, 0, (LONG_PTR)pThis);
+		SetWindowLongPtrW(hwnd, 0, reinterpret_cast<LONG_PTR>(pThis));
 	}
 
 	return pThis->OnReceiveMessage(hwnd, uMsg, wParam, lParam);
@@ -1442,10 +1459,14 @@ HRESULT CMpcVideoRenderer::Init(const bool bCreateWindow/* = false*/)
 		}
 
 		m_hWndParentMain = hwnd;
-		auto pfnOldProc = (WNDPROC)GetWindowLongPtrW(m_hWndParentMain, GWLP_WNDPROC);
-		SetWindowLongPtrW(m_hWndParentMain, GWLP_WNDPROC, (LONG_PTR)ParentWndProc);
-		SetPropW(m_hWndParentMain, g_pszOldParentWndProc, (HANDLE)pfnOldProc);
-		SetPropW(m_hWndParentMain, g_pszThis, (HANDLE)this);
+
+		auto lpPreviousProc = SetWindowLongPtrW(m_hWndParentMain, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ParentWndProc));
+		if (lpPreviousProc && lpPreviousProc != reinterpret_cast<LONG_PTR>(ParentWndProc)) {
+			SetPropW(m_hWndParentMain, g_pszOldParentWndProc, reinterpret_cast<HANDLE>(lpPreviousProc));
+			SetPropW(m_hWndParentMain, g_pszThis, reinterpret_cast<HANDLE>(this));
+		} else {
+			ASSERT(false);
+		}
 	}
 
 	if (bCreateWindow) {
