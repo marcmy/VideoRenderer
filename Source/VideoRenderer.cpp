@@ -2,7 +2,7 @@
  * RIFE migration wrapper around the existing renderer implementation.
  *
  * The legacy implementation remains byte-for-byte preserved in
- * VideoRendererLegacy.inl.  Only the settings and playback entry points are
+ * VideoRendererLegacy.inl. Only the settings and playback entry points are
  * wrapped here while the RIFE path replaces NvOFFRUC end-to-end.
  */
 
@@ -113,6 +113,17 @@ void EnsureRifeSettingsLoaded(CMpcVideoRenderer* renderer, Settings_t& settings)
 	}
 }
 
+FrameRate ResolveDisplayRate(const DisplayConfig_t& display)
+{
+	if (display.refreshRate.Numerator && display.refreshRate.Denominator) {
+		return {display.refreshRate.Numerator, display.refreshRate.Denominator};
+	}
+	// DisplayConfig is normally populated before playback. Keep a conservative
+	// fallback so "To screen" still degrades predictably during a transient
+	// display-mode transition instead of producing no presentation targets.
+	return {60, 1};
+}
+
 } // namespace
 
 STDMETHODIMP_(void) CMpcVideoRenderer::GetSettings(Settings_t& settings)
@@ -165,4 +176,130 @@ STDMETHODIMP CMpcVideoRenderer::SaveSettings()
 	}
 
 	return S_OK;
+}
+
+HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
+{
+	EnsureRifeSettingsLoaded(this, m_Sets);
+
+#ifdef _WIN64
+	const bool useRife = m_Sets.iRifeMode != RIFE_MODE_Disabled
+		&& m_VideoProcessor && m_VideoProcessor->Type() == VP_DX11;
+#else
+	const bool useRife = false;
+#endif
+	if (!useRife) {
+		return ReceiveLegacy(pSample);
+	}
+
+	if (m_bFlushing) {
+		DLog(L"CMpcVideoRenderer::Receive(RIFE) - flushing, skip sample");
+		return S_OK;
+	}
+	ASSERT(pSample);
+
+	HRESULT hr = PrepareReceive(pSample);
+	ASSERT(m_bInReceive == SUCCEEDED(hr));
+	if (FAILED(hr)) {
+		return hr == VFW_E_SAMPLE_REJECTED ? NOERROR : hr;
+	}
+
+	// Preserve the base renderer's paused-search behavior verbatim. RIFE only
+	// owns continuously running playback; frame stepping and paused redraws stay
+	// on MPCVR's mature synchronous path.
+	if (m_State == State_Paused) {
+		m_bInReceive = FALSE;
+		{
+			CAutoLock cVideoLock(&m_InterfaceLock);
+			if (m_State == State_Stopped) {
+				return NOERROR;
+			}
+			m_bInReceive = TRUE;
+		}
+		Ready();
+	}
+	if (m_State == State_Paused) {
+		m_bInReceive = FALSE;
+		CAutoLock cRendererLock(&m_RendererLock);
+		DoRenderSample(m_pMediaSample);
+	}
+
+	bool rifeSubmitted = false;
+	if (m_State == State_Running && m_VideoProcessor->Type() == VP_DX11) {
+		// BeginFlush enters with interface/renderer locks held and waits for
+		// m_bInReceive to clear. Advertise Receive as inactive before entering
+		// that lock order, then revalidate the graph state inside it.
+		m_bInReceive = FALSE;
+		{
+			CAutoLock cVideoLock(&m_InterfaceLock);
+			if (m_State != State_Running || m_bFlushing) {
+				return NOERROR;
+			}
+			m_bInReceive = TRUE;
+
+			CAutoLock cRendererLock(&m_RendererLock);
+			if (!m_RifePipeline) {
+				m_RifePipeline = std::make_unique<CRifePlaybackPipeline>(this);
+			}
+
+			auto* dx11 = static_cast<CDX11VideoProcessor*>(m_VideoProcessor.get());
+			const uint64_t generation = m_FrameInterpolationPresenterGeneration.load(std::memory_order_acquire);
+			const FrameRate displayRate = ResolveDisplayRate(m_DisplayConfig);
+			const REFERENCE_TIME frameDuration = m_FrameStats.GetAverageFrameDuration();
+			rifeSubmitted = m_RifePipeline->SubmitSample(
+				dx11,
+				m_pMediaSample,
+				m_Sets,
+				generation,
+				displayRate,
+				frameDuration);
+			if (rifeSubmitted) {
+				// The timed presenter owns all real/synthetic presentation from here.
+				CancelNotification();
+			}
+		}
+	}
+
+	if (rifeSubmitted) {
+		m_bInReceive = FALSE;
+
+		CAutoLock cVideoLock(&m_InterfaceLock);
+		if (m_State == State_Stopped) {
+			return NOERROR;
+		}
+		CAutoLock cRendererLock(&m_RendererLock);
+		ClearPendingSample();
+		SendEndOfStream();
+		CancelNotification();
+		return NOERROR;
+	}
+
+	// A full source pool, device transition, or source-preparation failure must
+	// never stall playback. Keep PrepareReceive's original timing notification,
+	// render this frame normally, and invalidate any partially queued RIFE work.
+	if (m_RifePipeline) {
+		m_RifePipeline->Reset();
+	}
+
+	hr = WaitForRenderTime();
+	if (FAILED(hr)) {
+		m_bInReceive = FALSE;
+		return NOERROR;
+	}
+
+	m_bInReceive = FALSE;
+	ResetFrameInterpolationPresenterQueue();
+
+	CAutoLock cVideoLock(&m_InterfaceLock);
+	if (m_State == State_Stopped) {
+		return NOERROR;
+	}
+	CAutoLock cRendererLock(&m_RendererLock);
+	if (m_State == State_Running) {
+		Render(m_pMediaSample);
+	}
+	ClearPendingSample();
+	SendEndOfStream();
+	CancelNotification();
+	return NOERROR;
 }
