@@ -1,0 +1,198 @@
+name: Apply RIFE runtime correctness patch
+
+on:
+  push:
+    branches:
+      - feature/rife-tensorrt-interpolation
+    paths:
+      - .github/workflows/rife-runtime-correctness-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feature/rife-tensorrt-interpolation
+          fetch-depth: 0
+
+      - name: Fix CUDA ownership synchronization and RIFE v1 padding semantics
+        shell: python
+        run: |
+          from pathlib import Path
+
+          runtime_path = Path('tools/RifeTensorRTRuntime/RifeTensorRTRuntime.cpp')
+          runtime = runtime_path.read_text(encoding='utf-8')
+          start = runtime.index('    int Interpolate(const MpcvrRifeRequest& request, MpcvrRifeStats& stats)\n')
+          end = runtime.index('\n\nprivate:\n', start)
+          replacement = r'''    int Interpolate(const MpcvrRifeRequest& request, MpcvrRifeStats& stats)
+    {
+        if (!request.first || !request.second || !request.output || request.timestep <= 0.0f || request.timestep >= 1.0f) {
+            return kInvalidArgument;
+        }
+        if (request.contextIndex >= m_contexts.size()) return kInvalidArgument;
+
+        std::scoped_lock lock(*m_contextMutexes[request.contextIndex]);
+        auto& state = *m_contexts[request.contextIndex];
+        if (cudaSetDevice(m_cudaDevice) != cudaSuccess) return kCudaFailure;
+
+        cudaGraphicsResource_t firstResource = m_registrations.Get(request.first, false);
+        cudaGraphicsResource_t secondResource = m_registrations.Get(request.second, false);
+        cudaGraphicsResource_t outputResource = m_registrations.Get(request.output, true);
+        if (!firstResource || !secondResource || !outputResource) return kCudaFailure;
+
+        std::array<cudaGraphicsResource_t, 3> resources{firstResource, secondResource, outputResource};
+        if (cudaGraphicsMapResources(static_cast<int>(resources.size()), resources.data(), state.stream) != cudaSuccess) {
+            return kCudaFailure;
+        }
+
+        bool mapped = true;
+        auto releaseMappings = [&]() -> cudaError_t {
+            if (!mapped) return cudaSuccess;
+            const cudaError_t unmapResult = cudaGraphicsUnmapResources(
+                static_cast<int>(resources.size()), resources.data(), state.stream);
+            mapped = false;
+            // Unmap is stream-ordered. The caller hands the output texture back to
+            // D3D11 immediately after this function returns, so wait for the
+            // ownership transition itself, not merely the preceding inference event.
+            const cudaError_t syncResult = cudaStreamSynchronize(state.stream);
+            return unmapResult != cudaSuccess ? unmapResult : syncResult;
+        };
+
+        cudaArray_t firstArray = nullptr;
+        cudaArray_t secondArray = nullptr;
+        cudaArray_t outputArray = nullptr;
+        if (cudaGraphicsSubResourceGetMappedArray(&firstArray, firstResource, 0, 0) != cudaSuccess ||
+            cudaGraphicsSubResourceGetMappedArray(&secondArray, secondResource, 0, 0) != cudaSuccess ||
+            cudaGraphicsSubResourceGetMappedArray(&outputArray, outputResource, 0, 0) != cudaSuccess) {
+            releaseMappings();
+            return kCudaFailure;
+        }
+
+        if (cudaEventRecord(state.startEvent, state.stream) != cudaSuccess) {
+            releaseMappings();
+            return kCudaFailure;
+        }
+        if (MpcvrRifePackInput(firstArray, secondArray, state.input, m_inputIsFp16,
+                static_cast<int>(m_width), static_cast<int>(m_height),
+                static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
+                request.timestep, state.stream) != cudaSuccess) {
+            releaseMappings();
+            return kCudaFailure;
+        }
+
+        const nvinfer1::Dims4 inputShape{1, 11, static_cast<int>(m_paddedHeight), static_cast<int>(m_paddedWidth)};
+        if (!state.context->setInputShape(m_inputName.c_str(), inputShape) ||
+            !state.context->setTensorAddress(m_inputName.c_str(), state.input) ||
+            !state.context->setTensorAddress(m_outputName.c_str(), state.output) ||
+            !state.context->enqueueV3(state.stream)) {
+            const cudaError_t releaseResult = releaseMappings();
+            return releaseResult == cudaSuccess ? kTensorRtFailure : kCudaFailure;
+        }
+
+        if (MpcvrRifeWriteOutput(state.output, m_outputIsFp16, outputArray,
+                static_cast<int>(m_width), static_cast<int>(m_height),
+                static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight), state.stream) != cudaSuccess) {
+            releaseMappings();
+            return kCudaFailure;
+        }
+
+        if (cudaEventRecord(state.endEvent, state.stream) != cudaSuccess) {
+            releaseMappings();
+            return kCudaFailure;
+        }
+        if (releaseMappings() != cudaSuccess) return kCudaFailure;
+
+        float elapsed = 0.0f;
+        if (cudaEventElapsedTime(&elapsed, state.startEvent, state.endEvent) != cudaSuccess) return kCudaFailure;
+        stats.inferenceMs = elapsed;
+        stats.engineBytes = m_engineBytes;
+        return kOk;
+    }'''
+          runtime = runtime[:start] + replacement + runtime[end:]
+          runtime_path.write_text(runtime, encoding='utf-8')
+
+          kernel_path = Path('tools/RifeTensorRTRuntime/RifeKernels.cu')
+          kernel = kernel_path.read_text(encoding='utf-8')
+          start = kernel.index('template <typename T>\n__global__ void PackInputKernel(')
+          end = kernel.index('template <typename T>\n__global__ void WriteOutputKernel(', start)
+          replacement = r'''template <typename T>
+__global__ void PackInputKernel(
+    cudaTextureObject_t first,
+    cudaTextureObject_t second,
+    T* tensor,
+    int sourceWidth,
+    int sourceHeight,
+    int paddedWidth,
+    int paddedHeight,
+    float timestep)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= paddedWidth || y >= paddedHeight) {
+        return;
+    }
+
+    const size_t plane = static_cast<size_t>(paddedWidth) * paddedHeight;
+    const size_t pixel = static_cast<size_t>(y) * paddedWidth + x;
+
+    float r0 = 0.0f, g0 = 0.0f, b0 = 0.0f;
+    float r1 = 0.0f, g1 = 0.0f, b1 = 0.0f;
+    float timeValue = 0.0f;
+    float gridX = 0.0f;
+    float gridY = 0.0f;
+    float multiplierX = 0.0f;
+    float multiplierY = 0.0f;
+
+    // vs-mlrt's RIFE v1 wrapper constructs the timestep/grid/multiplier
+    // clips at the original video dimensions before the inference layer pads
+    // to the model's required multiple. Match that contract: visible pixels
+    // use source-space normalization and the padded tail is zero-filled.
+    if (x < sourceWidth && y < sourceHeight) {
+        const uchar4 a = tex2D<uchar4>(first, static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f);
+        const uchar4 b = tex2D<uchar4>(second, static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f);
+        constexpr float inv255 = 1.0f / 255.0f;
+        b0 = a.x * inv255;
+        g0 = a.y * inv255;
+        r0 = a.z * inv255;
+        b1 = b.x * inv255;
+        g1 = b.y * inv255;
+        r1 = b.z * inv255;
+
+        timeValue = timestep;
+        gridX = sourceWidth > 1 ? (2.0f * x / static_cast<float>(sourceWidth - 1) - 1.0f) : 0.0f;
+        gridY = sourceHeight > 1 ? (2.0f * y / static_cast<float>(sourceHeight - 1) - 1.0f) : 0.0f;
+        multiplierX = sourceWidth > 1 ? 2.0f / static_cast<float>(sourceWidth - 1) : 0.0f;
+        multiplierY = sourceHeight > 1 ? 2.0f / static_cast<float>(sourceHeight - 1) : 0.0f;
+    }
+
+    Store(tensor, 0 * plane + pixel, r0);
+    Store(tensor, 1 * plane + pixel, g0);
+    Store(tensor, 2 * plane + pixel, b0);
+    Store(tensor, 3 * plane + pixel, r1);
+    Store(tensor, 4 * plane + pixel, g1);
+    Store(tensor, 5 * plane + pixel, b1);
+    Store(tensor, 6 * plane + pixel, timeValue);
+    Store(tensor, 7 * plane + pixel, gridX);
+    Store(tensor, 8 * plane + pixel, gridY);
+    Store(tensor, 9 * plane + pixel, multiplierX);
+    Store(tensor, 10 * plane + pixel, multiplierY);
+}
+
+'''
+          kernel = kernel[:start] + replacement + kernel[end:]
+          kernel_path.write_text(kernel, encoding='utf-8')
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tools/RifeTensorRTRuntime/RifeTensorRTRuntime.cpp tools/RifeTensorRTRuntime/RifeKernels.cu
+          git diff --cached --check
+          git commit -m "fix: harden RIFE CUDA interop and input padding"
+          git push origin HEAD:feature/rife-tensorrt-interpolation
