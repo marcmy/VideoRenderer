@@ -163,7 +163,12 @@ std::vector<FrameInterpolationTarget> CFrameInterpolationScheduler::Schedule(
             ++m_nextTargetIndex;
             continue;
         }
-        if (presentationTime >= secondTime) {
+        if (presentationTime > secondTime) {
+            break;
+        }
+        if (presentationTime == secondTime) {
+            targets.push_back({presentationTime, 1.0, true});
+            ++m_nextTargetIndex;
             break;
         }
 
