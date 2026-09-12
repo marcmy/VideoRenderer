@@ -72,6 +72,34 @@ void Test23976TimesFiveUses11988Grid()
     }
 }
 
+void TestRoundedNtscRatesUseCanonicalMultiplierGrids()
+{
+    // DirectShow frame durations are integer 100-ns ticks. A 23.976 or 29.97
+    // source therefore commonly reaches the renderer as these rounded rational
+    // rates rather than the exact 24000/1001 or 30000/1001 fractions.
+    {
+        CFrameInterpolationScheduler scheduler;
+        scheduler.Configure(FrameInterpolationRateMode::Movie5x, {}, {});
+        const auto targets = scheduler.Schedule(0, 417083, Rate(10'000'000, 417083));
+        Check(targets.size() == 5, "rounded 23.976 x5 target count");
+        if (targets.size() == 5) {
+            Check(targets[3].presentationTime == 333667,
+                "rounded 23.976 source snaps to canonical 119.88 Hz grid");
+        }
+    }
+
+    {
+        CFrameInterpolationScheduler scheduler;
+        scheduler.Configure(FrameInterpolationRateMode::Movie2x, {}, {});
+        const auto targets = scheduler.Schedule(0, 333667, Rate(10'000'000, 333667));
+        Check(targets.size() == 2, "rounded 29.97 x2 target count");
+        if (targets.size() == 2) {
+            Check(targets[0].presentationTime == 166833,
+                "rounded 29.97 source snaps to canonical 59.94 Hz grid");
+        }
+    }
+}
+
 void Test24To60KeepsUniformGridAcrossPairs()
 {
     CFrameInterpolationScheduler scheduler;
@@ -203,6 +231,7 @@ int main()
 {
     Test24To120();
     Test23976TimesFiveUses11988Grid();
+    TestRoundedNtscRatesUseCanonicalMultiplierGrids();
     Test24To60KeepsUniformGridAcrossPairs();
     TestMovieTwoAndHalfTimes();
     TestToScreenUsesPreciseDisplayRate();
