@@ -38,12 +38,17 @@ void Test24To120()
     scheduler.Configure(FrameInterpolationRateMode::Fixed120, {}, {});
 
     const auto targets = scheduler.Schedule(0, 416667, Rate(24));
-    Check(targets.size() == 4, "24 -> 120 must synthesize four frames per source interval");
-    if (targets.size() == 4) {
+    Check(targets.size() == 5, "24 -> 120 must return four synthetic frames plus the exact source endpoint");
+    if (targets.size() == 5) {
         CheckNear(targets[0].timestep, 0.2, 2.0e-5, "24 -> 120 t0");
         CheckNear(targets[1].timestep, 0.4, 2.0e-5, "24 -> 120 t1");
         CheckNear(targets[2].timestep, 0.6, 2.0e-5, "24 -> 120 t2");
         CheckNear(targets[3].timestep, 0.8, 2.0e-5, "24 -> 120 t3");
+        Check(!targets[0].exactSource && !targets[1].exactSource
+                && !targets[2].exactSource && !targets[3].exactSource,
+            "24 -> 120 interior targets are synthetic");
+        Check(targets[4].presentationTime == 416667 && targets[4].exactSource,
+            "24 -> 120 source endpoint lands on the 120 Hz grid");
     }
 }
 
@@ -56,12 +61,14 @@ void Test23976TimesFiveUses11988Grid()
     constexpr int64_t second = 417083; // rounded 1001/24000 s in 100 ns units
     const auto targets = scheduler.Schedule(first, second, Rate(24000, 1001));
 
-    Check(targets.size() == 4, "24000/1001 x5 must synthesize four interior frames");
-    if (targets.size() == 4) {
+    Check(targets.size() == 5, "24000/1001 x5 returns four synthetic frames plus exact source endpoint");
+    if (targets.size() == 5) {
         Check(targets[0].presentationTime == 83417, "119.88 grid target 1");
         Check(targets[1].presentationTime == 166833, "119.88 grid target 2");
         Check(targets[2].presentationTime == 250250, "119.88 grid target 3");
         Check(targets[3].presentationTime == 333667, "119.88 grid target 4");
+        Check(targets[4].presentationTime == second && targets[4].exactSource,
+            "119.88 grid target 5 is the real source endpoint");
     }
 }
 
@@ -74,12 +81,14 @@ void Test24To60KeepsUniformGridAcrossPairs()
     const auto secondPair = scheduler.Schedule(416667, 833333, Rate(24));
 
     Check(firstPair.size() == 2, "24 -> 60 first pair target count");
-    Check(secondPair.size() == 2, "24 -> 60 second pair target count");
-    if (firstPair.size() == 2 && secondPair.size() == 2) {
+    Check(secondPair.size() == 3, "24 -> 60 second pair includes the coincident source endpoint");
+    if (firstPair.size() == 2 && secondPair.size() == 3) {
         Check(firstPair[0].presentationTime == 166667, "60 Hz grid 1");
         Check(firstPair[1].presentationTime == 333333, "60 Hz grid 2");
         Check(secondPair[0].presentationTime == 500000, "60 Hz grid 3");
         Check(secondPair[1].presentationTime == 666667, "60 Hz grid 4");
+        Check(secondPair[2].presentationTime == 833333 && secondPair[2].exactSource,
+            "60 Hz grid 5 uses the coincident real source frame");
         CheckNear(secondPair[0].timestep, 0.2, 2.0e-5, "24 -> 60 phase wraps to .2");
         CheckNear(secondPair[1].timestep, 0.6, 2.0e-5, "24 -> 60 phase wraps to .6");
     }
@@ -94,12 +103,14 @@ void TestMovieTwoAndHalfTimes()
     const auto secondPair = scheduler.Schedule(416667, 833333, Rate(24));
 
     Check(firstPair.size() == 2, "24 x2.5 first interval has two synthetic targets");
-    Check(secondPair.size() == 2, "24 x2.5 second interval has two synthetic targets");
-    if (firstPair.size() == 2 && secondPair.size() == 2) {
+    Check(secondPair.size() == 3, "24 x2.5 second interval ends on the target grid");
+    if (firstPair.size() == 2 && secondPair.size() == 3) {
         Check(firstPair[0].presentationTime == 166667, "x2.5 target 1");
         Check(firstPair[1].presentationTime == 333333, "x2.5 target 2");
         Check(secondPair[0].presentationTime == 500000, "x2.5 target 3");
         Check(secondPair[1].presentationTime == 666667, "x2.5 target 4");
+        Check(secondPair[2].presentationTime == 833333 && secondPair[2].exactSource,
+            "x2.5 target 5 is the real endpoint");
     }
 }
 
