@@ -38,6 +38,21 @@ constexpr int kTensorRtFailure = -4;
 constexpr uint32_t kMaxContexts = 3;
 constexpr uint32_t kPadMultiple = 32;
 
+std::filesystem::path ThisModuleDirectory()
+{
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(&ThisModuleDirectory), &module) || !module) {
+        return {};
+    }
+
+    std::array<wchar_t, 32768> buffer{};
+    const DWORD length = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (!length || length >= buffer.size()) return {};
+    return std::filesystem::path(buffer.data()).parent_path();
+}
+
 uint32_t RoundUp(uint32_t value, uint32_t multiple)
 {
     return (value + multiple - 1) / multiple * multiple;
@@ -241,6 +256,13 @@ public:
         m_cachePath = params.cachePath;
         m_device = params.device;
         m_device->AddRef();
+
+        const auto runtimeDirectory = ThisModuleDirectory();
+        if (runtimeDirectory.empty()) return kTensorRtFailure;
+        const std::string internalLibraryPath = runtimeDirectory.string();
+        if (!nvinfer1::setInternalLibraryPath(internalLibraryPath.c_str())) {
+            return kTensorRtFailure;
+        }
 
         unsigned cudaCount = 0;
         std::array<int, 8> cudaDevices{};
