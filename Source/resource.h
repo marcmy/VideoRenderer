@@ -66,30 +66,30 @@
 #define IDF_PS_11_CONVERT_BITMAP_TO_PQ2 838
 #define IDF_PS_11_INTERP_MITCHELL4_X    840
 #define IDF_PS_11_INTERP_MITCHELL4_Y    841
-#define IDF_PS_11_INTERP_CATMULL4_X     842
-#define IDF_PS_11_INTERP_CATMULL4_Y     843
-#define IDF_PS_11_INTERP_LANCZOS2_X     844
-#define IDF_PS_11_INTERP_LANCZOS2_Y     845
-#define IDF_PS_11_INTERP_LANCZOS3_X     846
-#define IDF_PS_11_INTERP_LANCZOS3_Y     847
-#define IDF_PS_11_INTERP_JINC2          848
-#define IDF_PS_11_CONVOL_BOX_X          850
-#define IDF_PS_11_CONVOL_BOX_Y          851
-#define IDF_PS_11_CONVOL_BILINEAR_X     852
-#define IDF_PS_11_CONVOL_BILINEAR_Y     853
-#define IDF_PS_11_CONVOL_HAMMING_X      854
-#define IDF_PS_11_CONVOL_HAMMING_Y      855
-#define IDF_PS_11_CONVOL_BICUBIC05_X    856
-#define IDF_PS_11_CONVOL_BICUBIC05_Y    857
-#define IDF_PS_11_CONVOL_BICUBIC15_X    858
-#define IDF_PS_11_CONVOL_BICUBIC15_Y    859
-#define IDF_PS_11_CONVOL_LANCZOS_X      860
-#define IDF_PS_11_CONVOL_LANCZOS_Y      861
-#define IDF_PS_11_HALFOU_TO_INTERLACE   870
-#define IDF_PS_11_FINAL_PASS            880
-#define IDF_PS_11_FINAL_PASS_10         881
+#define IDF_PS_11_INTERP_CATMULL4_X      842
+#define IDF_PS_11_INTERP_CATMULL4_Y      843
+#define IDF_PS_11_INTERP_LANCZOS2_X      844
+#define IDF_PS_11_INTERP_LANCZOS2_Y      845
+#define IDF_PS_11_INTERP_LANCZOS3_X      846
+#define IDF_PS_11_INTERP_LANCZOS3_Y      847
+#define IDF_PS_11_INTERP_JINC2           848
+#define IDF_PS_11_CONVOL_BOX_X           850
+#define IDF_PS_11_CONVOL_BOX_Y           851
+#define IDF_PS_11_CONVOL_BILINEAR_X      852
+#define IDF_PS_11_CONVOL_BILINEAR_Y      853
+#define IDF_PS_11_CONVOL_HAMMING_X       854
+#define IDF_PS_11_CONVOL_HAMMING_Y       855
+#define IDF_PS_11_CONVOL_BICUBIC05_X     856
+#define IDF_PS_11_CONVOL_BICUBIC05_Y     857
+#define IDF_PS_11_CONVOL_BICUBIC15_X     858
+#define IDF_PS_11_CONVOL_BICUBIC15_Y     859
+#define IDF_PS_11_CONVOL_LANCZOS_X       860
+#define IDF_PS_11_CONVOL_LANCZOS_Y       861
+#define IDF_PS_11_HALFOU_TO_INTERLACE    870
+#define IDF_PS_11_FINAL_PASS             880
+#define IDF_PS_11_FINAL_PASS_10          881
 #define IDF_PS_11_HDR10_TONEMAP         882
-#define IDF_PS_11_TEST                  900
+#define IDF_PS_11_TEST                   900
 #define IDC_EDIT1                       1001
 #define IDC_EDIT2                       1002
 #define IDC_EDIT_DISPLAYMAX             1003
@@ -154,6 +154,9 @@
 #define IDC_MAXINE_OVERSAMPLE           1090
 #define IDC_STATIC_MAXINE_OVERSAMPLE    1091
 #define IDC_BUTTON_FRAMEINTERPOLATION    1092
+
+// The original FRUC IDs are retained as aliases so old resource/compiler
+// references remain source-compatible while the dialog becomes RIFE-specific.
 #define IDC_FRUC_MODE                    1093
 #define IDC_FRUC_SOURCE_LIMIT            1094
 #define IDC_FRUC_MAX_OUTPUT              1095
@@ -161,13 +164,25 @@
 #define IDC_FRUC_FALLBACK                1097
 #define IDC_BUTTON_FRUC_DEFAULTS         1098
 
+#define IDC_RIFE_MODE                    IDC_FRUC_MODE
+#define IDC_RIFE_CUSTOM_FPS              IDC_FRUC_SOURCE_LIMIT
+#define IDC_RIFE_GPU_THREADS             IDC_FRUC_MAX_OUTPUT
+#define IDC_RIFE_GPU                     IDC_FRUC_GPU
+#define IDC_RIFE_PERFORMANCE_BOOST       IDC_FRUC_FALLBACK
+#define IDC_BUTTON_RIFE_DEFAULTS         IDC_BUTTON_FRUC_DEFAULTS
+#define IDC_RIFE_SCENE_DETECTION         1099
+#define IDC_RIFE_SCENE_PROCESSING        1100
+#define IDC_RIFE_DUPLICATE_REMOVAL       1101
+#define IDC_RIFE_MODEL                   1102
+#define IDC_STATIC_RIFE_CUSTOM_FPS       1103
+
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        108
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1099
+#define _APS_NEXT_CONTROL_VALUE         1104
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif
