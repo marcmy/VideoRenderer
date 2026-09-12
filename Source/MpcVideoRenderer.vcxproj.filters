@@ -45,6 +45,12 @@
     <ClCompile Include="DX11VideoProcessor.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="FrameInterpolationScheduler.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="RifeFrameInterpolation.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="Times.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -153,6 +159,15 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="DX11VideoProcessor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="FrameInterpolationScheduler.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="RifeFrameInterpolation.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="RifeRuntimeApi.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="FrameStats.h">
