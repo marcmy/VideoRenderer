@@ -287,11 +287,16 @@ public:
         }
 
         bool mapped = true;
-        auto unmap = [&]() {
-            if (mapped) {
-                cudaGraphicsUnmapResources(static_cast<int>(resources.size()), resources.data(), state.stream);
-                mapped = false;
-            }
+        auto releaseMappings = [&]() -> cudaError_t {
+            if (!mapped) return cudaSuccess;
+            const cudaError_t unmapResult = cudaGraphicsUnmapResources(
+                static_cast<int>(resources.size()), resources.data(), state.stream);
+            mapped = false;
+            // Unmap is stream-ordered. The caller hands the output texture back to
+            // D3D11 immediately after this function returns, so wait for the
+            // ownership transition itself, not merely the preceding inference event.
+            const cudaError_t syncResult = cudaStreamSynchronize(state.stream);
+            return unmapResult != cudaSuccess ? unmapResult : syncResult;
         };
 
         cudaArray_t firstArray = nullptr;
@@ -300,16 +305,19 @@ public:
         if (cudaGraphicsSubResourceGetMappedArray(&firstArray, firstResource, 0, 0) != cudaSuccess ||
             cudaGraphicsSubResourceGetMappedArray(&secondArray, secondResource, 0, 0) != cudaSuccess ||
             cudaGraphicsSubResourceGetMappedArray(&outputArray, outputResource, 0, 0) != cudaSuccess) {
-            unmap();
+            releaseMappings();
             return kCudaFailure;
         }
 
-        cudaEventRecord(state.startEvent, state.stream);
+        if (cudaEventRecord(state.startEvent, state.stream) != cudaSuccess) {
+            releaseMappings();
+            return kCudaFailure;
+        }
         if (MpcvrRifePackInput(firstArray, secondArray, state.input, m_inputIsFp16,
                 static_cast<int>(m_width), static_cast<int>(m_height),
                 static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
                 request.timestep, state.stream) != cudaSuccess) {
-            unmap();
+            releaseMappings();
             return kCudaFailure;
         }
 
@@ -318,23 +326,25 @@ public:
             !state.context->setTensorAddress(m_inputName.c_str(), state.input) ||
             !state.context->setTensorAddress(m_outputName.c_str(), state.output) ||
             !state.context->enqueueV3(state.stream)) {
-            unmap();
-            return kTensorRtFailure;
+            const cudaError_t releaseResult = releaseMappings();
+            return releaseResult == cudaSuccess ? kTensorRtFailure : kCudaFailure;
         }
 
         if (MpcvrRifeWriteOutput(state.output, m_outputIsFp16, outputArray,
                 static_cast<int>(m_width), static_cast<int>(m_height),
                 static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight), state.stream) != cudaSuccess) {
-            unmap();
+            releaseMappings();
             return kCudaFailure;
         }
 
-        cudaEventRecord(state.endEvent, state.stream);
-        unmap();
-        if (cudaEventSynchronize(state.endEvent) != cudaSuccess) return kCudaFailure;
+        if (cudaEventRecord(state.endEvent, state.stream) != cudaSuccess) {
+            releaseMappings();
+            return kCudaFailure;
+        }
+        if (releaseMappings() != cudaSuccess) return kCudaFailure;
 
         float elapsed = 0.0f;
-        cudaEventElapsedTime(&elapsed, state.startEvent, state.endEvent);
+        if (cudaEventElapsedTime(&elapsed, state.startEvent, state.endEvent) != cudaSuccess) return kCudaFailure;
         stats.inferenceMs = elapsed;
         stats.engineBytes = m_engineBytes;
         return kOk;

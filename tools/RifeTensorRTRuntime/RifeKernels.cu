@@ -51,6 +51,15 @@ __global__ void PackInputKernel(
 
     float r0 = 0.0f, g0 = 0.0f, b0 = 0.0f;
     float r1 = 0.0f, g1 = 0.0f, b1 = 0.0f;
+    float timeValue = 0.0f;
+    float gridX = 0.0f;
+    float gridY = 0.0f;
+    float multiplierX = 0.0f;
+    float multiplierY = 0.0f;
+
+    // RIFE v1 auxiliary clips are constructed at the original video size
+    // before padding to the model's 32-pixel multiple. Keep source-space
+    // normalization for visible pixels and zero-fill the padded tail.
     if (x < sourceWidth && y < sourceHeight) {
         const uchar4 a = tex2D<uchar4>(first, static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f);
         const uchar4 b = tex2D<uchar4>(second, static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f);
@@ -61,6 +70,12 @@ __global__ void PackInputKernel(
         b1 = b.x * inv255;
         g1 = b.y * inv255;
         r1 = b.z * inv255;
+
+        timeValue = timestep;
+        gridX = sourceWidth > 1 ? (2.0f * x / static_cast<float>(sourceWidth - 1) - 1.0f) : 0.0f;
+        gridY = sourceHeight > 1 ? (2.0f * y / static_cast<float>(sourceHeight - 1) - 1.0f) : 0.0f;
+        multiplierX = sourceWidth > 1 ? 2.0f / static_cast<float>(sourceWidth - 1) : 0.0f;
+        multiplierY = sourceHeight > 1 ? 2.0f / static_cast<float>(sourceHeight - 1) : 0.0f;
     }
 
     Store(tensor, 0 * plane + pixel, r0);
@@ -69,14 +84,11 @@ __global__ void PackInputKernel(
     Store(tensor, 3 * plane + pixel, r1);
     Store(tensor, 4 * plane + pixel, g1);
     Store(tensor, 5 * plane + pixel, b1);
-    Store(tensor, 6 * plane + pixel, timestep);
-
-    const float gridX = paddedWidth > 1 ? (2.0f * x / static_cast<float>(paddedWidth - 1) - 1.0f) : 0.0f;
-    const float gridY = paddedHeight > 1 ? (2.0f * y / static_cast<float>(paddedHeight - 1) - 1.0f) : 0.0f;
+    Store(tensor, 6 * plane + pixel, timeValue);
     Store(tensor, 7 * plane + pixel, gridX);
     Store(tensor, 8 * plane + pixel, gridY);
-    Store(tensor, 9 * plane + pixel, paddedWidth > 1 ? 2.0f / static_cast<float>(paddedWidth - 1) : 0.0f);
-    Store(tensor, 10 * plane + pixel, paddedHeight > 1 ? 2.0f / static_cast<float>(paddedHeight - 1) : 0.0f);
+    Store(tensor, 9 * plane + pixel, multiplierX);
+    Store(tensor, 10 * plane + pixel, multiplierY);
 }
 
 template <typename T>
