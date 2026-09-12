@@ -5,6 +5,7 @@
 #include "DX11VideoProcessor.h"
 #include "NvidiaSceneChangeDetector.h"
 #include "RifeFrameInterpolation.h"
+#include "RifeSceneBlender.h"
 #include "VideoRenderer.h"
 
 #include <algorithm>
@@ -325,6 +326,7 @@ struct CRifePlaybackPipeline::Impl
 
     CNvidiaSceneChangeDetector nvofDetector;
     ImageCutDetector imageDetector;
+    CRifeSceneBlender sceneBlender;
     CComPtr<ID3D11Texture2D> outputTexture;
     CComPtr<ID3D11Device> outputDevice;
     UINT outputWidth = 0;
@@ -697,9 +699,18 @@ struct CRifePlaybackPipeline::Impl
             }
 
             if (sceneCut) {
-                // Repeat is the default. Until the dedicated GPU blend path is
-                // selected below, nearest-real-frame repetition is also the
-                // safe fallback if blend resources cannot be produced.
+                if (second.settings.iRifeSceneProcessing == RIFE_SCENE_PROCESS_Blend
+                        && !IsLate(second, target.presentationTime)
+                        && device && desc.Width && desc.Height
+                        && EnsureOutputTexture(device, desc.Width, desc.Height)
+                        && sceneBlender.Blend(device, first.texture, second.texture,
+                            outputTexture, static_cast<float>(target.timestep))) {
+                    QueueTexture(second, outputTexture, target.presentationTime, true);
+                    continue;
+                }
+
+                // Repeat is the default and also the safe fallback if the GPU
+                // blend path cannot produce a frame.
                 ID3D11Texture2D* repeated = target.timestep < 0.5
                     ? first.texture.p : second.texture.p;
                 QueueTexture(second, repeated, target.presentationTime, true);
@@ -766,6 +777,7 @@ struct CRifePlaybackPipeline::Impl
                 schedulerConfigured = false;
                 nvofDetector.Reset();
                 imageDetector.Reset();
+                sceneBlender.Reset();
                 removeEveryOtherToggle = false;
             }
 
