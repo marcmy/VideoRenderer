@@ -21,17 +21,40 @@ if(NOT TENSORRT_ROOT)
 endif()
 
 find_package(CUDAToolkit REQUIRED)
-find_path(TENSORRT_INCLUDE_DIR NvInfer.h
-    HINTS "${TENSORRT_ROOT}" "${TENSORRT_ROOT}/include"
+
+set(_TENSORRT_INCLUDE_HINTS
+    "${TENSORRT_ROOT}/include"
+    "${TENSORRT_ROOT}"
+)
+set(_TENSORRT_LIBRARY_HINTS
+    "${TENSORRT_ROOT}/lib"
+    "${TENSORRT_ROOT}/lib/x64"
+    "${TENSORRT_ROOT}"
+)
+
+find_path(TENSORRT_INCLUDE_DIR
+    NAMES NvInfer.h
+    HINTS ${_TENSORRT_INCLUDE_HINTS}
     PATH_SUFFIXES include)
-find_library(TENSORRT_NVINFER nvinfer
-    HINTS "${TENSORRT_ROOT}" "${TENSORRT_ROOT}/lib" "${TENSORRT_ROOT}/lib/x64"
+find_library(TENSORRT_NVINFER
+    NAMES nvinfer nvinfer_11 nvinfer_10
+    HINTS ${_TENSORRT_LIBRARY_HINTS}
     PATH_SUFFIXES lib lib/x64)
-find_library(TENSORRT_ONNXPARSER nvonnxparser
-    HINTS "${TENSORRT_ROOT}" "${TENSORRT_ROOT}/lib" "${TENSORRT_ROOT}/lib/x64"
+find_library(TENSORRT_ONNXPARSER
+    NAMES nvonnxparser nvonnxparser_11 nvonnxparser_10
+    HINTS ${_TENSORRT_LIBRARY_HINTS}
     PATH_SUFFIXES lib lib/x64)
 
+message(STATUS "TensorRT root: ${TENSORRT_ROOT}")
+message(STATUS "TensorRT include: ${TENSORRT_INCLUDE_DIR}")
+message(STATUS "TensorRT nvinfer: ${TENSORRT_NVINFER}")
+message(STATUS "TensorRT nvonnxparser: ${TENSORRT_ONNXPARSER}")
+
 if(NOT TENSORRT_INCLUDE_DIR OR NOT TENSORRT_NVINFER OR NOT TENSORRT_ONNXPARSER)
+    file(GLOB _TENSORRT_LIB_DIAGNOSTIC
+        "${TENSORRT_ROOT}/lib/*.lib"
+        "${TENSORRT_ROOT}/lib/x64/*.lib")
+    message(STATUS "TensorRT import libraries found: ${_TENSORRT_LIB_DIAGNOSTIC}")
     message(FATAL_ERROR "TensorRT headers/libraries were not found below TENSORRT_ROOT=${TENSORRT_ROOT}")
 endif()
 
@@ -70,6 +93,4 @@ target_link_libraries(MPCVRRifeRuntime64 PRIVATE
     bcrypt
 )
 
-message(STATUS "TensorRT include: ${TENSORRT_INCLUDE_DIR}")
-message(STATUS "TensorRT nvinfer: ${TENSORRT_NVINFER}")
 message(STATUS "CUDA toolkit: ${CUDAToolkit_VERSION}")
