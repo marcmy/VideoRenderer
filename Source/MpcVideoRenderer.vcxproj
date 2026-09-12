@@ -85,6 +85,7 @@
     <ClCompile Include="NvidiaSceneChangeDetector.cpp" />
     <ClCompile Include="PropPage.cpp" />
     <ClCompile Include="renbase2.cpp" />
+    <ClCompile Include="RifeDX11Bridge.cpp" />
     <ClCompile Include="RifeFrameInterpolation.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
