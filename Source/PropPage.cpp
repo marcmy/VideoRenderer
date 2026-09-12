@@ -23,6 +23,7 @@
 #include "Helper.h"
 #include "DisplayConfig.h"
 #include "PropPage.h"
+#include "RifeSettingsDialog.h"
 
 void SetCursor(HWND hWnd, LPCWSTR lpCursorName)
 {
@@ -65,90 +66,7 @@ void ComboBox_SelectByItemData(HWND hWnd, int nIDComboBox, LONG_PTR data)
 	}
 }
 
-
 namespace {
-
-
-void CopyFrameInterpolationSettings(Settings_t& dst, const Settings_t& src)
-{
-	dst.iFrameInterpolationMode = src.iFrameInterpolationMode;
-	dst.iFrameInterpolationSourceLimit = src.iFrameInterpolationSourceLimit;
-	dst.iFrameInterpolationMaxOutput = src.iFrameInterpolationMaxOutput;
-	dst.iFrameInterpolationGPU = src.iFrameInterpolationGPU;
-	dst.bFrameInterpolationFallback = src.bFrameInterpolationFallback;
-}
-
-bool FrameInterpolationSettingsEqual(const Settings_t& a, const Settings_t& b)
-{
-	return a.iFrameInterpolationMode == b.iFrameInterpolationMode
-		&& a.iFrameInterpolationSourceLimit == b.iFrameInterpolationSourceLimit
-		&& a.iFrameInterpolationMaxOutput == b.iFrameInterpolationMaxOutput
-		&& a.iFrameInterpolationGPU == b.iFrameInterpolationGPU
-		&& a.bFrameInterpolationFallback == b.bFrameInterpolationFallback;
-}
-
-void EnableFrameInterpolationDialogControls(HWND hwnd)
-{
-	const bool enabled = ComboBox_GetCurItemData(hwnd, IDC_FRUC_MODE) != FRUC_MODE_Disabled;
-	for (const int id : {IDC_FRUC_SOURCE_LIMIT, IDC_FRUC_MAX_OUTPUT, IDC_FRUC_GPU, IDC_FRUC_FALLBACK}) {
-		EnableWindow(GetDlgItem(hwnd, id), enabled);
-	}
-}
-
-void SetFrameInterpolationDialogControls(HWND hwnd, const Settings_t& settings)
-{
-	ComboBox_SelectByItemData(hwnd, IDC_FRUC_MODE, settings.iFrameInterpolationMode);
-	ComboBox_SelectByItemData(hwnd, IDC_FRUC_SOURCE_LIMIT, settings.iFrameInterpolationSourceLimit);
-	ComboBox_SelectByItemData(hwnd, IDC_FRUC_MAX_OUTPUT, settings.iFrameInterpolationMaxOutput);
-	ComboBox_SelectByItemData(hwnd, IDC_FRUC_GPU, settings.iFrameInterpolationGPU);
-	CheckDlgButton(hwnd, IDC_FRUC_FALLBACK, settings.bFrameInterpolationFallback ? BST_CHECKED : BST_UNCHECKED);
-	EnableFrameInterpolationDialogControls(hwnd);
-}
-
-void InitializeFrameInterpolationDialog(HWND hwnd, const Settings_t& settings)
-{
-	PopulateMaxineCombo(hwnd, IDC_FRUC_MODE, {{L"Disabled", FRUC_MODE_Disabled}, {L"Double source frame rate", FRUC_MODE_Double}});
-	PopulateMaxineCombo(hwnd, IDC_FRUC_SOURCE_LIMIT, {{L"720p or lower", FRUC_SOURCE_LIMIT_720p}, {L"1080p or lower", FRUC_SOURCE_LIMIT_1080p}, {L"1440p or lower", FRUC_SOURCE_LIMIT_1440p}, {L"2160p or lower", FRUC_SOURCE_LIMIT_2160p}});
-	PopulateMaxineCombo(hwnd, IDC_FRUC_MAX_OUTPUT, {{L"60 fps", FRUC_MAX_OUTPUT_60}, {L"120 fps", FRUC_MAX_OUTPUT_120}, {L"240 fps", FRUC_MAX_OUTPUT_240}});
-	PopulateMaxineCombo(hwnd, IDC_FRUC_GPU, {{L"Auto", FRUC_GPU_Auto}, {L"GPU 0", 0}, {L"GPU 1", 1}, {L"GPU 2", 2}, {L"GPU 3", 3}, {L"GPU 4", 4}, {L"GPU 5", 5}, {L"GPU 6", 6}, {L"GPU 7", 7}});
-	SetFrameInterpolationDialogControls(hwnd, settings);
-}
-
-void ReadFrameInterpolationDialog(HWND hwnd, Settings_t& settings)
-{
-	settings.iFrameInterpolationMode = static_cast<int>(ComboBox_GetCurItemData(hwnd, IDC_FRUC_MODE));
-	settings.iFrameInterpolationSourceLimit = static_cast<int>(ComboBox_GetCurItemData(hwnd, IDC_FRUC_SOURCE_LIMIT));
-	settings.iFrameInterpolationMaxOutput = static_cast<int>(ComboBox_GetCurItemData(hwnd, IDC_FRUC_MAX_OUTPUT));
-	settings.iFrameInterpolationGPU = static_cast<int>(ComboBox_GetCurItemData(hwnd, IDC_FRUC_GPU));
-	settings.bFrameInterpolationFallback = IsDlgButtonChecked(hwnd, IDC_FRUC_FALLBACK) == BST_CHECKED;
-}
-
-INT_PTR CALLBACK FrameInterpolationSettingsDlgProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
-{
-	auto* settings = reinterpret_cast<Settings_t*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-	switch (message) {
-	case WM_INITDIALOG:
-		settings = reinterpret_cast<Settings_t*>(lParam);
-		SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(settings));
-		InitializeFrameInterpolationDialog(hwnd, *settings);
-		return TRUE;
-	case WM_COMMAND:
-		switch (LOWORD(wParam)) {
-		case IDC_FRUC_MODE:
-			if (HIWORD(wParam) == CBN_SELCHANGE) { EnableFrameInterpolationDialogControls(hwnd); return TRUE; }
-			break;
-		case IDC_BUTTON_FRUC_DEFAULTS:
-			if (HIWORD(wParam) == BN_CLICKED) { Settings_t defaults; CopyFrameInterpolationSettings(*settings, defaults); SetFrameInterpolationDialogControls(hwnd, *settings); return TRUE; }
-			break;
-		case IDOK:
-			ReadFrameInterpolationDialog(hwnd, *settings); EndDialog(hwnd, IDOK); return TRUE;
-		case IDCANCEL:
-			EndDialog(hwnd, IDCANCEL); return TRUE;
-		}
-		break;
-	}
-	return FALSE;
-}
 
 void CopyMaxineSettings(Settings_t& dst, const Settings_t& src)
 {
@@ -382,7 +300,6 @@ INT_PTR CALLBACK MaxineSettingsDlgProc(HWND hwnd, UINT message, WPARAM wParam, L
 
 } // namespace
 
-
 // CVRMainPPage
 
 // https://msdn.microsoft.com/ru-ru/library/windows/desktop/dd375010(v=vs.85).aspx
@@ -507,18 +424,9 @@ bool CVRMainPPage::ShowMaxineSettings()
 	return true;
 }
 
-
 bool CVRMainPPage::ShowFrameInterpolationSettings()
 {
-	Settings_t candidate = m_SetsPP;
-	const INT_PTR result = DialogBoxParamW(g_hInst, MAKEINTRESOURCEW(IDD_FRAMEINTERPOLATION), m_hWnd, FrameInterpolationSettingsDlgProc, reinterpret_cast<LPARAM>(&candidate));
-	if (result == -1) {
-		MessageBoxW(L"The NVIDIA frame interpolation settings window could not be opened.", L"MPC Video Renderer", MB_OK | MB_ICONERROR);
-		return false;
-	}
-	if (result != IDOK || FrameInterpolationSettingsEqual(candidate, m_SetsPP)) { return false; }
-	CopyFrameInterpolationSettings(m_SetsPP, candidate);
-	return true;
+	return ShowRifeFrameInterpolationSettings(m_hWnd, g_hInst, m_SetsPP);
 }
 
 HRESULT CVRMainPPage::OnConnect(IUnknown *pUnk)
@@ -656,29 +564,32 @@ HRESULT CVRMainPPage::OnActivate()
 
 	AddHint(IDC_CHECK5,
 		L"It works fast, but it's not always good.\n"
-		"Disable it if you want to use shaders for resizing.");
+		L"Disable it if you want to use shaders for resizing.");
 	AddHint(IDC_COMBO8,
 		L"Sets the maximum source resolution for hardware video-processor\n"
-		"Super Resolution. Maxine has its own source limit.");
+		L"Super Resolution. Maxine has its own source limit.");
 	AddHint(IDC_BUTTON_MAXINE,
 		L"Opens the dedicated NVIDIA Maxine settings window.\n"
-		"Maxine is available in the 64-bit Direct3D 11 renderer.");
+		L"Maxine is available in the 64-bit Direct3D 11 renderer.");
+	AddHint(IDC_BUTTON_FRAMEINTERPOLATION,
+		L"Configures RIFE 4.6 frame interpolation through the optional NVIDIA TensorRT runtime.\n"
+		L"The normal renderer remains available when the RIFE runtime is not installed.");
 	AddHint(IDC_CHECK19,
 		L"Available for Direct3D 11.\n"
-		"Requires hardware and driver support:\n"
-		"- Nvidia RTX (x64 only)");
+		L"Requires hardware and driver support:\n"
+		L"- Nvidia RTX (x64 only)");
 	AddHint(IDC_COMBO5,
 		L"Used for YUV 4:2:0/4:2:2 input formats\n"
-		"when the DVXA2/D3D11 Video Processor is not active.");
+		L"when the DVXA2/D3D11 Video Processor is not active.");
 	AddHint(IDC_COMBO2,
 		L"Used to increase image size when the\n"
-		"DVXA2/D3D11 Video Processor is not used for resizing.");
+		L"DVXA2/D3D11 Video Processor is not used for resizing.");
 	AddHint(IDC_COMBO3,
 		L"Used to reduce image size when the\n"
-		"DVXA2/D3D11 Video Processor is not used for resizing.");
+		L"DVXA2/D3D11 Video Processor is not used for resizing.");
 	AddHint(IDC_COMBO4,
 		L"'Flip' is more efficient, but 'Discard' may work\n"
-		"more correctly in some rare situations.");
+		L"more correctly in some rare situations.");
 
 	m_bActivated = true;
 
