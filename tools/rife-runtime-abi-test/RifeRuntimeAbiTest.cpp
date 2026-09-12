@@ -28,6 +28,32 @@ int wmain()
     Check(good.available, "matching runtime ABI must be accepted");
     Check(good.abiVersion == MPCVR_RIFE_RUNTIME_ABI, "matching runtime must report ABI 1");
 
+    CRifeFrameInterpolation runtime;
+    Check(runtime.Initialize(
+        L"good-runtime", nullptr, 1920, 1080, UINT32_MAX, 2, false,
+        L"rife_v4.6.onnx", L"cache"),
+        "matching fake runtime must initialize");
+    Check(runtime.IsReady(), "initialized runtime must report ready");
+
+    MpcvrRifeStats stats = {};
+    auto* first = reinterpret_cast<ID3D11Texture2D*>(static_cast<uintptr_t>(1));
+    auto* second = reinterpret_cast<ID3D11Texture2D*>(static_cast<uintptr_t>(2));
+    auto* output = reinterpret_cast<ID3D11Texture2D*>(static_cast<uintptr_t>(3));
+    Check(runtime.Interpolate(1, first, second, output, 0.25f, stats),
+        "fake runtime interpolation call must succeed");
+    Check(stats.inferenceMs == 1.0, "runtime stats must propagate through ABI");
+    Check(stats.engineBytes == 1, "engine size stats must propagate through ABI");
+
+    runtime.Reset();
+    Check(!runtime.IsReady(), "Reset must unload runtime and clear handle");
+
+    CRifeFrameInterpolation badRuntime;
+    Check(!badRuntime.Initialize(
+        L"bad-runtime", nullptr, 1920, 1080, UINT32_MAX, 2, false,
+        L"rife_v4.6.onnx", L"cache"),
+        "ABI mismatch must fail persistent initialization");
+    Check(!badRuntime.IsReady(), "failed initialization must not leave a ready runtime");
+
     if (g_failures) {
         std::cerr << g_failures << " RIFE runtime ABI test(s) failed\n";
         return 1;
