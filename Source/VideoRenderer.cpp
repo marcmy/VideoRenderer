@@ -2,19 +2,22 @@
  * RIFE migration wrapper around the existing renderer implementation.
  *
  * The legacy implementation remains byte-for-byte preserved in
- * VideoRendererLegacy.inl.  Only the settings entry points are wrapped here
- * while the RIFE playback path is brought online.
+ * VideoRendererLegacy.inl.  Only the settings and playback entry points are
+ * wrapped here while the RIFE path replaces NvOFFRUC end-to-end.
  */
 
 #include "stdafx.h"
 #include <mutex>
 #include <unordered_set>
 #include "VideoRenderer.h"
+#include "RifePlaybackPipeline.h"
 
 #define GetSettings GetSettingsLegacy
 #define SetSettings SetSettingsLegacy
 #define SaveSettings SaveSettingsLegacy
+#define Receive ReceiveLegacy
 #include "VideoRendererLegacy.inl"
+#undef Receive
 #undef SaveSettings
 #undef SetSettings
 #undef GetSettings
@@ -90,7 +93,7 @@ void LoadRifeSettings(Settings_t& settings)
 		settings.iRifeDuplicateRemoval = dw < RIFE_DUPLICATES_COUNT ? static_cast<int>(dw) : RIFE_DUPLICATES_Keep;
 	}
 
-	// One-way migration from the old midpoint-only NvOFFRUC setting.  Merely
+	// One-way migration from the old midpoint-only NvOFFRUC setting. Merely
 	// reading the legacy setting does not disable it yet; applying/saving an
 	// enabled RIFE mode does that, so old builds retain a graceful fallback.
 	if (!hasRifeMode && settings.iFrameInterpolationMode == FRUC_MODE_Double) {
@@ -124,12 +127,15 @@ STDMETHODIMP_(void) CMpcVideoRenderer::SetSettings(const Settings_t& settings)
 
 	Settings_t adjusted = settings;
 	if (adjusted.iRifeMode != RIFE_MODE_Disabled) {
-		// RIFE owns production frame synthesis once enabled.  Keep the old
+		// RIFE owns production frame synthesis once enabled. Keep the old
 		// NvOFFRUC values only as migration data; never let both paths run.
 		adjusted.iFrameInterpolationMode = FRUC_MODE_Disabled;
 	}
 
 	if (RifeSettingsChanged(adjusted, m_Sets)) {
+		if (m_RifePipeline) {
+			m_RifePipeline->Reset();
+		}
 		ResetFrameInterpolationPresenterQueue();
 	}
 
