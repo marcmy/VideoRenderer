@@ -90,6 +90,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="RifePlaybackPipeline.cpp" />
+    <ClCompile Include="RifeSceneBlender.cpp" />
     <ClCompile Include="RifeSettingsDialog.cpp" />
     <ClCompile Include="Shaders.cpp" />
     <ClCompile Include="stdafx.cpp">
@@ -139,6 +140,7 @@
     <ClInclude Include="RifeFrameInterpolation.h" />
     <ClInclude Include="RifePlaybackPipeline.h" />
     <ClInclude Include="RifeRuntimeApi.h" />
+    <ClInclude Include="RifeSceneBlender.h" />
     <ClInclude Include="RifeSettingsDialog.h" />
     <ClInclude Include="Shaders.h" />
     <ClInclude Include="stdafx.h" />
