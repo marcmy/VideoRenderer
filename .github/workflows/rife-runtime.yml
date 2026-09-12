@@ -20,9 +20,9 @@ jobs:
     env:
       CUDA_VERSION: 12.9.1
       TENSORRT_VERSION: 11.2.1.2
-      CUDA_ROOT: ${{ runner.temp }}\cuda-12.9
-      TENSORRT_ARCHIVE: ${{ runner.temp }}\TensorRT-11.2.1.2.zip
-      TENSORRT_EXTRACT: ${{ runner.temp }}\tensorrt
+      CUDA_ROOT: ${{ github.workspace }}\_rife-deps\cuda-12.9
+      TENSORRT_ARCHIVE: ${{ github.workspace }}\_rife-deps\TensorRT-11.2.1.2.zip
+      TENSORRT_EXTRACT: ${{ github.workspace }}\_rife-deps\tensorrt
       BUILD_DIR: ${{ github.workspace }}\_rife-runtime-build
       PACKAGE_DIR: ${{ github.workspace }}\_rife-runtime-package
 
@@ -87,6 +87,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $env:TENSORRT_ARCHIVE) | Out-Null
           $url = 'https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/11.2.1/zip/TensorRT-Enterprise-11.2.1.2-Windows-amd64-cuda-12.9-Release-external.zip'
           & curl.exe --fail --location --retry 3 --output $env:TENSORRT_ARCHIVE $url
           if ($LASTEXITCODE -ne 0) { throw 'TensorRT download failed' }
