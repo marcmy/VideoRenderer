@@ -67,10 +67,6 @@ std::vector<std::filesystem::path> CandidateDirectories(const std::wstring& over
     }
 
     std::vector<std::filesystem::path> directories;
-    const auto env = ReadEnvironmentPath(L"MPCVR_RIFE_RUNTIME_DIR");
-    if (!env.empty()) {
-        directories.push_back(env);
-    }
     const auto module = ThisModuleDirectory();
     if (!module.empty()) {
         directories.push_back(module / L"RIFE" / L"runtime");
@@ -79,12 +75,50 @@ std::vector<std::filesystem::path> CandidateDirectories(const std::wstring& over
     if (!local.empty()) {
         directories.push_back(local);
     }
+    const auto env = ReadEnvironmentPath(L"MPCVR_RIFE_RUNTIME_DIR");
+    if (!env.empty()) {
+        directories.push_back(env);
+    }
     return directories;
 }
 
-RifeRuntimeProbeResult ProbeModule(const std::filesystem::path& modulePath)
+std::filesystem::path AbsoluteModulePath(const std::filesystem::path& directory)
+{
+    std::error_code error;
+    const auto absolute = std::filesystem::absolute(directory / RuntimeDllName, error);
+    return error ? directory / RuntimeDllName : absolute;
+}
+
+struct RuntimeExports {
+    MpcvrRifeGetAbiVersionFn getAbi = nullptr;
+    MpcvrRifeCreateFn create = nullptr;
+    MpcvrRifeInterpolateFn interpolate = nullptr;
+    MpcvrRifeDestroyFn destroy = nullptr;
+
+    [[nodiscard]] bool Complete() const noexcept
+    {
+        return getAbi && create && interpolate && destroy;
+    }
+};
+
+RuntimeExports ResolveExports(HMODULE module)
+{
+    RuntimeExports exports;
+    exports.getAbi = reinterpret_cast<MpcvrRifeGetAbiVersionFn>(
+        GetProcAddress(module, "MpcvrRifeGetAbiVersion"));
+    exports.create = reinterpret_cast<MpcvrRifeCreateFn>(
+        GetProcAddress(module, "MpcvrRifeCreate"));
+    exports.interpolate = reinterpret_cast<MpcvrRifeInterpolateFn>(
+        GetProcAddress(module, "MpcvrRifeInterpolate"));
+    exports.destroy = reinterpret_cast<MpcvrRifeDestroyFn>(
+        GetProcAddress(module, "MpcvrRifeDestroy"));
+    return exports;
+}
+
+RifeRuntimeProbeResult ProbeModule(const std::filesystem::path& directory)
 {
     RifeRuntimeProbeResult result;
+    const auto modulePath = AbsoluteModulePath(directory);
     result.modulePath = modulePath.wstring();
 
     HMODULE module = LoadLibraryExW(modulePath.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
@@ -94,22 +128,14 @@ RifeRuntimeProbeResult ProbeModule(const std::filesystem::path& modulePath)
         return result;
     }
 
-    const auto getAbi = reinterpret_cast<MpcvrRifeGetAbiVersionFn>(
-        GetProcAddress(module, "MpcvrRifeGetAbiVersion"));
-    const auto create = reinterpret_cast<MpcvrRifeCreateFn>(
-        GetProcAddress(module, "MpcvrRifeCreate"));
-    const auto interpolate = reinterpret_cast<MpcvrRifeInterpolateFn>(
-        GetProcAddress(module, "MpcvrRifeInterpolate"));
-    const auto destroy = reinterpret_cast<MpcvrRifeDestroyFn>(
-        GetProcAddress(module, "MpcvrRifeDestroy"));
-
-    if (!getAbi || !create || !interpolate || !destroy) {
+    const auto exports = ResolveExports(module);
+    if (!exports.Complete()) {
         result.status = std::format(L"RIFE runtime is missing required ABI exports: {}", modulePath.wstring());
         FreeLibrary(module);
         return result;
     }
 
-    result.abiVersion = getAbi();
+    result.abiVersion = exports.getAbi();
     if (result.abiVersion != MPCVR_RIFE_RUNTIME_ABI) {
         result.status = std::format(L"RIFE runtime ABI {} is incompatible with renderer ABI {}",
             result.abiVersion, MPCVR_RIFE_RUNTIME_ABI);
@@ -126,6 +152,11 @@ RifeRuntimeProbeResult ProbeModule(const std::filesystem::path& modulePath)
 
 } // namespace
 
+CRifeFrameInterpolation::~CRifeFrameInterpolation()
+{
+    Reset();
+}
+
 RifeRuntimeProbeResult CRifeFrameInterpolation::Probe(const std::wstring& overrideDirectory)
 {
 #ifndef _WIN64
@@ -137,8 +168,7 @@ RifeRuntimeProbeResult CRifeFrameInterpolation::Probe(const std::wstring& overri
     RifeRuntimeProbeResult lastResult;
 
     for (const auto& directory : directories) {
-        const auto modulePath = directory / RuntimeDllName;
-        auto result = ProbeModule(modulePath);
+        auto result = ProbeModule(directory);
         if (result.available || result.abiVersion != 0) {
             return result;
         }
@@ -150,4 +180,148 @@ RifeRuntimeProbeResult CRifeFrameInterpolation::Probe(const std::wstring& overri
     }
     return lastResult;
 #endif
+}
+
+bool CRifeFrameInterpolation::Initialize(
+    const std::wstring& overrideDirectory,
+    ID3D11Device* device,
+    const uint32_t width,
+    const uint32_t height,
+    const uint32_t gpuIndex,
+    const uint32_t contextCount,
+    const bool performanceBoost,
+    const std::wstring& modelPath,
+    const std::wstring& cachePath)
+{
+    Reset();
+
+#ifndef _WIN64
+    m_status = L"RIFE TensorRT runtime requires a 64-bit renderer";
+    return false;
+#else
+    if (!width || !height || !contextCount || modelPath.empty()) {
+        m_status = L"Invalid RIFE runtime initialization parameters";
+        return false;
+    }
+
+    const auto directories = CandidateDirectories(overrideDirectory);
+    for (const auto& directory : directories) {
+        if (LoadAndCreate(
+                AbsoluteModulePath(directory).wstring(), device, width, height, gpuIndex,
+                contextCount, performanceBoost, modelPath, cachePath)) {
+            return true;
+        }
+    }
+
+    if (m_status.empty()) {
+        m_status = L"RIFE runtime was not found";
+    }
+    return false;
+#endif
+}
+
+bool CRifeFrameInterpolation::LoadAndCreate(
+    const std::wstring& modulePath,
+    ID3D11Device* device,
+    const uint32_t width,
+    const uint32_t height,
+    const uint32_t gpuIndex,
+    const uint32_t contextCount,
+    const bool performanceBoost,
+    const std::wstring& modelPath,
+    const std::wstring& cachePath)
+{
+    HMODULE module = LoadLibraryExW(modulePath.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (!module) {
+        m_status = std::format(L"RIFE runtime not loadable: {} (Win32 error {})",
+            modulePath, GetLastError());
+        return false;
+    }
+
+    const auto exports = ResolveExports(module);
+    if (!exports.Complete()) {
+        m_status = std::format(L"RIFE runtime is missing required ABI exports: {}", modulePath);
+        FreeLibrary(module);
+        return false;
+    }
+
+    const uint32_t abiVersion = exports.getAbi();
+    if (abiVersion != MPCVR_RIFE_RUNTIME_ABI) {
+        m_status = std::format(L"RIFE runtime ABI {} is incompatible with renderer ABI {}",
+            abiVersion, MPCVR_RIFE_RUNTIME_ABI);
+        FreeLibrary(module);
+        return false;
+    }
+
+    MpcvrRifeCreateParams params = {};
+    params.device = device;
+    params.width = width;
+    params.height = height;
+    params.gpuIndex = gpuIndex;
+    params.contextCount = contextCount;
+    params.performanceBoost = performanceBoost ? 1u : 0u;
+    params.modelPath = modelPath.c_str();
+    params.cachePath = cachePath.empty() ? nullptr : cachePath.c_str();
+
+    void* handle = nullptr;
+    const int result = exports.create(&params, &handle);
+    if (result != 0 || !handle) {
+        m_status = std::format(L"RIFE runtime initialization failed with code {}", result);
+        FreeLibrary(module);
+        return false;
+    }
+
+    m_module = module;
+    m_handle = handle;
+    m_interpolate = exports.interpolate;
+    m_destroy = exports.destroy;
+    m_modulePath = modulePath;
+    m_status = std::format(L"RIFE runtime ready (ABI {}, {} contexts)",
+        abiVersion, contextCount);
+    return true;
+}
+
+bool CRifeFrameInterpolation::Interpolate(
+    const uint32_t contextIndex,
+    ID3D11Texture2D* first,
+    ID3D11Texture2D* second,
+    ID3D11Texture2D* output,
+    const float timestep,
+    MpcvrRifeStats& stats)
+{
+    if (!IsReady() || !first || !second || !output || !(timestep > 0.0f && timestep < 1.0f)) {
+        return false;
+    }
+
+    MpcvrRifeRequest request = {};
+    request.contextIndex = contextIndex;
+    request.first = first;
+    request.second = second;
+    request.output = output;
+    request.timestep = timestep;
+
+    stats = {};
+    const int result = m_interpolate(m_handle, &request, &stats);
+    if (result != 0) {
+        m_status = std::format(L"RIFE inference failed with code {}", result);
+        return false;
+    }
+    return true;
+}
+
+void CRifeFrameInterpolation::Reset() noexcept
+{
+    if (m_handle && m_destroy) {
+        m_destroy(m_handle);
+    }
+    m_handle = nullptr;
+    m_interpolate = nullptr;
+    m_destroy = nullptr;
+
+    if (m_module) {
+        FreeLibrary(m_module);
+    }
+    m_module = nullptr;
+    m_modulePath.clear();
+    m_status.clear();
 }
