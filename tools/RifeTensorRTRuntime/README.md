@@ -35,6 +35,8 @@ cmake -S . -B build -A x64
 cmake --build build --config Release
 ```
 
+On Windows, TensorRT 10/11 uses versioned import-library names such as `nvinfer_11.lib` and `nvonnxparser_11.lib`. The CMake project accepts both those names and the unversioned Linux-style names so the same source remains portable across supported TensorRT package layouts.
+
 The resulting file is `MPCVRRifeRuntime64.dll`.
 
 ## GPU path
