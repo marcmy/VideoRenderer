@@ -20,8 +20,10 @@ jobs:
     env:
       CUDA_VERSION: 12.9.1
       TENSORRT_VERSION: 11.2.1.2
+      NVIDIA_DOWNLOAD_CACHE: ${{ github.workspace }}\_rife-download-cache
       CUDA_ROOT: ${{ github.workspace }}\_rife-deps\cuda-12.9
-      TENSORRT_ARCHIVE: ${{ github.workspace }}\_rife-deps\TensorRT-11.2.1.2.zip
+      TENSORRT_ARCHIVE: ${{ github.workspace }}\_rife-download-cache\TensorRT-11.2.1.2.zip
+      TENSORRT_EXPECTED_SHA256: 8653df0b9a57ea5fd349e12d20243f6131f02052ef8041e756366e5779348c16
       TENSORRT_EXTRACT: ${{ github.workspace }}\_rife-deps\tensorrt
       BUILD_DIR: ${{ github.workspace }}\_rife-runtime-build
       PACKAGE_DIR: ${{ github.workspace }}\_rife-runtime-package
@@ -29,6 +31,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+
+      - name: Cache pinned NVIDIA SDK archives
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}\_rife-download-cache
+          key: rife-nvidia-sdk-windows-cuda-12.9.1-tensorrt-11.2.1.2-v1
 
       - name: Enter Visual Studio x64 developer shell
         shell: pwsh
@@ -50,16 +58,27 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path $env:CUDA_ROOT | Out-Null
+          New-Item -ItemType Directory -Force -Path $env:NVIDIA_DOWNLOAD_CACHE | Out-Null
 
           function Add-CudaArchive([string]$name, [string]$relativePath, [string]$sha256) {
-              $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+              $zip = Join-Path $env:NVIDIA_DOWNLOAD_CACHE "$name.zip"
               $extract = Join-Path $env:RUNNER_TEMP "$name-extract"
               $url = "https://developer.download.nvidia.com/compute/cuda/redist/$relativePath"
-              Write-Host "Downloading $url"
-              & curl.exe --fail --location --retry 3 --output $zip $url
-              if ($LASTEXITCODE -ne 0) { throw "curl failed for $name" }
+              if (-not (Test-Path -LiteralPath $zip -PathType Leaf)) {
+                  Write-Host "Downloading $url"
+                  & curl.exe --fail --location --retry 3 --output $zip $url
+                  if ($LASTEXITCODE -ne 0) { throw "curl failed for $name" }
+              }
+              else {
+                  Write-Host "Using cached $name archive"
+              }
+
               $actual = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
-              if ($actual -ne $sha256) { throw "$name SHA-256 mismatch: $actual" }
+              if ($actual -ne $sha256) {
+                  Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+                  throw "$name SHA-256 mismatch: $actual"
+              }
+
               Remove-Item -Recurse -Force $extract -ErrorAction SilentlyContinue
               Expand-Archive -Path $zip -DestinationPath $extract
               $root = Get-ChildItem -Path $extract -Directory | Select-Object -First 1
@@ -87,16 +106,28 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $env:TENSORRT_ARCHIVE) | Out-Null
+          New-Item -ItemType Directory -Force -Path $env:NVIDIA_DOWNLOAD_CACHE | Out-Null
           $url = 'https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/11.2.1/zip/TensorRT-Enterprise-11.2.1.2-Windows-amd64-cuda-12.9-Release-external.zip'
-          & curl.exe --fail --location --retry 3 --output $env:TENSORRT_ARCHIVE $url
-          if ($LASTEXITCODE -ne 0) { throw 'TensorRT download failed' }
+          if (-not (Test-Path -LiteralPath $env:TENSORRT_ARCHIVE -PathType Leaf)) {
+              & curl.exe --fail --location --retry 3 --output $env:TENSORRT_ARCHIVE $url
+              if ($LASTEXITCODE -ne 0) { throw 'TensorRT download failed' }
+          }
+          else {
+              Write-Host 'Using cached TensorRT archive'
+          }
+
+          $actual = (Get-FileHash -Algorithm SHA256 $env:TENSORRT_ARCHIVE).Hash.ToLowerInvariant()
+          if ($actual -ne $env:TENSORRT_EXPECTED_SHA256) {
+              Remove-Item -LiteralPath $env:TENSORRT_ARCHIVE -Force -ErrorAction SilentlyContinue
+              throw "TensorRT SHA-256 mismatch: $actual"
+          }
+
           Remove-Item -Recurse -Force $env:TENSORRT_EXTRACT -ErrorAction SilentlyContinue
           Expand-Archive -Path $env:TENSORRT_ARCHIVE -DestinationPath $env:TENSORRT_EXTRACT
           $root = Get-ChildItem -Path $env:TENSORRT_EXTRACT -Directory | Where-Object Name -Like 'TensorRT-*' | Select-Object -First 1
           if (-not $root) { throw 'TensorRT root directory was not found after extraction' }
           "TENSORRT_ROOT=$($root.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "TENSORRT_DOWNLOAD_SHA256=$((Get-FileHash -Algorithm SHA256 $env:TENSORRT_ARCHIVE).Hash.ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TENSORRT_DOWNLOAD_SHA256=$actual" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Get-ChildItem (Join-Path $root.FullName 'lib') -Filter 'nvinfer*.dll' | Select-Object -First 8 -ExpandProperty Name
 
       - name: Configure and build runtime
