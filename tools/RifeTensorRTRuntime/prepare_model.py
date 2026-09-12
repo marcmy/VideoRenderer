@@ -16,9 +16,14 @@ import shutil
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import onnx
 import py7zr
 from modelopt.onnx.autocast import convert_to_mixed_precision
+
+
+CALIBRATION_WIDTH = 1024
+CALIBRATION_HEIGHT = 576
 
 
 def sha256(path: Path) -> str:
@@ -51,6 +56,42 @@ def choose_source(root: Path) -> Path:
     if not v1:
         raise RuntimeError("rife_v4.6.onnx was not found in the upstream archive")
     raise RuntimeError(f"ambiguous RIFE 4.6 source models: {[str(p) for p in v1]}")
+
+
+def make_calibration_input(input_name: str, destination: Path) -> None:
+    """Write one deterministic, structurally valid RIFE inference sample.
+
+    AutoCast normally synthesizes inputs from model metadata. RIFE's H/W are
+    dynamic, so the automatic generator resolves them to zero and ONNX Runtime
+    cannot execute the reference graph. Supplying a representative padded video
+    size keeps the exported model dynamic while giving the precision classifier
+    a real inference sample.
+    """
+
+    height = CALIBRATION_HEIGHT
+    width = CALIBRATION_WIDTH
+    y = np.linspace(0.0, 1.0, height, dtype=np.float32)[:, None]
+    x = np.linspace(0.0, 1.0, width, dtype=np.float32)[None, :]
+
+    tensor = np.empty((1, 11, height, width), dtype=np.float32)
+
+    # Two different but correlated normalized RGB frames. This is more
+    # representative than unconstrained random noise and exercises motion/blend
+    # paths without requiring copyrighted calibration media.
+    tensor[0, 0] = x
+    tensor[0, 1] = y
+    tensor[0, 2] = 0.65 * x + 0.35 * y
+    tensor[0, 3] = np.clip(x + 0.025, 0.0, 1.0)
+    tensor[0, 4] = np.clip(y + 0.015, 0.0, 1.0)
+    tensor[0, 5] = np.clip(0.65 * x + 0.35 * y + 0.02, 0.0, 1.0)
+
+    tensor[0, 6].fill(0.5)
+    tensor[0, 7] = np.broadcast_to(x * 2.0 - 1.0, (height, width))
+    tensor[0, 8] = np.broadcast_to(y * 2.0 - 1.0, (height, width))
+    tensor[0, 9].fill(2.0 / (width - 1))
+    tensor[0, 10].fill(2.0 / (height - 1))
+
+    np.savez(destination, **{input_name: tensor})
 
 
 def validate_contract(model: onnx.ModelProto) -> dict[str, object]:
@@ -114,10 +155,14 @@ def main() -> int:
         if len(original_contract["input_shape"]) != 4 or original_contract["input_shape"][1] != 11:
             raise RuntimeError(f"upstream model no longer matches the 11-channel RIFE ABI: {original_contract}")
 
+        calibration = temp / "rife_v4.6-calibration.npz"
+        make_calibration_input(original.graph.input[0].name, calibration)
+
         converted = convert_to_mixed_precision(
             onnx_path=str(source),
             low_precision_type="fp16",
             keep_io_types=False,
+            calibration_data=str(calibration),
             providers=["cpu"],
             use_standalone_type_inference=True,
         )
@@ -136,6 +181,7 @@ def main() -> int:
         "output_bytes": output.stat().st_size,
         "contract": contract,
         "conversion": "NVIDIA Model Optimizer AutoCast fp16",
+        "calibration_shape": [1, 11, CALIBRATION_HEIGHT, CALIBRATION_WIDTH],
     }
     metadata_path = output.with_name("model-metadata.json")
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
