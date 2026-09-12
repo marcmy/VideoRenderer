@@ -116,15 +116,34 @@ void TestToScreenUsesPreciseDisplayRate()
     }
 }
 
-void TestEndpointIsNotSynthesized()
+void TestExactEndpointIsReturnedAsSource()
 {
     CFrameInterpolationScheduler scheduler;
     scheduler.Configure(FrameInterpolationRateMode::Fixed60, {}, {});
 
     const auto pair1 = scheduler.Schedule(0, 500000, Rate(20));
-    Check(pair1.size() == 2, "20 -> 60 has two interior frames, not the real endpoint");
-    if (pair1.size() == 2) {
-        Check(pair1.back().presentationTime == 333333, "endpoint at 500000 is excluded");
+    Check(pair1.size() == 3, "20 -> 60 returns two synthetic frames plus the exact real endpoint");
+    if (pair1.size() == 3) {
+        Check(pair1[0].presentationTime == 166667 && !pair1[0].exactSource,
+            "first 20 -> 60 target is synthetic");
+        Check(pair1[1].presentationTime == 333333 && !pair1[1].exactSource,
+            "second 20 -> 60 target is synthetic");
+        Check(pair1[2].presentationTime == 500000, "exact target-grid endpoint is returned");
+        Check(pair1[2].exactSource, "endpoint is tagged as an exact source frame");
+        CheckNear(pair1[2].timestep, 1.0, 1.0e-12, "exact source endpoint has t=1");
+    }
+}
+
+void TestNonGridEndpointRemainsExcluded()
+{
+    CFrameInterpolationScheduler scheduler;
+    scheduler.Configure(FrameInterpolationRateMode::Fixed60, {}, {});
+
+    const auto pair = scheduler.Schedule(0, 416667, Rate(24));
+    Check(pair.size() == 2, "non-grid 24 fps source endpoint is not forced onto a 60 Hz grid");
+    if (!pair.empty()) {
+        Check(pair.back().presentationTime == 333333 && !pair.back().exactSource,
+            "last target before a non-grid endpoint remains synthetic");
     }
 }
 
@@ -176,7 +195,8 @@ int main()
     Test24To60KeepsUniformGridAcrossPairs();
     TestMovieTwoAndHalfTimes();
     TestToScreenUsesPreciseDisplayRate();
-    TestEndpointIsNotSynthesized();
+    TestExactEndpointIsReturnedAsSource();
+    TestNonGridEndpointRemainsExcluded();
     TestResetReanchorsTimeline();
     TestLongRunDoesNotAccumulateRoundedPeriodDrift();
 
