@@ -3,9 +3,10 @@
 #include <cstdint>
 #include <memory>
 
-#include <d3d11.h>
+#include <d3d11_4.h>
 #include <strmif.h>
 
+#include "Helper.h"
 #include "FrameInterpolationScheduler.h"
 #include "IVideoRenderer.h"
 
