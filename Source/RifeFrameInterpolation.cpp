@@ -7,7 +7,6 @@
 #include "RifeFrameInterpolation.h"
 
 #include <Windows.h>
-#include <ShlObj.h>
 
 #include <array>
 #include <filesystem>
@@ -18,6 +17,22 @@
 namespace {
 
 constexpr wchar_t RuntimeDllName[] = L"MPCVRRifeRuntime64.dll";
+
+std::filesystem::path ReadEnvironmentPath(const wchar_t* name)
+{
+    const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
+    if (!required) {
+        return {};
+    }
+
+    std::wstring value(required, L'\0');
+    const DWORD written = GetEnvironmentVariableW(name, value.data(), required);
+    if (!written || written >= required) {
+        return {};
+    }
+    value.resize(written);
+    return std::filesystem::path(value);
+}
 
 std::filesystem::path ThisModuleDirectory()
 {
@@ -38,29 +53,11 @@ std::filesystem::path ThisModuleDirectory()
 
 std::filesystem::path LocalAppDataRuntimeDirectory()
 {
-    PWSTR rawPath = nullptr;
-    if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &rawPath)) || !rawPath) {
+    const auto localAppData = ReadEnvironmentPath(L"LOCALAPPDATA");
+    if (localAppData.empty()) {
         return {};
     }
-    const std::filesystem::path path = std::filesystem::path(rawPath)
-        / L"MPCVideoRenderer" / L"RIFE" / L"runtime";
-    CoTaskMemFree(rawPath);
-    return path;
-}
-
-std::filesystem::path EnvironmentRuntimeDirectory()
-{
-    const DWORD required = GetEnvironmentVariableW(L"MPCVR_RIFE_RUNTIME_DIR", nullptr, 0);
-    if (!required) {
-        return {};
-    }
-    std::wstring value(required, L'\0');
-    const DWORD written = GetEnvironmentVariableW(L"MPCVR_RIFE_RUNTIME_DIR", value.data(), required);
-    if (!written || written >= required) {
-        return {};
-    }
-    value.resize(written);
-    return std::filesystem::path(value);
+    return localAppData / L"MPCVideoRenderer" / L"RIFE" / L"runtime";
 }
 
 std::vector<std::filesystem::path> CandidateDirectories(const std::wstring& overrideDirectory)
@@ -70,7 +67,7 @@ std::vector<std::filesystem::path> CandidateDirectories(const std::wstring& over
     }
 
     std::vector<std::filesystem::path> directories;
-    const auto env = EnvironmentRuntimeDirectory();
+    const auto env = ReadEnvironmentPath(L"MPCVR_RIFE_RUNTIME_DIR");
     if (!env.empty()) {
         directories.push_back(env);
     }
