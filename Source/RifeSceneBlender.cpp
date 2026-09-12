@@ -1,4 +1,8 @@
 #include "stdafx.h"
+
+#include <d3d11_4.h>
+
+#include "Helper.h"
 #include "RifeSceneBlender.h"
 #include "Shaders.h"
 
