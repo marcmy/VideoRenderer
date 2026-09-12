@@ -12,6 +12,7 @@
 #include "FrameInterpolationScheduler.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <numeric>
 
@@ -27,6 +28,29 @@ FrameRate ReduceRate(FrameRate rate) noexcept
     const uint32_t divisor = std::gcd(rate.numerator, rate.denominator);
     rate.numerator /= divisor;
     rate.denominator /= divisor;
+    return rate;
+}
+
+FrameRate SnapNtscSourceRate(FrameRate rate) noexcept
+{
+    rate = ReduceRate(rate);
+    if (!rate.IsValid()) {
+        return {};
+    }
+
+    constexpr FrameRate ntscRates[] = {
+        {24'000, 1'001},
+        {30'000, 1'001},
+    };
+    constexpr long double relativeTolerance = 10.0e-6L; // 10 ppm
+
+    const long double value = static_cast<long double>(rate.numerator) / rate.denominator;
+    for (const auto candidate : ntscRates) {
+        const long double canonical = static_cast<long double>(candidate.numerator) / candidate.denominator;
+        if (std::abs(value - canonical) / canonical <= relativeTolerance) {
+            return candidate;
+        }
+    }
     return rate;
 }
 
@@ -79,19 +103,20 @@ void CFrameInterpolationScheduler::Configure(
 
 FrameRate CFrameInterpolationScheduler::ResolveTargetRate(const FrameRate sourceRate) const noexcept
 {
+    const FrameRate multiplierSourceRate = SnapNtscSourceRate(sourceRate);
     switch (m_mode) {
     case FrameInterpolationRateMode::ToScreen:
         return ReduceRate(m_displayRate);
     case FrameInterpolationRateMode::Movie2x:
-        return ScaleRate(sourceRate, 2);
+        return ScaleRate(multiplierSourceRate, 2);
     case FrameInterpolationRateMode::Movie2_5x:
-        return ScaleRate(sourceRate, 5, 2);
+        return ScaleRate(multiplierSourceRate, 5, 2);
     case FrameInterpolationRateMode::Movie3x:
-        return ScaleRate(sourceRate, 3);
+        return ScaleRate(multiplierSourceRate, 3);
     case FrameInterpolationRateMode::Movie4x:
-        return ScaleRate(sourceRate, 4);
+        return ScaleRate(multiplierSourceRate, 4);
     case FrameInterpolationRateMode::Movie5x:
-        return ScaleRate(sourceRate, 5);
+        return ScaleRate(multiplierSourceRate, 5);
     case FrameInterpolationRateMode::Fixed60:
         return {60, 1};
     case FrameInterpolationRateMode::Fixed72:
