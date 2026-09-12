@@ -1,4 +1,11 @@
 #include "stdafx.h"
+#include <uuids.h>
+#include <Mferror.h>
+#include <Mfidl.h>
+#include <algorithm>
+#include "Helper.h"
+#include "Times.h"
+#include "VideoRenderer.h"
 #include "DX11VideoProcessor.h"
 
 bool CDX11VideoProcessor::PrepareRifeSource(
@@ -42,16 +49,15 @@ bool CDX11VideoProcessor::PrepareRifeSource(
     m_pDeviceContext->ClearRenderTargetView(targetView, clearColor);
 
     // Process() deliberately stops before the normal Render() subtitle/OSD
-    // composition.  RIFE therefore sees only the video image; subtitles and
+    // composition. RIFE therefore sees only the video image; subtitles and
     // statistics are drawn later when the prepared texture is presented.
     hr = Process(target, m_srcRect, m_videoRect, false);
     if (FAILED(hr)) {
         return false;
     }
 
-    // Publish all D3D11 writes before the source is handed to NVOF/CUDA on the
-    // worker thread.  The interop APIs provide the ownership synchronization;
-    // this flush only makes the immediate-context command stream visible.
+    // Publish D3D11 writes before handing the source to NVOF/CUDA on the
+    // worker thread. Interop APIs provide resource ownership synchronization.
     m_pDeviceContext->Flush();
     return true;
 #else
