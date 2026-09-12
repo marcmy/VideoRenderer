@@ -1,0 +1,156 @@
+name: Build RIFE TensorRT runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/rife-tensorrt-interpolation
+    paths:
+      - .github/workflows/rife-runtime.yml
+      - tools/RifeTensorRTRuntime/**
+      - Source/RifeRuntimeApi.h
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      CUDA_VERSION: 12.9.1
+      TENSORRT_VERSION: 11.2.1.2
+      CUDA_ROOT: ${{ runner.temp }}\cuda-12.9
+      TENSORRT_ARCHIVE: ${{ runner.temp }}\TensorRT-11.2.1.2.zip
+      TENSORRT_EXTRACT: ${{ runner.temp }}\tensorrt
+      BUILD_DIR: ${{ github.workspace }}\_rife-runtime-build
+      PACKAGE_DIR: ${{ github.workspace }}\_rife-runtime-package
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Enter Visual Studio x64 developer shell
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'Visual Studio C++ toolchain was not found' }
+          Import-Module (Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          "VS_INSTALL=$vs" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "VSCMD_ARG_TGT_ARCH=x64" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          cl 2>&1 | Select-Object -First 3
+          cmake --version
+          ninja --version
+
+      - name: Download pinned CUDA 12.9.1 build components
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path $env:CUDA_ROOT | Out-Null
+
+          function Add-CudaArchive([string]$name, [string]$relativePath, [string]$sha256) {
+              $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+              $extract = Join-Path $env:RUNNER_TEMP "$name-extract"
+              $url = "https://developer.download.nvidia.com/compute/cuda/redist/$relativePath"
+              Write-Host "Downloading $url"
+              & curl.exe --fail --location --retry 3 --output $zip $url
+              if ($LASTEXITCODE -ne 0) { throw "curl failed for $name" }
+              $actual = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+              if ($actual -ne $sha256) { throw "$name SHA-256 mismatch: $actual" }
+              Remove-Item -Recurse -Force $extract -ErrorAction SilentlyContinue
+              Expand-Archive -Path $zip -DestinationPath $extract
+              $root = Get-ChildItem -Path $extract -Directory | Select-Object -First 1
+              if (-not $root) { throw "$name archive did not contain a root directory" }
+              Copy-Item -Path (Join-Path $root.FullName '*') -Destination $env:CUDA_ROOT -Recurse -Force
+          }
+
+          Add-CudaArchive 'cuda_nvcc' `
+            'cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-12.9.86-archive.zip' `
+            '227b109663b5e57d2718bcabb24a4ba0d9d4e52d958e327dc476f7c28691be85'
+          Add-CudaArchive 'cuda_cudart' `
+            'cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.9.79-archive.zip' `
+            '179e9c43b0735ffe67207b3da556eb5a0c50f3047961882b7657d3b822d34ef8'
+          Add-CudaArchive 'cuda_cccl' `
+            'cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-12.9.27-archive.zip' `
+            '17aaa7c6b8f94a417d8f3261780b7e34b9cbdfab7513bce86768623b06aa28b5'
+
+          $nvcc = Join-Path $env:CUDA_ROOT 'bin\nvcc.exe'
+          if (-not (Test-Path $nvcc)) { throw "nvcc not found at $nvcc" }
+          & $nvcc --version
+          "CUDAToolkit_ROOT=$env:CUDA_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "$env:CUDA_ROOT\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Download TensorRT 11.2.1.2 for CUDA 12.9
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $url = 'https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/11.2.1/zip/TensorRT-Enterprise-11.2.1.2-Windows-amd64-cuda-12.9-Release-external.zip'
+          & curl.exe --fail --location --retry 3 --output $env:TENSORRT_ARCHIVE $url
+          if ($LASTEXITCODE -ne 0) { throw 'TensorRT download failed' }
+          Remove-Item -Recurse -Force $env:TENSORRT_EXTRACT -ErrorAction SilentlyContinue
+          Expand-Archive -Path $env:TENSORRT_ARCHIVE -DestinationPath $env:TENSORRT_EXTRACT
+          $root = Get-ChildItem -Path $env:TENSORRT_EXTRACT -Directory | Where-Object Name -Like 'TensorRT-*' | Select-Object -First 1
+          if (-not $root) { throw 'TensorRT root directory was not found after extraction' }
+          "TENSORRT_ROOT=$($root.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TENSORRT_DOWNLOAD_SHA256=$((Get-FileHash -Algorithm SHA256 $env:TENSORRT_ARCHIVE).Hash.ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Get-ChildItem (Join-Path $root.FullName 'lib') -Filter 'nvinfer*.dll' | Select-Object -First 8 -ExpandProperty Name
+
+      - name: Configure and build runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vs = $env:VS_INSTALL
+          Import-Module (Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+
+          cmake -S tools/RifeTensorRTRuntime -B $env:BUILD_DIR -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            "-DCMAKE_CUDA_COMPILER=$env:CUDA_ROOT\bin\nvcc.exe" `
+            "-DCUDAToolkit_ROOT=$env:CUDA_ROOT" `
+            "-DTENSORRT_ROOT=$env:TENSORRT_ROOT"
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed' }
+
+          cmake --build $env:BUILD_DIR --parallel
+          if ($LASTEXITCODE -ne 0) { throw 'RIFE runtime build failed' }
+
+      - name: Validate and package runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dll = Get-ChildItem -Path $env:BUILD_DIR -Recurse -Filter 'MPCVRRifeRuntime64.dll' | Select-Object -First 1
+          if (-not $dll) { throw 'MPCVRRifeRuntime64.dll was not produced' }
+
+          New-Item -ItemType Directory -Force -Path $env:PACKAGE_DIR | Out-Null
+          Copy-Item $dll.FullName (Join-Path $env:PACKAGE_DIR 'MPCVRRifeRuntime64.dll')
+
+          $vs = $env:VS_INSTALL
+          Import-Module (Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          $depends = (& dumpbin /dependents $dll.FullName 2>&1 | Out-String)
+          $depends | Set-Content -Encoding utf8 (Join-Path $env:PACKAGE_DIR 'DEPENDENCIES.txt')
+          $hash = (Get-FileHash -Algorithm SHA256 $dll.FullName).Hash.ToLowerInvariant()
+          "$hash  MPCVRRifeRuntime64.dll" | Set-Content -Encoding ascii (Join-Path $env:PACKAGE_DIR 'SHA256SUMS.txt')
+          @"
+          MPCVR RIFE TensorRT runtime build
+          Runtime: TensorRT $env:TENSORRT_VERSION (mainline GA)
+          TensorRT archive SHA-256: $env:TENSORRT_DOWNLOAD_SHA256
+          CUDA toolkit: $env:CUDA_VERSION
+          CUDA compiler: 12.9.86
+          CUDA runtime: 12.9.79
+          Architectures: sm_75, sm_80, sm_86, sm_89
+          NVIDIA runtime DLLs are intentionally not redistributed in this artifact.
+          "@ | Set-Content -Encoding utf8 (Join-Path $env:PACKAGE_DIR 'BUILD-INFO.txt')
+
+          Get-Content (Join-Path $env:PACKAGE_DIR 'SHA256SUMS.txt')
+          Get-Content (Join-Path $env:PACKAGE_DIR 'DEPENDENCIES.txt')
+
+      - name: Upload runtime artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: mpcvr-rife-tensorrt-runtime
+          path: ${{ github.workspace }}\_rife-runtime-package\
+          if-no-files-found: error
+          compression-level: 0
