@@ -1,0 +1,825 @@
+#include "stdafx.h"
+
+#include "RifePlaybackPipeline.h"
+
+#include "DX11VideoProcessor.h"
+#include "NvidiaSceneChangeDetector.h"
+#include "RifeFrameInterpolation.h"
+#include "VideoRenderer.h"
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cmath>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
+#include <filesystem>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <thread>
+#include <utility>
+
+namespace {
+
+constexpr size_t kSourcePoolSize = 12;
+constexpr REFERENCE_TIME kLateTolerance = 10'000; // 1 ms in DirectShow ticks.
+
+FrameInterpolationRateMode ToSchedulerMode(const int mode)
+{
+    switch (mode) {
+    case RIFE_MODE_ToScreen:  return FrameInterpolationRateMode::ToScreen;
+    case RIFE_MODE_Movie2x:   return FrameInterpolationRateMode::Movie2x;
+    case RIFE_MODE_Movie2_5x: return FrameInterpolationRateMode::Movie2_5x;
+    case RIFE_MODE_Movie3x:   return FrameInterpolationRateMode::Movie3x;
+    case RIFE_MODE_Movie4x:   return FrameInterpolationRateMode::Movie4x;
+    case RIFE_MODE_Movie5x:   return FrameInterpolationRateMode::Movie5x;
+    case RIFE_MODE_Fixed60:   return FrameInterpolationRateMode::Fixed60;
+    case RIFE_MODE_Fixed72:   return FrameInterpolationRateMode::Fixed72;
+    case RIFE_MODE_Fixed90:   return FrameInterpolationRateMode::Fixed90;
+    case RIFE_MODE_Fixed120:  return FrameInterpolationRateMode::Fixed120;
+    case RIFE_MODE_Custom:    return FrameInterpolationRateMode::Custom;
+    default:                  return FrameInterpolationRateMode::Disabled;
+    }
+}
+
+FrameRate SourceRateFromDuration(const REFERENCE_TIME duration)
+{
+    if (duration <= 0 || duration > static_cast<REFERENCE_TIME>(UINT32_MAX)) {
+        return {};
+    }
+    return {10'000'000u, static_cast<uint32_t>(duration)};
+}
+
+std::filesystem::path LocalAppDataRoot()
+{
+    const DWORD required = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
+    if (!required) {
+        return {};
+    }
+    std::wstring value(required, L'\0');
+    const DWORD written = GetEnvironmentVariableW(L"LOCALAPPDATA", value.data(), required);
+    if (!written || written >= required) {
+        return {};
+    }
+    value.resize(written);
+    return std::filesystem::path(value) / L"MPCVideoRenderer" / L"RIFE";
+}
+
+bool SameTextureShape(ID3D11Texture2D* texture, ID3D11Device* device, UINT width, UINT height)
+{
+    if (!texture || !device) {
+        return false;
+    }
+    CComPtr<ID3D11Device> textureDevice;
+    texture->GetDevice(&textureDevice);
+    if (textureDevice != device) {
+        return false;
+    }
+    D3D11_TEXTURE2D_DESC desc = {};
+    texture->GetDesc(&desc);
+    return desc.Width == width && desc.Height == height
+        && desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM
+        && desc.SampleDesc.Count == 1;
+}
+
+HRESULT CreateBgraTexture(ID3D11Device* device, UINT width, UINT height, ID3D11Texture2D** texture)
+{
+    if (!device || !width || !height || !texture) {
+        return E_INVALIDARG;
+    }
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    return device->CreateTexture2D(&desc, nullptr, texture);
+}
+
+struct RuntimeBuildState {
+    std::mutex mutex;
+    std::shared_ptr<CRifeFrameInterpolation> runtime;
+    std::wstring status = L"Not started";
+    std::atomic_bool done = false;
+    std::atomic_bool success = false;
+};
+
+struct RuntimeKey {
+    ID3D11Device* device = nullptr;
+    UINT width = 0;
+    UINT height = 0;
+    int gpu = RIFE_GPU_Auto;
+    int contexts = RIFE_GPU_THREADS_DEF;
+    bool performanceBoost = false;
+
+    bool operator==(const RuntimeKey& other) const noexcept
+    {
+        return device == other.device && width == other.width && height == other.height
+            && gpu == other.gpu && contexts == other.contexts
+            && performanceBoost == other.performanceBoost;
+    }
+};
+
+class ImageCutDetector
+{
+public:
+    bool Analyze(ID3D11Device* device, ID3D11Texture2D* first, ID3D11Texture2D* second, bool& likelyCut)
+    {
+        likelyCut = false;
+        if (!device || !first || !second) {
+            return false;
+        }
+
+        D3D11_TEXTURE2D_DESC desc = {};
+        first->GetDesc(&desc);
+        D3D11_TEXTURE2D_DESC secondDesc = {};
+        second->GetDesc(&secondDesc);
+        if (desc.Width != secondDesc.Width || desc.Height != secondDesc.Height
+                || desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM
+                || secondDesc.Format != desc.Format) {
+            return false;
+        }
+
+        if (!EnsureResources(device, desc.Width, desc.Height)) {
+            return false;
+        }
+
+        m_context->CopyResource(m_firstStaging, first);
+        m_context->CopyResource(m_secondStaging, second);
+        m_context->Flush();
+
+        D3D11_MAPPED_SUBRESOURCE a = {};
+        D3D11_MAPPED_SUBRESOURCE b = {};
+        if (FAILED(m_context->Map(m_firstStaging, 0, D3D11_MAP_READ, 0, &a))) {
+            return false;
+        }
+        if (FAILED(m_context->Map(m_secondStaging, 0, D3D11_MAP_READ, 0, &b))) {
+            m_context->Unmap(m_firstStaging, 0);
+            return false;
+        }
+
+        const UINT stepX = std::max<UINT>(1, desc.Width / 64);
+        const UINT stepY = std::max<UINT>(1, desc.Height / 36);
+        double sumA = 0.0;
+        double sumB = 0.0;
+        double sumAA = 0.0;
+        double sumBB = 0.0;
+        double sumAB = 0.0;
+        double mad = 0.0;
+        uint64_t samples = 0;
+
+        for (UINT y = stepY / 2; y < desc.Height; y += stepY) {
+            const auto* rowA = static_cast<const uint8_t*>(a.pData) + static_cast<size_t>(y) * a.RowPitch;
+            const auto* rowB = static_cast<const uint8_t*>(b.pData) + static_cast<size_t>(y) * b.RowPitch;
+            for (UINT x = stepX / 2; x < desc.Width; x += stepX) {
+                const auto* pa = rowA + static_cast<size_t>(x) * 4;
+                const auto* pb = rowB + static_cast<size_t>(x) * 4;
+                const double ya = (0.0722 * pa[0] + 0.7152 * pa[1] + 0.2126 * pa[2]) / 255.0;
+                const double yb = (0.0722 * pb[0] + 0.7152 * pb[1] + 0.2126 * pb[2]) / 255.0;
+                sumA += ya;
+                sumB += yb;
+                sumAA += ya * ya;
+                sumBB += yb * yb;
+                sumAB += ya * yb;
+                mad += std::abs(ya - yb);
+                ++samples;
+            }
+        }
+
+        m_context->Unmap(m_secondStaging, 0);
+        m_context->Unmap(m_firstStaging, 0);
+        if (samples < 16) {
+            return false;
+        }
+
+        const double n = static_cast<double>(samples);
+        const double meanA = sumA / n;
+        const double meanB = sumB / n;
+        const double varA = std::max(0.0, sumAA / n - meanA * meanA);
+        const double varB = std::max(0.0, sumBB / n - meanB * meanB);
+        const double covariance = sumAB / n - meanA * meanB;
+        double correlation = 1.0;
+        const double denom = std::sqrt(varA * varB);
+        if (denom > 1.0e-8) {
+            correlation = std::clamp(covariance / denom, -1.0, 1.0);
+        } else if (std::abs(meanA - meanB) > 0.02) {
+            correlation = 0.0;
+        }
+
+        const double normalizedMad = mad / n;
+        likelyCut = correlation < 0.15 && normalizedMad > 0.055;
+        return true;
+    }
+
+    void Reset()
+    {
+        m_secondStaging.Release();
+        m_firstStaging.Release();
+        m_context.Release();
+        m_device.Release();
+        m_width = m_height = 0;
+    }
+
+private:
+    bool EnsureResources(ID3D11Device* device, UINT width, UINT height)
+    {
+        if (m_device == device && m_width == width && m_height == height
+                && m_firstStaging && m_secondStaging && m_context) {
+            return true;
+        }
+        Reset();
+        m_device = device;
+        m_width = width;
+        m_height = height;
+        device->GetImmediateContext(&m_context);
+        if (!m_context) {
+            return false;
+        }
+        CComPtr<ID3D11Multithread> multithread;
+        if (SUCCEEDED(m_context->QueryInterface(IID_PPV_ARGS(&multithread))) && multithread) {
+            multithread->SetMultithreadProtected(TRUE);
+        }
+
+        D3D11_TEXTURE2D_DESC desc = {};
+        desc.Width = width;
+        desc.Height = height;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_STAGING;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        return SUCCEEDED(device->CreateTexture2D(&desc, nullptr, &m_firstStaging))
+            && SUCCEEDED(device->CreateTexture2D(&desc, nullptr, &m_secondStaging));
+    }
+
+    CComPtr<ID3D11Device> m_device;
+    CComPtr<ID3D11DeviceContext> m_context;
+    CComPtr<ID3D11Texture2D> m_firstStaging;
+    CComPtr<ID3D11Texture2D> m_secondStaging;
+    UINT m_width = 0;
+    UINT m_height = 0;
+};
+
+} // namespace
+
+struct CRifePlaybackPipeline::Impl
+{
+    struct SourceSlot {
+        CComPtr<ID3D11Texture2D> texture;
+        bool inUse = false;
+    };
+
+    struct SourceFrame {
+        size_t slot = SIZE_MAX;
+        CComPtr<ID3D11Texture2D> texture;
+        CDX11VideoProcessor* processor = nullptr;
+        REFERENCE_TIME time = INVALID_TIME;
+        REFERENCE_TIME frameDuration = 0;
+        uint64_t presenterGeneration = 0;
+        uint64_t resetSerial = 0;
+        Settings_t settings;
+        FrameRate displayRate;
+        CComPtr<IReferenceClock> clock;
+        REFERENCE_TIME graphStart = 0;
+    };
+
+    explicit Impl(CMpcVideoRenderer* renderer)
+        : owner(renderer)
+        , worker(&Impl::WorkerMain, this)
+    {
+    }
+
+    ~Impl()
+    {
+        stop.store(true);
+        cv.notify_all();
+        if (worker.joinable()) {
+            worker.join();
+        }
+        ClearQueuedFrames();
+    }
+
+    CMpcVideoRenderer* owner = nullptr;
+    std::array<SourceSlot, kSourcePoolSize> sourcePool;
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::deque<SourceFrame> queue;
+    std::thread worker;
+    std::atomic_bool stop = false;
+    std::atomic_uint64_t resetSerial = 1;
+    uint64_t lastSubmittedGeneration = UINT64_MAX;
+
+    CFrameInterpolationScheduler scheduler;
+    bool schedulerConfigured = false;
+    int schedulerMode = RIFE_MODE_Disabled;
+    int schedulerCustomFps = 0;
+    FrameRate schedulerDisplayRate = {};
+    uint64_t schedulerSerial = 0;
+
+    CNvidiaSceneChangeDetector nvofDetector;
+    ImageCutDetector imageDetector;
+    CComPtr<ID3D11Texture2D> outputTexture;
+    CComPtr<ID3D11Device> outputDevice;
+    UINT outputWidth = 0;
+    UINT outputHeight = 0;
+
+    std::shared_ptr<RuntimeBuildState> runtimeBuild;
+    std::optional<RuntimeKey> runtimeKey;
+    uint32_t nextContext = 0;
+    bool removeEveryOtherToggle = false;
+
+    void ClearQueuedFrames()
+    {
+        std::deque<SourceFrame> stale;
+        {
+            std::lock_guard lock(mutex);
+            stale.swap(queue);
+            for (const auto& frame : stale) {
+                if (frame.slot < sourcePool.size()) {
+                    sourcePool[frame.slot].inUse = false;
+                }
+            }
+        }
+    }
+
+    void ResetNonBlocking()
+    {
+        resetSerial.fetch_add(1, std::memory_order_acq_rel);
+        ClearQueuedFrames();
+        cv.notify_all();
+    }
+
+    bool AcquireSourceSlot(ID3D11Device* device, UINT width, UINT height, size_t& index, ID3D11Texture2D** texture)
+    {
+        index = SIZE_MAX;
+        if (!device || !width || !height || !texture) {
+            return false;
+        }
+
+        std::lock_guard lock(mutex);
+        for (size_t i = 0; i < sourcePool.size(); ++i) {
+            auto& slot = sourcePool[i];
+            if (slot.inUse) {
+                continue;
+            }
+            if (!SameTextureShape(slot.texture, device, width, height)) {
+                slot.texture.Release();
+                if (FAILED(CreateBgraTexture(device, width, height, &slot.texture))) {
+                    continue;
+                }
+            }
+            slot.inUse = true;
+            index = i;
+            *texture = slot.texture;
+            (*texture)->AddRef();
+            return true;
+        }
+        return false;
+    }
+
+    void ReleaseSourceSlot(size_t index)
+    {
+        if (index >= sourcePool.size()) {
+            return;
+        }
+        std::lock_guard lock(mutex);
+        sourcePool[index].inUse = false;
+    }
+
+    bool Submit(
+        CDX11VideoProcessor* processor,
+        IMediaSample* sample,
+        const Settings_t& settings,
+        uint64_t presenterGeneration,
+        FrameRate displayRate,
+        REFERENCE_TIME frameDuration)
+    {
+        if (!owner || !processor || !sample || settings.iRifeMode == RIFE_MODE_Disabled) {
+            return false;
+        }
+
+        if (lastSubmittedGeneration != presenterGeneration) {
+            lastSubmittedGeneration = presenterGeneration;
+            ResetNonBlocking();
+        }
+
+        ID3D11Device* device = processor->GetRifeDevice();
+        const CSize size = processor->GetRifeFrameSize();
+        if (!device || size.cx <= 0 || size.cy <= 0) {
+            return false;
+        }
+
+        size_t slot = SIZE_MAX;
+        CComPtr<ID3D11Texture2D> texture;
+        if (!AcquireSourceSlot(device, static_cast<UINT>(size.cx), static_cast<UINT>(size.cy), slot, &texture)) {
+            return false;
+        }
+
+        REFERENCE_TIME sourceTime = INVALID_TIME;
+        if (!processor->PrepareRifeSource(sample, texture, sourceTime) || sourceTime == INVALID_TIME) {
+            ReleaseSourceSlot(slot);
+            return false;
+        }
+
+        SourceFrame frame;
+        frame.slot = slot;
+        frame.texture = texture;
+        frame.processor = processor;
+        frame.time = sourceTime;
+        frame.frameDuration = frameDuration;
+        frame.presenterGeneration = presenterGeneration;
+        frame.resetSerial = resetSerial.load(std::memory_order_acquire);
+        frame.settings = settings;
+        frame.displayRate = displayRate;
+        frame.clock = owner->m_pClock;
+        frame.graphStart = static_cast<REFERENCE_TIME>(owner->m_tStart);
+
+        {
+            std::lock_guard lock(mutex);
+            queue.push_back(std::move(frame));
+        }
+        cv.notify_one();
+        return true;
+    }
+
+    bool IsCurrent(const SourceFrame& frame) const
+    {
+        return owner && !stop.load(std::memory_order_acquire)
+            && frame.resetSerial == resetSerial.load(std::memory_order_acquire)
+            && frame.presenterGeneration == owner->m_FrameInterpolationPresenterGeneration.load(std::memory_order_acquire);
+    }
+
+    bool IsLate(const SourceFrame& frame, REFERENCE_TIME presentationTime) const
+    {
+        if (!frame.clock) {
+            return false;
+        }
+        REFERENCE_TIME now = 0;
+        if (FAILED(frame.clock->GetTime(&now))) {
+            return false;
+        }
+        return now > frame.graphStart + presentationTime + kLateTolerance;
+    }
+
+    bool QueueTexture(const SourceFrame& frame, ID3D11Texture2D* texture, REFERENCE_TIME time, bool synthetic)
+    {
+        if (!texture || !frame.processor) {
+            return false;
+        }
+
+        const unsigned maxAttempts = synthetic ? 8u : 80u;
+        for (unsigned attempt = 0; attempt < maxAttempts; ++attempt) {
+            if (!IsCurrent(frame)) {
+                return false;
+            }
+            if (synthetic && IsLate(frame, time)) {
+                return false;
+            }
+
+            UINT handle = UINT_MAX;
+            if (frame.processor->ReserveRifePresentationSurface(texture, handle)) {
+                if (owner->QueueFrameInterpolationSource(handle, time)) {
+                    return true;
+                }
+                frame.processor->ReleaseFrameInterpolationSource(handle);
+                return false;
+            }
+            Sleep(1);
+        }
+        return false;
+    }
+
+    void ConfigureScheduler(const SourceFrame& frame)
+    {
+        const bool changed = !schedulerConfigured
+            || schedulerSerial != frame.resetSerial
+            || schedulerMode != frame.settings.iRifeMode
+            || schedulerCustomFps != frame.settings.iRifeCustomFps
+            || schedulerDisplayRate.numerator != frame.displayRate.numerator
+            || schedulerDisplayRate.denominator != frame.displayRate.denominator;
+        if (!changed) {
+            return;
+        }
+
+        schedulerMode = frame.settings.iRifeMode;
+        schedulerCustomFps = frame.settings.iRifeCustomFps;
+        schedulerDisplayRate = frame.displayRate;
+        schedulerSerial = frame.resetSerial;
+        scheduler.Configure(
+            ToSchedulerMode(frame.settings.iRifeMode),
+            {static_cast<uint32_t>(std::clamp(frame.settings.iRifeCustomFps,
+                RIFE_CUSTOM_FPS_MIN, RIFE_CUSTOM_FPS_MAX)), 1},
+            frame.displayRate);
+        schedulerConfigured = true;
+    }
+
+    bool EnsureOutputTexture(ID3D11Device* device, UINT width, UINT height)
+    {
+        if (outputDevice == device && outputWidth == width && outputHeight == height
+                && SameTextureShape(outputTexture, device, width, height)) {
+            return true;
+        }
+        outputTexture.Release();
+        outputDevice = device;
+        outputWidth = width;
+        outputHeight = height;
+        return SUCCEEDED(CreateBgraTexture(device, width, height, &outputTexture));
+    }
+
+    std::shared_ptr<CRifeFrameInterpolation> ReadyRuntime() const
+    {
+        const auto build = runtimeBuild;
+        if (!build || !build->done.load(std::memory_order_acquire)
+                || !build->success.load(std::memory_order_acquire)) {
+            return {};
+        }
+        std::lock_guard lock(build->mutex);
+        return build->runtime;
+    }
+
+    void EnsureRuntimeBuild(const SourceFrame& frame, ID3D11Device* device, UINT width, UINT height)
+    {
+        RuntimeKey key;
+        key.device = device;
+        key.width = width;
+        key.height = height;
+        key.gpu = frame.settings.iRifeGPU;
+        key.contexts = std::clamp(frame.settings.iRifeGpuThreads, RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX);
+        key.performanceBoost = frame.settings.bRifePerformanceBoost;
+
+        if (runtimeKey && *runtimeKey == key && runtimeBuild) {
+            return;
+        }
+        runtimeKey = key;
+        nextContext = 0;
+
+        auto state = std::make_shared<RuntimeBuildState>();
+        runtimeBuild = state;
+
+        const auto root = LocalAppDataRoot();
+        const auto model = root / L"models" / L"rife_v4.6.onnx";
+        const auto cache = root / L"cache";
+        if (root.empty() || !std::filesystem::exists(model)) {
+            state->status = L"RIFE 4.6 model is not installed";
+            state->done.store(true, std::memory_order_release);
+            return;
+        }
+
+        device->AddRef();
+        const uint32_t gpuIndex = key.gpu == RIFE_GPU_Auto
+            ? UINT32_MAX : static_cast<uint32_t>(key.gpu);
+        std::thread([state, device, width, height, gpuIndex, key, model, cache]() {
+            auto runtime = std::make_shared<CRifeFrameInterpolation>();
+            const bool ok = runtime->Initialize(
+                L"", device, width, height, gpuIndex,
+                static_cast<uint32_t>(key.contexts), key.performanceBoost,
+                model.wstring(), cache.wstring());
+            device->Release();
+
+            {
+                std::lock_guard lock(state->mutex);
+                state->status = runtime->GetStatus();
+                if (ok) {
+                    state->runtime = std::move(runtime);
+                }
+            }
+            state->success.store(ok, std::memory_order_release);
+            state->done.store(true, std::memory_order_release);
+        }).detach();
+    }
+
+    bool DetectSceneCut(const SourceFrame& first, const SourceFrame& second)
+    {
+        if (second.settings.iRifeSceneDetection == RIFE_SCENE_Disabled) {
+            return false;
+        }
+        ID3D11Device* device = second.processor ? second.processor->GetRifeDevice() : nullptr;
+        if (!device) {
+            return false;
+        }
+        D3D11_TEXTURE2D_DESC desc = {};
+        second.texture->GetDesc(&desc);
+
+        if (second.settings.iRifeSceneDetection == RIFE_SCENE_NVOF) {
+            CNvidiaSceneChangeDetector::Metrics metrics;
+            if (nvofDetector.Initialize(device, desc.Width, desc.Height)
+                    && nvofDetector.Analyze(first.texture, second.texture, metrics)
+                    && metrics.valid) {
+                return metrics.likelyCut;
+            }
+            // NVOF is the preferred detector, but a driver/API failure should
+            // not silently disable cut protection. Fall back to image analysis.
+        }
+
+        bool cut = false;
+        return imageDetector.Analyze(device, first.texture, second.texture, cut) && cut;
+    }
+
+    bool GenerateRife(
+        const SourceFrame& first,
+        const SourceFrame& second,
+        float timestep,
+        ID3D11Texture2D** output)
+    {
+        if (!output || !second.processor) {
+            return false;
+        }
+        *output = nullptr;
+        ID3D11Device* device = second.processor->GetRifeDevice();
+        if (!device) {
+            return false;
+        }
+        D3D11_TEXTURE2D_DESC desc = {};
+        second.texture->GetDesc(&desc);
+        EnsureRuntimeBuild(second, device, desc.Width, desc.Height);
+        auto runtime = ReadyRuntime();
+        if (!runtime || !EnsureOutputTexture(device, desc.Width, desc.Height)) {
+            return false;
+        }
+
+        MpcvrRifeStats stats = {};
+        const uint32_t contextCount = static_cast<uint32_t>(std::clamp(
+            second.settings.iRifeGpuThreads, RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX));
+        const uint32_t context = nextContext++ % std::max(1u, contextCount);
+        if (!runtime->Interpolate(context, first.texture, second.texture,
+                outputTexture, timestep, stats)) {
+            return false;
+        }
+        *output = outputTexture;
+        (*output)->AddRef();
+        return true;
+    }
+
+    void ProcessPair(SourceFrame& first, SourceFrame& second)
+    {
+        if (!IsCurrent(second) || second.time <= first.time) {
+            return;
+        }
+
+        ConfigureScheduler(second);
+        const FrameRate sourceRate = SourceRateFromDuration(
+            second.frameDuration > 0 ? second.frameDuration : second.time - first.time);
+        const auto targets = scheduler.Schedule(first.time, second.time, sourceRate);
+
+        ID3D11Device* device = second.processor ? second.processor->GetRifeDevice() : nullptr;
+        D3D11_TEXTURE2D_DESC desc = {};
+        if (second.texture) {
+            second.texture->GetDesc(&desc);
+        }
+        if (device && desc.Width && desc.Height) {
+            EnsureRuntimeBuild(second, device, desc.Width, desc.Height);
+        }
+        const bool runtimeReady = static_cast<bool>(ReadyRuntime());
+
+        // During first-run TensorRT optimization or when the optional runtime
+        // is absent, preserve ordinary video playback rather than holding B.
+        if (!runtimeReady) {
+            QueueTexture(second, second.texture, second.time, false);
+            return;
+        }
+
+        const bool sceneCut = DetectSceneCut(first, second);
+        for (const auto& target : targets) {
+            if (!IsCurrent(second)) {
+                return;
+            }
+
+            if (target.exactSource) {
+                QueueTexture(second, second.texture, target.presentationTime, false);
+                continue;
+            }
+
+            if (sceneCut) {
+                // Repeat is the default. Until the dedicated GPU blend path is
+                // selected below, nearest-real-frame repetition is also the
+                // safe fallback if blend resources cannot be produced.
+                ID3D11Texture2D* repeated = target.timestep < 0.5
+                    ? first.texture.p : second.texture.p;
+                QueueTexture(second, repeated, target.presentationTime, true);
+                continue;
+            }
+
+            if (IsLate(second, target.presentationTime)) {
+                continue;
+            }
+
+            CComPtr<ID3D11Texture2D> generated;
+            if (GenerateRife(first, second, static_cast<float>(target.timestep), &generated)) {
+                QueueTexture(second, generated, target.presentationTime, true);
+            } else {
+                // A transient inference failure must degrade to a real frame,
+                // never stall the graph or audio clock.
+                ID3D11Texture2D* fallback = target.timestep < 0.5
+                    ? first.texture.p : second.texture.p;
+                QueueTexture(second, fallback, target.presentationTime, true);
+            }
+        }
+    }
+
+    void ReleaseFrame(SourceFrame& frame)
+    {
+        const size_t slot = frame.slot;
+        frame.texture.Release();
+        frame.slot = SIZE_MAX;
+        ReleaseSourceSlot(slot);
+    }
+
+    void WorkerMain()
+    {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+        std::optional<SourceFrame> previous;
+        uint64_t activeSerial = 0;
+
+        while (!stop.load(std::memory_order_acquire)) {
+            SourceFrame current;
+            {
+                std::unique_lock lock(mutex);
+                cv.wait(lock, [&] {
+                    return stop.load(std::memory_order_acquire) || !queue.empty();
+                });
+                if (stop.load(std::memory_order_acquire)) {
+                    break;
+                }
+                current = std::move(queue.front());
+                queue.pop_front();
+            }
+
+            if (!IsCurrent(current)) {
+                ReleaseFrame(current);
+                continue;
+            }
+
+            if (activeSerial != current.resetSerial) {
+                if (previous) {
+                    ReleaseFrame(*previous);
+                    previous.reset();
+                }
+                activeSerial = current.resetSerial;
+                scheduler.Reset();
+                schedulerConfigured = false;
+                nvofDetector.Reset();
+                imageDetector.Reset();
+                removeEveryOtherToggle = false;
+            }
+
+            if (current.settings.iRifeDuplicateRemoval == RIFE_DUPLICATES_RemoveEveryOther) {
+                removeEveryOtherToggle = !removeEveryOtherToggle;
+                if (!removeEveryOtherToggle) {
+                    ReleaseFrame(current);
+                    continue;
+                }
+            } else {
+                removeEveryOtherToggle = false;
+            }
+
+            if (!previous) {
+                // The scheduler anchors its target grid at this real frame.
+                ConfigureScheduler(current);
+                QueueTexture(current, current.texture, current.time, false);
+                previous = std::move(current);
+                continue;
+            }
+
+            ProcessPair(*previous, current);
+            ReleaseFrame(*previous);
+            previous = std::move(current);
+        }
+
+        if (previous) {
+            ReleaseFrame(*previous);
+        }
+    }
+};
+
+CRifePlaybackPipeline::CRifePlaybackPipeline(CMpcVideoRenderer* owner)
+    : m_impl(std::make_unique<Impl>(owner))
+{
+}
+
+CRifePlaybackPipeline::~CRifePlaybackPipeline() = default;
+
+bool CRifePlaybackPipeline::SubmitSample(
+    CDX11VideoProcessor* processor,
+    IMediaSample* sample,
+    const Settings_t& settings,
+    uint64_t presenterGeneration,
+    FrameRate displayRate,
+    REFERENCE_TIME frameDuration)
+{
+    return m_impl && m_impl->Submit(
+        processor, sample, settings, presenterGeneration, displayRate, frameDuration);
+}
+
+void CRifePlaybackPipeline::Reset() noexcept
+{
+    if (m_impl) {
+        m_impl->ResetNonBlocking();
+    }
+}
