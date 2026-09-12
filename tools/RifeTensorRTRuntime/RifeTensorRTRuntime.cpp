@@ -360,7 +360,7 @@ private:
         if (!builder) return false;
 
         uint32_t networkFlags = 0;
-#if NV_TENSORRT_MAJOR == 10
+#if NV_TENSORRT_MAJOR >= 10
         networkFlags |= 1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kSTRONGLY_TYPED);
 #endif
         TrtPtr<nvinfer1::INetworkDefinition> network(builder->createNetworkV2(networkFlags));
@@ -380,7 +380,7 @@ private:
             return false;
         }
 
-        TrtPtr<nvinfer1::IOptimizationProfile> profile(builder->createOptimizationProfile());
+        nvinfer1::IOptimizationProfile* profile = builder->createOptimizationProfile();
         if (!profile) return false;
 
         const int minW = m_performanceBoost ? static_cast<int>(m_paddedWidth) : 128;
@@ -395,8 +395,7 @@ private:
             !profile->setDimensions(input->getName(), nvinfer1::OptProfileSelector::kMAX, maxDims)) {
             return false;
         }
-        if (config->addOptimizationProfile(profile.get()) < 0) return false;
-        profile.release();
+        if (config->addOptimizationProfile(profile) < 0) return false;
 
         config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, size_t{2} << 30);
 
@@ -439,7 +438,10 @@ private:
 
         const auto inputType = m_engine->getTensorDataType(inputName);
         const auto outputType = m_engine->getTensorDataType(outputName);
-        if (DataTypeBytes(inputType) == 0 || DataTypeBytes(outputType) == 0) return false;
+        const auto supportedType = [](nvinfer1::DataType type) {
+            return type == nvinfer1::DataType::kFLOAT || type == nvinfer1::DataType::kHALF;
+        };
+        if (!supportedType(inputType) || !supportedType(outputType)) return false;
         m_inputIsFp16 = inputType == nvinfer1::DataType::kHALF;
         m_outputIsFp16 = outputType == nvinfer1::DataType::kHALF;
         return true;
