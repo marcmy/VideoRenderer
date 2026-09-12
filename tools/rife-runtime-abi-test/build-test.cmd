@@ -27,7 +27,7 @@ if errorlevel 1 exit /b %errorlevel%
 
 cl /nologo /std:c++20 /EHsc /W4 /WX /I"..\..\Source" ^
   RifeRuntimeAbiTest.cpp "..\..\Source\RifeFrameInterpolation.cpp" ^
-  /Fe:RifeRuntimeAbiTest.exe
+  shell32.lib ole32.lib /Fe:RifeRuntimeAbiTest.exe
 if errorlevel 1 exit /b %errorlevel%
 
 RifeRuntimeAbiTest.exe
