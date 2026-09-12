@@ -1,0 +1,34 @@
+name: Apply TensorRT internal library path patch
+
+on:
+  push:
+    branches:
+      - feature/rife-tensorrt-interpolation
+    paths:
+      - .github/workflows/rife-internal-path-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feature/rife-tensorrt-interpolation
+          fetch-depth: 0
+
+      - name: Apply source patch
+        run: python tools/RifeTensorRTRuntime/apply_internal_library_path_patch.py
+
+      - name: Commit source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tools/RifeTensorRTRuntime/RifeTensorRTRuntime.cpp
+          git diff --cached --check
+          git commit -m "fix: point TensorRT at private runtime libraries"
+          git push origin HEAD:feature/rife-tensorrt-interpolation
