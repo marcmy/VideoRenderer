@@ -666,7 +666,10 @@ HRESULT CMpcVideoRenderer::WaitForStreamTime(const REFERENCE_TIME streamTime)
 }
 
 
-bool CMpcVideoRenderer::QueueFrameInterpolationSource(const UINT sourceSurface, const REFERENCE_TIME streamTime)
+bool CMpcVideoRenderer::QueueFrameInterpolationSource(
+	const UINT sourceSurface,
+	const REFERENCE_TIME streamTime,
+	const bool synthetic)
 {
 	if (sourceSurface == UINT_MAX || streamTime == INVALID_TIME) {
 		return false;
@@ -700,7 +703,8 @@ bool CMpcVideoRenderer::QueueFrameInterpolationSource(const UINT sourceSurface, 
 				streamTime,
 				graphStart,
 				clock,
-				generation
+				generation,
+				synthetic
 			});
 			queued = true;
 		}
@@ -710,6 +714,45 @@ bool CMpcVideoRenderer::QueueFrameInterpolationSource(const UINT sourceSurface, 
 		m_FrameInterpolationPresenterWake.Set();
 	}
 	return queued;
+}
+
+bool CMpcVideoRenderer::ReclaimFrameInterpolationPresentationSource()
+{
+	FrameInterpolationPresentation staleFrame;
+	bool haveFrame = false;
+	{
+		std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
+		if (m_FrameInterpolationPresenterQueue.empty()) {
+			return false;
+		}
+
+		// A real source frame must never be starved by queued interpolation.
+		// Prefer evicting the oldest synthetic frame. If the presenter is so far
+		// behind that the queue contains only real frames, discard its oldest
+		// queued frame and keep the newest source moving toward the screen.
+		auto stale = m_FrameInterpolationPresenterQueue.begin();
+		for (auto it = m_FrameInterpolationPresenterQueue.begin();
+				it != m_FrameInterpolationPresenterQueue.end(); ++it) {
+			if (it->synthetic) {
+				stale = it;
+				break;
+			}
+		}
+		staleFrame = *stale;
+		m_FrameInterpolationPresenterQueue.erase(stale);
+		haveFrame = true;
+	}
+
+	if (haveFrame) {
+		m_FrameInterpolationPresenterWake.Set();
+	}
+	if (!haveFrame || !m_VideoProcessor) {
+		return false;
+	}
+
+	CAutoLock cRendererLock(&m_RendererLock);
+	m_VideoProcessor->ReleaseFrameInterpolationSource(staleFrame.sourceSurface);
+	return true;
 }
 
 void CMpcVideoRenderer::ResetFrameInterpolationPresenterQueue()

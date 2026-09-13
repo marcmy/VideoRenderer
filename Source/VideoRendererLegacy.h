@@ -142,6 +142,7 @@ private:
 		REFERENCE_TIME graphStart = 0;
 		CComPtr<IReferenceClock> clock;
 		uint64_t generation = 0;
+		bool synthetic = false;
 	};
 	std::mutex m_FrameInterpolationPresenterMutex;
 	std::deque<FrameInterpolationPresentation> m_FrameInterpolationPresenterQueue;
@@ -152,7 +153,8 @@ private:
 
 	void FrameInterpolationPresenter();
 	bool WaitForFrameInterpolationTime(const FrameInterpolationPresentation& frame);
-	bool QueueFrameInterpolationSource(UINT sourceSurface, REFERENCE_TIME streamTime);
+	bool QueueFrameInterpolationSource(UINT sourceSurface, REFERENCE_TIME streamTime, bool synthetic = false);
+	bool ReclaimFrameInterpolationPresentationSource();
 	void ResetFrameInterpolationPresenterQueue();
 	void StopFrameInterpolationPresenter();
 

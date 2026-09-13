@@ -367,6 +367,8 @@ struct CRifePlaybackPipeline::Impl
     std::atomic_uint64_t inferenceFallbackFrames = 0;
     std::atomic_uint64_t runtimeWaitPairs = 0;
     std::atomic_uint64_t lateSyntheticDrops = 0;
+    std::atomic_uint64_t presentationDrops = 0;
+    std::atomic_uint64_t presentationReclaims = 0;
     std::atomic_uint64_t sourceResyncs = 0;
     std::atomic_uint64_t lastInferenceUs = 0;
 
@@ -519,7 +521,7 @@ struct CRifePlaybackPipeline::Impl
             return false;
         }
 
-        const unsigned maxAttempts = synthetic ? 8u : 80u;
+        const unsigned maxAttempts = synthetic ? 1u : 4u;
         for (unsigned attempt = 0; attempt < maxAttempts; ++attempt) {
             if (!IsCurrent(frame)) {
                 return false;
@@ -531,14 +533,29 @@ struct CRifePlaybackPipeline::Impl
 
             UINT handle = UINT_MAX;
             if (frame.processor->ReserveRifePresentationSurface(texture, handle)) {
-                if (owner->QueueFrameInterpolationSource(handle, time)) {
+                if (owner->QueueFrameInterpolationSource(handle, time, synthetic)) {
                     return true;
                 }
                 frame.processor->ReleaseFrameInterpolationSource(handle);
                 return false;
             }
+
+            if (synthetic) {
+                presentationDrops.fetch_add(1, std::memory_order_relaxed);
+                return false;
+            }
+
+            // The four legacy presentation surfaces are intentionally small.
+            // When they are saturated, waiting here blocks the only RIFE worker
+            // and turns a transient presenter delay into a permanent-looking
+            // video freeze. Make room for the newest real source frame instead.
+            if (owner->ReclaimFrameInterpolationPresentationSource()) {
+                presentationReclaims.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
             Sleep(1);
         }
+        presentationDrops.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
 
@@ -787,12 +804,14 @@ struct CRifePlaybackPipeline::Impl
     std::wstring Diagnostics() const
     {
         return std::format(
-            L"generated {}, scene-repeat {}, infer-fallback {}, runtime-wait {}, late-drop {}, source-resync {}, last infer {:.2f} ms",
+            L"generated {}, scene-repeat {}, infer-fallback {}, runtime-wait {}, late-drop {}, present-drop {}, present-reclaim {}, source-resync {}, last infer {:.2f} ms",
             generatedFrames.load(std::memory_order_relaxed),
             sceneRepeatFrames.load(std::memory_order_relaxed),
             inferenceFallbackFrames.load(std::memory_order_relaxed),
             runtimeWaitPairs.load(std::memory_order_relaxed),
             lateSyntheticDrops.load(std::memory_order_relaxed),
+            presentationDrops.load(std::memory_order_relaxed),
+            presentationReclaims.load(std::memory_order_relaxed),
             sourceResyncs.load(std::memory_order_relaxed),
             lastInferenceUs.load(std::memory_order_relaxed) / 1000.0);
     }
