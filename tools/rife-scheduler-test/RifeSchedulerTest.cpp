@@ -225,6 +225,46 @@ void TestLongRunDoesNotAccumulateRoundedPeriodDrift()
     }
 }
 
+void TestTwoTimesWithQuantizedSourceTimestamps()
+{
+    for (const auto rate : {Rate(60), Rate(60000, 1001), Rate(30000, 1001)}) {
+        for (const int64_t quantum : {1LL, 10000LL}) { // 100 ns and millisecond container timebases
+            CFrameInterpolationScheduler scheduler;
+            scheduler.Configure(FrameInterpolationRateMode::Movie2x, {}, {});
+            const double duration = 10'000'000.0 * rate.denominator / rate.numerator;
+            int synthetic = 0, source = 0;
+            int64_t previousTarget = 0;
+            const auto timestamp = [&](int index) {
+                return static_cast<int64_t>(std::llround(index * duration / quantum)) * quantum;
+            };
+            for (int i = 0; i < 600; ++i) {
+                // A running average expressed in integer ticks can alternate by
+                // one tick even though the video's rational frame rate is fixed.
+                const uint32_t measuredDuration = static_cast<uint32_t>(
+                    i % 2 ? std::ceil(duration) : std::floor(duration));
+                const auto targets = scheduler.Schedule(timestamp(i), timestamp(i + 1),
+                    Rate(10'000'000, measuredDuration));
+                for (const auto& target : targets) {
+                    Check(target.presentationTime > previousTarget, "quantized 2x target timestamps increase");
+                    previousTarget = target.presentationTime;
+                    if (target.exactSource) ++source;
+                    else {
+                        ++synthetic;
+                        Check(target.timestep > 0.4 && target.timestep < 0.6,
+                            "2x inference is the midpoint, never a rounded source endpoint");
+                    }
+                }
+            }
+            std::cout << "2x " << rate.numerator << '/' << rate.denominator
+                << " quantum=" << quantum << " source=" << source << " synthetic=" << synthetic << '\n';
+            Check(source == 600, "2x reuses every real source endpoint despite timestamp rounding");
+            Check(synthetic == 600, "2x needs exactly one inference per source pair");
+            CheckNear(static_cast<double>(previousTarget), 600.0 * duration, 1.0,
+                "2x keeps the rational target grid despite quantized source timestamps");
+        }
+    }
+}
+
 } // namespace
 
 int main()
@@ -239,6 +279,7 @@ int main()
     TestNonGridEndpointRemainsExcluded();
     TestResetReanchorsTimeline();
     TestLongRunDoesNotAccumulateRoundedPeriodDrift();
+    TestTwoTimesWithQuantizedSourceTimestamps();
 
     if (g_failures) {
         std::cerr << g_failures << " scheduler test(s) failed\n";

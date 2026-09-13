@@ -31,21 +31,23 @@ FrameRate ReduceRate(FrameRate rate) noexcept
     return rate;
 }
 
-FrameRate SnapNtscSourceRate(FrameRate rate) noexcept
+FrameRate SnapSourceRate(FrameRate rate) noexcept
 {
     rate = ReduceRate(rate);
     if (!rate.IsValid()) {
         return {};
     }
 
-    constexpr FrameRate ntscRates[] = {
+    constexpr FrameRate commonRates[] = {
+        {24, 1}, {25, 1}, {30, 1}, {50, 1}, {60, 1}, {120, 1},
         {24'000, 1'001},
         {30'000, 1'001},
+        {60'000, 1'001},
     };
     constexpr long double relativeTolerance = 10.0e-6L; // 10 ppm
 
     const long double value = static_cast<long double>(rate.numerator) / rate.denominator;
-    for (const auto candidate : ntscRates) {
+    for (const auto candidate : commonRates) {
         const long double canonical = static_cast<long double>(candidate.numerator) / candidate.denominator;
         if (std::abs(value - canonical) / canonical <= relativeTolerance) {
             return candidate;
@@ -103,7 +105,7 @@ void CFrameInterpolationScheduler::Configure(
 
 FrameRate CFrameInterpolationScheduler::ResolveTargetRate(const FrameRate sourceRate) const noexcept
 {
-    const FrameRate multiplierSourceRate = SnapNtscSourceRate(sourceRate);
+    const FrameRate multiplierSourceRate = SnapSourceRate(sourceRate);
     switch (m_mode) {
     case FrameInterpolationRateMode::ToScreen:
         return ReduceRate(m_displayRate);
@@ -178,6 +180,18 @@ std::vector<FrameInterpolationTarget> CFrameInterpolationScheduler::Schedule(
         m_anchored = true;
     }
 
+    // Container timestamps can be quantized to milliseconds even when the
+    // nominal rate is rational. Treat a target within that precision of B as
+    // the real frame, keeping its presentation on the uniform target grid.
+    // Otherwise 2x needlessly infers both the midpoint and an almost-identical
+    // endpoint. Include targets just beyond B too, so they are not inferred
+    // again near t=0 in the following pair. Bound tolerance to a quarter of
+    // either interval so genuine interior targets cannot collapse together.
+    const int64_t targetPeriod = static_cast<int64_t>(
+        ReferenceTicksPerSecond * targetRate.denominator / targetRate.numerator);
+    const int64_t endpointTolerance = std::min({int64_t{10'000},
+        (secondTime - firstTime) / 4, targetPeriod / 4});
+
     while (true) {
         const int64_t presentationTime = TargetTime(m_nextTargetIndex, targetRate);
         if (presentationTime == std::numeric_limits<int64_t>::max()) {
@@ -188,10 +202,10 @@ std::vector<FrameInterpolationTarget> CFrameInterpolationScheduler::Schedule(
             ++m_nextTargetIndex;
             continue;
         }
-        if (presentationTime > secondTime) {
+        if (presentationTime > secondTime && presentationTime - secondTime > endpointTolerance) {
             break;
         }
-        if (presentationTime == secondTime) {
+        if (std::abs(presentationTime - secondTime) <= endpointTolerance) {
             targets.push_back({presentationTime, 1.0, true});
             ++m_nextTargetIndex;
             break;

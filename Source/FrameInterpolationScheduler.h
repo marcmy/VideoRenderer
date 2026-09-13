@@ -41,7 +41,7 @@ enum class FrameInterpolationRateMode : uint8_t {
 struct FrameInterpolationTarget {
     int64_t presentationTime = 0;
     double timestep = 0.0;
-    bool exactSource = false;
+    bool exactSource = false; // Use the real second frame within source timestamp precision.
 };
 
 class CFrameInterpolationScheduler {
