@@ -1,5 +1,6 @@
 #include "../../Source/RifeRuntimeApi.h"
 #include "RifeKernels.h"
+#include "D3D11InteropLock.h"
 
 #include <NvInfer.h>
 #include <NvInferRuntime.h>
@@ -236,10 +237,15 @@ class RifeRuntime {
 public:
     ~RifeRuntime()
     {
-        m_registrations.Clear();
+        if (m_cudaDevice >= 0) cudaSetDevice(m_cudaDevice);
+        {
+            D3D11InteropLock interopLock(m_d3dMultithread);
+            m_registrations.Clear();
+        }
         m_contexts.clear();
         m_engine.reset();
         m_runtime.reset();
+        if (m_d3dMultithread) m_d3dMultithread->Release();
         if (m_device) m_device->Release();
     }
 
@@ -259,6 +265,14 @@ public:
         m_cachePath = params.cachePath;
         m_device = params.device;
         m_device->AddRef();
+
+        ID3D11DeviceContext* immediate = nullptr;
+        m_device->GetImmediateContext(&immediate);
+        if (!immediate) return kUnsupported;
+        const HRESULT threadingResult = immediate->QueryInterface(IID_PPV_ARGS(&m_d3dMultithread));
+        immediate->Release();
+        if (FAILED(threadingResult) || !m_d3dMultithread) return kUnsupported;
+        m_d3dMultithread->SetMultithreadProtected(TRUE);
 
         const auto runtimeDirectory = ThisModuleDirectory();
         if (runtimeDirectory.empty()) return kTensorRtFailure;
@@ -301,21 +315,26 @@ public:
         auto& state = *m_contexts[request.contextIndex];
         if (cudaSetDevice(m_cudaDevice) != cudaSuccess) return kCudaFailure;
 
-        cudaGraphicsResource_t firstResource = m_registrations.Get(request.first, false);
-        cudaGraphicsResource_t secondResource = m_registrations.Get(request.second, false);
-        cudaGraphicsResource_t outputResource = m_registrations.Get(request.output, true);
-        if (!firstResource || !secondResource || !outputResource) return kCudaFailure;
-
-        std::array<cudaGraphicsResource_t, 3> resources{firstResource, secondResource, outputResource};
-        if (cudaGraphicsMapResources(static_cast<int>(resources.size()), resources.data(), state.stream) != cudaSuccess) {
-            return kCudaFailure;
+        std::array<cudaGraphicsResource_t, 3> resources{};
+        {
+            D3D11InteropLock interopLock(m_d3dMultithread);
+            resources = {m_registrations.Get(request.first, false),
+                m_registrations.Get(request.second, false), m_registrations.Get(request.output, true)};
+            if (!resources[0] || !resources[1] || !resources[2]) return kCudaFailure;
+            if (cudaGraphicsMapResources(static_cast<int>(resources.size()), resources.data(), state.stream) != cudaSuccess) {
+                return kCudaFailure;
+            }
         }
 
         bool mapped = true;
         auto releaseMappings = [&]() -> cudaError_t {
             if (!mapped) return cudaSuccess;
-            const cudaError_t unmapResult = cudaGraphicsUnmapResources(
-                static_cast<int>(resources.size()), resources.data(), state.stream);
+            cudaError_t unmapResult;
+            {
+                D3D11InteropLock interopLock(m_d3dMultithread);
+                unmapResult = cudaGraphicsUnmapResources(
+                    static_cast<int>(resources.size()), resources.data(), state.stream);
+            }
             mapped = false;
             // Unmap is stream-ordered. The caller hands the output texture back to
             // D3D11 immediately after this function returns, so wait for the
@@ -327,9 +346,9 @@ public:
         cudaArray_t firstArray = nullptr;
         cudaArray_t secondArray = nullptr;
         cudaArray_t outputArray = nullptr;
-        if (cudaGraphicsSubResourceGetMappedArray(&firstArray, firstResource, 0, 0) != cudaSuccess ||
-            cudaGraphicsSubResourceGetMappedArray(&secondArray, secondResource, 0, 0) != cudaSuccess ||
-            cudaGraphicsSubResourceGetMappedArray(&outputArray, outputResource, 0, 0) != cudaSuccess) {
+        if (cudaGraphicsSubResourceGetMappedArray(&firstArray, resources[0], 0, 0) != cudaSuccess ||
+            cudaGraphicsSubResourceGetMappedArray(&secondArray, resources[1], 0, 0) != cudaSuccess ||
+            cudaGraphicsSubResourceGetMappedArray(&outputArray, resources[2], 0, 0) != cudaSuccess) {
             releaseMappings();
             return kCudaFailure;
         }
@@ -554,6 +573,7 @@ private:
     }
 
     ID3D11Device* m_device = nullptr;
+    ID3D11Multithread* m_d3dMultithread = nullptr;
     int m_cudaDevice = -1;
     uint32_t m_width = 0;
     uint32_t m_height = 0;
