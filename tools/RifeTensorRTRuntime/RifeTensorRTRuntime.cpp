@@ -202,7 +202,10 @@ public:
         if (it != map.end()) return it->second;
 
         cudaGraphicsResource_t resource = nullptr;
-        const unsigned flags = writable ? cudaGraphicsRegisterFlagsSurfaceLoadStore : cudaGraphicsRegisterFlagsReadOnly;
+        // CUDA's D3D11 registration API does not accept
+        // cudaGraphicsRegisterFlagsReadOnly. Inputs use the default registration
+        // mode; only outputs need surface load/store access for the CUDA kernel.
+        const unsigned flags = writable ? cudaGraphicsRegisterFlagsSurfaceLoadStore : cudaGraphicsRegisterFlagsNone;
         if (cudaGraphicsD3D11RegisterResource(&resource, texture, flags) != cudaSuccess) return nullptr;
         texture->AddRef();
         map.emplace(texture, resource);
@@ -382,10 +385,27 @@ private:
 
         const std::string cacheKey = BuildCacheKey(modelHash);
         const auto planPath = m_cachePath / std::filesystem::path(std::wstring(cacheKey.begin(), cacheKey.end()) + L".plan");
-        const auto plan = ReadFile(planPath);
+        auto plan = ReadFile(planPath);
         if (!plan.empty() && DeserializeEngine(plan)) {
             m_engineBytes = plan.size();
             return ConfigureEngineContract();
+        }
+
+        // Older builds unnecessarily keyed dynamic TensorRT plans by the
+        // current window size even though their optimization profile already
+        // spans 128x128 through 3840x2176. Migrate the matching legacy plan on
+        // first use so switching between windowed and fullscreen does not
+        // trigger another expensive engine build.
+        if (!m_performanceBoost) {
+            const std::string legacyKey = BuildLegacyCacheKey(modelHash);
+            const auto legacyPath = m_cachePath / std::filesystem::path(
+                std::wstring(legacyKey.begin(), legacyKey.end()) + L".plan");
+            plan = ReadFile(legacyPath);
+            if (!plan.empty() && DeserializeEngine(plan) && ConfigureEngineContract()) {
+                m_engineBytes = plan.size();
+                WriteFileAtomically(planPath, plan.data(), plan.size());
+                return true;
+            }
         }
 
         TrtPtr<nvinfer1::IBuilder> builder(nvinfer1::createInferBuilder(g_logger));
@@ -510,9 +530,26 @@ private:
         out << "rife46_" << modelHash.substr(0, 16)
             << "_trt" << NV_TENSORRT_MAJOR << '_' << NV_TENSORRT_MINOR
             << "_cc" << m_computeMajor << m_computeMinor
+            << '_' << Sanitize(m_gpuName);
+        if (m_performanceBoost) {
+            out << '_' << m_paddedWidth << 'x' << m_paddedHeight << "_static";
+        } else {
+            const uint32_t maxWidth = std::max<uint32_t>(3840, m_paddedWidth);
+            const uint32_t maxHeight = std::max<uint32_t>(2176, m_paddedHeight);
+            out << "_dynamic_max" << maxWidth << 'x' << maxHeight;
+        }
+        return out.str();
+    }
+
+    std::string BuildLegacyCacheKey(const std::string& modelHash) const
+    {
+        std::ostringstream out;
+        out << "rife46_" << modelHash.substr(0, 16)
+            << "_trt" << NV_TENSORRT_MAJOR << '_' << NV_TENSORRT_MINOR
+            << "_cc" << m_computeMajor << m_computeMinor
             << '_' << Sanitize(m_gpuName)
             << '_' << m_paddedWidth << 'x' << m_paddedHeight
-            << (m_performanceBoost ? "_static" : "_dynamic");
+            << "_dynamic";
         return out.str();
     }
 

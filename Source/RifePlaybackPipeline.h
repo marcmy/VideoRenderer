@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include <d3d11_4.h>
 #include <strmif.h>
@@ -39,6 +40,10 @@ public:
     // Non-blocking reset used for seek/flush/configuration changes. In-flight
     // GPU work is invalidated by generation checks and discarded on completion.
     void Reset() noexcept;
+
+    // Lightweight live diagnostics for Ctrl+J. Counters are intentionally
+    // cumulative so a user can see which fallback path is actually active.
+    [[nodiscard]] std::wstring GetDiagnostics() const;
 
 private:
     struct Impl;

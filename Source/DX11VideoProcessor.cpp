@@ -31,6 +31,7 @@
 #include "Times.h"
 #include "resource.h"
 #include "VideoRenderer.h"
+#include "RifePlaybackPipeline.h"
 #include "../Include/Version.h"
 #include "DX11VideoProcessor.h"
 #include "../Include/ID3DVideoMemoryConfiguration.h"
@@ -5371,6 +5372,12 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 		const auto& runtimeInfo = m_FrameInterpolation.GetRuntimeInfo();
 		if (!runtimeInfo.empty()) {
 			str += std::format(L"\nFRUC runtime : {}", runtimeInfo);
+		}
+	}
+	if (m_pFilter->m_Sets.iRifeMode != RIFE_MODE_Disabled && m_pFilter->m_RifePipeline) {
+		const auto rifeDiagnostics = m_pFilter->m_RifePipeline->GetDiagnostics();
+		if (!rifeDiagnostics.empty()) {
+			str += std::format(L"\nRIFE pipeline: {}", rifeDiagnostics);
 		}
 	}
 

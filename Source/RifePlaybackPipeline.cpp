@@ -337,6 +337,13 @@ struct CRifePlaybackPipeline::Impl
     uint32_t nextContext = 0;
     bool removeEveryOtherToggle = false;
 
+    std::atomic_uint64_t generatedFrames = 0;
+    std::atomic_uint64_t sceneRepeatFrames = 0;
+    std::atomic_uint64_t inferenceFallbackFrames = 0;
+    std::atomic_uint64_t runtimeWaitPairs = 0;
+    std::atomic_uint64_t lateSyntheticDrops = 0;
+    std::atomic_uint64_t lastInferenceUs = 0;
+
     void ClearQueuedFrames()
     {
         std::deque<SourceFrame> stale;
@@ -482,6 +489,7 @@ struct CRifePlaybackPipeline::Impl
                 return false;
             }
             if (synthetic && IsLate(frame, time)) {
+                lateSyntheticDrops.fetch_add(1, std::memory_order_relaxed);
                 return false;
             }
 
@@ -654,6 +662,8 @@ struct CRifePlaybackPipeline::Impl
                 outputTexture, timestep, stats)) {
             return false;
         }
+        lastInferenceUs.store(static_cast<uint64_t>(std::max(0.0, stats.inferenceMs) * 1000.0),
+            std::memory_order_relaxed);
         *output = outputTexture;
         (*output)->AddRef();
         return true;
@@ -683,6 +693,7 @@ struct CRifePlaybackPipeline::Impl
         // During first-run TensorRT optimization or when the optional runtime
         // is absent, preserve ordinary video playback rather than holding B.
         if (!runtimeReady) {
+            runtimeWaitPairs.fetch_add(1, std::memory_order_relaxed);
             QueueTexture(second, second.texture, second.time, false);
             return;
         }
@@ -713,6 +724,7 @@ struct CRifePlaybackPipeline::Impl
                 // blend path cannot produce a frame.
                 ID3D11Texture2D* repeated = target.timestep < 0.5
                     ? first.texture.p : second.texture.p;
+                sceneRepeatFrames.fetch_add(1, std::memory_order_relaxed);
                 QueueTexture(second, repeated, target.presentationTime, true);
                 continue;
             }
@@ -723,15 +735,29 @@ struct CRifePlaybackPipeline::Impl
 
             CComPtr<ID3D11Texture2D> generated;
             if (GenerateRife(first, second, static_cast<float>(target.timestep), &generated)) {
+                generatedFrames.fetch_add(1, std::memory_order_relaxed);
                 QueueTexture(second, generated, target.presentationTime, true);
             } else {
                 // A transient inference failure must degrade to a real frame,
                 // never stall the graph or audio clock.
                 ID3D11Texture2D* fallback = target.timestep < 0.5
                     ? first.texture.p : second.texture.p;
+                inferenceFallbackFrames.fetch_add(1, std::memory_order_relaxed);
                 QueueTexture(second, fallback, target.presentationTime, true);
             }
         }
+    }
+
+    std::wstring Diagnostics() const
+    {
+        return std::format(
+            L"generated {}, scene-repeat {}, infer-fallback {}, runtime-wait {}, late-drop {}, last infer {:.2f} ms",
+            generatedFrames.load(std::memory_order_relaxed),
+            sceneRepeatFrames.load(std::memory_order_relaxed),
+            inferenceFallbackFrames.load(std::memory_order_relaxed),
+            runtimeWaitPairs.load(std::memory_order_relaxed),
+            lateSyntheticDrops.load(std::memory_order_relaxed),
+            lastInferenceUs.load(std::memory_order_relaxed) / 1000.0);
     }
 
     void ReleaseFrame(SourceFrame& frame)
@@ -834,4 +860,9 @@ void CRifePlaybackPipeline::Reset() noexcept
     if (m_impl) {
         m_impl->ResetNonBlocking();
     }
+}
+
+std::wstring CRifePlaybackPipeline::GetDiagnostics() const
+{
+    return m_impl ? m_impl->Diagnostics() : std::wstring();
 }
