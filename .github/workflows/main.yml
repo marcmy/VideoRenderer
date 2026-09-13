@@ -31,6 +31,9 @@ jobs:
         run: .\tools\rife-scheduler-test\build-test.cmd
         shell: cmd
 
+      - name: Test RIFE receive pacing
+        run: python .\tools\rife-receive-pacing-test\test_receive_pacing.py
+
       - name: Test RIFE runtime ABI
         run: .\tools\rife-runtime-abi-test\build-test.cmd
         shell: cmd

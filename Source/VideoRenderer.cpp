@@ -253,14 +253,19 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 				generation,
 				displayRate,
 				frameDuration);
-			if (rifeSubmitted) {
-				// The timed presenter owns all real/synthetic presentation from here.
-				CancelNotification();
-			}
 		}
 	}
 
 	if (rifeSubmitted) {
+		// The RIFE presenter owns actual real/synthetic rendering, but Receive()
+		// must retain DirectShow's source-time pacing so decoder delivery cannot
+		// run arbitrarily ahead of the small presentation-surface pool.
+		hr = WaitForRenderTime();
+		if (FAILED(hr)) {
+			m_bInReceive = FALSE;
+			return NOERROR;
+		}
+
 		m_bInReceive = FALSE;
 
 		CAutoLock cVideoLock(&m_InterfaceLock);
