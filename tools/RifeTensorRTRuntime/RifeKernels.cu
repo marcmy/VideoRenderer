@@ -182,6 +182,13 @@ cudaError_t MpcvrRifePackInput(
             static_cast<float*>(tensor), sourceWidth, sourceHeight, paddedWidth, paddedHeight, timestep);
     }
     err = cudaGetLastError();
+    if (err == cudaSuccess) {
+        // Texture objects are referenced by the asynchronous kernel above.
+        // Keep them alive until the stream has consumed that launch; destroying
+        // them immediately can invalidate the objects while the GPU is still
+        // reading the mapped D3D11 resources.
+        err = cudaStreamSynchronize(stream);
+    }
     cudaDestroyTextureObject(secondTexture);
     cudaDestroyTextureObject(firstTexture);
     return err;
@@ -216,6 +223,13 @@ cudaError_t MpcvrRifeWriteOutput(
             sourceWidth, sourceHeight, paddedWidth, paddedHeight);
     }
     err = cudaGetLastError();
+    if (err == cudaSuccess) {
+        // The surface object must outlive the asynchronous write kernel. The
+        // caller will hand this D3D11 texture back to the renderer immediately
+        // after the request, so complete the write before destroying the CUDA
+        // view and transferring ownership back to D3D11.
+        err = cudaStreamSynchronize(stream);
+    }
     cudaDestroySurfaceObject(surface);
     return err;
 }
