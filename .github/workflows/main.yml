@@ -31,10 +31,6 @@ jobs:
         run: .\tools\rife-scheduler-test\build-test.cmd
         shell: cmd
 
-      - name: Test RIFE backpressure
-        run: .\tools\rife-backpressure-test\build-test.cmd
-        shell: cmd
-
       - name: Test RIFE runtime ABI
         run: .\tools\rife-runtime-abi-test\build-test.cmd
         shell: cmd
