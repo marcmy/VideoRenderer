@@ -422,6 +422,8 @@ CMpcVideoRenderer::~CMpcVideoRenderer()
 	DLog(L"CMpcVideoRenderer::~CMpcVideoRenderer()");
 
 	StopFrameInterpolationPresenter();
+	m_RifePipeline.reset();
+	ForgetRifeSettings(this);
 	UnregisterClassW(g_szClassName, g_hInst);
 
 	if (m_hWndParentMain) {
@@ -445,6 +447,9 @@ void CMpcVideoRenderer::NewSegment(REFERENCE_TIME startTime)
 {
 	DLog(L"CMpcVideoRenderer::NewSegment()");
 
+	if (m_RifePipeline) {
+		m_RifePipeline->Reset();
+	}
 	ResetFrameInterpolationPresenterQueue();
 	m_rtStartTime = startTime;
 }
@@ -456,6 +461,9 @@ HRESULT CMpcVideoRenderer::BeginFlush()
 	m_bFlushing = true;
 	if (m_VideoProcessor) {
 		m_VideoProcessor->CancelFrameInterpolationSubmission();
+	}
+	if (m_RifePipeline) {
+		m_RifePipeline->Reset();
 	}
 	ResetFrameInterpolationPresenterQueue();
 	return __super::BeginFlush();
@@ -1130,6 +1138,9 @@ STDMETHODIMP CMpcVideoRenderer::Pause()
 	DLog(L"CMpcVideoRenderer::Pause()");
 
 	m_filterState = State_Paused;
+	if (m_RifePipeline) {
+		m_RifePipeline->Reset();
+	}
 	ResetFrameInterpolationPresenterQueue();
 
 	return CBaseVideoRenderer2::Pause();
@@ -1141,6 +1152,9 @@ STDMETHODIMP CMpcVideoRenderer::Stop()
 
 	m_filterState = State_Stopped;
 	m_bValidBuffer = false;
+	if (m_RifePipeline) {
+		m_RifePipeline->Reset();
+	}
 	ResetFrameInterpolationPresenterQueue();
 
 	{

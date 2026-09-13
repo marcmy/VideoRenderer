@@ -12,6 +12,10 @@
 #include "VideoRenderer.h"
 #include "RifePlaybackPipeline.h"
 
+namespace {
+void ForgetRifeSettings(const CMpcVideoRenderer* renderer);
+}
+
 #define GetSettings GetSettingsLegacy
 #define SetSettings SetSettingsLegacy
 #define SaveSettings SaveSettingsLegacy
@@ -36,6 +40,12 @@ constexpr LPCWSTR OPT_RifeDuplicateRemoval  = L"RifeDuplicateRemoval";
 
 std::mutex g_rifeSettingsMutex;
 std::unordered_set<const CMpcVideoRenderer*> g_rifeSettingsLoaded;
+
+void ForgetRifeSettings(const CMpcVideoRenderer* renderer)
+{
+	std::scoped_lock lock(g_rifeSettingsMutex);
+	g_rifeSettingsLoaded.erase(renderer);
+}
 
 bool RifeSettingsChanged(const Settings_t& a, const Settings_t& b)
 {

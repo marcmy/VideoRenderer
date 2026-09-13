@@ -3989,8 +3989,14 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 		prepared.pTexture = m_pFrameInterpolationTexture;
 		prepared.pShaderResource = m_pFrameInterpolationView;
 		m_pFrameInterpolationTexture->GetDesc(&prepared.desc);
-		const CRect fullRect(0, 0, prepared.desc.Width, prepared.desc.Height);
-		return TextureCopyRect(prepared, pRenderTarget, fullRect, fullRect,
+		D3D11_TEXTURE2D_DESC targetDesc = {};
+		pRenderTarget->GetDesc(&targetDesc);
+		const CRect copyRect(
+			0,
+			0,
+			std::min(prepared.desc.Width, targetDesc.Width),
+			std::min(prepared.desc.Height, targetDesc.Height));
+		return TextureCopyRect(prepared, pRenderTarget, copyRect, copyRect,
 			m_pPS_Simple, nullptr, 0, false);
 	}
 

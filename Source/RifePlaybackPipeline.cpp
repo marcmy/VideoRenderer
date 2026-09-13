@@ -291,6 +291,31 @@ struct CRifePlaybackPipeline::Impl
         REFERENCE_TIME graphStart = 0;
     };
 
+    static bool RifeFramesCompatible(const SourceFrame& first, const SourceFrame& second)
+    {
+        if (!first.texture || !second.texture || !first.processor || first.processor != second.processor) {
+            return false;
+        }
+
+        CComPtr<ID3D11Device> firstDevice;
+        CComPtr<ID3D11Device> secondDevice;
+        first.texture->GetDevice(&firstDevice);
+        second.texture->GetDevice(&secondDevice);
+        if (!firstDevice || firstDevice != secondDevice) {
+            return false;
+        }
+
+        D3D11_TEXTURE2D_DESC firstDesc = {};
+        D3D11_TEXTURE2D_DESC secondDesc = {};
+        first.texture->GetDesc(&firstDesc);
+        second.texture->GetDesc(&secondDesc);
+        return firstDesc.Width == secondDesc.Width
+            && firstDesc.Height == secondDesc.Height
+            && firstDesc.Format == secondDesc.Format
+            && firstDesc.SampleDesc.Count == secondDesc.SampleDesc.Count
+            && firstDesc.SampleDesc.Quality == secondDesc.SampleDesc.Quality;
+    }
+
     explicit Impl(CMpcVideoRenderer* renderer)
         : owner(renderer)
         , worker(&Impl::WorkerMain, this)
@@ -342,6 +367,7 @@ struct CRifePlaybackPipeline::Impl
     std::atomic_uint64_t inferenceFallbackFrames = 0;
     std::atomic_uint64_t runtimeWaitPairs = 0;
     std::atomic_uint64_t lateSyntheticDrops = 0;
+    std::atomic_uint64_t sourceResyncs = 0;
     std::atomic_uint64_t lastInferenceUs = 0;
 
     void ClearQueuedFrames()
@@ -363,6 +389,16 @@ struct CRifePlaybackPipeline::Impl
         resetSerial.fetch_add(1, std::memory_order_acq_rel);
         ClearQueuedFrames();
         cv.notify_all();
+    }
+
+    void ResetSequenceState()
+    {
+        scheduler.Reset();
+        schedulerConfigured = false;
+        nvofDetector.Reset();
+        imageDetector.Reset();
+        sceneBlender.Reset();
+        removeEveryOtherToggle = false;
     }
 
     bool AcquireSourceSlot(ID3D11Device* device, UINT width, UINT height, size_t& index, ID3D11Texture2D** texture)
@@ -751,12 +787,13 @@ struct CRifePlaybackPipeline::Impl
     std::wstring Diagnostics() const
     {
         return std::format(
-            L"generated {}, scene-repeat {}, infer-fallback {}, runtime-wait {}, late-drop {}, last infer {:.2f} ms",
+            L"generated {}, scene-repeat {}, infer-fallback {}, runtime-wait {}, late-drop {}, source-resync {}, last infer {:.2f} ms",
             generatedFrames.load(std::memory_order_relaxed),
             sceneRepeatFrames.load(std::memory_order_relaxed),
             inferenceFallbackFrames.load(std::memory_order_relaxed),
             runtimeWaitPairs.load(std::memory_order_relaxed),
             lateSyntheticDrops.load(std::memory_order_relaxed),
+            sourceResyncs.load(std::memory_order_relaxed),
             lastInferenceUs.load(std::memory_order_relaxed) / 1000.0);
     }
 
@@ -799,12 +836,7 @@ struct CRifePlaybackPipeline::Impl
                     previous.reset();
                 }
                 activeSerial = current.resetSerial;
-                scheduler.Reset();
-                schedulerConfigured = false;
-                nvofDetector.Reset();
-                imageDetector.Reset();
-                sceneBlender.Reset();
-                removeEveryOtherToggle = false;
+                ResetSequenceState();
             }
 
             if (current.settings.iRifeDuplicateRemoval == RIFE_DUPLICATES_RemoveEveryOther) {
@@ -821,6 +853,16 @@ struct CRifePlaybackPipeline::Impl
                 // The scheduler anchors its target grid at this real frame.
                 ConfigureScheduler(current);
                 QueueTexture(current, current.texture, current.time, false);
+                previous = std::move(current);
+                continue;
+            }
+
+            if (!RifeFramesCompatible(*previous, current)) {
+                sourceResyncs.fetch_add(1, std::memory_order_relaxed);
+                ResetSequenceState();
+                ConfigureScheduler(current);
+                QueueTexture(current, current.texture, current.time, false);
+                ReleaseFrame(*previous);
                 previous = std::move(current);
                 continue;
             }

@@ -38,6 +38,9 @@ jobs:
         run: .\tools\rife-runtime-abi-test\build-test.cmd
         shell: cmd
 
+      - name: Test RIFE lifecycle
+        run: python .\tools\rife-lifecycle-test\test_rife_lifecycle.py
+
       - name: Build VideoRenderer
         run: |
           .\build_mpcvr.cmd NoWait

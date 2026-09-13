@@ -21,8 +21,9 @@ bool CDX11VideoProcessor::PrepareRifeSource(
 
     D3D11_TEXTURE2D_DESC desc = {};
     target->GetDesc(&desc);
-    const UINT width = static_cast<UINT>(std::max(0, m_windowRect.Width()));
-    const UINT height = static_cast<UINT>(std::max(0, m_windowRect.Height()));
+    const CSize rifeSize = GetRifeFrameSize();
+    const UINT width = static_cast<UINT>(std::max<LONG>(0, rifeSize.cx));
+    const UINT height = static_cast<UINT>(std::max<LONG>(0, rifeSize.cy));
     if (!width || !height || desc.Width != width || desc.Height != height
             || desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM || desc.SampleDesc.Count != 1) {
         return false;
