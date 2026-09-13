@@ -9,7 +9,6 @@
 #include <filesystem>
 #include <format>
 #include <mutex>
-#include <unordered_map>
 #include <vector>
 
 namespace nvof_scene {
@@ -189,7 +188,8 @@ struct CNvidiaSceneChangeDetector::Impl
     CComPtr<ID3D11Device> device;
     CComPtr<ID3D11DeviceContext> context;
     CComPtr<ID3D11Multithread> multithread;
-    std::unordered_map<ID3D11Texture2D*, RegisteredInput> inputs;
+    RegisteredInput firstInput;
+    RegisteredInput secondInput;
     FlowSurface forward;
     FlowSurface backward;
     UINT width = 0;
@@ -235,10 +235,8 @@ struct CNvidiaSceneChangeDetector::Impl
 
     void ResetUnlocked()
     {
-        for (auto& item : inputs) {
-            UnregisterInput(item.second);
-        }
-        inputs.clear();
+        UnregisterInput(firstInput);
+        UnregisterInput(secondInput);
         ReleaseFlow(forward);
         ReleaseFlow(backward);
         if (session && api.destroy) {
@@ -294,6 +292,31 @@ struct CNvidiaSceneChangeDetector::Impl
         hr = device->CreateTexture2D(&desc, nullptr, &flow.staging);
         if (FAILED(hr)) {
             status = std::format(L"NVOF staging texture creation failed (0x{:08X})", static_cast<unsigned>(hr));
+            return false;
+        }
+        return true;
+    }
+
+    bool CreateInputSurface(RegisteredInput& input)
+    {
+        D3D11_TEXTURE2D_DESC desc = {};
+        desc.Width = width;
+        desc.Height = height;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+        HRESULT hr = device->CreateTexture2D(&desc, nullptr, &input.texture);
+        if (FAILED(hr)) {
+            status = std::format(L"NVOF input texture creation failed (0x{:08X})", static_cast<unsigned>(hr));
+            return false;
+        }
+        const auto code = api.registerResourceD3D11(session, input.texture, &input.handle);
+        if (code != nvof_scene::Success) {
+            status = std::format(L"NVOF input registration failed: {}", DriverError(code));
             return false;
         }
         return true;
@@ -409,7 +432,8 @@ struct CNvidiaSceneChangeDetector::Impl
             return Fail(std::format(L"NvOFInit(scene detector) failed: {}", DriverError(code)));
         }
 
-        if (!CreateFlowSurface(forward) || !CreateFlowSurface(backward)) {
+        if (!CreateInputSurface(firstInput) || !CreateInputSurface(secondInput)
+                || !CreateFlowSurface(forward) || !CreateFlowSurface(backward)) {
             const std::wstring saved = status;
             ResetUnlocked();
             status = saved;
@@ -420,33 +444,21 @@ struct CNvidiaSceneChangeDetector::Impl
         return true;
     }
 
-    RegisteredInput* RegisterInput(ID3D11Texture2D* texture)
+    bool CopyInput(ID3D11Texture2D* source, RegisteredInput& input)
     {
-        if (!texture || !session) {
-            return nullptr;
-        }
-        auto found = inputs.find(texture);
-        if (found != inputs.end()) {
-            return &found->second;
+        if (!source || !input.texture || !input.handle || !context) {
+            return false;
         }
 
         D3D11_TEXTURE2D_DESC desc = {};
-        texture->GetDesc(&desc);
+        source->GetDesc(&desc);
         if (desc.Width != width || desc.Height != height || desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM ||
             desc.SampleDesc.Count != 1) {
             status = L"NVOF scene detector requires single-sample BGRA8 source textures at the configured size";
-            return nullptr;
+            return false;
         }
-
-        RegisteredInput input;
-        input.texture = texture;
-        const auto code = api.registerResourceD3D11(session, texture, &input.handle);
-        if (code != nvof_scene::Success) {
-            status = std::format(L"NVOF source registration failed: {}", DriverError(code));
-            return nullptr;
-        }
-        auto [it, inserted] = inputs.emplace(texture, std::move(input));
-        return inserted ? &it->second : nullptr;
+        context->CopyResource(input.texture, source);
+        return true;
     }
 
     bool Analyze(ID3D11Texture2D* firstTexture, ID3D11Texture2D* secondTexture, CNvidiaSceneChangeDetector::Metrics& metrics)
@@ -458,15 +470,13 @@ struct CNvidiaSceneChangeDetector::Impl
             return false;
         }
 
-        RegisteredInput* first = RegisterInput(firstTexture);
-        RegisteredInput* second = RegisterInput(secondTexture);
-        if (!first || !second) {
+        if (!CopyInput(firstTexture, firstInput) || !CopyInput(secondTexture, secondInput)) {
             return false;
         }
 
         nvof_scene::ExecuteInputParams input = {};
-        input.inputFrame = second->handle;
-        input.referenceFrame = first->handle;
+        input.inputFrame = secondInput.handle;
+        input.referenceFrame = firstInput.handle;
         input.disableTemporalHints = nvof_scene::True;
         nvof_scene::ExecuteOutputParams output = {};
         output.outputBuffer = forward.handle;
