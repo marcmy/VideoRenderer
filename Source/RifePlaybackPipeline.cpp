@@ -27,6 +27,9 @@ namespace {
 
 constexpr size_t kSourcePoolSize = 12;
 constexpr REFERENCE_TIME kLateTolerance = 10'000; // 1 ms in DirectShow ticks.
+constexpr ULONGLONG kPresentationCapacityWaitMs = 100;
+constexpr size_t kRuntimeCacheSize = 4;
+constexpr ULONGLONG kRuntimeRetryDelayMs = 2'000;
 
 FrameInterpolationRateMode ToSchedulerMode(const int mode)
 {
@@ -109,6 +112,7 @@ struct RuntimeBuildState {
     std::wstring status = L"Not started";
     std::atomic_bool done = false;
     std::atomic_bool success = false;
+    std::atomic_uint64_t retryAfterTick = 0;
 };
 
 struct RuntimeKey {
@@ -359,6 +363,7 @@ struct CRifePlaybackPipeline::Impl
 
     std::shared_ptr<RuntimeBuildState> runtimeBuild;
     std::optional<RuntimeKey> runtimeKey;
+    std::deque<std::pair<RuntimeKey, std::shared_ptr<RuntimeBuildState>>> runtimeCache;
     uint32_t nextContext = 0;
     bool removeEveryOtherToggle = false;
 
@@ -523,12 +528,14 @@ struct CRifePlaybackPipeline::Impl
             return false;
         }
 
-        const unsigned maxAttempts = synthetic ? 1u : 4u;
-        for (unsigned attempt = 0; attempt < maxAttempts; ++attempt) {
+        const ULONGLONG waitStart = GetTickCount64();
+        for (;;) {
             if (!IsCurrent(frame)) {
                 return false;
             }
-            if (synthetic && dropIfLate && IsLate(frame, time)) {
+
+            const bool late = IsLate(frame, time);
+            if (synthetic && dropIfLate && late) {
                 lateSyntheticDrops.fetch_add(1, std::memory_order_relaxed);
                 return false;
             }
@@ -543,23 +550,54 @@ struct CRifePlaybackPipeline::Impl
                 return false;
             }
 
-            if (synthetic) {
+            const bool waitExpired = GetTickCount64() - waitStart >= kPresentationCapacityWaitMs;
+            if (synthetic && waitExpired) {
                 presentationDrops.fetch_add(1, std::memory_order_relaxed);
                 return false;
             }
 
-            // The four legacy presentation surfaces are intentionally small.
-            // When they are saturated, waiting here blocks the only RIFE worker
-            // and turns a transient presenter delay into a permanent-looking
-            // video freeze. Make room for the newest real source frame instead.
-            if (owner->ReclaimFrameInterpolationPresentationSource()) {
-                presentationReclaims.fetch_add(1, std::memory_order_relaxed);
-                continue;
+            // Backpressure the worker until the presenter retires a surface.
+            // This keeps fast RIFE/image-comparison paths from filling all four
+            // presentation surfaces and then evicting their own queued output.
+            // A real source frame may reclaim only after its presentation time
+            // has passed (or the bounded fallback wait expires).
+            if (!synthetic && (late || waitExpired)) {
+                if (owner->ReclaimFrameInterpolationPresentationSource()) {
+                    presentationReclaims.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
+                presentationDrops.fetch_add(1, std::memory_order_relaxed);
+                return false;
             }
             Sleep(1);
         }
-        presentationDrops.fetch_add(1, std::memory_order_relaxed);
-        return false;
+    }
+
+    bool AcquireRifePresentationSurfaceWithBackpressure(const SourceFrame& frame, UINT width, UINT height,
+        REFERENCE_TIME time, ID3D11Texture2D** target, UINT& handle)
+    {
+        if (!frame.processor || !target) {
+            return false;
+        }
+
+        const ULONGLONG waitStart = GetTickCount64();
+        for (;;) {
+            if (!IsCurrent(frame)) {
+                return false;
+            }
+            if (IsLate(frame, time)) {
+                lateSyntheticDrops.fetch_add(1, std::memory_order_relaxed);
+                return false;
+            }
+            if (frame.processor->AcquireRifePresentationSurface(width, height, target, handle)) {
+                return true;
+            }
+            if (GetTickCount64() - waitStart >= kPresentationCapacityWaitMs) {
+                presentationDrops.fetch_add(1, std::memory_order_relaxed);
+                return false;
+            }
+            Sleep(1);
+        }
     }
 
     bool QueueReservedSurface(const SourceFrame& frame, UINT handle, REFERENCE_TIME time,
@@ -650,20 +688,44 @@ struct CRifePlaybackPipeline::Impl
         key.contexts = std::clamp(frame.settings.iRifeGpuThreads, RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX);
         key.performanceBoost = frame.settings.bRifePerformanceBoost;
 
-        if (runtimeKey && *runtimeKey == key && runtimeBuild) {
-            return;
+        for (auto it = runtimeCache.begin(); it != runtimeCache.end(); ++it) {
+            if (!(it->first == key)) {
+                continue;
+            }
+
+            const auto cached = it->second;
+            const bool failed = cached->done.load(std::memory_order_acquire)
+                && !cached->success.load(std::memory_order_acquire);
+            if (!failed || GetTickCount64() < cached->retryAfterTick.load(std::memory_order_acquire)) {
+                runtimeKey = key;
+                runtimeBuild = cached;
+                return;
+            }
+
+            // A transient initialization failure must not leave this key stuck
+            // in runtime-wait forever. Drop the failed entry after a short
+            // cooldown and let the normal build path retry it.
+            runtimeCache.erase(it);
+            break;
         }
+
         runtimeKey = key;
         nextContext = 0;
 
         auto state = std::make_shared<RuntimeBuildState>();
         runtimeBuild = state;
+        if (runtimeCache.size() >= kRuntimeCacheSize) {
+            runtimeCache.pop_front();
+        }
+        runtimeCache.emplace_back(key, state);
 
         const auto root = LocalAppDataRoot();
         const auto model = root / L"models" / L"rife_v4.6.onnx";
         const auto cache = root / L"cache";
         if (root.empty() || !std::filesystem::exists(model)) {
             state->status = L"RIFE 4.6 model is not installed";
+            state->retryAfterTick.store(GetTickCount64() + kRuntimeRetryDelayMs,
+                std::memory_order_release);
             state->done.store(true, std::memory_order_release);
             return;
         }
@@ -685,6 +747,10 @@ struct CRifePlaybackPipeline::Impl
                 if (ok) {
                     state->runtime = std::move(runtime);
                 }
+            }
+            if (!ok) {
+                state->retryAfterTick.store(GetTickCount64() + kRuntimeRetryDelayMs,
+                    std::memory_order_release);
             }
             state->success.store(ok, std::memory_order_release);
             state->done.store(true, std::memory_order_release);
@@ -826,9 +892,8 @@ struct CRifePlaybackPipeline::Impl
 
             UINT generatedSurface = UINT_MAX;
             CComPtr<ID3D11Texture2D> generated;
-            if (!second.processor->AcquireRifePresentationSurface(
-                    desc.Width, desc.Height, &generated, generatedSurface)) {
-                presentationDrops.fetch_add(1, std::memory_order_relaxed);
+            if (!AcquireRifePresentationSurfaceWithBackpressure(second, desc.Width, desc.Height,
+                    target.presentationTime, &generated, generatedSurface)) {
                 continue;
             }
 

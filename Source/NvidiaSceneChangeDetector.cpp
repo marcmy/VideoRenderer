@@ -419,7 +419,10 @@ struct CNvidiaSceneChangeDetector::Impl
         init.outputGridSize = nvof_scene::OutputGrid4;
         init.hintGridSize = nvof_scene::HintGridUndefined;
         init.mode = nvof_scene::ModeOpticalFlow;
-        init.performance = nvof_scene::PerfSlow;
+        // Scene detection needs robust coarse motion, not the highest-quality
+        // optical flow field. PerfSlow consumes too much of a 16.7 ms source
+        // frame budget at 60 fps once RIFE inference is added afterward.
+        init.performance = nvof_scene::PerfFast;
         init.enableExternalHints = nvof_scene::False;
         init.enableOutputCost = nvof_scene::False; // intentionally off on the Turing live path
         init.disparityRange = nvof_scene::StereoRangeUndefined;
@@ -440,7 +443,7 @@ struct CNvidiaSceneChangeDetector::Impl
             return false;
         }
 
-        status = std::format(L"NVOF scene detector ready, {}x{}, bidirectional 4x4 flow", width, height);
+        status = std::format(L"NVOF scene detector ready, {}x{}, fast bidirectional 4x4 flow", width, height);
         return true;
     }
 
