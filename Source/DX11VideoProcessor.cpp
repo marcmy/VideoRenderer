@@ -3328,7 +3328,7 @@ HRESULT CDX11VideoProcessor::Render(int field, const REFERENCE_TIME frameStartTi
 		}
 	}
 
-	if (!m_pPSHalfOUtoInterlace) {
+	if (!m_pPSHalfOUtoInterlace || rifePresentation) {
 		DrawSubtitles(pBackBuffer);
 	}
 
@@ -4087,14 +4087,15 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 		pConvertOutput = &m_TexRifeConvertOutput;
 		pPostScaleTextures = &m_TexsRifePostScale;
 
-		CSize convertSize(m_srcRectWidth, m_srcRectHeight);
-		if (m_D3D11VP.IsReady() && m_bVPScaling && !canUseMaxineVSR) {
-			// Keep the VP pass in unrotated source space. Rotation is applied by
-			// ResizeShaderPass below so the RIFE input geometry remains stable.
-			convertSize = (m_iRotation == 90 || m_iRotation == 270)
-				? CSize(dstRect.Height(), dstRect.Width())
-				: dstRect.Size();
-		}
+		// Keep the VP pass in unrotated source space. Rotation is applied by
+		// ResizeShaderPass below so the RIFE input geometry remains stable.
+		const auto convertPolicy = ResolveRifeVpIntermediateSize(
+			{ m_srcRectWidth, m_srcRectHeight },
+			{ static_cast<uint32_t>(std::max<LONG>(0, dstRect.Width())),
+			  static_cast<uint32_t>(std::max<LONG>(0, dstRect.Height())) },
+			m_D3D11VP.IsReady() && m_bVPScaling, canUseMaxineVSR, m_iRotation);
+		const CSize convertSize(
+			static_cast<int>(convertPolicy.width), static_cast<int>(convertPolicy.height));
 
 		const DXGI_FORMAT convertFormat = m_D3D11VP.IsReady() ? m_D3D11OutputFmt : m_InternalTexFmt;
 		hr = pConvertOutput->CheckCreate(m_pDevice, convertFormat,
@@ -4341,7 +4342,9 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 		}
 
 		if (m_pPSHalfOUtoInterlace) {
-			DrawSubtitles(pRT);
+			if (!rifeSourcePreparation) {
+				DrawSubtitles(pRT);
+			}
 
 			StepSetting();
 			FLOAT ConstData[] = {

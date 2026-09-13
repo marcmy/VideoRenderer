@@ -6,7 +6,9 @@ repo = Path(__file__).resolve().parents[2]
 dx11_header = (repo / "Source" / "DX11VideoProcessor.h").read_text(encoding="utf-8")
 dx11_legacy_header = (repo / "Source" / "DX11VideoProcessorLegacyBody.h").read_text(encoding="utf-8")
 rife_bridge = (repo / "Source" / "RifeDX11Bridge.cpp").read_text(encoding="utf-8")
+rife_pipeline = (repo / "Source" / "RifePlaybackPipeline.cpp").read_text(encoding="utf-8")
 dx11_processor = (repo / "Source" / "DX11VideoProcessor.cpp").read_text(encoding="utf-8")
+renderer_header = (repo / "Source" / "VideoRendererLegacy.h").read_text(encoding="utf-8")
 renderer_legacy = (repo / "Source" / "VideoRendererLegacy.inl").read_text(encoding="utf-8")
 
 
@@ -22,8 +24,8 @@ frame_size_block = dx11_header[frame_size_start:frame_size_end]
 assert "m_windowRect" not in frame_size_block, (
     "RIFE working dimensions must not change when only the player window changes"
 )
-assert "GetRifeContentSize()" in frame_size_block, (
-    "RIFE aligned working dimensions must be derived from stable video content dimensions"
+assert "ResolveRifeContentSize" in frame_size_block and "AlignRifeSize" in frame_size_block, (
+    "RIFE aligned working dimensions must use the tested source-derived spatial policy"
 )
 
 prepare_start = rife_bridge.find("bool CDX11VideoProcessor::PrepareRifeSource(")
@@ -62,6 +64,14 @@ assert "m_TexRifeConvertOutput" in process_body and "m_TexsRifePostScale" in pro
 assert "rifeSourcePreparation ||" in process_body, (
     "RIFE source preparation must force the intermediate path instead of taking a window-sensitive direct VP shortcut"
 )
+half_ou_start = process_body.find("if (m_pPSHalfOUtoInterlace)")
+assert half_ou_start != -1, "Half-OU post-scale branch was not found"
+half_ou_end = process_body.find("\n\t\tif (m_bFinalPass)", half_ou_start)
+assert half_ou_end != -1, "Half-OU post-scale branch end was not found"
+half_ou_branch = process_body[half_ou_start:half_ou_end]
+assert "!rifeSourcePreparation" in half_ou_branch and "DrawSubtitles" in half_ou_branch, (
+    "RIFE preprocessing must keep presentation-space subtitles out of the neural input"
+)
 
 convert_start = dx11_processor.find("HRESULT CDX11VideoProcessor::ConvertColorPass(")
 assert convert_start != -1, "ConvertColorPass() was not found"
@@ -92,6 +102,45 @@ assert "ResizeShaderPass" in prepared_branch, (
 
 assert "RIFE input" in dx11_processor and "GetRifeFrameSize()" in dx11_processor, (
     "Ctrl+J diagnostics must expose the stable RIFE working dimensions for fullscreen verification"
+)
+
+render_start = dx11_processor.find("HRESULT CDX11VideoProcessor::Render(int field")
+assert render_start != -1, "Render() was not found"
+render_end = dx11_processor.find("\nHRESULT CDX11VideoProcessor::FillBlack", render_start)
+assert render_end != -1, "Render() end was not found"
+render_body = dx11_processor[render_start:render_end]
+assert "!m_pPSHalfOUtoInterlace || rifePresentation" in render_body, (
+    "RIFE Half-OU presentation must restore subtitle composition after interpolation"
+)
+
+assert "expectedGeneration" in renderer_header, (
+    "frame-interpolation queueing must accept the generation captured before asynchronous preparation"
+)
+queue_texture_start = rife_pipeline.find("bool QueueTexture(")
+assert queue_texture_start != -1, "RIFE QueueTexture() was not found"
+queue_texture_end = rife_pipeline.find("\n    void ConfigureScheduler", queue_texture_start)
+assert queue_texture_end != -1, "RIFE QueueTexture() end was not found"
+queue_texture_body = rife_pipeline[queue_texture_start:queue_texture_end]
+assert "frame.presenterGeneration" in queue_texture_body and "QueueFrameInterpolationSource" in queue_texture_body, (
+    "RIFE worker must carry its original presenter generation through final queue insertion"
+)
+
+queue_source_start = renderer_legacy.find("bool CMpcVideoRenderer::QueueFrameInterpolationSource(")
+assert queue_source_start != -1, "QueueFrameInterpolationSource() was not found"
+queue_source_end = renderer_legacy.find("\nbool CMpcVideoRenderer::ReclaimFrameInterpolationPresentationSource", queue_source_start)
+assert queue_source_end != -1, "QueueFrameInterpolationSource() end was not found"
+queue_source_body = renderer_legacy[queue_source_start:queue_source_end]
+assert "expectedGeneration" in queue_source_body, (
+    "queue insertion must reject work prepared under an invalidated generation"
+)
+
+receive_start = renderer_legacy.find("REFERENCE_TIME interpolationTime = INVALID_TIME;")
+assert receive_start != -1, "synchronous frame-interpolation receive block was not found"
+receive_end = renderer_legacy.find("\n\tif (frameInterpolationPrepared) {", receive_start)
+assert receive_end != -1, "synchronous frame-interpolation preparation block end was not found"
+receive_block = renderer_legacy[receive_start:receive_end]
+assert "interpolationGeneration" in receive_block and "QueueFrameInterpolationSource" in receive_block, (
+    "NvOFFRUC prepare/queue must retain the generation captured before preparation"
 )
 
 rotation_start = renderer_legacy.find('if (!strcmp(field, "rotation"))')

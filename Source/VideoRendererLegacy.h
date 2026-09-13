@@ -153,7 +153,8 @@ private:
 
 	void FrameInterpolationPresenter();
 	bool WaitForFrameInterpolationTime(const FrameInterpolationPresentation& frame);
-	bool QueueFrameInterpolationSource(UINT sourceSurface, REFERENCE_TIME streamTime, bool synthetic = false);
+	bool QueueFrameInterpolationSource(UINT sourceSurface, REFERENCE_TIME streamTime,
+		bool synthetic, uint64_t expectedGeneration);
 	bool ReclaimFrameInterpolationPresentationSource();
 	void ResetFrameInterpolationPresenterQueue();
 	void StopFrameInterpolationPresenter();

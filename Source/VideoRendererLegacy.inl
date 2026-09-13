@@ -669,7 +669,8 @@ HRESULT CMpcVideoRenderer::WaitForStreamTime(const REFERENCE_TIME streamTime)
 bool CMpcVideoRenderer::QueueFrameInterpolationSource(
 	const UINT sourceSurface,
 	const REFERENCE_TIME streamTime,
-	const bool synthetic)
+	const bool synthetic,
+	const uint64_t expectedGeneration)
 {
 	if (sourceSurface == UINT_MAX || streamTime == INVALID_TIME) {
 		return false;
@@ -677,7 +678,7 @@ bool CMpcVideoRenderer::QueueFrameInterpolationSource(
 
 	CComPtr<IReferenceClock> clock;
 	REFERENCE_TIME graphStart = 0;
-	const uint64_t generation = m_FrameInterpolationPresenterGeneration.load();
+	const uint64_t generation = expectedGeneration;
 	{
 		// Snapshot all graph-timing state on the receive thread. The presenter
 		// must never take m_InterfaceLock: DirectShow seek/flush already enters
@@ -957,6 +958,7 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 	bool frameInterpolationPrepared = false;
 	bool sourceQueued = false;
 	bool renderInterpolation = false;
+	uint64_t interpolationGeneration = 0;
 
 	if (m_State == State_Running && m_VideoProcessor->Type() == VP_DX11) {
 		// DirectShow's BeginFlush holds m_InterfaceLock and m_RendererLock while
@@ -972,13 +974,15 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 			}
 
 			m_bInReceive = TRUE;
+			interpolationGeneration = m_FrameInterpolationPresenterGeneration.load(std::memory_order_acquire);
 			frameInterpolationPrepared = m_VideoProcessor->PrepareFrameInterpolation(
 				m_pMediaSample, currentFrameTime, requestedMidpoint, sourceSurface);
 			if (frameInterpolationPrepared) {
 				// Preserve and queue the source while the interface lock prevents a
 				// flush from splitting preparation from its presentation metadata.
 				CancelNotification();
-				sourceQueued = QueueFrameInterpolationSource(sourceSurface, currentFrameTime);
+				sourceQueued = QueueFrameInterpolationSource(
+					sourceSurface, currentFrameTime, false, interpolationGeneration);
 			}
 		}
 	}

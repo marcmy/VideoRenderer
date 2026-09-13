@@ -535,7 +535,8 @@ struct CRifePlaybackPipeline::Impl
 
             UINT handle = UINT_MAX;
             if (frame.processor->ReserveRifePresentationSurface(texture, handle)) {
-                if (owner->QueueFrameInterpolationSource(handle, time, synthetic)) {
+                if (owner->QueueFrameInterpolationSource(
+                        handle, time, synthetic, frame.presenterGeneration)) {
                     return true;
                 }
                 frame.processor->ReleaseFrameInterpolationSource(handle);
