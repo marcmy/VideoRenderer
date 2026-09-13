@@ -4,6 +4,7 @@
 
 #include "DX11VideoProcessor.h"
 #include "NvidiaSceneChangeDetector.h"
+#include "RifeBackpressure.h"
 #include "RifeFrameInterpolation.h"
 #include "RifeSceneBlender.h"
 #include "VideoRenderer.h"
@@ -289,6 +290,7 @@ struct CRifePlaybackPipeline::Impl
         FrameRate displayRate;
         CComPtr<IReferenceClock> clock;
         REFERENCE_TIME graphStart = 0;
+        bool discontinuity = false;
     };
 
     explicit Impl(CMpcVideoRenderer* renderer)
@@ -395,6 +397,26 @@ struct CRifePlaybackPipeline::Impl
         sourcePool[index].inUse = false;
     }
 
+    bool CollapseQueuedBacklogIfNeeded()
+    {
+        std::deque<SourceFrame> stale;
+        {
+            std::lock_guard lock(mutex);
+            if (!RifeBackpressure::ShouldCollapse(queue.size())) {
+                return false;
+            }
+
+            stale.swap(queue);
+            for (const auto& frame : stale) {
+                if (frame.slot < sourcePool.size()) {
+                    sourcePool[frame.slot].inUse = false;
+                }
+            }
+        }
+
+        return true;
+    }
+
     bool Submit(
         CDX11VideoProcessor* processor,
         IMediaSample* sample,
@@ -417,6 +439,11 @@ struct CRifePlaybackPipeline::Impl
         if (!device || size.cx <= 0 || size.cy <= 0) {
             return false;
         }
+
+        // Never let optional interpolation accumulate hundreds of milliseconds
+        // of latency. A slow RIFE inference should cost synthetic frames, not
+        // make real video periodically freeze when the 12-frame pool fills.
+        const bool discontinuity = CollapseQueuedBacklogIfNeeded();
 
         size_t slot = SIZE_MAX;
         CComPtr<ID3D11Texture2D> texture;
@@ -442,6 +469,7 @@ struct CRifePlaybackPipeline::Impl
         frame.displayRate = displayRate;
         frame.clock = owner->m_pClock;
         frame.graphStart = static_cast<REFERENCE_TIME>(owner->m_tStart);
+        frame.discontinuity = discontinuity;
 
         {
             std::lock_guard lock(mutex);
@@ -779,6 +807,26 @@ struct CRifePlaybackPipeline::Impl
                 imageDetector.Reset();
                 sceneBlender.Reset();
                 removeEveryOtherToggle = false;
+            }
+
+            if (current.discontinuity) {
+                // Pending source work was intentionally collapsed on the
+                // receive thread. Do not interpolate across the skipped gap;
+                // restart from the freshest real frame and re-anchor timing.
+                if (previous) {
+                    ReleaseFrame(*previous);
+                    previous.reset();
+                }
+                scheduler.Reset();
+                schedulerConfigured = false;
+                nvofDetector.Reset();
+                imageDetector.Reset();
+                sceneBlender.Reset();
+                removeEveryOtherToggle = false;
+
+                QueueTexture(current, current.texture, current.time, false);
+                previous = std::move(current);
+                continue;
             }
 
             if (current.settings.iRifeDuplicateRemoval == RIFE_DUPLICATES_RemoveEveryOther) {
