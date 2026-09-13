@@ -21,10 +21,12 @@ bool CDX11VideoProcessor::PrepareRifeSource(
 
     D3D11_TEXTURE2D_DESC desc = {};
     target->GetDesc(&desc);
+    const CSize contentSize = GetRifeContentSize();
     const CSize rifeSize = GetRifeFrameSize();
     const UINT width = static_cast<UINT>(std::max<LONG>(0, rifeSize.cx));
     const UINT height = static_cast<UINT>(std::max<LONG>(0, rifeSize.cy));
-    if (!width || !height || desc.Width != width || desc.Height != height
+    if (contentSize.cx <= 0 || contentSize.cy <= 0 || !width || !height
+            || desc.Width != width || desc.Height != height
             || desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM || desc.SampleDesc.Count != 1) {
         return false;
     }
@@ -54,7 +56,8 @@ bool CDX11VideoProcessor::PrepareRifeSource(
     // Process() deliberately stops before the normal Render() subtitle/OSD
     // composition. RIFE therefore sees only the video image; subtitles and
     // statistics are drawn later when the prepared texture is presented.
-    hr = Process(target, m_srcRect, m_videoRect, false);
+    const CRect contentRect(0, 0, contentSize.cx, contentSize.cy);
+    hr = Process(target, m_srcRect, contentRect, false);
     if (FAILED(hr)) {
         RecordRifeD3DFailure(RIFE_D3D_FAILURE_PREPARE_PROCESS, hr);
         return false;

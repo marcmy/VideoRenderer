@@ -3862,7 +3862,7 @@ HRESULT CDX11VideoProcessor::ConvertColorPass(ID3D11Texture2D* pRenderTarget)
 	return hr;
 }
 
-HRESULT CDX11VideoProcessor::ResizeShaderPass(const Tex2D_t& Tex, ID3D11Texture2D* pRenderTarget, const CRect& srcRect, const CRect& dstRect, const int rotation)
+HRESULT CDX11VideoProcessor::ResizeShaderPass(const Tex2D_t& Tex, ID3D11Texture2D* pRenderTarget, const CRect& srcRect, const CRect& dstRect, const int rotation, const bool flip)
 {
 	HRESULT hr = S_OK;
 	const int w2 = dstRect.Width();
@@ -3896,7 +3896,7 @@ HRESULT CDX11VideoProcessor::ResizeShaderPass(const Tex2D_t& Tex, ID3D11Texture2
 
 		if (resizerX == resizerY) {
 			// one pass resize
-			hr = TextureResizeShader(Tex, pRenderTarget, srcRect, dstRect, resizerX, rotation, m_bFlip);
+			hr = TextureResizeShader(Tex, pRenderTarget, srcRect, dstRect, resizerX, rotation, flip);
 			DLogIf(FAILED(hr), L"CDX11VideoProcessor::ResizeShaderPass() : failed with error {}", HR2Str(hr));
 
 			return hr;
@@ -3924,22 +3924,22 @@ HRESULT CDX11VideoProcessor::ResizeShaderPass(const Tex2D_t& Tex, ID3D11Texture2
 		CRect resizeRect(dstRect.left, 0, dstRect.right, texHeight);
 
 		// First resize pass
-		hr = TextureResizeShader(Tex, m_TexResize.pTexture, srcRect, resizeRect, resizerX, rotation, m_bFlip);
+		hr = TextureResizeShader(Tex, m_TexResize.pTexture, srcRect, resizeRect, resizerX, rotation, flip);
 		// Second resize pass
 		hr = TextureResizeShader(m_TexResize, pRenderTarget, resizeRect, dstRect, resizerY, 0, false);
 	}
 	else {
 		if (resizerX) {
 			// one pass resize for width
-			hr = TextureResizeShader(Tex, pRenderTarget, srcRect, dstRect, resizerX, rotation, m_bFlip);
+			hr = TextureResizeShader(Tex, pRenderTarget, srcRect, dstRect, resizerX, rotation, flip);
 		}
 		else if (resizerY) {
 			// one pass resize for height
-			hr = TextureResizeShader(Tex, pRenderTarget, srcRect, dstRect, resizerY, rotation, m_bFlip);
+			hr = TextureResizeShader(Tex, pRenderTarget, srcRect, dstRect, resizerY, rotation, flip);
 		}
 		else {
 			// no resize
-			hr = TextureCopyRect(Tex, pRenderTarget, srcRect, dstRect, m_pPS_Simple, nullptr, rotation, m_bFlip);
+			hr = TextureCopyRect(Tex, pRenderTarget, srcRect, dstRect, m_pPS_Simple, nullptr, rotation, flip);
 		}
 	}
 
@@ -4051,15 +4051,16 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 		prepared.pTexture = m_pFrameInterpolationTexture;
 		prepared.pShaderResource = m_pFrameInterpolationView;
 		m_pFrameInterpolationTexture->GetDesc(&prepared.desc);
-		D3D11_TEXTURE2D_DESC targetDesc = {};
-		pRenderTarget->GetDesc(&targetDesc);
-		const CRect copyRect(
+		const CSize contentSize = GetRifeContentSize();
+		const CRect contentRect(
 			0,
 			0,
-			std::min(prepared.desc.Width, targetDesc.Width),
-			std::min(prepared.desc.Height, targetDesc.Height));
-		return TextureCopyRect(prepared, pRenderTarget, copyRect, copyRect,
-			m_pPS_Simple, nullptr, 0, false);
+			std::min<UINT>(static_cast<UINT>(std::max<LONG>(0, contentSize.cx)), prepared.desc.Width),
+			std::min<UINT>(static_cast<UINT>(std::max<LONG>(0, contentSize.cy)), prepared.desc.Height));
+		if (contentRect.IsRectEmpty() || dstRect.IsRectEmpty()) {
+			return E_FAIL;
+		}
+		return ResizeShaderPass(prepared, pRenderTarget, contentRect, dstRect, 0, false);
 	}
 
 	HRESULT hr = S_OK;
@@ -4257,7 +4258,7 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 		}
 
 		if (rSrc != dstRect || rotation != 0) {
-			hr = ResizeShaderPass(*pInputTexture, pRT, rSrc, dstRect, rotation);
+			hr = ResizeShaderPass(*pInputTexture, pRT, rSrc, dstRect, rotation, m_bFlip);
 		} else {
 			pTex = pInputTexture; // Hmm
 		}
@@ -4326,7 +4327,7 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 		}
 	}
 	else {
-		hr = ResizeShaderPass(*pInputTexture, pRenderTarget, rSrc, dstRect, rotation);
+		hr = ResizeShaderPass(*pInputTexture, pRenderTarget, rSrc, dstRect, rotation, m_bFlip);
 	}
 
 	DLogIf(FAILED(hr), L"CDX11VideoProcessor::Process() : failed with error {}", HR2Str(hr));
@@ -5446,6 +5447,12 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 		const auto rifeDiagnostics = m_pFilter->m_RifePipeline->GetDiagnostics();
 		if (!rifeDiagnostics.empty()) {
 			str += std::format(L"\nRIFE pipeline: {}", rifeDiagnostics);
+		}
+		const CSize rifeContentSize = GetRifeContentSize();
+		const CSize rifeFrameSize = GetRifeFrameSize();
+		if (rifeFrameSize.cx > 0 && rifeFrameSize.cy > 0) {
+			str += std::format(L"\nRIFE input   : {}x{} (content {}x{})",
+				rifeFrameSize.cx, rifeFrameSize.cy, rifeContentSize.cx, rifeContentSize.cy);
 		}
 		const UINT failureStage = m_RifeD3DFailureStage.load(std::memory_order_acquire);
 		if (failureStage != RIFE_D3D_FAILURE_NONE && failureStage != UINT_MAX) {

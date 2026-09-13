@@ -35,8 +35,8 @@ assert prepared_start != -1, "prepared-frame presentation branch was not found"
 prepared_end = dx11_processor.find("\n\tHRESULT hr = S_OK;", prepared_start)
 assert prepared_end != -1, "prepared-frame presentation branch end was not found"
 prepared_branch = dx11_processor[prepared_start:prepared_end]
-assert "copyRect" in prepared_branch and "pRenderTarget->GetDesc" in prepared_branch, (
-    "aligned RIFE surfaces must be cropped back to the actual render target during presentation"
+assert "GetRifeContentSize()" in prepared_branch and "ResizeShaderPass" in prepared_branch, (
+    "aligned RIFE surfaces must crop padding and scale the content into the presentation rectangle"
 )
 
 assert "static bool RifeFramesCompatible" in rife_pipeline and "RifeFramesCompatible(*previous, current)" in rife_pipeline, (
