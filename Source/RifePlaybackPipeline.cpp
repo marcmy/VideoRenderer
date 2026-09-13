@@ -367,6 +367,7 @@ struct CRifePlaybackPipeline::Impl
     std::atomic_uint64_t inferenceFallbackFrames = 0;
     std::atomic_uint64_t runtimeWaitPairs = 0;
     std::atomic_uint64_t lateSyntheticDrops = 0;
+    std::atomic_uint64_t sourceContinuityFrames = 0;
     std::atomic_uint64_t presentationDrops = 0;
     std::atomic_uint64_t presentationReclaims = 0;
     std::atomic_uint64_t sourceResyncs = 0;
@@ -751,6 +752,7 @@ struct CRifePlaybackPipeline::Impl
             return;
         }
 
+        bool queuedOutput = false;
         const bool sceneCut = DetectSceneCut(first, second);
         for (const auto& target : targets) {
             if (!IsCurrent(second)) {
@@ -758,7 +760,7 @@ struct CRifePlaybackPipeline::Impl
             }
 
             if (target.exactSource) {
-                QueueTexture(second, second.texture, target.presentationTime, false);
+                queuedOutput |= QueueTexture(second, second.texture, target.presentationTime, false);
                 continue;
             }
 
@@ -769,7 +771,7 @@ struct CRifePlaybackPipeline::Impl
                         && EnsureOutputTexture(device, desc.Width, desc.Height)
                         && sceneBlender.Blend(device, first.texture, second.texture,
                             outputTexture, static_cast<float>(target.timestep))) {
-                    QueueTexture(second, outputTexture, target.presentationTime, true);
+                    queuedOutput |= QueueTexture(second, outputTexture, target.presentationTime, true);
                     continue;
                 }
 
@@ -778,7 +780,7 @@ struct CRifePlaybackPipeline::Impl
                 ID3D11Texture2D* repeated = target.timestep < 0.5
                     ? first.texture.p : second.texture.p;
                 sceneRepeatFrames.fetch_add(1, std::memory_order_relaxed);
-                QueueTexture(second, repeated, target.presentationTime, true);
+                queuedOutput |= QueueTexture(second, repeated, target.presentationTime, true);
                 continue;
             }
 
@@ -789,14 +791,21 @@ struct CRifePlaybackPipeline::Impl
             CComPtr<ID3D11Texture2D> generated;
             if (GenerateRife(first, second, static_cast<float>(target.timestep), &generated)) {
                 generatedFrames.fetch_add(1, std::memory_order_relaxed);
-                QueueTexture(second, generated, target.presentationTime, true);
+                queuedOutput |= QueueTexture(second, generated, target.presentationTime, true);
             } else {
                 // A transient inference failure must degrade to a real frame,
                 // never stall the graph or audio clock.
                 ID3D11Texture2D* fallback = target.timestep < 0.5
                     ? first.texture.p : second.texture.p;
                 inferenceFallbackFrames.fetch_add(1, std::memory_order_relaxed);
-                QueueTexture(second, fallback, target.presentationTime, true);
+                queuedOutput |= QueueTexture(second, fallback, target.presentationTime, true);
+            }
+        }
+        // Rounded source timestamps need not coincide with the output grid.
+        // Keep source video moving if every scheduled output was discarded.
+        if (!targets.empty() && !queuedOutput && IsCurrent(second)) {
+            if (QueueTexture(second, second.texture, second.time, false)) {
+                sourceContinuityFrames.fetch_add(1, std::memory_order_relaxed);
             }
         }
     }
@@ -804,12 +813,13 @@ struct CRifePlaybackPipeline::Impl
     std::wstring Diagnostics() const
     {
         return std::format(
-            L"generated {}, scene-repeat {}, infer-fallback {}, runtime-wait {}, late-drop {}, present-drop {}, present-reclaim {}, source-resync {}, last infer {:.2f} ms",
+            L"generated {}, scene-repeat {}, infer-fallback {}, runtime-wait {}, late-drop {}, source-fallback {}, present-drop {}, present-reclaim {}, source-resync {}, last infer {:.2f} ms",
             generatedFrames.load(std::memory_order_relaxed),
             sceneRepeatFrames.load(std::memory_order_relaxed),
             inferenceFallbackFrames.load(std::memory_order_relaxed),
             runtimeWaitPairs.load(std::memory_order_relaxed),
             lateSyntheticDrops.load(std::memory_order_relaxed),
+            sourceContinuityFrames.load(std::memory_order_relaxed),
             presentationDrops.load(std::memory_order_relaxed),
             presentationReclaims.load(std::memory_order_relaxed),
             sourceResyncs.load(std::memory_order_relaxed),
