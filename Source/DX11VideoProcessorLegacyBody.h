@@ -229,12 +229,33 @@ private:
 	REFERENCE_TIME m_rtFrameInterpolationLastInput = INVALID_TIME;
 	ID3D11Texture2D* m_pFrameInterpolationTexture = nullptr;
 	ID3D11ShaderResourceView* m_pFrameInterpolationView = nullptr;
+	enum RifeD3DFailureStage : UINT {
+		RIFE_D3D_FAILURE_NONE = 0,
+		RIFE_D3D_FAILURE_PREPARE_COPY_SAMPLE,
+		RIFE_D3D_FAILURE_PREPARE_CREATE_RTV,
+		RIFE_D3D_FAILURE_PREPARE_PROCESS,
+		RIFE_D3D_FAILURE_PRESENT_CREATE_TEXTURE,
+		RIFE_D3D_FAILURE_PRESENT_CREATE_QUERY,
+		RIFE_D3D_FAILURE_PRESENT_RETIRE_QUERY,
+		RIFE_D3D_FAILURE_RENDER_GET_BUFFER,
+		RIFE_D3D_FAILURE_RENDER_CREATE_RTV,
+		RIFE_D3D_FAILURE_RENDER_PROCESS,
+		RIFE_D3D_FAILURE_RENDER_PRESENT,
+		RIFE_D3D_FAILURE_RENDER_SOURCE,
+	};
 	struct FrameInterpolationPresentationSurface {
 		Tex2D_t texture;
+		CComPtr<ID3D11Query> retireQuery;
 		bool inUse = false;
+		bool retirePending = false;
 	};
 	static constexpr UINT FrameInterpolationSurfaceCount = 4;
 	std::array<FrameInterpolationPresentationSurface, FrameInterpolationSurfaceCount> m_FrameInterpolationPresentationSurfaces;
+	std::atomic_uint m_RifeD3DFailureStage = RIFE_D3D_FAILURE_NONE;
+	std::atomic_long m_RifeD3DFailureHr = S_OK;
+	std::atomic_long m_RifeDeviceRemovedReason = S_OK;
+	void RecordRifeD3DFailure(UINT stage, HRESULT hr);
+	const wchar_t* RifeD3DFailureStageName(UINT stage) const;
 	std::atomic_uint64_t m_FrameInterpolationGeneration = 0;
 	uint64_t m_FrameInterpolationPendingGeneration = 0;
 	std::wstring m_strFrameInterpolationStatus = L"Disabled";

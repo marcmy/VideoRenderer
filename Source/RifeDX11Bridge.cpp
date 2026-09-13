@@ -38,12 +38,14 @@ bool CDX11VideoProcessor::PrepareRifeSource(
 
     HRESULT hr = CopySample(pSample);
     if (FAILED(hr)) {
+        RecordRifeD3DFailure(RIFE_D3D_FAILURE_PREPARE_COPY_SAMPLE, hr);
         return false;
     }
 
     CComPtr<ID3D11RenderTargetView> targetView;
     hr = m_pDevice->CreateRenderTargetView(target, nullptr, &targetView);
     if (FAILED(hr)) {
+        RecordRifeD3DFailure(RIFE_D3D_FAILURE_PREPARE_CREATE_RTV, hr);
         return false;
     }
     const FLOAT clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
@@ -54,6 +56,7 @@ bool CDX11VideoProcessor::PrepareRifeSource(
     // statistics are drawn later when the prepared texture is presented.
     hr = Process(target, m_srcRect, m_videoRect, false);
     if (FAILED(hr)) {
+        RecordRifeD3DFailure(RIFE_D3D_FAILURE_PREPARE_PROCESS, hr);
         return false;
     }
 
@@ -82,10 +85,28 @@ bool CDX11VideoProcessor::ReserveRifePresentationSurface(
 
     UINT freeSurface = UINT_MAX;
     for (UINT i = 0; i < FrameInterpolationSurfaceCount; ++i) {
-        if (!m_FrameInterpolationPresentationSurfaces[i].inUse) {
-            freeSurface = i;
-            break;
+        auto& candidate = m_FrameInterpolationPresentationSurfaces[i];
+        if (candidate.inUse) {
+            continue;
         }
+        if (candidate.retirePending) {
+            if (!candidate.retireQuery) {
+                candidate.retirePending = false;
+            } else {
+                const HRESULT queryHr = m_pDeviceContext->GetData(
+                    candidate.retireQuery, nullptr, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH);
+                if (queryHr == S_FALSE) {
+                    continue;
+                }
+                if (FAILED(queryHr)) {
+                    RecordRifeD3DFailure(RIFE_D3D_FAILURE_PRESENT_RETIRE_QUERY, queryHr);
+                    continue;
+                }
+                candidate.retirePending = false;
+            }
+        }
+        freeSurface = i;
+        break;
     }
     if (freeSurface == UINT_MAX) {
         return false;
@@ -102,7 +123,18 @@ bool CDX11VideoProcessor::ReserveRifePresentationSurface(
     const HRESULT hr = surface.texture.CheckCreate(
         m_pDevice, desc.Format, desc.Width, desc.Height, Tex2D_DefaultShader);
     if (FAILED(hr)) {
+        RecordRifeD3DFailure(RIFE_D3D_FAILURE_PRESENT_CREATE_TEXTURE, hr);
         return false;
+    }
+
+    if (!surface.retireQuery) {
+        D3D11_QUERY_DESC queryDesc = {};
+        queryDesc.Query = D3D11_QUERY_EVENT;
+        const HRESULT queryHr = m_pDevice->CreateQuery(&queryDesc, &surface.retireQuery);
+        if (FAILED(queryHr)) {
+            RecordRifeD3DFailure(RIFE_D3D_FAILURE_PRESENT_CREATE_QUERY, queryHr);
+            return false;
+        }
     }
 
     m_pDeviceContext->CopyResource(surface.texture.pTexture, source);

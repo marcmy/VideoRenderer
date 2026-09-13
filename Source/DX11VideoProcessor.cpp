@@ -2370,12 +2370,51 @@ void CDX11VideoProcessor::ResetFrameInterpolation()
 	m_pFrameInterpolationView = nullptr;
 	m_TexFrameInterpolationInput.Release();
 	for (auto& surface : m_FrameInterpolationPresentationSurfaces) {
-		if (!surface.inUse) {
+		if (!surface.inUse && !surface.retirePending) {
 			surface.texture.Release();
+			surface.retireQuery.Release();
 		}
 	}
 	m_strFrameInterpolationStatus = m_iFrameInterpolationMode == FRUC_MODE_Disabled
 		? L"Disabled" : L"Waiting for frames";
+}
+
+const wchar_t* CDX11VideoProcessor::RifeD3DFailureStageName(const UINT stage) const
+{
+	switch (stage) {
+	case RIFE_D3D_FAILURE_PREPARE_COPY_SAMPLE: return L"prepare/copy-sample";
+	case RIFE_D3D_FAILURE_PREPARE_CREATE_RTV: return L"prepare/create-rtv";
+	case RIFE_D3D_FAILURE_PREPARE_PROCESS: return L"prepare/process";
+	case RIFE_D3D_FAILURE_PRESENT_CREATE_TEXTURE: return L"present/create-texture";
+	case RIFE_D3D_FAILURE_PRESENT_CREATE_QUERY: return L"present/create-query";
+	case RIFE_D3D_FAILURE_PRESENT_RETIRE_QUERY: return L"present/retire-query";
+	case RIFE_D3D_FAILURE_RENDER_GET_BUFFER: return L"render/get-buffer";
+	case RIFE_D3D_FAILURE_RENDER_CREATE_RTV: return L"render/create-rtv";
+	case RIFE_D3D_FAILURE_RENDER_PROCESS: return L"render/process";
+	case RIFE_D3D_FAILURE_RENDER_PRESENT: return L"render/present";
+	case RIFE_D3D_FAILURE_RENDER_SOURCE: return L"render/source";
+	default: return L"unknown";
+	}
+}
+
+void CDX11VideoProcessor::RecordRifeD3DFailure(const UINT stage, const HRESULT hr)
+{
+	if (SUCCEEDED(hr) || stage == RIFE_D3D_FAILURE_NONE) {
+		return;
+	}
+
+	UINT expected = RIFE_D3D_FAILURE_NONE;
+	if (!m_RifeD3DFailureStage.compare_exchange_strong(
+			expected, UINT_MAX, std::memory_order_acq_rel, std::memory_order_acquire)) {
+		return;
+	}
+
+	const HRESULT removedReason = m_pDevice ? m_pDevice->GetDeviceRemovedReason() : E_POINTER;
+	m_RifeD3DFailureHr.store(hr, std::memory_order_relaxed);
+	m_RifeDeviceRemovedReason.store(removedReason, std::memory_order_relaxed);
+	m_RifeD3DFailureStage.store(stage, std::memory_order_release);
+	DLog(L"RIFE D3D11 failure at {}: error {}, device removed reason {}",
+		RifeD3DFailureStageName(stage), HR2Str(hr), HR2Str(removedReason));
 }
 
 bool CDX11VideoProcessor::PrepareFrameInterpolation(IMediaSample* pSample, REFERENCE_TIME& sourceTime,
@@ -2633,8 +2672,15 @@ HRESULT CDX11VideoProcessor::RenderFrameInterpolationSource(UINT sourceSurface, 
 	m_pFrameInterpolationView = surface.texture.pShaderResource;
 	m_rtStart = frameStartTime;
 	const HRESULT hr = Render(1, frameStartTime);
+	if (surface.retireQuery) {
+		m_pDeviceContext->End(surface.retireQuery);
+		surface.retirePending = true;
+	}
 	m_pFrameInterpolationTexture = nullptr;
 	m_pFrameInterpolationView = nullptr;
+	if (FAILED(hr)) {
+		RecordRifeD3DFailure(RIFE_D3D_FAILURE_RENDER_SOURCE, hr);
+	}
 	if (SUCCEEDED(hr)) {
 		m_pFilter->m_DrawStats.Add(GetPreciseTick());
 	}
@@ -3142,9 +3188,14 @@ HRESULT CDX11VideoProcessor::Render(int field, const REFERENCE_TIME frameStartTi
 		m_FieldDrawn = field;
 	}
 
+	const bool rifePresentation = m_pFrameInterpolationTexture != nullptr
+		&& m_pFilter->m_Sets.iRifeMode != RIFE_MODE_Disabled;
 	CComPtr<ID3D11Texture2D> pBackBuffer;
 	HRESULT hr = m_pDXGISwapChain1->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
 	if (FAILED(hr)) {
+		if (rifePresentation) {
+			RecordRifeD3DFailure(RIFE_D3D_FAILURE_RENDER_GET_BUFFER, hr);
+		}
 		DLog(L"CDX11VideoProcessor::Render() : GetBuffer() failed with error {}", HR2Str(hr));
 		return hr;
 	}
@@ -3153,11 +3204,15 @@ HRESULT CDX11VideoProcessor::Render(int field, const REFERENCE_TIME frameStartTi
 
 	if (!m_windowRect.IsRectEmpty()) {
 		// fill the BackBuffer with black
-		ID3D11RenderTargetView* pRenderTargetView;
-		if (S_OK == m_pDevice->CreateRenderTargetView(pBackBuffer, nullptr, &pRenderTargetView)) {
+		ID3D11RenderTargetView* pRenderTargetView = nullptr;
+		const HRESULT rtvHr = m_pDevice->CreateRenderTargetView(pBackBuffer, nullptr, &pRenderTargetView);
+		if (SUCCEEDED(rtvHr)) {
 			const FLOAT ClearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 			m_pDeviceContext->ClearRenderTargetView(pRenderTargetView, ClearColor);
 			pRenderTargetView->Release();
+		} else if (rifePresentation) {
+			RecordRifeD3DFailure(RIFE_D3D_FAILURE_RENDER_CREATE_RTV, rtvHr);
+			return rtvHr;
 		}
 	}
 
@@ -3265,6 +3320,10 @@ HRESULT CDX11VideoProcessor::Render(int field, const REFERENCE_TIME frameStartTi
 
 	if (!m_renderRect.IsRectEmpty()) {
 		hr = Process(pBackBuffer, m_srcRect, m_videoRect, m_FieldDrawn == 2);
+		if (FAILED(hr) && rifePresentation) {
+			RecordRifeD3DFailure(RIFE_D3D_FAILURE_RENDER_PROCESS, hr);
+			return hr;
+		}
 	}
 
 	if (!m_pPSHalfOUtoInterlace) {
@@ -3338,6 +3397,9 @@ HRESULT CDX11VideoProcessor::Render(int field, const REFERENCE_TIME frameStartTi
 	g_bPresent = true;
 	hr = m_pDXGISwapChain1->Present(1, 0);
 	g_bPresent = false;
+	if (FAILED(hr) && rifePresentation) {
+		RecordRifeD3DFailure(RIFE_D3D_FAILURE_RENDER_PRESENT, hr);
+	}
 	DLogIf(FAILED(hr), L"CDX11VideoProcessor::Render() : Present() failed with error {}", HR2Str(hr));
 
 	m_RenderStats.presentticks = GetPreciseTick() - tick3;
@@ -5384,6 +5446,13 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 		const auto rifeDiagnostics = m_pFilter->m_RifePipeline->GetDiagnostics();
 		if (!rifeDiagnostics.empty()) {
 			str += std::format(L"\nRIFE pipeline: {}", rifeDiagnostics);
+		}
+		const UINT failureStage = m_RifeD3DFailureStage.load(std::memory_order_acquire);
+		if (failureStage != RIFE_D3D_FAILURE_NONE && failureStage != UINT_MAX) {
+			const HRESULT failureHr = static_cast<HRESULT>(m_RifeD3DFailureHr.load(std::memory_order_relaxed));
+			const HRESULT removedReason = static_cast<HRESULT>(m_RifeDeviceRemovedReason.load(std::memory_order_relaxed));
+			str += std::format(L"\nRIFE D3D11 : {} failed {}, removed-reason {}",
+				RifeD3DFailureStageName(failureStage), HR2Str(failureHr), HR2Str(removedReason));
 		}
 	}
 

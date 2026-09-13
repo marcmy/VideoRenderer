@@ -516,7 +516,8 @@ struct CRifePlaybackPipeline::Impl
         return now > frame.graphStart + presentationTime + kLateTolerance;
     }
 
-    bool QueueTexture(const SourceFrame& frame, ID3D11Texture2D* texture, REFERENCE_TIME time, bool synthetic)
+    bool QueueTexture(const SourceFrame& frame, ID3D11Texture2D* texture, REFERENCE_TIME time,
+        bool synthetic, bool dropIfLate = true)
     {
         if (!texture || !frame.processor) {
             return false;
@@ -527,7 +528,7 @@ struct CRifePlaybackPipeline::Impl
             if (!IsCurrent(frame)) {
                 return false;
             }
-            if (synthetic && IsLate(frame, time)) {
+            if (synthetic && dropIfLate && IsLate(frame, time)) {
                 lateSyntheticDrops.fetch_add(1, std::memory_order_relaxed);
                 return false;
             }
@@ -791,7 +792,11 @@ struct CRifePlaybackPipeline::Impl
             CComPtr<ID3D11Texture2D> generated;
             if (GenerateRife(first, second, static_cast<float>(target.timestep), &generated)) {
                 generatedFrames.fetch_add(1, std::memory_order_relaxed);
-                queuedOutput |= QueueTexture(second, generated, target.presentationTime, true);
+                // We already rejected targets that were hopelessly late before
+                // starting inference. Do not throw away a successfully generated
+                // frame solely because inference crossed its nominal timestamp;
+                // the presenter can display a slightly late frame immediately.
+                queuedOutput |= QueueTexture(second, generated, target.presentationTime, true, false);
             } else {
                 // A transient inference failure must degrade to a real frame,
                 // never stall the graph or audio clock.
