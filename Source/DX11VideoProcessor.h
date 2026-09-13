@@ -13,6 +13,7 @@
 #define UpdateTexures() UpdateTexures(); \
 public: \
 	bool PrepareRifeSource(IMediaSample* pSample, ID3D11Texture2D* target, REFERENCE_TIME& sourceTime); \
+	bool AcquireRifePresentationSurface(UINT width, UINT height, ID3D11Texture2D** target, UINT& sourceSurface); \
 	bool ReserveRifePresentationSurface(ID3D11Texture2D* source, UINT& sourceSurface); \
 	ID3D11Device* GetRifeDevice() const { return m_pDevice; } \
 	static UINT RifeAlignedDimension(int value) { return value > 0 ? AlignRifeDimension(static_cast<UINT>(value)) : 0u; } \

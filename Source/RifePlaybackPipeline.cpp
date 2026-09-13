@@ -562,6 +562,36 @@ struct CRifePlaybackPipeline::Impl
         return false;
     }
 
+    bool QueueReservedSurface(const SourceFrame& frame, UINT handle, REFERENCE_TIME time,
+        bool synthetic, bool dropIfLate = true)
+    {
+        if (handle == UINT_MAX || !frame.processor) {
+            return false;
+        }
+
+        const auto release = [&]() {
+            frame.processor->ReleaseFrameInterpolationSource(handle);
+        };
+
+        if (!IsCurrent(frame)) {
+            release();
+            return false;
+        }
+        if (synthetic && dropIfLate && IsLate(frame, time)) {
+            lateSyntheticDrops.fetch_add(1, std::memory_order_relaxed);
+            release();
+            return false;
+        }
+        if (owner->QueueFrameInterpolationSource(
+                handle, time, synthetic, frame.presenterGeneration)) {
+            return true;
+        }
+
+        presentationDrops.fetch_add(1, std::memory_order_relaxed);
+        release();
+        return false;
+    }
+
     void ConfigureScheduler(const SourceFrame& frame)
     {
         const bool changed = !schedulerConfigured
@@ -692,12 +722,11 @@ struct CRifePlaybackPipeline::Impl
         const SourceFrame& first,
         const SourceFrame& second,
         float timestep,
-        ID3D11Texture2D** output)
+        ID3D11Texture2D* output)
     {
         if (!output || !second.processor) {
             return false;
         }
-        *output = nullptr;
         ID3D11Device* device = second.processor->GetRifeDevice();
         if (!device) {
             return false;
@@ -706,7 +735,13 @@ struct CRifePlaybackPipeline::Impl
         second.texture->GetDesc(&desc);
         EnsureRuntimeBuild(second, device, desc.Width, desc.Height);
         auto runtime = ReadyRuntime();
-        if (!runtime || !EnsureOutputTexture(device, desc.Width, desc.Height)) {
+        D3D11_TEXTURE2D_DESC outputDesc = {};
+        output->GetDesc(&outputDesc);
+        if (!runtime
+                || outputDesc.Width != desc.Width
+                || outputDesc.Height != desc.Height
+                || outputDesc.Format != DXGI_FORMAT_B8G8R8A8_UNORM
+                || outputDesc.SampleDesc.Count != 1) {
             return false;
         }
 
@@ -715,13 +750,11 @@ struct CRifePlaybackPipeline::Impl
             second.settings.iRifeGpuThreads, RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX));
         const uint32_t context = nextContext++ % std::max(1u, contextCount);
         if (!runtime->Interpolate(context, first.texture, second.texture,
-                outputTexture, timestep, stats)) {
+                output, timestep, stats)) {
             return false;
         }
         lastInferenceUs.store(static_cast<uint64_t>(std::max(0.0, stats.inferenceMs) * 1000.0),
             std::memory_order_relaxed);
-        *output = outputTexture;
-        (*output)->AddRef();
         return true;
     }
 
@@ -787,18 +820,28 @@ struct CRifePlaybackPipeline::Impl
             }
 
             if (IsLate(second, target.presentationTime)) {
+                lateSyntheticDrops.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
 
+            UINT generatedSurface = UINT_MAX;
             CComPtr<ID3D11Texture2D> generated;
-            if (GenerateRife(first, second, static_cast<float>(target.timestep), &generated)) {
+            if (!second.processor->AcquireRifePresentationSurface(
+                    desc.Width, desc.Height, &generated, generatedSurface)) {
+                presentationDrops.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+
+            if (GenerateRife(first, second, static_cast<float>(target.timestep), generated)) {
                 generatedFrames.fetch_add(1, std::memory_order_relaxed);
-                // We already rejected targets that were hopelessly late before
-                // starting inference. Do not throw away a successfully generated
-                // frame solely because inference crossed its nominal timestamp;
-                // the presenter can display a slightly late frame immediately.
-                queuedOutput |= QueueTexture(second, generated, target.presentationTime, true, false);
+                // CUDA writes directly into a presentation surface whose D3D11
+                // retirement query controls reuse. This avoids re-mapping one
+                // shared CUDA output while an asynchronous D3D11 copy from the
+                // preceding inference may still be reading it.
+                queuedOutput |= QueueReservedSurface(
+                    second, generatedSurface, target.presentationTime, true, false);
             } else {
+                second.processor->ReleaseFrameInterpolationSource(generatedSurface);
                 // A transient inference failure must degrade to a real frame,
                 // never stall the graph or audio clock.
                 ID3D11Texture2D* fallback = target.timestep < 0.5

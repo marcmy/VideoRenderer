@@ -235,6 +235,7 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 	}
 
 	bool rifeSubmitted = false;
+	REFERENCE_TIME rifeFrameDuration = 0;
 	if (m_State == State_Running && m_VideoProcessor->Type() == VP_DX11) {
 		// BeginFlush enters with interface/renderer locks held and waits for
 		// m_bInReceive to clear. Advertise Receive as inactive before entering
@@ -255,22 +256,33 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 			auto* dx11 = static_cast<CDX11VideoProcessor*>(m_VideoProcessor.get());
 			const uint64_t generation = m_FrameInterpolationPresenterGeneration.load(std::memory_order_acquire);
 			const FrameRate displayRate = ResolveDisplayRate(m_DisplayConfig);
-			const REFERENCE_TIME frameDuration = m_FrameStats.GetAverageFrameDuration();
+			rifeFrameDuration = m_FrameStats.GetAverageFrameDuration();
 			rifeSubmitted = m_RifePipeline->SubmitSample(
 				dx11,
 				m_pMediaSample,
 				m_Sets,
 				generation,
 				displayRate,
-				frameDuration);
+				rifeFrameDuration);
 		}
 	}
 
 	if (rifeSubmitted) {
 		// The RIFE presenter owns actual real/synthetic rendering, but Receive()
-		// must retain DirectShow's source-time pacing so decoder delivery cannot
-		// run arbitrarily ahead of the small presentation-surface pool.
-		hr = WaitForRenderTime();
+		// still bounds decoder delivery. Give the worker one source-frame of
+		// additional lookahead so interpolation between A and B can finish before
+		// its midpoint is due. Submission happens before this wait, so pacing at
+		// B - duration keeps at most a small, fixed lead instead of allowing an
+		// unbounded source backlog.
+		REFERENCE_TIME rtSourceStart = INVALID_TIME;
+		REFERENCE_TIME rtSourceEnd = INVALID_TIME;
+		const bool haveSourceTime = m_pMediaSample
+			&& SUCCEEDED(m_pMediaSample->GetTime(&rtSourceStart, &rtSourceEnd));
+		if (haveSourceTime && rifeFrameDuration > 0) {
+			hr = WaitForStreamTime(rtSourceStart - rifeFrameDuration);
+		} else {
+			hr = WaitForRenderTime();
+		}
 		if (FAILED(hr)) {
 			m_bInReceive = FALSE;
 			return NOERROR;

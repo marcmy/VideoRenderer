@@ -8,6 +8,7 @@ legacy_renderer = (repo / "Source" / "VideoRendererLegacy.inl").read_text(encodi
 dx11_header = (repo / "Source" / "DX11VideoProcessor.h").read_text(encoding="utf-8")
 dx11_processor = (repo / "Source" / "DX11VideoProcessor.cpp").read_text(encoding="utf-8")
 rife_pipeline = (repo / "Source" / "RifePlaybackPipeline.cpp").read_text(encoding="utf-8")
+rife_bridge = (repo / "Source" / "RifeDX11Bridge.cpp").read_text(encoding="utf-8")
 
 
 def function_body(source: str, marker: str) -> str:
@@ -41,6 +42,19 @@ assert "GetRifeContentSize()" in prepared_branch and "ResizeShaderPass" in prepa
 
 assert "static bool RifeFramesCompatible" in rife_pipeline and "RifeFramesCompatible(*previous, current)" in rife_pipeline, (
     "the worker must never pair RIFE source textures from different device/size generations"
+)
+
+assert "AcquireRifePresentationSurface" in dx11_header and "AcquireRifePresentationSurface" in rife_bridge, (
+    "generated RIFE frames need a presentation surface whose retirement query owns texture reuse"
+)
+generate_rife = function_body(rife_pipeline, "bool GenerateRife(")
+assert "runtime->Interpolate(context, first.texture, second.texture," in generate_rife
+assert "outputTexture" not in generate_rife, (
+    "RIFE inference must write into the reserved presentation surface instead of a shared CUDA output texture"
+)
+process_pair = function_body(rife_pipeline, "void ProcessPair(")
+assert "AcquireRifePresentationSurface" in process_pair and "QueueReservedSurface" in process_pair, (
+    "generated output must remain on the same retired presentation surface from inference through queueing"
 )
 
 assert "ForgetRifeSettings(this)" in legacy_renderer, (

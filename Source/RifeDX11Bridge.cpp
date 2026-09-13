@@ -124,7 +124,7 @@ bool CDX11VideoProcessor::ReserveRifePresentationSurface(
 
     auto& surface = m_FrameInterpolationPresentationSurfaces[freeSurface];
     const HRESULT hr = surface.texture.CheckCreate(
-        m_pDevice, desc.Format, desc.Width, desc.Height, Tex2D_DefaultShader);
+        m_pDevice, desc.Format, desc.Width, desc.Height, Tex2D_DefaultShaderRTarget);
     if (FAILED(hr)) {
         RecordRifeD3DFailure(RIFE_D3D_FAILURE_PRESENT_CREATE_TEXTURE, hr);
         return false;
@@ -147,6 +147,83 @@ bool CDX11VideoProcessor::ReserveRifePresentationSurface(
     return true;
 #else
     UNREFERENCED_PARAMETER(source);
+    return false;
+#endif
+}
+
+bool CDX11VideoProcessor::AcquireRifePresentationSurface(
+    const UINT width,
+    const UINT height,
+    ID3D11Texture2D** target,
+    UINT& sourceSurface)
+{
+    sourceSurface = UINT_MAX;
+    if (target) {
+        *target = nullptr;
+    }
+#ifdef _WIN64
+    if (!target || !width || !height || !m_pDevice || !m_pDeviceContext) {
+        return false;
+    }
+
+    CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
+
+    UINT freeSurface = UINT_MAX;
+    for (UINT i = 0; i < FrameInterpolationSurfaceCount; ++i) {
+        auto& candidate = m_FrameInterpolationPresentationSurfaces[i];
+        if (candidate.inUse) {
+            continue;
+        }
+        if (candidate.retirePending) {
+            if (!candidate.retireQuery) {
+                candidate.retirePending = false;
+            } else {
+                const HRESULT queryHr = m_pDeviceContext->GetData(
+                    candidate.retireQuery, nullptr, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH);
+                if (queryHr == S_FALSE) {
+                    continue;
+                }
+                if (FAILED(queryHr)) {
+                    RecordRifeD3DFailure(RIFE_D3D_FAILURE_PRESENT_RETIRE_QUERY, queryHr);
+                    continue;
+                }
+                candidate.retirePending = false;
+            }
+        }
+        freeSurface = i;
+        break;
+    }
+    if (freeSurface == UINT_MAX) {
+        return false;
+    }
+
+    auto& surface = m_FrameInterpolationPresentationSurfaces[freeSurface];
+    const HRESULT hr = surface.texture.CheckCreate(
+        m_pDevice, DXGI_FORMAT_B8G8R8A8_UNORM, width, height, Tex2D_DefaultShaderRTarget);
+    if (FAILED(hr)) {
+        RecordRifeD3DFailure(RIFE_D3D_FAILURE_PRESENT_CREATE_TEXTURE, hr);
+        return false;
+    }
+
+    if (!surface.retireQuery) {
+        D3D11_QUERY_DESC queryDesc = {};
+        queryDesc.Query = D3D11_QUERY_EVENT;
+        const HRESULT queryHr = m_pDevice->CreateQuery(&queryDesc, &surface.retireQuery);
+        if (FAILED(queryHr)) {
+            RecordRifeD3DFailure(RIFE_D3D_FAILURE_PRESENT_CREATE_QUERY, queryHr);
+            return false;
+        }
+    }
+
+    surface.inUse = true;
+    sourceSurface = freeSurface;
+    *target = surface.texture.pTexture;
+    (*target)->AddRef();
+    return true;
+#else
+    UNREFERENCED_PARAMETER(width);
+    UNREFERENCED_PARAMETER(height);
+    UNREFERENCED_PARAMETER(target);
     return false;
 #endif
 }
