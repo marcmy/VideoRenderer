@@ -196,6 +196,7 @@ struct CNvidiaSceneChangeDetector::Impl
     UINT height = 0;
     UINT flowWidth = 0;
     UINT flowHeight = 0;
+    bool analysisPending = false;
     std::wstring status = L"Disabled";
 
     std::wstring DriverError(nvof_scene::Status code) const
@@ -252,6 +253,7 @@ struct CNvidiaSceneChangeDetector::Impl
         }
         api = {};
         width = height = flowWidth = flowHeight = 0;
+        analysisPending = false;
     }
 
     bool Fail(const std::wstring& message)
@@ -464,12 +466,15 @@ struct CNvidiaSceneChangeDetector::Impl
         return true;
     }
 
-    bool Analyze(ID3D11Texture2D* firstTexture, ID3D11Texture2D* secondTexture, CNvidiaSceneChangeDetector::Metrics& metrics)
+    bool BeginAnalyze(ID3D11Texture2D* firstTexture, ID3D11Texture2D* secondTexture)
     {
         std::scoped_lock lock(mutex);
-        metrics = {};
         if (!session) {
             status = L"NVOF scene detector is not initialized";
+            return false;
+        }
+        if (analysisPending) {
+            status = L"NVOF scene detector already has pending analysis";
             return false;
         }
 
@@ -491,6 +496,20 @@ struct CNvidiaSceneChangeDetector::Impl
             return false;
         }
 
+        analysisPending = true;
+        return true;
+    }
+
+    bool FinishAnalyze(CNvidiaSceneChangeDetector::Metrics& metrics)
+    {
+        std::scoped_lock lock(mutex);
+        metrics = {};
+        if (!session || !analysisPending) {
+            status = L"NVOF scene detector has no pending analysis";
+            return false;
+        }
+        analysisPending = false;
+
         context->CopyResource(forward.staging, forward.texture);
         context->CopyResource(backward.staging, backward.texture);
 
@@ -508,8 +527,14 @@ struct CNvidiaSceneChangeDetector::Impl
             return false;
         }
 
+        // The OFA still computes the complete bidirectional 4x4 flow field.
+        // Scene-cut classification does not need to reduce every vector on the
+        // CPU: an 8x8-pixel sampling lattice retains tens of thousands of
+        // samples at 1080p while substantially reducing readback processing.
+        constexpr UINT kAnalysisStride = 2;
         std::vector<float> magnitudes;
-        magnitudes.reserve(static_cast<size_t>(flowWidth) * flowHeight);
+        magnitudes.reserve(static_cast<size_t>((flowWidth + kAnalysisStride - 1) / kAnalysisStride)
+            * ((flowHeight + kAnalysisStride - 1) / kAnalysisStride));
         double sumMotion = 0.0;
         double sumResidual = 0.0;
         double sumForwardX = 0.0;
@@ -517,10 +542,10 @@ struct CNvidiaSceneChangeDetector::Impl
         size_t incoherent = 0;
         size_t count = 0;
 
-        for (UINT y = 0; y < flowHeight; ++y) {
+        for (UINT y = 0; y < flowHeight; y += kAnalysisStride) {
             const auto* frow = reinterpret_cast<const FlowVector*>(static_cast<const uint8_t*>(fwd.pData) + static_cast<size_t>(y) * fwd.RowPitch);
             const auto* brow = reinterpret_cast<const FlowVector*>(static_cast<const uint8_t*>(bwd.pData) + static_cast<size_t>(y) * bwd.RowPitch);
-            for (UINT x = 0; x < flowWidth; ++x) {
+            for (UINT x = 0; x < flowWidth; x += kAnalysisStride) {
                 const float fx = frow[x].x * FlowFixedPointScale;
                 const float fy = frow[x].y * FlowFixedPointScale;
                 const float bx = brow[x].x * FlowFixedPointScale;
@@ -583,6 +608,11 @@ struct CNvidiaSceneChangeDetector::Impl
             metrics.likelyCut ? L"; cut" : L"");
         return true;
     }
+
+    bool Analyze(ID3D11Texture2D* firstTexture, ID3D11Texture2D* secondTexture, CNvidiaSceneChangeDetector::Metrics& metrics)
+    {
+        return BeginAnalyze(firstTexture, secondTexture) && FinishAnalyze(metrics);
+    }
 };
 
 CNvidiaSceneChangeDetector::CNvidiaSceneChangeDetector()
@@ -598,6 +628,16 @@ CNvidiaSceneChangeDetector::~CNvidiaSceneChangeDetector()
 bool CNvidiaSceneChangeDetector::Initialize(ID3D11Device* device, UINT width, UINT height)
 {
     return m_impl->Initialize(device, width, height);
+}
+
+bool CNvidiaSceneChangeDetector::BeginAnalyze(ID3D11Texture2D* first, ID3D11Texture2D* second)
+{
+    return m_impl->BeginAnalyze(first, second);
+}
+
+bool CNvidiaSceneChangeDetector::FinishAnalyze(Metrics& metrics)
+{
+    return m_impl->FinishAnalyze(metrics);
 }
 
 bool CNvidiaSceneChangeDetector::Analyze(ID3D11Texture2D* first, ID3D11Texture2D* second, Metrics& metrics)

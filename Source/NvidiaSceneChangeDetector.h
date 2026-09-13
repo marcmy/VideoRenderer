@@ -33,6 +33,8 @@ public:
     CNvidiaSceneChangeDetector& operator=(const CNvidiaSceneChangeDetector&) = delete;
 
     bool Initialize(ID3D11Device* device, UINT width, UINT height);
+    bool BeginAnalyze(ID3D11Texture2D* first, ID3D11Texture2D* second);
+    bool FinishAnalyze(Metrics& metrics);
     bool Analyze(ID3D11Texture2D* first, ID3D11Texture2D* second, Metrics& metrics);
     void Reset();
 

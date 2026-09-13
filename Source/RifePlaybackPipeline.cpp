@@ -757,27 +757,11 @@ struct CRifePlaybackPipeline::Impl
         }).detach();
     }
 
-    bool DetectSceneCut(const SourceFrame& first, const SourceFrame& second)
+    bool DetectImageSceneCut(const SourceFrame& first, const SourceFrame& second)
     {
-        if (second.settings.iRifeSceneDetection == RIFE_SCENE_Disabled) {
-            return false;
-        }
         ID3D11Device* device = second.processor ? second.processor->GetRifeDevice() : nullptr;
         if (!device) {
             return false;
-        }
-        D3D11_TEXTURE2D_DESC desc = {};
-        second.texture->GetDesc(&desc);
-
-        if (second.settings.iRifeSceneDetection == RIFE_SCENE_NVOF) {
-            CNvidiaSceneChangeDetector::Metrics metrics;
-            if (nvofDetector.Initialize(device, desc.Width, desc.Height)
-                    && nvofDetector.Analyze(first.texture, second.texture, metrics)
-                    && metrics.valid) {
-                return metrics.likelyCut;
-            }
-            // NVOF is the preferred detector, but a driver/API failure should
-            // not silently disable cut protection. Fall back to image analysis.
         }
 
         bool cut = false;
@@ -853,8 +837,37 @@ struct CRifePlaybackPipeline::Impl
             return;
         }
 
+        bool hasTimelySyntheticTarget = false;
+        for (const auto& target : targets) {
+            if (!target.exactSource && !IsLate(second, target.presentationTime)) {
+                hasTimelySyntheticTarget = true;
+                break;
+            }
+        }
+
         bool queuedOutput = false;
-        const bool sceneCut = DetectSceneCut(first, second);
+        bool sceneDecisionReady = second.settings.iRifeSceneDetection != RIFE_SCENE_NVOF;
+        bool sceneCut = hasTimelySyntheticTarget
+            && second.settings.iRifeSceneDetection == RIFE_SCENE_Image
+            && DetectImageSceneCut(first, second);
+
+        const auto queueSceneCutTarget = [&](const FrameInterpolationTarget& target) {
+            if (second.settings.iRifeSceneProcessing == RIFE_SCENE_PROCESS_Blend
+                    && device && desc.Width && desc.Height
+                    && EnsureOutputTexture(device, desc.Width, desc.Height)
+                    && sceneBlender.Blend(device, first.texture, second.texture,
+                        outputTexture, static_cast<float>(target.timestep))) {
+                return QueueTexture(second, outputTexture, target.presentationTime, true);
+            }
+
+            // Repeat is the default and also the safe fallback if the GPU
+            // blend path cannot produce a frame.
+            ID3D11Texture2D* repeated = target.timestep < 0.5
+                ? first.texture.p : second.texture.p;
+            sceneRepeatFrames.fetch_add(1, std::memory_order_relaxed);
+            return QueueTexture(second, repeated, target.presentationTime, true);
+        };
+
         for (const auto& target : targets) {
             if (!IsCurrent(second)) {
                 return;
@@ -865,28 +878,13 @@ struct CRifePlaybackPipeline::Impl
                 continue;
             }
 
-            if (sceneCut) {
-                if (second.settings.iRifeSceneProcessing == RIFE_SCENE_PROCESS_Blend
-                        && !IsLate(second, target.presentationTime)
-                        && device && desc.Width && desc.Height
-                        && EnsureOutputTexture(device, desc.Width, desc.Height)
-                        && sceneBlender.Blend(device, first.texture, second.texture,
-                            outputTexture, static_cast<float>(target.timestep))) {
-                    queuedOutput |= QueueTexture(second, outputTexture, target.presentationTime, true);
-                    continue;
-                }
-
-                // Repeat is the default and also the safe fallback if the GPU
-                // blend path cannot produce a frame.
-                ID3D11Texture2D* repeated = target.timestep < 0.5
-                    ? first.texture.p : second.texture.p;
-                sceneRepeatFrames.fetch_add(1, std::memory_order_relaxed);
-                queuedOutput |= QueueTexture(second, repeated, target.presentationTime, true);
+            if (IsLate(second, target.presentationTime)) {
+                lateSyntheticDrops.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
 
-            if (IsLate(second, target.presentationTime)) {
-                lateSyntheticDrops.fetch_add(1, std::memory_order_relaxed);
+            if (sceneDecisionReady && sceneCut) {
+                queuedOutput |= queueSceneCutTarget(target);
                 continue;
             }
 
@@ -897,7 +895,48 @@ struct CRifePlaybackPipeline::Impl
                 continue;
             }
 
-            if (GenerateRife(first, second, static_cast<float>(target.timestep), generated)) {
+            bool nvofStarted = false;
+            if (!sceneDecisionReady && device && desc.Width && desc.Height) {
+                const bool nvofReady = nvofDetector.Initialize(device, desc.Width, desc.Height);
+                if (nvofReady && IsLate(second, target.presentationTime)) {
+                    second.processor->ReleaseFrameInterpolationSource(generatedSurface);
+                    lateSyntheticDrops.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
+                nvofStarted = nvofReady
+                    && nvofDetector.BeginAnalyze(first.texture, second.texture);
+                if (!nvofStarted) {
+                    // Driver/API failures retain cut protection through the
+                    // existing image-comparison path.
+                    sceneCut = DetectImageSceneCut(first, second);
+                    sceneDecisionReady = true;
+                    if (sceneCut) {
+                        second.processor->ReleaseFrameInterpolationSource(generatedSurface);
+                        queuedOutput |= queueSceneCutTarget(target);
+                        continue;
+                    }
+                }
+            }
+
+            const bool generatedOk = GenerateRife(
+                first, second, static_cast<float>(target.timestep), generated);
+
+            if (nvofStarted) {
+                CNvidiaSceneChangeDetector::Metrics metrics;
+                if (nvofDetector.FinishAnalyze(metrics) && metrics.valid) {
+                    sceneCut = metrics.likelyCut;
+                } else {
+                    sceneCut = DetectImageSceneCut(first, second);
+                }
+                sceneDecisionReady = true;
+                if (sceneCut) {
+                    second.processor->ReleaseFrameInterpolationSource(generatedSurface);
+                    queuedOutput |= queueSceneCutTarget(target);
+                    continue;
+                }
+            }
+
+            if (generatedOk) {
                 generatedFrames.fetch_add(1, std::memory_order_relaxed);
                 // CUDA writes directly into a presentation surface whose D3D11
                 // retirement query controls reuse. This avoids re-mapping one
