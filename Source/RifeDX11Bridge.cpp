@@ -57,7 +57,7 @@ bool CDX11VideoProcessor::PrepareRifeSource(
     // composition. RIFE therefore sees only the video image; subtitles and
     // statistics are drawn later when the prepared texture is presented.
     const CRect contentRect(0, 0, contentSize.cx, contentSize.cy);
-    hr = Process(target, m_srcRect, contentRect, false);
+    hr = Process(target, m_srcRect, contentRect, false, true);
     if (FAILED(hr)) {
         RecordRifeD3DFailure(RIFE_D3D_FAILURE_PREPARE_PROCESS, hr);
         return false;

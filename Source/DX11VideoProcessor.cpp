@@ -810,8 +810,10 @@ void CDX11VideoProcessor::ReleaseVP()
 	m_TexFrameInterpolationInput.Release();
 	m_TexSrcVideo.Release();
 	m_TexConvertOutput.Release();
+	m_TexRifeConvertOutput.Release();
 	m_TexResize.Release();
 	m_TexsPostScale.Release();
+	m_TexsRifePostScale.Release();
 
 	m_PSConvColorData.Release();
 	m_pDoviCurvesConstantBuffer.Release();
@@ -3817,11 +3819,14 @@ HRESULT CDX11VideoProcessor::ConvertColorPass(ID3D11Texture2D* pRenderTarget)
 		return hr;
 	}
 
+	D3D11_TEXTURE2D_DESC targetDesc = {};
+	pRenderTarget->GetDesc(&targetDesc);
+
 	D3D11_VIEWPORT VP;
 	VP.TopLeftX = 0;
 	VP.TopLeftY = 0;
-	VP.Width = (FLOAT)m_TexConvertOutput.desc.Width;
-	VP.Height = (FLOAT)m_TexConvertOutput.desc.Height;
+	VP.Width = (FLOAT)targetDesc.Width;
+	VP.Height = (FLOAT)targetDesc.Height;
 	VP.MinDepth = 0.0f;
 	VP.MaxDepth = 1.0f;
 
@@ -4044,7 +4049,8 @@ void CDX11VideoProcessor::DrawSubtitles(ID3D11Texture2D* pRenderTarget)
 	}
 }
 
-HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect& srcRect, const CRect& dstRect, const bool second)
+HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect& srcRect, const CRect& dstRect,
+		const bool second, const bool rifeSourcePreparation)
 {
 	if (m_pFrameInterpolationTexture && m_pFrameInterpolationView) {
 		Tex2D_t prepared;
@@ -4074,12 +4080,41 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 	CSize maxineTargetSize;
 	bool maxineUpscaleNeeded = false;
 	const bool canUseMaxineVSR = GetMaxineVSRTargetSize(dstRect, maxineTargetSize, maxineUpscaleNeeded);
+	Tex2D_t* pConvertOutput = &m_TexConvertOutput;
+	CTex2DRing* pPostScaleTextures = &m_TexsPostScale;
+
+	if (rifeSourcePreparation) {
+		pConvertOutput = &m_TexRifeConvertOutput;
+		pPostScaleTextures = &m_TexsRifePostScale;
+
+		CSize convertSize(m_srcRectWidth, m_srcRectHeight);
+		if (m_D3D11VP.IsReady() && m_bVPScaling && !canUseMaxineVSR) {
+			// Keep the VP pass in unrotated source space. Rotation is applied by
+			// ResizeShaderPass below so the RIFE input geometry remains stable.
+			convertSize = (m_iRotation == 90 || m_iRotation == 270)
+				? CSize(dstRect.Height(), dstRect.Width())
+				: dstRect.Size();
+		}
+
+		const DXGI_FORMAT convertFormat = m_D3D11VP.IsReady() ? m_D3D11OutputFmt : m_InternalTexFmt;
+		hr = pConvertOutput->CheckCreate(m_pDevice, convertFormat,
+			convertSize.cx, convertSize.cy, Tex2D_DefaultShaderRTarget);
+		if (FAILED(hr)) {
+			return hr;
+		}
+
+		hr = pPostScaleTextures->CheckCreate(m_pDevice, m_InternalTexFmt,
+			dstRect.Width(), dstRect.Height(), numSteps);
+		if (FAILED(hr)) {
+			return hr;
+		}
+	}
 
 	if (m_D3D11VP.IsReady()) {
 		if (!(m_iSwapEffect == SWAPEFFECT_Discard && (m_VendorId == PCIV_AMDATI || m_VendorId == PCIV_INTEL))) {
-			const bool bNeedShaderTransform = canUseMaxineVSR ||
-				(m_TexConvertOutput.desc.Width != dstRect.Width() || m_TexConvertOutput.desc.Height != dstRect.Height() || m_bFlip
-				|| dstRect.right > m_windowRect.right || dstRect.bottom > m_windowRect.bottom)
+			const bool bNeedShaderTransform = rifeSourcePreparation || canUseMaxineVSR ||
+				(pConvertOutput->desc.Width != dstRect.Width() || pConvertOutput->desc.Height != dstRect.Height() || m_bFlip
+				|| (!rifeSourcePreparation && (dstRect.right > m_windowRect.right || dstRect.bottom > m_windowRect.bottom)))
 				|| (m_bHdrPassthroughSupport && (m_bHdrPassthrough || m_bHdrLocalToneMapping)); // At least on Nvidia we can sometimes get the "D3D11: Removing Device" error here when HDR Passthrough.
 			if (!bNeedShaderTransform && !numSteps) {
 				m_bVPScalingUseShaders = false;
@@ -4089,23 +4124,25 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 			}
 		}
 
-		CRect rect(0, 0, m_TexConvertOutput.desc.Width, m_TexConvertOutput.desc.Height);
+		CRect rect(0, 0, pConvertOutput->desc.Width, pConvertOutput->desc.Height);
 		const bool deferRotationForMaxine = canUseMaxineVSR && m_iRotation != 0;
-		if (deferRotationForMaxine) {
+		const bool deferRotationForRife = rifeSourcePreparation && m_iRotation != 0;
+		const bool deferRotation = deferRotationForMaxine || deferRotationForRife;
+		if (deferRotation) {
 			m_D3D11VP.SetRotation(D3D11_VIDEO_PROCESSOR_ROTATION_IDENTITY);
 		}
-		hr = D3D11VPPass(m_TexConvertOutput.pTexture, rSrc, rect, second);
-		if (deferRotationForMaxine) {
+		hr = D3D11VPPass(pConvertOutput->pTexture, rSrc, rect, second);
+		if (deferRotation) {
 			m_D3D11VP.SetRotation(static_cast<D3D11_VIDEO_PROCESSOR_ROTATION>(m_iRotation / 90));
 		}
-		pInputTexture = &m_TexConvertOutput;
+		pInputTexture = pConvertOutput;
 		rSrc = rect;
-		rotation = deferRotationForMaxine ? m_iRotation : 0;
+		rotation = deferRotation ? m_iRotation : 0;
 	}
 	else if (m_PSConvColorData.bEnable) {
-		ConvertColorPass(m_TexConvertOutput.pTexture);
-		pInputTexture = &m_TexConvertOutput;
-		rSrc.SetRect(0, 0, m_TexConvertOutput.desc.Width, m_TexConvertOutput.desc.Height);
+		ConvertColorPass(pConvertOutput->pTexture);
+		pInputTexture = pConvertOutput;
+		rSrc.SetRect(0, 0, pConvertOutput->desc.Width, pConvertOutput->desc.Height);
 	}
 	else {
 		pInputTexture = &m_TexSrcVideo;
@@ -4236,14 +4273,14 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 
 	if (numSteps) {
 		UINT step = 0;
-		Tex2D_t* pTex = m_TexsPostScale.GetFirstTex();
+		Tex2D_t* pTex = pPostScaleTextures->GetFirstTex();
 		ID3D11Texture2D* pRT = pTex->pTexture;
 
 		auto StepSetting = [&]() {
 			step++;
 			pInputTexture = pTex;
 			if (step < numSteps) {
-				pTex = m_TexsPostScale.GetNextTex();
+				pTex = pPostScaleTextures->GetNextTex();
 				pRT = pTex->pTexture;
 			} else {
 				pRT = pRenderTarget;

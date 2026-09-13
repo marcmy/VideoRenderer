@@ -2001,7 +2001,13 @@ STDMETHODIMP CMpcVideoRenderer::Flt_SetInt(LPCSTR field, int value)
 
 			CAutoLock cRendererLock(&m_RendererLock);
 
-			m_VideoProcessor->SetRotation(value);
+			if (m_VideoProcessor->GetRotation() != value) {
+				if (m_RifePipeline) {
+					m_RifePipeline->Reset();
+				}
+				ResetFrameInterpolationPresenterQueue();
+				m_VideoProcessor->SetRotation(value);
+			}
 			return S_OK;
 		}
 	}

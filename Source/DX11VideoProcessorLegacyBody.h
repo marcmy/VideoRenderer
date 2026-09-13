@@ -72,6 +72,7 @@ private:
 
 	Tex11Video_t m_TexSrcVideo; // for copy of frame
 	Tex2D_t m_TexConvertOutput;
+	Tex2D_t m_TexRifeConvertOutput;
 	Tex2D_t m_TexMaxineInput;
 	Tex2D_t m_TexMaxineVSR;
 	Tex2D_t m_TexMaxineDenoise;
@@ -82,6 +83,7 @@ private:
 	Tex2D_t m_TexFrameInterpolationInput;
 	Tex2D_t m_TexResize;        // for intermediate result of two-pass resize
 	CTex2DRing m_TexsPostScale;
+	CTex2DRing m_TexsRifePostScale;
 	Tex2D_t m_TexDither;
 
 	// for GetAlignmentSize()
@@ -446,7 +448,8 @@ private:
 	HRESULT FinalPass(const Tex2D_t& Tex, ID3D11Texture2D* pRenderTarget, const CRect& srcRect, const CRect& dstRect);
 
 	void DrawSubtitles(ID3D11Texture2D* pRenderTarget);
-	HRESULT Process(ID3D11Texture2D* pRenderTarget, const CRect& srcRect, const CRect& dstRect, const bool second);
+	HRESULT Process(ID3D11Texture2D* pRenderTarget, const CRect& srcRect, const CRect& dstRect, const bool second,
+		const bool rifeSourcePreparation = false);
 
 	HRESULT AlphaBlt(ID3D11ShaderResourceView* pShaderResource, ID3D11Texture2D* pRenderTarget,
 					 ID3D11Buffer* pVertexBuffer, D3D11_VIEWPORT* pViewPort,
