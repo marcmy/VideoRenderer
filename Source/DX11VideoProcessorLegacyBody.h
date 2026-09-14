@@ -434,6 +434,10 @@ private:
 	HRESULT RenderPreparedFrame(const bool interpolated, const REFERENCE_TIME frameStartTime);
 	void ResetFrameInterpolation();
 	bool GetMaxineVSRTargetSize(const CRect& dstRect, CSize& targetSize, bool& upscaleNeeded);
+	bool GetMaxineVSRTargetSizeForInput(const CRect& dstRect, const CSize& sourceSize,
+		bool sourceAlreadyOriented, CSize& targetSize, bool& upscaleNeeded);
+	bool ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, const CSize& sourceSize,
+		const CSize& targetSize, bool upscaleNeeded);
 	unsigned ResolveMaxineUpscaleMode() const;
 	void UpdateTexures();
 	void UpdatePostScaleTexures();

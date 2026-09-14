@@ -124,10 +124,10 @@ std::wstring FormatRange(uint32_t minimum, uint32_t maximum, bool milli)
 		return L"any";
 	}
 	if (!minimum) {
-		return std::format(L"≤{}", Format(maximum));
+		return std::format(L"\u2264{}", Format(maximum));
 	}
 	if (!maximum) {
-		return std::format(L"≥{}", Format(minimum));
+		return std::format(L"\u2265{}", Format(minimum));
 	}
 	if (minimum == maximum) {
 		return Format(minimum);

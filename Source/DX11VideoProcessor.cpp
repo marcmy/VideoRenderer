@@ -3491,6 +3491,14 @@ unsigned CDX11VideoProcessor::ResolveMaxineUpscaleMode() const
 
 bool CDX11VideoProcessor::GetMaxineVSRTargetSize(const CRect& dstRect, CSize& targetSize, bool& upscaleNeeded)
 {
+	return GetMaxineVSRTargetSizeForInput(dstRect,
+		CSize(static_cast<int>(m_srcRectWidth), static_cast<int>(m_srcRectHeight)),
+		false, targetSize, upscaleNeeded);
+}
+
+bool CDX11VideoProcessor::GetMaxineVSRTargetSizeForInput(const CRect& dstRect, const CSize& sourceSize,
+		const bool sourceAlreadyOriented, CSize& targetSize, bool& upscaleNeeded)
+{
 	targetSize = CSize(0, 0);
 	upscaleNeeded = false;
 	m_bMaxineOversampleClamped = false;
@@ -3504,7 +3512,9 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSize(const CRect& dstRect, CSize& ta
 		m_strMaxineVSRStatus = L"Requires an NVIDIA GPU";
 		return false;
 	}
-	if (!m_srcRectWidth || !m_srcRectHeight) {
+	const UINT sourceWidth = static_cast<UINT>(std::max<LONG>(0, sourceSize.cx));
+	const UINT sourceHeight = static_cast<UINT>(std::max<LONG>(0, sourceSize.cy));
+	if (!sourceWidth || !sourceHeight) {
 		m_strMaxineVSRStatus = L"Waiting for source dimensions";
 		return false;
 	}
@@ -3512,7 +3522,7 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSize(const CRect& dstRect, CSize& ta
 		m_strMaxineVSRStatus = L"Maxine source limit is disabled";
 		return false;
 	}
-	if (!SourceMatchesSuperResLimit(m_srcRectWidth, m_srcRectHeight, m_iMaxineSourceLimit)) {
+	if (!SourceMatchesSuperResLimit(sourceWidth, sourceHeight, m_iMaxineSourceLimit)) {
 		m_strMaxineVSRStatus = L"Source exceeds the selected Maxine limit";
 		return false;
 	}
@@ -3530,7 +3540,7 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSize(const CRect& dstRect, CSize& ta
 			m_strMaxineVSRStatus = L"Denoise-only operation has no selected strength";
 			return false;
 		}
-		targetSize = CSize(m_srcRectWidth, m_srcRectHeight);
+		targetSize = CSize(sourceWidth, sourceHeight);
 		m_strMaxineVSRStatus = L"Eligible for same-resolution denoise";
 		return true;
 	}
@@ -3539,7 +3549,7 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSize(const CRect& dstRect, CSize& ta
 			m_strMaxineVSRStatus = L"Deblur-only operation has no selected strength";
 			return false;
 		}
-		targetSize = CSize(m_srcRectWidth, m_srcRectHeight);
+		targetSize = CSize(sourceWidth, sourceHeight);
 		m_strMaxineVSRStatus = L"Eligible for same-resolution deblur";
 		return true;
 	}
@@ -3549,7 +3559,7 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSize(const CRect& dstRect, CSize& ta
 	if (m_iMaxineScale == MAXINE_SCALE_MatchOutput) {
 		int dstWidth = dstRect.Width();
 		int dstHeight = dstRect.Height();
-		if (m_iRotation == 90 || m_iRotation == 270) {
+		if (!sourceAlreadyOriented && (m_iRotation == 90 || m_iRotation == 270)) {
 			std::swap(dstWidth, dstHeight);
 		}
 		if (dstWidth <= 0 || dstHeight <= 0) {
@@ -3561,15 +3571,15 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSize(const CRect& dstRect, CSize& ta
 		targetWidth = (static_cast<unsigned long long>(dstWidth) * oversample + 50ull) / 100ull;
 		targetHeight = (static_cast<unsigned long long>(dstHeight) * oversample + 50ull) / 100ull;
 
-		const unsigned long long maxWidth = static_cast<unsigned long long>(m_srcRectWidth) * 4ull;
-		const unsigned long long maxHeight = static_cast<unsigned long long>(m_srcRectHeight) * 4ull;
+		const unsigned long long maxWidth = static_cast<unsigned long long>(sourceWidth) * 4ull;
+		const unsigned long long maxHeight = static_cast<unsigned long long>(sourceHeight) * 4ull;
 		if (targetWidth > maxWidth || targetHeight > maxHeight) {
 			const long double scaleX = static_cast<long double>(maxWidth) / targetWidth;
 			const long double scaleY = static_cast<long double>(maxHeight) / targetHeight;
 			const long double scale = std::min(scaleX, scaleY);
-			targetWidth = std::min(maxWidth, std::max<unsigned long long>(m_srcRectWidth,
+			targetWidth = std::min(maxWidth, std::max<unsigned long long>(sourceWidth,
 				static_cast<unsigned long long>(std::llround(targetWidth * scale))));
-			targetHeight = std::min(maxHeight, std::max<unsigned long long>(m_srcRectHeight,
+			targetHeight = std::min(maxHeight, std::max<unsigned long long>(sourceHeight,
 				static_cast<unsigned long long>(std::llround(targetHeight * scale))));
 			m_bMaxineOversampleClamped = true;
 		}
@@ -3581,8 +3591,8 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSize(const CRect& dstRect, CSize& ta
 			m_strMaxineVSRStatus = L"Invalid Maxine output-size setting";
 			return false;
 		}
-		targetWidth = (static_cast<unsigned long long>(m_srcRectWidth) * scale + 50ull) / 100ull;
-		targetHeight = (static_cast<unsigned long long>(m_srcRectHeight) * scale + 50ull) / 100ull;
+		targetWidth = (static_cast<unsigned long long>(sourceWidth) * scale + 50ull) / 100ull;
+		targetHeight = (static_cast<unsigned long long>(sourceHeight) * scale + 50ull) / 100ull;
 	}
 
 	if (targetWidth > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION
@@ -3591,10 +3601,10 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSize(const CRect& dstRect, CSize& ta
 		return false;
 	}
 
-	upscaleNeeded = targetWidth > m_srcRectWidth || targetHeight > m_srcRectHeight;
+	upscaleNeeded = targetWidth > sourceWidth || targetHeight > sourceHeight;
 	if (!upscaleNeeded) {
-		targetWidth = m_srcRectWidth;
-		targetHeight = m_srcRectHeight;
+		targetWidth = sourceWidth;
+		targetHeight = sourceHeight;
 		if (m_iMaxineDenoise == MAXINE_FILTER_Off && m_iMaxineDeblur == MAXINE_FILTER_Off) {
 			m_strMaxineVSRStatus = L"Player output does not require upscaling";
 			return false;
@@ -3607,6 +3617,144 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSize(const CRect& dstRect, CSize& ta
 #else
 	UNREFERENCED_PARAMETER(dstRect);
 	m_strMaxineVSRStatus = L"Requires a 64-bit build";
+	return false;
+#endif
+}
+
+bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, const CSize& sourceSize,
+		const CSize& targetSize, const bool upscaleNeeded)
+{
+#ifdef _WIN64
+	m_bMaxineVSRUsed = false;
+	m_MaxineVSRSize = CSize(0, 0);
+	m_iMaxineResolvedMode = -1;
+	m_strMaxinePipeline.clear();
+
+	if (!pInputTexture || !pInputTexture->pShaderResource || sourceSize.cx <= 0 || sourceSize.cy <= 0) {
+		m_strMaxineVSRStatus = L"The source texture cannot be sampled";
+		return false;
+	}
+
+	const CRect inputRect(0, 0, sourceSize.cx, sourceSize.cy);
+	const HRESULT inputCreateHr = m_TexMaxineInput.CheckCreate(m_pDevice,
+		DXGI_FORMAT_B8G8R8A8_UNORM, sourceSize.cx, sourceSize.cy, Tex2D_DefaultShaderRTarget);
+	if (FAILED(inputCreateHr)) {
+		m_strMaxineVSRStatus = L"Could not create the BGRA8 Maxine input texture";
+		return false;
+	}
+
+	const HRESULT copyHr = TextureCopyRect(*pInputTexture, m_TexMaxineInput.pTexture,
+		srcRect, inputRect, m_pPS_Simple, nullptr, 0, false);
+	if (FAILED(copyHr)) {
+		m_strMaxineVSRStatus = L"Could not convert the source to BGRA8";
+		return false;
+	}
+
+	Tex2D_t* pMaxineResult = &m_TexMaxineInput;
+	CSize currentSize = sourceSize;
+	bool passesOk = true;
+	bool ranPass = false;
+
+	auto AppendPassName = [&](const wchar_t* name) {
+		if (!m_strMaxinePipeline.empty()) {
+			m_strMaxinePipeline.append(L" -> ");
+		}
+		m_strMaxinePipeline.append(name);
+	};
+
+	auto RunPass = [&](const MaxinePass pass) {
+		Tex2D_t* pOutput = nullptr;
+		CNvidiaMaxineVSR* pEffect = nullptr;
+		CSize outputSize = currentSize;
+		unsigned mode = 0;
+		const wchar_t* passName = nullptr;
+
+		switch (pass) {
+		case MaxinePass::Upscale:
+			if (m_iMaxineOperation != MAXINE_OPERATION_Upscale || !upscaleNeeded) {
+				return true;
+			}
+			pOutput = &m_TexMaxineVSR;
+			pEffect = &m_MaxineVSR;
+			outputSize = targetSize;
+			mode = ResolveMaxineUpscaleMode();
+			m_iMaxineResolvedMode = static_cast<int>(mode);
+			passName = L"Upscale";
+			break;
+		case MaxinePass::Denoise:
+			if (m_iMaxineDenoise == MAXINE_FILTER_Off
+					|| (m_iMaxineOperation != MAXINE_OPERATION_Upscale
+						&& m_iMaxineOperation != MAXINE_OPERATION_Denoise)) {
+				return true;
+			}
+			pOutput = &m_TexMaxineDenoise;
+			pEffect = &m_MaxineDenoise;
+			mode = 7u + static_cast<unsigned>(m_iMaxineDenoise);
+			passName = L"Denoise";
+			break;
+		case MaxinePass::Deblur:
+			if (m_iMaxineDeblur == MAXINE_FILTER_Off
+					|| (m_iMaxineOperation != MAXINE_OPERATION_Upscale
+						&& m_iMaxineOperation != MAXINE_OPERATION_Deblur)) {
+				return true;
+			}
+			pOutput = &m_TexMaxineDeblur;
+			pEffect = &m_MaxineDeblur;
+			mode = 11u + static_cast<unsigned>(m_iMaxineDeblur);
+			passName = L"Deblur";
+			break;
+		}
+
+		const HRESULT createHr = pOutput->CheckCreate(m_pDevice, DXGI_FORMAT_B8G8R8A8_UNORM,
+			outputSize.cx, outputSize.cy, Tex2D_DefaultShaderRTarget);
+		if (FAILED(createHr)) {
+			m_strMaxineVSRStatus = std::format(L"Could not create the Maxine {} texture", passName);
+			return false;
+		}
+		if (!pEffect->Process(m_pDeviceContext, pMaxineResult->pTexture,
+				pOutput->pTexture, mode, m_iMaxineGPU)) {
+			m_strMaxineVSRStatus = std::format(L"{} failed: {}", passName, pEffect->GetStatus());
+			return false;
+		}
+
+		pMaxineResult = pOutput;
+		currentSize = outputSize;
+		ranPass = true;
+		AppendPassName(passName);
+		if (m_strMaxineRuntimeInfo.empty()) {
+			m_strMaxineRuntimeInfo = pEffect->GetRuntimeInfo();
+		}
+		return true;
+	};
+
+	if (m_iMaxineOperation == MAXINE_OPERATION_Upscale) {
+		for (const MaxinePass pass : GetMaxinePassOrder(m_iMaxinePipeline)) {
+			if (!RunPass(pass)) {
+				passesOk = false;
+				break;
+			}
+		}
+	}
+	else {
+		passesOk = RunPass(m_iMaxineOperation == MAXINE_OPERATION_Denoise
+			? MaxinePass::Denoise : MaxinePass::Deblur);
+	}
+
+	if (passesOk && ranPass) {
+		pInputTexture = pMaxineResult;
+		srcRect.SetRect(0, 0, currentSize.cx, currentSize.cy);
+		m_bMaxineVSRUsed = true;
+		m_MaxineVSRSize = currentSize;
+		m_strMaxineVSRStatus = L"Active";
+		return true;
+	}
+	return false;
+#else
+	UNREFERENCED_PARAMETER(pInputTexture);
+	UNREFERENCED_PARAMETER(srcRect);
+	UNREFERENCED_PARAMETER(sourceSize);
+	UNREFERENCED_PARAMETER(targetSize);
+	UNREFERENCED_PARAMETER(upscaleNeeded);
 	return false;
 #endif
 }
@@ -4066,7 +4214,24 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 		if (contentRect.IsRectEmpty() || dstRect.IsRectEmpty()) {
 			return E_FAIL;
 		}
-		return ResizeShaderPass(prepared, pRenderTarget, contentRect, dstRect, 0, false);
+
+		// RIFE works on the source-sized, presentation-oriented video image.
+		// Apply Maxine after interpolation so generated frames receive the same
+		// enhancement as source frames and Match output uses the real player size.
+		Tex2D_t* pInputTexture = &prepared;
+		CRect inputRect = contentRect;
+		m_bMaxineVSRUsed = false;
+		m_MaxineVSRSize = CSize(0, 0);
+		m_iMaxineResolvedMode = -1;
+		m_strMaxinePipeline.clear();
+		CSize maxineTargetSize;
+		bool maxineUpscaleNeeded = false;
+		if (GetMaxineVSRTargetSizeForInput(dstRect, contentRect.Size(), true,
+				maxineTargetSize, maxineUpscaleNeeded)) {
+			ApplyMaxine(pInputTexture, inputRect, contentRect.Size(),
+				maxineTargetSize, maxineUpscaleNeeded);
+		}
+		return ResizeShaderPass(*pInputTexture, pRenderTarget, inputRect, dstRect, 0, false);
 	}
 
 	HRESULT hr = S_OK;
@@ -4079,7 +4244,10 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 	const UINT numSteps = GetPostScaleSteps();
 	CSize maxineTargetSize;
 	bool maxineUpscaleNeeded = false;
-	const bool canUseMaxineVSR = GetMaxineVSRTargetSize(dstRect, maxineTargetSize, maxineUpscaleNeeded);
+	// RIFE source preparation should remain source-sized. Maxine is applied to
+	// the source and generated RIFE presentation frames after interpolation.
+	const bool canUseMaxineVSR = !rifeSourcePreparation
+		&& GetMaxineVSRTargetSize(dstRect, maxineTargetSize, maxineUpscaleNeeded);
 	Tex2D_t* pConvertOutput = &m_TexConvertOutput;
 	CTex2DRing* pPostScaleTextures = &m_TexsPostScale;
 
@@ -4154,122 +4322,9 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 	m_iMaxineResolvedMode = -1;
 	m_strMaxinePipeline.clear();
 	if (canUseMaxineVSR) {
-		const CRect inputRect(0, 0, m_srcRectWidth, m_srcRectHeight);
-		const HRESULT inputCreateHr = m_TexMaxineInput.CheckCreate(m_pDevice,
-			DXGI_FORMAT_B8G8R8A8_UNORM, m_srcRectWidth, m_srcRectHeight, Tex2D_DefaultShaderRTarget);
-
-		if (FAILED(inputCreateHr)) {
-			m_strMaxineVSRStatus = L"Could not create the BGRA8 Maxine input texture";
-		}
-		else if (!pInputTexture->pShaderResource) {
-			m_strMaxineVSRStatus = L"The source texture cannot be sampled";
-		}
-		else {
-			const HRESULT copyHr = TextureCopyRect(*pInputTexture, m_TexMaxineInput.pTexture,
-				rSrc, inputRect, m_pPS_Simple, nullptr, 0, false);
-			if (FAILED(copyHr)) {
-				m_strMaxineVSRStatus = L"Could not convert the source to BGRA8";
-			}
-			else {
-				Tex2D_t* pMaxineResult = &m_TexMaxineInput;
-				CSize currentSize(m_srcRectWidth, m_srcRectHeight);
-				bool passesOk = true;
-				bool ranPass = false;
-
-				auto AppendPassName = [&](const wchar_t* name) {
-					if (!m_strMaxinePipeline.empty()) {
-						m_strMaxinePipeline.append(L" -> ");
-					}
-					m_strMaxinePipeline.append(name);
-				};
-
-				auto RunPass = [&](const MaxinePass pass) {
-					Tex2D_t* pOutput = nullptr;
-					CNvidiaMaxineVSR* pEffect = nullptr;
-					CSize outputSize = currentSize;
-					unsigned mode = 0;
-					const wchar_t* passName = nullptr;
-
-					switch (pass) {
-					case MaxinePass::Upscale:
-						if (m_iMaxineOperation != MAXINE_OPERATION_Upscale || !maxineUpscaleNeeded) {
-							return true;
-						}
-						pOutput = &m_TexMaxineVSR;
-						pEffect = &m_MaxineVSR;
-						outputSize = maxineTargetSize;
-						mode = ResolveMaxineUpscaleMode();
-						m_iMaxineResolvedMode = static_cast<int>(mode);
-						passName = L"Upscale";
-						break;
-					case MaxinePass::Denoise:
-						if (m_iMaxineDenoise == MAXINE_FILTER_Off
-								|| (m_iMaxineOperation != MAXINE_OPERATION_Upscale
-									&& m_iMaxineOperation != MAXINE_OPERATION_Denoise)) {
-							return true;
-						}
-						pOutput = &m_TexMaxineDenoise;
-						pEffect = &m_MaxineDenoise;
-						mode = 7u + static_cast<unsigned>(m_iMaxineDenoise);
-						passName = L"Denoise";
-						break;
-					case MaxinePass::Deblur:
-						if (m_iMaxineDeblur == MAXINE_FILTER_Off
-								|| (m_iMaxineOperation != MAXINE_OPERATION_Upscale
-									&& m_iMaxineOperation != MAXINE_OPERATION_Deblur)) {
-							return true;
-						}
-						pOutput = &m_TexMaxineDeblur;
-						pEffect = &m_MaxineDeblur;
-						mode = 11u + static_cast<unsigned>(m_iMaxineDeblur);
-						passName = L"Deblur";
-						break;
-					}
-
-					const HRESULT createHr = pOutput->CheckCreate(m_pDevice, DXGI_FORMAT_B8G8R8A8_UNORM,
-						outputSize.cx, outputSize.cy, Tex2D_DefaultShaderRTarget);
-					if (FAILED(createHr)) {
-						m_strMaxineVSRStatus = std::format(L"Could not create the Maxine {} texture", passName);
-						return false;
-					}
-					if (!pEffect->Process(m_pDeviceContext, pMaxineResult->pTexture,
-							pOutput->pTexture, mode, m_iMaxineGPU)) {
-						m_strMaxineVSRStatus = std::format(L"{} failed: {}", passName, pEffect->GetStatus());
-						return false;
-					}
-
-					pMaxineResult = pOutput;
-					currentSize = outputSize;
-					ranPass = true;
-					AppendPassName(passName);
-					if (m_strMaxineRuntimeInfo.empty()) {
-						m_strMaxineRuntimeInfo = pEffect->GetRuntimeInfo();
-					}
-					return true;
-				};
-
-				if (m_iMaxineOperation == MAXINE_OPERATION_Upscale) {
-					for (const MaxinePass pass : GetMaxinePassOrder(m_iMaxinePipeline)) {
-						if (!RunPass(pass)) {
-							passesOk = false;
-							break;
-						}
-					}
-				}
-				else {
-					passesOk = RunPass(m_iMaxineOperation == MAXINE_OPERATION_Denoise
-						? MaxinePass::Denoise : MaxinePass::Deblur);
-				}
-
-				if (passesOk && ranPass) {
-					pInputTexture = pMaxineResult;
-					rSrc.SetRect(0, 0, currentSize.cx, currentSize.cy);
-					m_bMaxineVSRUsed = true;
-					m_MaxineVSRSize = currentSize;
-					m_strMaxineVSRStatus = L"Active";
-				}
-			}
-		}
+		ApplyMaxine(pInputTexture, rSrc,
+			CSize(static_cast<int>(m_srcRectWidth), static_cast<int>(m_srcRectHeight)),
+			maxineTargetSize, maxineUpscaleNeeded);
 	}
 
 	if (numSteps) {
