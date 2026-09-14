@@ -265,6 +265,28 @@ void TestTwoTimesWithQuantizedSourceTimestamps()
     }
 }
 
+void TestPerVideoCapsNeverBoostRequestedRate()
+{
+    CFrameInterpolationScheduler scheduler;
+    scheduler.Configure(FrameInterpolationRateMode::Fixed120, {}, {}, 2000, 90'000);
+    const FrameRate capped = scheduler.ResolveTargetRate(Rate(24));
+    Check(capped.numerator == 48 && capped.denominator == 1,
+        "2x cap wins over fixed 120 and 90 fps cap for 24 fps source");
+
+    scheduler.Configure(FrameInterpolationRateMode::Movie2x, {}, {}, 4000, 120'000);
+    const FrameRate unchanged = scheduler.ResolveTargetRate(Rate(24));
+    Check(unchanged.numerator == 48 && unchanged.denominator == 1,
+        "rule caps never boost a lower requested mode");
+}
+
+void TestPerVideoCapsPreserveNtscRationals()
+{
+    CFrameInterpolationScheduler scheduler;
+    scheduler.Configure(FrameInterpolationRateMode::Movie5x, {}, {}, 2000, 0);
+    const FrameRate capped = scheduler.ResolveTargetRate(Rate(24000, 1001));
+    Check(capped.numerator == 48000 && capped.denominator == 1001,
+        "2x cap preserves canonical 23.976 rational rate");
+}
 } // namespace
 
 int main()
@@ -280,6 +302,8 @@ int main()
     TestResetReanchorsTimeline();
     TestLongRunDoesNotAccumulateRoundedPeriodDrift();
     TestTwoTimesWithQuantizedSourceTimestamps();
+    TestPerVideoCapsNeverBoostRequestedRate();
+    TestPerVideoCapsPreserveNtscRationals();
 
     if (g_failures) {
         std::cerr << g_failures << " scheduler test(s) failed\n";

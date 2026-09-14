@@ -7,6 +7,7 @@
  */
 
 #include "stdafx.h"
+#include <array>
 #include <mutex>
 #include <unordered_set>
 #include "VideoRenderer.h"
@@ -37,6 +38,7 @@ constexpr LPCWSTR OPT_RifePerformanceBoost  = L"RifePerformanceBoost";
 constexpr LPCWSTR OPT_RifeSceneDetection    = L"RifeSceneDetection";
 constexpr LPCWSTR OPT_RifeSceneProcessing   = L"RifeSceneProcessing";
 constexpr LPCWSTR OPT_RifeDuplicateRemoval  = L"RifeDuplicateRemoval";
+constexpr LPCWSTR OPT_RifeRateRules          = L"RifeRateRules";
 
 std::mutex g_rifeSettingsMutex;
 std::unordered_set<const CMpcVideoRenderer*> g_rifeSettingsLoaded;
@@ -57,7 +59,8 @@ bool RifeSettingsChanged(const Settings_t& a, const Settings_t& b)
 		|| a.bRifePerformanceBoost != b.bRifePerformanceBoost
 		|| a.iRifeSceneDetection != b.iRifeSceneDetection
 		|| a.iRifeSceneProcessing != b.iRifeSceneProcessing
-		|| a.iRifeDuplicateRemoval != b.iRifeDuplicateRemoval;
+		|| a.iRifeDuplicateRemoval != b.iRifeDuplicateRemoval
+		|| a.rifeRules != b.rifeRules;
 }
 
 void LoadRifeSettings(Settings_t& settings)
@@ -101,6 +104,14 @@ void LoadRifeSettings(Settings_t& settings)
 	}
 	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeDuplicateRemoval, dw)) {
 		settings.iRifeDuplicateRemoval = dw < RIFE_DUPLICATES_COUNT ? static_cast<int>(dw) : RIFE_DUPLICATES_Keep;
+	}
+	std::array<wchar_t, RifeRateRulesMaxTextLength + 1> rulesText = {};
+	ULONG rulesChars = static_cast<ULONG>(rulesText.size());
+	if (ERROR_SUCCESS == key.QueryStringValue(OPT_RifeRateRules, rulesText.data(), &rulesChars)) {
+		RifeRateRules parsed;
+		if (ParseRifeRateRules(rulesText.data(), parsed)) {
+			settings.rifeRules = parsed;
+		}
 	}
 
 	// One-way migration from the old midpoint-only NvOFFRUC setting. Merely
@@ -183,6 +194,10 @@ STDMETHODIMP CMpcVideoRenderer::SaveSettings()
 		key.SetDWORDValue(OPT_RifeSceneDetection,   static_cast<DWORD>(m_Sets.iRifeSceneDetection));
 		key.SetDWORDValue(OPT_RifeSceneProcessing,  static_cast<DWORD>(m_Sets.iRifeSceneProcessing));
 		key.SetDWORDValue(OPT_RifeDuplicateRemoval, static_cast<DWORD>(m_Sets.iRifeDuplicateRemoval));
+		const std::wstring serializedRules = SerializeRifeRateRules(m_Sets.rifeRules);
+		if (!serializedRules.empty()) {
+			key.SetStringValue(OPT_RifeRateRules, serializedRules.c_str());
+		}
 	}
 
 	return S_OK;

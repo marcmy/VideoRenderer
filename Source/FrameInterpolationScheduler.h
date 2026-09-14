@@ -47,7 +47,10 @@ struct FrameInterpolationTarget {
 class CFrameInterpolationScheduler {
 public:
     void Reset() noexcept;
-    void Configure(FrameInterpolationRateMode mode, FrameRate customRate, FrameRate displayRate) noexcept;
+    void Configure(FrameInterpolationRateMode mode, FrameRate customRate, FrameRate displayRate,
+        uint32_t maxMultiplierMilli = 0, uint32_t maxOutputFpsMilli = 0) noexcept;
+
+    [[nodiscard]] FrameRate ResolveTargetRate(FrameRate sourceRate) const noexcept;
 
     [[nodiscard]] std::vector<FrameInterpolationTarget> Schedule(
         int64_t firstTime,
@@ -55,12 +58,14 @@ public:
         FrameRate sourceRate);
 
 private:
-    [[nodiscard]] FrameRate ResolveTargetRate(FrameRate sourceRate) const noexcept;
+    [[nodiscard]] FrameRate ResolveRequestedRate(FrameRate sourceRate) const noexcept;
     [[nodiscard]] int64_t TargetTime(uint64_t index, FrameRate rate) const noexcept;
 
     FrameInterpolationRateMode m_mode = FrameInterpolationRateMode::Disabled;
     FrameRate m_customRate = {};
     FrameRate m_displayRate = {};
+    uint32_t m_maxMultiplierMilli = 0;
+    uint32_t m_maxOutputFpsMilli = 0;
     FrameRate m_activeTargetRate = {};
     int64_t m_anchorTime = 0;
     uint64_t m_nextTargetIndex = 1;

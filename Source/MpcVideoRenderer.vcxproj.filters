@@ -167,6 +167,9 @@
     <ClInclude Include="RifeFrameInterpolation.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="RifeRateRules.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="RifeRuntimeApi.h">
       <Filter>Header Files</Filter>
     </ClInclude>

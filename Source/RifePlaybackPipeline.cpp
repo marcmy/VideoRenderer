@@ -291,6 +291,8 @@ struct CRifePlaybackPipeline::Impl
         uint64_t resetSerial = 0;
         Settings_t settings;
         FrameRate displayRate;
+        uint32_t maxMultiplierMilli = 0;
+        uint32_t maxOutputFpsMilli = 0;
         CComPtr<IReferenceClock> clock;
         REFERENCE_TIME graphStart = 0;
     };
@@ -352,6 +354,8 @@ struct CRifePlaybackPipeline::Impl
     int schedulerCustomFps = 0;
     FrameRate schedulerDisplayRate = {};
     uint64_t schedulerSerial = 0;
+    uint32_t schedulerMaxMultiplierMilli = 0;
+    uint32_t schedulerMaxOutputFpsMilli = 0;
 
     CNvidiaSceneChangeDetector nvofDetector;
     ImageCutDetector imageDetector;
@@ -377,6 +381,10 @@ struct CRifePlaybackPipeline::Impl
     std::atomic_uint64_t presentationReclaims = 0;
     std::atomic_uint64_t sourceResyncs = 0;
     std::atomic_uint64_t lastInferenceUs = 0;
+    std::atomic_int activeRule = -1;
+    std::atomic_bool ruleBypass = false;
+    std::atomic_uint32_t ruleMaxMultiplierMilli = 0;
+    std::atomic_uint32_t ruleMaxOutputFpsMilli = 0;
 
     void ClearQueuedFrames()
     {
@@ -458,6 +466,44 @@ struct CRifePlaybackPipeline::Impl
             return false;
         }
 
+        // Match the visible source geometry, before TensorRT padding, window
+        // scaling, texture allocation, or any engine work. Returning false
+        // uses Receive's existing normally paced source-video path.
+        const CSize contentSize = processor->GetRifeContentSize();
+        const int ruleIndex = MatchRifeRateRule(settings.rifeRules,
+            static_cast<uint32_t>(std::max<LONG>(0, contentSize.cx)),
+            static_cast<uint32_t>(std::max<LONG>(0, contentSize.cy)), frameDuration);
+        uint32_t maxMultiplierMilli = 0;
+        uint32_t maxOutputFpsMilli = 0;
+        bool bypass = false;
+        if (ruleIndex >= 0) {
+            const auto& rule = settings.rifeRules.rules[ruleIndex];
+            maxMultiplierMilli = rule.maxMultiplierMilli;
+            maxOutputFpsMilli = rule.maxOutputFpsMilli;
+            bypass = rule.off;
+            if (!bypass && (maxMultiplierMilli || maxOutputFpsMilli)) {
+                CFrameInterpolationScheduler capped;
+                capped.Configure(ToSchedulerMode(settings.iRifeMode),
+                    {static_cast<uint32_t>(settings.iRifeCustomFps), 1}, displayRate,
+                    maxMultiplierMilli, maxOutputFpsMilli);
+                const FrameRate sourceRate = SourceRateFromDuration(frameDuration);
+                const FrameRate targetRate = capped.ResolveTargetRate(sourceRate);
+                // A cap at/below source FPS means no interpolation, never
+                // decimate the original video to satisfy a workload limit.
+                bypass = sourceRate.IsValid() && (!targetRate.IsValid()
+                    || static_cast<uint64_t>(targetRate.numerator) * sourceRate.denominator
+                        <= static_cast<uint64_t>(sourceRate.numerator) * targetRate.denominator
+                    || maxMultiplierMilli == 1000);
+            }
+        }
+        activeRule.store(ruleIndex, std::memory_order_relaxed);
+        ruleBypass.store(bypass, std::memory_order_relaxed);
+        ruleMaxMultiplierMilli.store(maxMultiplierMilli, std::memory_order_relaxed);
+        ruleMaxOutputFpsMilli.store(maxOutputFpsMilli, std::memory_order_relaxed);
+        if (bypass) {
+            return false;
+        }
+
         if (lastSubmittedGeneration != presenterGeneration) {
             lastSubmittedGeneration = presenterGeneration;
             ResetNonBlocking();
@@ -491,6 +537,8 @@ struct CRifePlaybackPipeline::Impl
         frame.resetSerial = resetSerial.load(std::memory_order_acquire);
         frame.settings = settings;
         frame.displayRate = displayRate;
+        frame.maxMultiplierMilli = maxMultiplierMilli;
+        frame.maxOutputFpsMilli = maxOutputFpsMilli;
         frame.clock = owner->m_pClock;
         frame.graphStart = static_cast<REFERENCE_TIME>(owner->m_tStart);
 
@@ -636,6 +684,8 @@ struct CRifePlaybackPipeline::Impl
             || schedulerSerial != frame.resetSerial
             || schedulerMode != frame.settings.iRifeMode
             || schedulerCustomFps != frame.settings.iRifeCustomFps
+            || schedulerMaxMultiplierMilli != frame.maxMultiplierMilli
+            || schedulerMaxOutputFpsMilli != frame.maxOutputFpsMilli
             || schedulerDisplayRate.numerator != frame.displayRate.numerator
             || schedulerDisplayRate.denominator != frame.displayRate.denominator;
         if (!changed) {
@@ -644,13 +694,15 @@ struct CRifePlaybackPipeline::Impl
 
         schedulerMode = frame.settings.iRifeMode;
         schedulerCustomFps = frame.settings.iRifeCustomFps;
+        schedulerMaxMultiplierMilli = frame.maxMultiplierMilli;
+        schedulerMaxOutputFpsMilli = frame.maxOutputFpsMilli;
         schedulerDisplayRate = frame.displayRate;
         schedulerSerial = frame.resetSerial;
         scheduler.Configure(
             ToSchedulerMode(frame.settings.iRifeMode),
             {static_cast<uint32_t>(std::clamp(frame.settings.iRifeCustomFps,
                 RIFE_CUSTOM_FPS_MIN, RIFE_CUSTOM_FPS_MAX)), 1},
-            frame.displayRate);
+            frame.displayRate, frame.maxMultiplierMilli, frame.maxOutputFpsMilli);
         schedulerConfigured = true;
     }
 
@@ -965,7 +1017,7 @@ struct CRifePlaybackPipeline::Impl
 
     std::wstring Diagnostics() const
     {
-        return std::format(
+        std::wstring diagnostics = std::format(
             L"generated {}, scene-repeat {}, infer-fallback {}, runtime-wait {}, late-drop {}, source-fallback {}, present-drop {}, present-reclaim {}, source-resync {}, last infer {:.2f} ms",
             generatedFrames.load(std::memory_order_relaxed),
             sceneRepeatFrames.load(std::memory_order_relaxed),
@@ -977,6 +1029,20 @@ struct CRifePlaybackPipeline::Impl
             presentationReclaims.load(std::memory_order_relaxed),
             sourceResyncs.load(std::memory_order_relaxed),
             lastInferenceUs.load(std::memory_order_relaxed) / 1000.0);
+        const int ruleIndex = activeRule.load(std::memory_order_relaxed);
+        if (ruleIndex >= 0) {
+            diagnostics += std::format(L"\nRIFE rule    : #{}", ruleIndex + 1);
+            if (ruleBypass.load(std::memory_order_relaxed)) {
+                diagnostics += L" - off (source playback)";
+            } else {
+                const auto multiplier = ruleMaxMultiplierMilli.load(std::memory_order_relaxed);
+                const auto fps = ruleMaxOutputFpsMilli.load(std::memory_order_relaxed);
+                if (multiplier) diagnostics += std::format(L" - max {:.3g}x", multiplier / 1000.0);
+                if (fps) diagnostics += std::format(L" - max {:.3f} fps", fps / 1000.0);
+                if (!multiplier && !fps) diagnostics += L" - selected rate";
+            }
+        }
+        return diagnostics;
     }
 
     void ReleaseFrame(SourceFrame& frame)

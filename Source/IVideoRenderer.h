@@ -21,6 +21,7 @@
 #pragma once
 
 #include <dxva2api.h>
+#include "RifeRateRules.h"
 
 enum :int {
 	TEXFMT_AUTOINT = 0,
@@ -296,6 +297,7 @@ struct Settings_t {
 	int iRifeSceneDetection;
 	int iRifeSceneProcessing;
 	int iRifeDuplicateRemoval;
+	RifeRateRules rifeRules;
 
 	Settings_t() {
 		SetDefault();
@@ -373,6 +375,7 @@ struct Settings_t {
 		iRifeSceneDetection             = RIFE_SCENE_NVOF;
 		iRifeSceneProcessing            = RIFE_SCENE_PROCESS_Repeat;
 		iRifeDuplicateRemoval           = RIFE_DUPLICATES_Keep;
+		rifeRules                       = {};
 	}
 };
 

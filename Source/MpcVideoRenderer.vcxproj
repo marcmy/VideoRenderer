@@ -139,6 +139,7 @@
     <ClInclude Include="resource.h" />
     <ClInclude Include="RifeFrameInterpolation.h" />
     <ClInclude Include="RifePlaybackPipeline.h" />
+    <ClInclude Include="RifeRateRules.h" />
     <ClInclude Include="RifeRuntimeApi.h" />
     <ClInclude Include="RifeSceneBlender.h" />
     <ClInclude Include="RifeSettingsDialog.h" />

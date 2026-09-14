@@ -62,8 +62,11 @@ FrameRate ScaleRate(FrameRate rate, uint32_t numerator, uint32_t denominator = 1
         return {};
     }
 
-    const uint64_t scaledNumerator = static_cast<uint64_t>(rate.numerator) * numerator;
-    const uint64_t scaledDenominator = static_cast<uint64_t>(rate.denominator) * denominator;
+    uint64_t scaledNumerator = static_cast<uint64_t>(rate.numerator) * numerator;
+    uint64_t scaledDenominator = static_cast<uint64_t>(rate.denominator) * denominator;
+    const uint64_t divisor = std::gcd(scaledNumerator, scaledDenominator);
+    scaledNumerator /= divisor;
+    scaledDenominator /= divisor;
     if (scaledNumerator > std::numeric_limits<uint32_t>::max()
             || scaledDenominator > std::numeric_limits<uint32_t>::max()) {
         return {};
@@ -95,15 +98,19 @@ void CFrameInterpolationScheduler::Reset() noexcept
 void CFrameInterpolationScheduler::Configure(
     const FrameInterpolationRateMode mode,
     const FrameRate customRate,
-    const FrameRate displayRate) noexcept
+    const FrameRate displayRate,
+    const uint32_t maxMultiplierMilli,
+    const uint32_t maxOutputFpsMilli) noexcept
 {
     m_mode = mode;
     m_customRate = ReduceRate(customRate);
     m_displayRate = ReduceRate(displayRate);
+    m_maxMultiplierMilli = maxMultiplierMilli;
+    m_maxOutputFpsMilli = maxOutputFpsMilli;
     Reset();
 }
 
-FrameRate CFrameInterpolationScheduler::ResolveTargetRate(const FrameRate sourceRate) const noexcept
+FrameRate CFrameInterpolationScheduler::ResolveRequestedRate(const FrameRate sourceRate) const noexcept
 {
     const FrameRate multiplierSourceRate = SnapSourceRate(sourceRate);
     switch (m_mode) {
@@ -133,6 +140,27 @@ FrameRate CFrameInterpolationScheduler::ResolveTargetRate(const FrameRate source
     default:
         return {};
     }
+}
+
+FrameRate CFrameInterpolationScheduler::ResolveTargetRate(const FrameRate sourceRate) const noexcept
+{
+    FrameRate rate = ResolveRequestedRate(sourceRate);
+    const auto capRate = [&](FrameRate cap) {
+        if (cap.IsValid() && static_cast<uint64_t>(cap.numerator) * rate.denominator
+                < static_cast<uint64_t>(rate.numerator) * cap.denominator) {
+            rate = cap;
+        }
+    };
+    if (m_maxMultiplierMilli) {
+        // Reduce the multiplier before scaling to preserve rational NTSC rates
+        // and avoid unnecessary overflow with 100ns source durations.
+        const FrameRate multiplier = ReduceRate({m_maxMultiplierMilli, 1000});
+        capRate(ScaleRate(SnapSourceRate(sourceRate), multiplier.numerator, multiplier.denominator));
+    }
+    if (m_maxOutputFpsMilli) {
+        capRate(ReduceRate({m_maxOutputFpsMilli, 1000}));
+    }
+    return rate;
 }
 
 int64_t CFrameInterpolationScheduler::TargetTime(const uint64_t index, const FrameRate rate) const noexcept

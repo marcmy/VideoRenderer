@@ -6,6 +6,7 @@
 #define IDD_INFOPROPPAGE                103
 #define IDD_MAXINESETTINGS              106
 #define IDD_FRAMEINTERPOLATION           107
+#define IDD_RIFE_RATE_RULE               108
 // Dedicated NVIDIA Maxine settings dialog controls, including output oversampling
 #define IDS_MAINPROPPAGE_TITLE          104
 #define IDS_INFOPROPPAGE_TITLE          105
@@ -175,14 +176,30 @@
 #define IDC_RIFE_DUPLICATE_REMOVAL       1101
 #define IDC_RIFE_MODEL                   1102
 #define IDC_STATIC_RIFE_CUSTOM_FPS       1103
+#define IDC_RIFE_RULES_ENABLED           1104
+#define IDC_RIFE_RULES_LIST              1105
+#define IDC_RIFE_RULE_ADD                1106
+#define IDC_RIFE_RULE_EDIT               1107
+#define IDC_RIFE_RULE_REMOVE             1108
+#define IDC_RIFE_RULE_EXAMPLE            1109
+#define IDC_RIFE_RULE_ENABLED            1110
+#define IDC_RIFE_RULE_OFF                1111
+#define IDC_RIFE_RULE_MIN_LONG           1112
+#define IDC_RIFE_RULE_MAX_LONG           1113
+#define IDC_RIFE_RULE_MIN_SHORT          1114
+#define IDC_RIFE_RULE_MAX_SHORT          1115
+#define IDC_RIFE_RULE_MIN_FPS            1116
+#define IDC_RIFE_RULE_MAX_FPS            1117
+#define IDC_RIFE_RULE_MAX_MULTIPLIER     1118
+#define IDC_RIFE_RULE_MAX_OUTPUT_FPS     1119
 
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        108
+#define _APS_NEXT_RESOURCE_VALUE        109
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1104
+#define _APS_NEXT_CONTROL_VALUE         1120
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif
