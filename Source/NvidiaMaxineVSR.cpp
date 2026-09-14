@@ -10,6 +10,7 @@
 #include "NvidiaMaxineVSR.h"
 #include "Helper.h"
 
+#include <d3d11_4.h>
 #include <array>
 #include <chrono>
 #include <filesystem>
@@ -20,6 +21,31 @@
 namespace {
 
 #ifdef _WIN64
+
+class D3D11InteropLock final
+{
+public:
+	explicit D3D11InteropLock(ID3D11Multithread* multithread) noexcept
+		: m_multithread(multithread)
+	{
+		if (m_multithread) {
+			m_multithread->Enter();
+		}
+	}
+
+	~D3D11InteropLock()
+	{
+		if (m_multithread) {
+			m_multithread->Leave();
+		}
+	}
+
+	D3D11InteropLock(const D3D11InteropLock&) = delete;
+	D3D11InteropLock& operator=(const D3D11InteropLock&) = delete;
+
+private:
+	ID3D11Multithread* m_multithread = nullptr;
+};
 
 using NvCV_Status = int;
 constexpr NvCV_Status NVCV_SUCCESS = 0;
@@ -233,6 +259,7 @@ struct CNvidiaMaxineVSR::Impl
 	NvCVImage d3dOutput = {};
 	NvCVImage gpuInput = {};
 	NvCVImage gpuOutput = {};
+	CComPtr<ID3D11Multithread> d3dMultithread;
 
 	ID3D11Texture2D* inputTexture = nullptr;
 	ID3D11Texture2D* outputTexture = nullptr;
@@ -304,14 +331,18 @@ struct CNvidiaMaxineVSR::Impl
 
 	void ReleaseD3DImages()
 	{
-		if (NvCVImage_Dealloc) {
-			NvCVImage_Dealloc(&d3dInput);
-			NvCVImage_Dealloc(&d3dOutput);
+		{
+			D3D11InteropLock interopLock(d3dMultithread);
+			if (NvCVImage_Dealloc) {
+				NvCVImage_Dealloc(&d3dInput);
+				NvCVImage_Dealloc(&d3dOutput);
+			}
 		}
 		d3dInput = {};
 		d3dOutput = {};
 		inputTexture = nullptr;
 		outputTexture = nullptr;
+		d3dMultithread.Release();
 	}
 
 	void ReleaseGpuImages()
@@ -338,16 +369,38 @@ struct CNvidiaMaxineVSR::Impl
 
 		ReleaseD3DImages();
 
-		NvCV_Status code = NvCVImage_InitFromD3D11Texture(&d3dInput, input);
-		if (code != NVCV_SUCCESS) {
-			SetError(L"NvCVImage_InitFromD3D11Texture(input)", code);
-			ReleaseD3DImages();
+		CComPtr<ID3D11Device> inputDevice;
+		CComPtr<ID3D11Device> outputDevice;
+		input->GetDevice(&inputDevice);
+		output->GetDevice(&outputDevice);
+		if (!inputDevice || inputDevice != outputDevice) {
+			status = L"Maxine input and output textures must use the same D3D11 device";
+			DLog(L"NVIDIA Maxine VSR: {}", status);
 			return false;
 		}
+		CComPtr<ID3D11DeviceContext> immediateContext;
+		inputDevice->GetImmediateContext(&immediateContext);
+		if (!immediateContext || FAILED(immediateContext->QueryInterface(IID_PPV_ARGS(&d3dMultithread)))) {
+			status = L"Could not acquire D3D11 multithread protection for Maxine interop";
+			DLog(L"NVIDIA Maxine VSR: {}", status);
+			d3dMultithread.Release();
+			return false;
+		}
+		d3dMultithread->SetMultithreadProtected(TRUE);
 
-		code = NvCVImage_InitFromD3D11Texture(&d3dOutput, output);
+		NvCV_Status code = NVCV_SUCCESS;
+		bool inputInitialized = false;
+		{
+			D3D11InteropLock interopLock(d3dMultithread);
+			code = NvCVImage_InitFromD3D11Texture(&d3dInput, input);
+			if (code == NVCV_SUCCESS) {
+				inputInitialized = true;
+				code = NvCVImage_InitFromD3D11Texture(&d3dOutput, output);
+			}
+		}
 		if (code != NVCV_SUCCESS) {
-			SetError(L"NvCVImage_InitFromD3D11Texture(output)", code);
+			SetError(inputInitialized ? L"NvCVImage_InitFromD3D11Texture(output)"
+				: L"NvCVImage_InitFromD3D11Texture(input)", code);
 			ReleaseD3DImages();
 			return false;
 		}
@@ -792,18 +845,22 @@ bool CNvidiaMaxineVSR::Process(
 		return Finish(false);
 	}
 
-	ID3D11ShaderResourceView* nullViews[3] = {};
-	pDeviceContext->PSSetShaderResources(0, std::size(nullViews), nullViews);
-	pDeviceContext->OMSetRenderTargets(0, nullptr, nullptr);
-
 	bool inputMapped = false;
 	bool outputMapped = false;
 	const wchar_t* failedOperation = L"NvCVImage_MapResource(input)";
-	NvCV_Status code = m_impl->NvCVImage_MapResource(&m_impl->d3dInput, m_impl->stream);
-	if (code == NVCV_SUCCESS) {
-		inputMapped = true;
-		failedOperation = L"NvCVImage_MapResource(output)";
-		code = m_impl->NvCVImage_MapResource(&m_impl->d3dOutput, m_impl->stream);
+	NvCV_Status code = NVCV_SUCCESS;
+	{
+		D3D11InteropLock interopLock(m_impl->d3dMultithread);
+		ID3D11ShaderResourceView* nullViews[3] = {};
+		pDeviceContext->PSSetShaderResources(0, std::size(nullViews), nullViews);
+		pDeviceContext->OMSetRenderTargets(0, nullptr, nullptr);
+
+		code = m_impl->NvCVImage_MapResource(&m_impl->d3dInput, m_impl->stream);
+		if (code == NVCV_SUCCESS) {
+			inputMapped = true;
+			failedOperation = L"NvCVImage_MapResource(output)";
+			code = m_impl->NvCVImage_MapResource(&m_impl->d3dOutput, m_impl->stream);
+		}
 	}
 	if (code == NVCV_SUCCESS) {
 		outputMapped = true;
@@ -821,17 +878,20 @@ bool CNvidiaMaxineVSR::Process(
 
 	NvCV_Status unmapCode = NVCV_SUCCESS;
 	const wchar_t* unmapOperation = nullptr;
-	if (outputMapped) {
-		unmapCode = m_impl->NvCVImage_UnmapResource(&m_impl->d3dOutput, m_impl->stream);
-		if (unmapCode != NVCV_SUCCESS) {
-			unmapOperation = L"NvCVImage_UnmapResource(output)";
+	{
+		D3D11InteropLock interopLock(m_impl->d3dMultithread);
+		if (outputMapped) {
+			unmapCode = m_impl->NvCVImage_UnmapResource(&m_impl->d3dOutput, m_impl->stream);
+			if (unmapCode != NVCV_SUCCESS) {
+				unmapOperation = L"NvCVImage_UnmapResource(output)";
+			}
 		}
-	}
-	if (inputMapped) {
-		const NvCV_Status inputUnmapCode = m_impl->NvCVImage_UnmapResource(&m_impl->d3dInput, m_impl->stream);
-		if (unmapCode == NVCV_SUCCESS && inputUnmapCode != NVCV_SUCCESS) {
-			unmapCode = inputUnmapCode;
-			unmapOperation = L"NvCVImage_UnmapResource(input)";
+		if (inputMapped) {
+			const NvCV_Status inputUnmapCode = m_impl->NvCVImage_UnmapResource(&m_impl->d3dInput, m_impl->stream);
+			if (unmapCode == NVCV_SUCCESS && inputUnmapCode != NVCV_SUCCESS) {
+				unmapCode = inputUnmapCode;
+				unmapOperation = L"NvCVImage_UnmapResource(input)";
+			}
 		}
 	}
 	if (code == NVCV_SUCCESS && unmapCode != NVCV_SUCCESS) {
