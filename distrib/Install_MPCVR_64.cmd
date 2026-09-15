@@ -1,13 +1,17 @@
 @cd /d "%~dp0"
-@regsvr32.exe "%~dp0/MpcVideoRenderer64.ax" /s
+@set "TARGET_DIR=%ProgramFiles(x86)%\K-Lite Codec Pack\MPC-HC64\MPCVR"
+@if not exist "%TARGET_DIR%" mkdir "%TARGET_DIR%"
+@if %errorlevel% NEQ 0 goto error
+@copy /Y "%~dp0MpcVideoRenderer64.ax" "%TARGET_DIR%\MpcVideoRenderer64.ax" >NUL
+@if %errorlevel% NEQ 0 goto error
+@regsvr32.exe "%TARGET_DIR%\MpcVideoRenderer64.ax" /s
 @if %errorlevel% NEQ 0 goto error
 :success
 @echo.
 @echo.
 @echo    Installation succeeded.
 @echo.
-@echo    Please do not delete the MpcVideoRenderer64.ax file.
-@echo    The installer has not copied the files anywhere.
+@echo    Installed to "%TARGET_DIR%\MpcVideoRenderer64.ax".
 @echo.
 @goto done
 :error
