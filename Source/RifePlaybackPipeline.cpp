@@ -740,7 +740,11 @@ struct CRifePlaybackPipeline::Impl
         key.contexts = std::clamp(frame.settings.iRifeGpuThreads, RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX);
         key.performanceBoost = frame.settings.bRifePerformanceBoost;
 
-        if (runtimeKey && !(*runtimeKey == key)) {
+        const bool sameLiveGeometry = runtimeKey
+            && runtimeKey->device == key.device
+            && runtimeKey->width == key.width
+            && runtimeKey->height == key.height;
+        if (sameLiveGeometry && !(*runtimeKey == key)) {
             // CUDA/D3D11 registrations belong to a specific runtime instance.
             // Retaining two runtimes for the same live texture geometry can
             // leave the old instance holding registrations that make the new
@@ -751,7 +755,9 @@ struct CRifePlaybackPipeline::Impl
             // TensorRT plans remain cached on disk, so discarding same-shape
             // runtime objects here preserves the expensive engine cache while
             // guaranteeing that only one runtime can own registrations for the
-            // current D3D11 texture set.
+            // current D3D11 texture set. A normal video-size change must keep
+            // the destination geometry cached so switching back to a clip can
+            // immediately reuse its already-ready runtime.
             runtimeBuild.reset();
             for (auto it = runtimeCache.begin(); it != runtimeCache.end();) {
                 if (it->first.device == key.device
