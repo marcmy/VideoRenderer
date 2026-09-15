@@ -31,6 +31,7 @@
 #include "Times.h"
 #include "resource.h"
 #include "VideoRenderer.h"
+#include "MaxineInteropPolicy.h"
 #include "MaxineSpatialPolicy.h"
 #include "RifePlaybackPipeline.h"
 #include "../Include/Version.h"
@@ -3643,7 +3644,7 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSizeForInput(const CRect& dstRect, c
 }
 
 bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, const CSize& sourceSize,
-		const CSize& targetSize, const bool upscaleNeeded)
+		const CSize& targetSize, const bool upscaleNeeded, const bool forceInputStaging)
 {
 #ifdef _WIN64
 	m_bMaxineVSRUsed = false;
@@ -3659,12 +3660,13 @@ bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, c
 	const CRect inputRect(0, 0, sourceSize.cx, sourceSize.cy);
 	D3D11_TEXTURE2D_DESC maxineInputDesc = {};
 	pInputTexture->pTexture->GetDesc(&maxineInputDesc);
-	const bool directBgraInput = maxineInputDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM
+	const bool directBgraCompatible = maxineInputDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM
 		&& maxineInputDesc.SampleDesc.Count == 1
 		&& maxineInputDesc.Width == static_cast<UINT>(sourceSize.cx)
 		&& maxineInputDesc.Height == static_cast<UINT>(sourceSize.cy)
 		&& srcRect.left == 0 && srcRect.top == 0
 		&& srcRect.right == sourceSize.cx && srcRect.bottom == sourceSize.cy;
+	const bool directBgraInput = CanUseDirectMaxineInput(directBgraCompatible, forceInputStaging);
 
 	Tex2D_t* pMaxineResult = pInputTexture;
 	if (!directBgraInput) {
@@ -4269,8 +4271,11 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 		bool maxineUpscaleNeeded = false;
 		if (GetMaxineVSRTargetSizeForInput(dstRect, contentRect.Size(), true,
 				maxineTargetSize, maxineUpscaleNeeded)) {
+			// RIFE keeps its input/output D3D11 textures CUDA-registered between
+			// inference calls. NvCV cannot register the same resource independently,
+			// so always stage RIFE-owned presentation textures before Maxine interop.
 			ApplyMaxine(pInputTexture, inputRect, contentRect.Size(),
-				maxineTargetSize, maxineUpscaleNeeded);
+				maxineTargetSize, maxineUpscaleNeeded, true);
 		}
 		return ResizeShaderPass(*pInputTexture, pRenderTarget, inputRect, dstRect, 0, false);
 	}
@@ -4365,7 +4370,7 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 	if (canUseMaxineVSR) {
 		ApplyMaxine(pInputTexture, rSrc,
 			CSize(static_cast<int>(m_srcRectWidth), static_cast<int>(m_srcRectHeight)),
-			maxineTargetSize, maxineUpscaleNeeded);
+			maxineTargetSize, maxineUpscaleNeeded, false);
 	}
 
 	if (numSteps) {

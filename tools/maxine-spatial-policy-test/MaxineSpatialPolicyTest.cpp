@@ -1,10 +1,17 @@
 #include <cassert>
 #include <iostream>
 
+#include "../../Source/MaxineInteropPolicy.h"
 #include "../../Source/MaxineSpatialPolicy.h"
 
 int main()
 {
+	// RIFE presentation textures can otherwise satisfy every direct-input
+	// condition while still being owned by RIFE's persistent CUDA registration.
+	assert(CanUseDirectMaxineInput(true, false));
+	assert(!CanUseDirectMaxineInput(true, true));
+	assert(!CanUseDirectMaxineInput(false, false));
+
 	// Ordinary landscape playback keeps the exact aspect-fitted output size.
 	assert((ResolveMaxineMatchOutputBaseSize(
 		{1280, 720}, {1440, 1080}, {1920, 1080}, false) == MaxineSpatialSize{1440, 1080}));
