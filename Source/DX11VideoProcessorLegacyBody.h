@@ -271,6 +271,7 @@ private:
 	bool m_bHdrDisplayModeEnabled             = false;
 	bool m_bHdrAllowSwitchDisplay             = true;
 	bool m_bACMEnabled                        = false;
+	CSize m_DisplaySize                       = CSize(0, 0);
 
 	UINT m_srcVideoTransferFunction = 0; // need a description or rename
 

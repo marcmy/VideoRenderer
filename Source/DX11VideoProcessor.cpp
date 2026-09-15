@@ -616,14 +616,22 @@ void CDX11VideoProcessor::FillDisplayParams()
 	m_bHdrPassthroughSupport = false;
 	m_bHdrDisplayModeEnabled = false;
 	m_DisplayBitsPerChannel = 8;
+	m_DisplaySize = CSize(0, 0);
 
 	m_bACMEnabled = false;
 
 	MONITORINFOEXW mi = { sizeof(mi) };
-	GetMonitorInfoW(MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTOPRIMARY), reinterpret_cast<LPMONITORINFO>(&mi));
+	if (GetMonitorInfoW(MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTOPRIMARY), reinterpret_cast<LPMONITORINFO>(&mi))) {
+		m_DisplaySize = CSize(
+			std::max<LONG>(0, mi.rcMonitor.right - mi.rcMonitor.left),
+			std::max<LONG>(0, mi.rcMonitor.bottom - mi.rcMonitor.top));
+	}
 	DisplayConfig_t displayConfig = {};
 
 	if (GetDisplayConfig(mi.szDevice, displayConfig)) {
+		if (displayConfig.width && displayConfig.height) {
+			m_DisplaySize = CSize(displayConfig.width, displayConfig.height);
+		}
 		m_bHdrDisplayModeEnabled = displayConfig.HDREnabled();
 		m_bHdrPassthroughSupport = displayConfig.HDRSupported() && m_bHdrDisplayModeEnabled;
 		m_DisplayBitsPerChannel = displayConfig.bitsPerChannel;
@@ -3572,8 +3580,8 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSizeForInput(const CRect& dstRect, c
 		const MaxineSpatialSize baseTarget = ResolveMaxineMatchOutputBaseSize(
 			{ sourceWidth, sourceHeight },
 			{ static_cast<uint32_t>(dstWidth), static_cast<uint32_t>(dstHeight) },
-			{ static_cast<uint32_t>(std::max<LONG>(0, m_windowRect.Width())),
-			  static_cast<uint32_t>(std::max<LONG>(0, m_windowRect.Height())) },
+			{ static_cast<uint32_t>(std::max<LONG>(0, m_DisplaySize.cx)),
+			  static_cast<uint32_t>(std::max<LONG>(0, m_DisplaySize.cy)) },
 			presentationPortrait);
 		if (!baseTarget.width || !baseTarget.height) {
 			m_strMaxineVSRStatus = L"Invalid player output size";

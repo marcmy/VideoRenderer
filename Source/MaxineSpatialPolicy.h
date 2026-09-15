@@ -27,16 +27,15 @@ constexpr uint32_t ScaleMaxineDimension(
 }
 
 // Match-output normally follows the aspect-fitted video rectangle exactly.
-// When the video's presentation orientation differs from the player surface,
-// that rectangle is numerically smaller than the source on both axes (for
-// example 720x1280 -> 608x1080 on a 1920x1080 surface). Treat that case by
-// resolution class: map the player's short edge to the source's short edge
-// while preserving the source aspect ratio, then return the target in the
-// orientation of the texture Maxine will process.
+// When the video's presentation orientation differs from the physical display,
+// use the fitted extent along the display's short-resolution axis as the source
+// resolution class. This keeps portrait 720p content eligible in an auto-sized
+// portrait window on a landscape 1080p display while still following window
+// size changes and preserving zoom beyond the visible display edge.
 constexpr MaxineSpatialSize ResolveMaxineMatchOutputBaseSize(
 		const MaxineSpatialSize source,
 		const MaxineSpatialSize fittedOutput,
-		const MaxineSpatialSize playerOutput,
+		const MaxineSpatialSize displayOutput,
 		const bool presentationPortrait) noexcept
 {
 	if (!source.width || !source.height || !fittedOutput.width || !fittedOutput.height) {
@@ -44,20 +43,21 @@ constexpr MaxineSpatialSize ResolveMaxineMatchOutputBaseSize(
 	}
 
 	const bool sourcePortrait = IsMaxinePortrait(source);
-	const bool playerPortrait = playerOutput.width && playerOutput.height
-		? IsMaxinePortrait(playerOutput)
+	const bool displayPortrait = displayOutput.width && displayOutput.height
+		? IsMaxinePortrait(displayOutput)
 		: presentationPortrait;
 
-	if (presentationPortrait == playerPortrait || !playerOutput.width || !playerOutput.height) {
+	if (presentationPortrait == displayPortrait || !displayOutput.width || !displayOutput.height) {
 		return sourcePortrait == presentationPortrait
 			? fittedOutput
 			: MaxineSpatialSize{ fittedOutput.height, fittedOutput.width };
 	}
 
 	const uint32_t sourceShort = std::min(source.width, source.height);
-	const uint32_t playerShort = std::min(playerOutput.width, playerOutput.height);
+	const uint32_t displayShort = std::min(displayOutput.width, displayOutput.height);
 	const uint32_t fittedShort = std::min(fittedOutput.width, fittedOutput.height);
-	const uint32_t targetShort = std::max(playerShort, fittedShort);
+	const uint32_t displayAxisExtent = displayPortrait ? fittedOutput.width : fittedOutput.height;
+	const uint32_t targetShort = std::max(fittedShort, std::min(displayAxisExtent, displayShort));
 	return {
 		ScaleMaxineDimension(source.width, targetShort, sourceShort),
 		ScaleMaxineDimension(source.height, targetShort, sourceShort)

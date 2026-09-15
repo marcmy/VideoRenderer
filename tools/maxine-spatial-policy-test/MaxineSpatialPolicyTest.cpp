@@ -14,6 +14,13 @@ int main()
 	// because the aspect-fitted rectangle is only 608x1080.
 	assert((ResolveMaxineMatchOutputBaseSize(
 		{720, 1280}, {608, 1080}, {1920, 1080}, true) == MaxineSpatialSize{1080, 1920}));
+
+	// An auto-sized portrait player window on a landscape 1080p display still
+	// uses the display's vertical resolution axis for the portrait source class.
+	// It should match the same 944-line class reached after widening the window,
+	// rather than suppressing VSR because the fitted width is only 531 pixels.
+	assert((ResolveMaxineMatchOutputBaseSize(
+		{720, 1280}, {531, 944}, {1920, 1080}, true) == MaxineSpatialSize{944, 1678}));
 	assert((ResolveMaxineMatchOutputBaseSize(
 		{720, 1280}, {1216, 2160}, {1920, 1080}, true) == MaxineSpatialSize{1216, 2162}));
 
