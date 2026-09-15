@@ -1,0 +1,91 @@
+name: One-shot Maxine RIFE interop fix
+
+on:
+  push:
+    branches:
+      - feature/rife-tensorrt-interpolation
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    if: github.event.head_commit.message == 'chore: run one-shot Maxine/RIFE interop fix'
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Add failing regression first
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+
+          path = Path('tools/maxine-spatial-policy-test/MaxineSpatialPolicyTest.cpp')
+          text = path.read_text(encoding='utf-8')
+          marker = 'int main()\n{\n'
+          addition = '''int main()\n{\n\t// A texture owned by the RIFE presentation path must never be handed\n\t// directly to Maxine because RIFE keeps a CUDA/D3D11 registration cached.\n\tassert(CanUseDirectMaxineInput(false, true));\n\tassert(!CanUseDirectMaxineInput(true, true));\n\tassert(!CanUseDirectMaxineInput(false, false));\n\n'''
+          if marker not in text:
+              raise SystemExit('Could not locate Maxine policy test main() marker')
+          if 'CanUseDirectMaxineInput' in text:
+              raise SystemExit('Regression test already present unexpectedly')
+          path.write_text(text.replace(marker, addition, 1), encoding='utf-8')
+          '@ | python -
+
+          cmd /c tools\maxine-spatial-policy-test\build-test.cmd
+          if ($LASTEXITCODE -eq 0) {
+            throw 'Regression test unexpectedly passed before the production policy existed.'
+          }
+          Write-Host 'Expected RED regression confirmed.'
+
+      - name: Apply minimal interop policy fix
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+
+          header = Path('Source/MaxineSpatialPolicy.h')
+          text = header.read_text(encoding='utf-8')
+          marker = '''constexpr uint32_t ScaleMaxineDimension(\n\t\tconst uint32_t value, const uint32_t numerator, const uint32_t denominator) noexcept\n{\n\tif (!value || !numerator || !denominator) {\n\t\treturn 0;\n\t}\n\n\treturn static_cast<uint32_t>((static_cast<uint64_t>(value) * numerator + denominator / 2u) / denominator);\n}\n\n'''
+          addition = marker + '''// RIFE presentation textures can remain CUDA/D3D11-registered after they are\n// unmapped. Maxine uses its own CUDA interop stack, so those textures must be\n// staged through a renderer-owned texture before Maxine tries to register them.\nconstexpr bool CanUseDirectMaxineInput(\n\t\tconst bool frameInterpolationTextureActive,\n\t\tconst bool directBgraCompatible) noexcept\n{\n\treturn !frameInterpolationTextureActive && directBgraCompatible;\n}\n\n'''
+          if marker not in text:
+              raise SystemExit('Could not locate Maxine policy insertion point')
+          if 'CanUseDirectMaxineInput' in text:
+              raise SystemExit('Maxine interop policy already present unexpectedly')
+          header.write_text(text.replace(marker, addition, 1), encoding='utf-8')
+
+          source = Path('Source/DX11VideoProcessor.cpp')
+          text = source.read_text(encoding='utf-8')
+          old = '''\tconst bool directBgraInput = maxineInputDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM\n\t\t&& maxineInputDesc.SampleDesc.Count == 1\n\t\t&& maxineInputDesc.Width == static_cast<UINT>(sourceSize.cx)\n\t\t&& maxineInputDesc.Height == static_cast<UINT>(sourceSize.cy)\n\t\t&& srcRect.left == 0 && srcRect.top == 0\n\t\t&& srcRect.right == sourceSize.cx && srcRect.bottom == sourceSize.cy;\n'''
+          new = '''\tconst bool directBgraCompatible = maxineInputDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM\n\t\t&& maxineInputDesc.SampleDesc.Count == 1\n\t\t&& maxineInputDesc.Width == static_cast<UINT>(sourceSize.cx)\n\t\t&& maxineInputDesc.Height == static_cast<UINT>(sourceSize.cy)\n\t\t&& srcRect.left == 0 && srcRect.top == 0\n\t\t&& srcRect.right == sourceSize.cx && srcRect.bottom == sourceSize.cy;\n\tconst bool directBgraInput = CanUseDirectMaxineInput(\n\t\tm_pFrameInterpolationTexture != nullptr, directBgraCompatible);\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'Expected exactly one direct-BGRA predicate, found {text.count(old)}')
+          source.write_text(text.replace(old, new, 1), encoding='utf-8')
+          '@ | python -
+
+      - name: Verify regression is green
+        shell: pwsh
+        run: |
+          cmd /c tools\maxine-spatial-policy-test\build-test.cmd
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Full x64 renderer build
+        shell: pwsh
+        run: |
+          .\build_mpcvr.cmd NoWait
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Commit verified fix and remove one-shot workflow
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/one-shot-maxine-rife-interop-fix.yml
+          git add Source/DX11VideoProcessor.cpp Source/MaxineSpatialPolicy.h tools/maxine-spatial-policy-test/MaxineSpatialPolicyTest.cpp
+          git diff --cached --check
+          git commit -m 'Fix Maxine interop with RIFE-registered textures'
+          git push origin HEAD:feature/rife-tensorrt-interpolation
