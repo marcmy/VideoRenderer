@@ -31,6 +31,7 @@
 #include "Times.h"
 #include "resource.h"
 #include "VideoRenderer.h"
+#include "MaxineSpatialPolicy.h"
 #include "RifePlaybackPipeline.h"
 #include "../Include/Version.h"
 #include "DX11VideoProcessor.h"
@@ -3557,19 +3558,31 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSizeForInput(const CRect& dstRect, c
 	unsigned long long targetWidth = 0;
 	unsigned long long targetHeight = 0;
 	if (m_iMaxineScale == MAXINE_SCALE_MatchOutput) {
-		int dstWidth = dstRect.Width();
-		int dstHeight = dstRect.Height();
-		if (!sourceAlreadyOriented && (m_iRotation == 90 || m_iRotation == 270)) {
-			std::swap(dstWidth, dstHeight);
-		}
+		const int dstWidth = dstRect.Width();
+		const int dstHeight = dstRect.Height();
 		if (dstWidth <= 0 || dstHeight <= 0) {
 			m_strMaxineVSRStatus = L"Invalid player output size";
 			return false;
 		}
 
+		bool presentationPortrait = sourceHeight > sourceWidth;
+		if (!sourceAlreadyOriented && (m_iRotation == 90 || m_iRotation == 270)) {
+			presentationPortrait = sourceWidth > sourceHeight;
+		}
+		const MaxineSpatialSize baseTarget = ResolveMaxineMatchOutputBaseSize(
+			{ sourceWidth, sourceHeight },
+			{ static_cast<uint32_t>(dstWidth), static_cast<uint32_t>(dstHeight) },
+			{ static_cast<uint32_t>(std::max<LONG>(0, m_windowRect.Width())),
+			  static_cast<uint32_t>(std::max<LONG>(0, m_windowRect.Height())) },
+			presentationPortrait);
+		if (!baseTarget.width || !baseTarget.height) {
+			m_strMaxineVSRStatus = L"Invalid player output size";
+			return false;
+		}
+
 		const int oversample = NormalizeMaxineOversample(m_iMaxineOversample);
-		targetWidth = (static_cast<unsigned long long>(dstWidth) * oversample + 50ull) / 100ull;
-		targetHeight = (static_cast<unsigned long long>(dstHeight) * oversample + 50ull) / 100ull;
+		targetWidth = (static_cast<unsigned long long>(baseTarget.width) * oversample + 50ull) / 100ull;
+		targetHeight = (static_cast<unsigned long long>(baseTarget.height) * oversample + 50ull) / 100ull;
 
 		const unsigned long long maxWidth = static_cast<unsigned long long>(sourceWidth) * 4ull;
 		const unsigned long long maxHeight = static_cast<unsigned long long>(sourceHeight) * 4ull;

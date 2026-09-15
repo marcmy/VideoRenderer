@@ -205,9 +205,13 @@ void SelectComboValue(HWND hwnd, int id, LONG_PTR value)
 void UpdateRuleButtons(HWND hwnd)
 {
 	const LRESULT selected = SendDlgItemMessageW(hwnd, IDC_RIFE_RULES_LIST, LB_GETCURSEL, 0, 0);
+	const LRESULT count = SendDlgItemMessageW(hwnd, IDC_RIFE_RULES_LIST, LB_GETCOUNT, 0, 0);
 	const BOOL hasSelection = selected != LB_ERR;
 	EnableWindow(GetDlgItem(hwnd, IDC_RIFE_RULE_EDIT), hasSelection);
 	EnableWindow(GetDlgItem(hwnd, IDC_RIFE_RULE_REMOVE), hasSelection);
+	EnableWindow(GetDlgItem(hwnd, IDC_RIFE_RULE_UP), hasSelection && selected > 0);
+	EnableWindow(GetDlgItem(hwnd, IDC_RIFE_RULE_DOWN),
+		hasSelection && count != LB_ERR && selected + 1 < count);
 }
 
 void RefreshRuleList(HWND hwnd, const RifeRateRules& rules, int preferredSelection = -1)
@@ -225,6 +229,23 @@ void RefreshRuleList(HWND hwnd, const RifeRateRules& rules, int preferredSelecti
 		SendDlgItemMessageW(hwnd, IDC_RIFE_RULES_LIST, LB_SETCURSEL, selection, 0);
 	}
 	UpdateRuleButtons(hwnd);
+}
+
+bool MoveSelectedRule(HWND hwnd, RifeRateRules& rules, int direction)
+{
+	const LRESULT selected = SendDlgItemMessageW(hwnd, IDC_RIFE_RULES_LIST, LB_GETCURSEL, 0, 0);
+	if (selected == LB_ERR || static_cast<uint32_t>(selected) >= rules.count) {
+		return false;
+	}
+
+	const int destination = static_cast<int>(selected) + direction;
+	if (destination < 0 || destination >= static_cast<int>(rules.count)) {
+		return false;
+	}
+
+	std::swap(rules.rules[static_cast<size_t>(selected)], rules.rules[static_cast<size_t>(destination)]);
+	RefreshRuleList(hwnd, rules, destination);
+	return true;
 }
 
 void EnableRuleCapControls(HWND hwnd)
@@ -385,6 +406,8 @@ void SetControls(HWND hwnd, const Settings_t& settings)
 
 void InitializeDialog(HWND hwnd, const Settings_t& settings)
 {
+	SetDlgItemTextW(hwnd, IDC_RIFE_RULE_UP, L"\u2191");
+	SetDlgItemTextW(hwnd, IDC_RIFE_RULE_DOWN, L"\u2193");
 	PopulateCombo(hwnd, IDC_RIFE_MODE, {
 		{L"Disabled", RIFE_MODE_Disabled},
 		{L"To screen", RIFE_MODE_ToScreen},
@@ -537,6 +560,18 @@ INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 					settings->rifeRules.rules[settings->rifeRules.count] = {};
 					RefreshRuleList(hwnd, settings->rifeRules, static_cast<int>(index));
 				}
+				return TRUE;
+			}
+			break;
+		case IDC_RIFE_RULE_UP:
+			if (HIWORD(wParam) == BN_CLICKED) {
+				MoveSelectedRule(hwnd, settings->rifeRules, -1);
+				return TRUE;
+			}
+			break;
+		case IDC_RIFE_RULE_DOWN:
+			if (HIWORD(wParam) == BN_CLICKED) {
+				MoveSelectedRule(hwnd, settings->rifeRules, 1);
 				return TRUE;
 			}
 			break;

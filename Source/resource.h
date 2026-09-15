@@ -192,6 +192,8 @@
 #define IDC_RIFE_RULE_MAX_FPS            1117
 #define IDC_RIFE_RULE_MAX_MULTIPLIER     1118
 #define IDC_RIFE_RULE_MAX_OUTPUT_FPS     1119
+#define IDC_RIFE_RULE_UP                 1120
+#define IDC_RIFE_RULE_DOWN               1121
 
 // Next default values for new objects
 // 
@@ -199,7 +201,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        109
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1120
+#define _APS_NEXT_CONTROL_VALUE         1122
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif
