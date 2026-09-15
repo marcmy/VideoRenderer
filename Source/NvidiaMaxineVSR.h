@@ -25,7 +25,8 @@ public:
 		ID3D11Texture2D* pInputTexture,
 		ID3D11Texture2D* pOutputTexture,
 		unsigned mode,
-		int gpuIndex = -1);
+		int gpuIndex = -1,
+		bool releaseD3DImagesAfterRun = true);
 
 	void Reset();
 	const std::wstring& GetStatus() const;

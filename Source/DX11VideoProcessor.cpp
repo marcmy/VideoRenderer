@@ -3636,24 +3636,44 @@ bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, c
 	}
 
 	const CRect inputRect(0, 0, sourceSize.cx, sourceSize.cy);
-	const HRESULT inputCreateHr = m_TexMaxineInput.CheckCreate(m_pDevice,
-		DXGI_FORMAT_B8G8R8A8_UNORM, sourceSize.cx, sourceSize.cy, Tex2D_DefaultShaderRTarget);
-	if (FAILED(inputCreateHr)) {
-		m_strMaxineVSRStatus = L"Could not create the BGRA8 Maxine input texture";
-		return false;
-	}
+	D3D11_TEXTURE2D_DESC maxineInputDesc = {};
+	pInputTexture->pTexture->GetDesc(&maxineInputDesc);
+	const bool directBgraInput = maxineInputDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM
+		&& maxineInputDesc.SampleDesc.Count == 1
+		&& maxineInputDesc.Width == static_cast<UINT>(sourceSize.cx)
+		&& maxineInputDesc.Height == static_cast<UINT>(sourceSize.cy)
+		&& srcRect.left == 0 && srcRect.top == 0
+		&& srcRect.right == sourceSize.cx && srcRect.bottom == sourceSize.cy;
 
-	const HRESULT copyHr = TextureCopyRect(*pInputTexture, m_TexMaxineInput.pTexture,
-		srcRect, inputRect, m_pPS_Simple, nullptr, 0, false);
-	if (FAILED(copyHr)) {
-		m_strMaxineVSRStatus = L"Could not convert the source to BGRA8";
-		return false;
-	}
+	Tex2D_t* pMaxineResult = pInputTexture;
+	if (!directBgraInput) {
+		const HRESULT inputCreateHr = m_TexMaxineInput.CheckCreate(m_pDevice,
+			DXGI_FORMAT_B8G8R8A8_UNORM, sourceSize.cx, sourceSize.cy, Tex2D_DefaultShaderRTarget);
+		if (FAILED(inputCreateHr)) {
+			m_strMaxineVSRStatus = L"Could not create the BGRA8 Maxine input texture";
+			return false;
+		}
 
-	Tex2D_t* pMaxineResult = &m_TexMaxineInput;
+		const HRESULT copyHr = TextureCopyRect(*pInputTexture, m_TexMaxineInput.pTexture,
+			srcRect, inputRect, m_pPS_Simple, nullptr, 0, false);
+		if (FAILED(copyHr)) {
+			m_strMaxineVSRStatus = L"Could not convert the source to BGRA8";
+			return false;
+		}
+		pMaxineResult = &m_TexMaxineInput;
+	}
 	CSize currentSize = sourceSize;
 	bool passesOk = true;
 	bool ranPass = false;
+	int activePassCount = 0;
+	if (m_iMaxineOperation == MAXINE_OPERATION_Upscale) {
+		activePassCount += upscaleNeeded ? 1 : 0;
+		activePassCount += m_iMaxineDenoise != MAXINE_FILTER_Off ? 1 : 0;
+		activePassCount += m_iMaxineDeblur != MAXINE_FILTER_Off ? 1 : 0;
+	} else {
+		activePassCount = 1;
+	}
+	const bool releaseD3DImagesAfterRun = activePassCount > 1;
 
 	auto AppendPassName = [&](const wchar_t* name) {
 		if (!m_strMaxinePipeline.empty()) {
@@ -3712,7 +3732,7 @@ bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, c
 			return false;
 		}
 		if (!pEffect->Process(m_pDeviceContext, pMaxineResult->pTexture,
-				pOutput->pTexture, mode, m_iMaxineGPU)) {
+				pOutput->pTexture, mode, m_iMaxineGPU, releaseD3DImagesAfterRun)) {
 			m_strMaxineVSRStatus = std::format(L"{} failed: {}", passName, pEffect->GetStatus());
 			return false;
 		}

@@ -808,7 +808,8 @@ bool CNvidiaMaxineVSR::Process(
 	ID3D11Texture2D* pInputTexture,
 	ID3D11Texture2D* pOutputTexture,
 	unsigned mode,
-	int gpuIndex)
+	int gpuIndex,
+	bool releaseD3DImagesAfterRun)
 {
 #ifdef _WIN64
 	const auto started = std::chrono::steady_clock::now();
@@ -899,9 +900,13 @@ bool CNvidiaMaxineVSR::Process(
 		failedOperation = unmapOperation ? unmapOperation : L"NvCVImage_UnmapResource";
 	}
 
-	// D3D11/CUDA interop resources cannot remain registered between chained
-	// passes because one pass's output becomes the next pass's input.
-	m_impl->ReleaseD3DImages();
+	// Chained effects cannot retain registrations because one pass's output is
+	// the next pass's input. A single effect with stable textures can safely keep
+	// its resources registered while unmapped, avoiding per-frame unregister /
+	// re-register overhead without changing the processing result.
+	if (releaseD3DImagesAfterRun) {
+		m_impl->ReleaseD3DImages();
+	}
 
 	if (code != NVCV_SUCCESS) {
 		m_impl->SetError(failedOperation, code);
@@ -928,9 +933,8 @@ void CNvidiaMaxineVSR::Reset()
 	const bool runtimeLoadFailed = m_impl->runtimeAttempted && !m_impl->hNvVideoEffects;
 	const std::wstring runtimeError = runtimeLoadFailed ? m_impl->status : std::wstring();
 
-	// A renderer/media reset only invalidates the D3D11 textures. Process()
-	// already detaches those CUDA interop wrappers after every successful pass,
-	// so keep the expensive VFX effect, CUDA stream and GPU work images cached.
+	// A renderer/media reset invalidates any retained D3D11/CUDA wrappers while
+	// keeping the expensive VFX effect, CUDA stream and GPU work images cached.
 	// EnsureEffect() resizes/rebinds those work images dynamically and performs
 	// a hard rebuild only for a GPU/adapter transition or incompatible runtime.
 	m_impl->ReleaseD3DImages();
