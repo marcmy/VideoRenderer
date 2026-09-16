@@ -295,6 +295,8 @@ jobs:
           $modelArchive = Join-Path $root 'MPCVR-RIFE-Model-v4.6.zip'
           $script = 'tools/RifeRuntimeInstaller/Install-MPCVRRifeRuntime.ps1'
           $inventory = '[{"name":"NVIDIA GeForce RTX 2070 SUPER","computeCapability":"7.5"},{"name":"NVIDIA GeForce RTX 5070","computeCapability":"12.0"}]'
+          $inventoryPath = Join-Path $root 'gpu-inventory.json'
+          Set-Content -LiteralPath $inventoryPath -Value $inventory -Encoding ASCII
 
           function Get-TreeHashes([string]$Path) {
             @(
@@ -318,7 +320,7 @@ jobs:
               -RuntimeBundleRoot $bundle `
               -ModelArchive $modelArchive `
               -InstallRoot $installRoot `
-              -GpuInventoryJson $inventory `
+              -GpuInventoryJson $inventoryPath `
               -NoPause
             if ($LASTEXITCODE -ne 0) { throw "$hostExe first fixture install failed with $LASTEXITCODE" }
 
@@ -329,7 +331,7 @@ jobs:
               -RuntimeBundleRoot $bundle `
               -ModelArchive $modelArchive `
               -InstallRoot $installRoot `
-              -GpuInventoryJson $inventory `
+              -GpuInventoryJson $inventoryPath `
               -NoPause
             if ($LASTEXITCODE -ne 0) { throw "$hostExe repeated fixture install failed with $LASTEXITCODE" }
 
@@ -343,7 +345,7 @@ jobs:
               -RuntimeBundleRoot $bundle `
               -ModelArchive $modelArchive `
               -InstallRoot $installRoot `
-              -GpuInventoryJson $inventory `
+              -GpuInventoryJson $inventoryPath `
               -NoPause `
               -TestInjectInvalidInstalledModelHash 2>&1 | Out-String
             $failureCode = $LASTEXITCODE
