@@ -39,3 +39,54 @@ pwsh.exe -NoLogo -NoProfile -File `
 ```
 
 The validator rejects missing architecture packs, manifest drift, unexpected ZIP contents, missing checksums, extra checksum entries, and checksum mismatches.
+
+## Installing the runtime
+
+`Install-MPCVRRifeRuntime.cmd` launches the PowerShell 5.1 installer. The installer detects every NVIDIA GPU with `nvidia-smi`, maps each compute capability to a supported architecture pack, verifies the selected runtime archives and the model package, stages a complete replacement tree, runs native ABI preflight, and only then removes the previous backup.
+
+The default install root is:
+
+```text
+%LOCALAPPDATA%\MPCVideoRenderer\RIFE
+```
+
+The installed tree is:
+
+```text
+runtime\
+  MPCVRRifeRuntime64.dll
+  cudart64_12.dll
+  nvinfer_11.dll
+  nvonnxparser_11.dll
+  nvinfer_builder_resource_ptx_11.dll
+  nvinfer_builder_resource_sm*_11.dll
+models\
+  rife_v4.6.onnx
+cache\
+installed-manifest.json
+```
+
+For a local release payload, run:
+
+```powershell
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
+  .\Install-MPCVRRifeRuntime.ps1 `
+  -RuntimeBundleRoot .\payload `
+  -ModelArchive .\payload\MPCVR-RIFE-Model-v4.6.zip `
+  -NoPause
+```
+
+The installer verifies archive/model hashes before moving the existing install. A compatible TensorRT engine cache is preserved only when the model SHA-256, TensorRT major/minor version, and runtime ABI all match the new payload. Any post-swap preflight failure removes the failed tree and restores the previous install.
+
+`Test-MPCVRRifePreflight.ps1` checks the common runtime DLLs, every builder resource required by the detected GPUs, the installed model hash, cache writability, and the native `MpcvrRifeGetAbiVersion` export. The expected ABI is 1.
+
+For CI or diagnostics, `-GpuInventoryJson` accepts either raw JSON or a JSON file containing entries such as:
+
+```json
+[
+  {"name":"NVIDIA GeForce RTX 2070 SUPER","computeCapability":"7.5"},
+  {"name":"NVIDIA GeForce RTX 5070","computeCapability":"12.0"}
+]
+```
+
+`-ValidateOnly` performs GPU-to-pack selection without requiring a release payload. Unsupported capabilities fail with an explicit `Unsupported CUDA compute capability: <major.minor>` message.
