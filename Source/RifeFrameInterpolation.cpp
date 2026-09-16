@@ -205,15 +205,23 @@ bool CRifeFrameInterpolation::Initialize(
     }
 
     const auto directories = CandidateDirectories(overrideDirectory);
+    std::wstring actionableStatus;
     for (const auto& directory : directories) {
+        bool abiCompatibleRuntime = false;
         if (LoadAndCreate(
                 AbsoluteModulePath(directory).wstring(), device, width, height, gpuIndex,
-                contextCount, performanceBoost, modelPath, cachePath)) {
+                contextCount, performanceBoost, modelPath, cachePath, &abiCompatibleRuntime)) {
             return true;
+        }
+        if (abiCompatibleRuntime) {
+            actionableStatus = m_status;
         }
     }
 
-    if (m_status.empty()) {
+    if (!actionableStatus.empty()) {
+        m_status = std::move(actionableStatus);
+    }
+    else if (m_status.empty()) {
         m_status = L"RIFE runtime was not found";
     }
     return false;
@@ -229,8 +237,12 @@ bool CRifeFrameInterpolation::LoadAndCreate(
     const uint32_t contextCount,
     const bool performanceBoost,
     const std::wstring& modelPath,
-    const std::wstring& cachePath)
+    const std::wstring& cachePath,
+    bool* abiCompatibleRuntime)
 {
+    if (abiCompatibleRuntime) {
+        *abiCompatibleRuntime = false;
+    }
     HMODULE module = LoadLibraryExW(modulePath.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!module) {
         m_status = std::format(L"RIFE runtime not loadable: {} (Win32 error {})",
@@ -251,6 +263,10 @@ bool CRifeFrameInterpolation::LoadAndCreate(
             abiVersion, MPCVR_RIFE_RUNTIME_ABI);
         FreeLibrary(module);
         return false;
+    }
+
+    if (abiCompatibleRuntime) {
+        *abiCompatibleRuntime = true;
     }
 
     MpcvrRifeCreateParams params = {};

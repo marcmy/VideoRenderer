@@ -62,7 +62,8 @@ private:
         uint32_t contextCount,
         bool performanceBoost,
         const std::wstring& modelPath,
-        const std::wstring& cachePath);
+        const std::wstring& cachePath,
+        bool* abiCompatibleRuntime = nullptr);
 
     HMODULE m_module = nullptr;
     void* m_handle = nullptr;

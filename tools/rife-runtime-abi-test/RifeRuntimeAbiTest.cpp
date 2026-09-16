@@ -86,6 +86,18 @@ int wmain()
     Check(futureFailure.GetStatus().find(L"-99") != std::wstring::npos,
         "unknown future runtime failure must preserve its numeric code");
 
+    // Production normally probes multiple candidate directories. A useful error
+    // from a loadable/ABI-compatible runtime must survive later missing paths.
+    SetEnvironmentVariableW(L"LOCALAPPDATA", L"missing-localappdata");
+    SetEnvironmentVariableW(L"MPCVR_RIFE_RUNTIME_DIR", L"missing-env-runtime");
+    CRifeFrameInterpolation candidateFallback;
+    Check(!candidateFallback.Initialize(
+        L"", nullptr, 1920, 1080, UINT32_MAX, 2, false,
+        L"rife_v4.6.onnx", L"cache"),
+        "multi-directory runtime lookup must fail for unsupported compute capability");
+    Check(candidateFallback.GetStatus() == L"RIFE runtime does not support this CUDA compute capability",
+        "actionable runtime initialization failure must survive later missing candidates");
+
     if (g_failures) {
         std::cerr << g_failures << " RIFE runtime ABI test(s) failed\n";
         return 1;
