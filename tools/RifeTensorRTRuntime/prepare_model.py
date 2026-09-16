@@ -12,18 +12,20 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import tempfile
 from pathlib import Path
 
-import numpy as np
-import onnx
-import py7zr
-from modelopt.onnx.autocast import convert_to_mixed_precision
-
 
 CALIBRATION_WIDTH = 1024
 CALIBRATION_HEIGHT = 576
+MODEL_MANIFEST_SCHEMA_VERSION = 1
+MODEL_NAME = "RIFE 4.6"
+MODEL_FILE = "rife_v4.6.onnx"
+MODEL_SOURCE_RELEASE = "model-20220923"
+MODEL_PRECISION = "mixed-fp16-fp32"
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def sha256(path: Path) -> str:
@@ -34,7 +36,7 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def tensor_shape(value: onnx.ValueInfoProto) -> list[int | str | None]:
+def tensor_shape(value: object) -> list[int | str | None]:
     result: list[int | str | None] = []
     for dim in value.type.tensor_type.shape.dim:
         if dim.HasField("dim_value"):
@@ -68,6 +70,8 @@ def make_calibration_input(input_name: str, destination: Path) -> None:
     a real inference sample.
     """
 
+    import numpy as np
+
     height = CALIBRATION_HEIGHT
     width = CALIBRATION_WIDTH
     y = np.linspace(0.0, 1.0, height, dtype=np.float32)[:, None]
@@ -94,7 +98,9 @@ def make_calibration_input(input_name: str, destination: Path) -> None:
     np.savez(destination, **{input_name: tensor})
 
 
-def validate_contract(model: onnx.ModelProto) -> dict[str, object]:
+def validate_contract(model: object) -> dict[str, object]:
+    import onnx
+
     onnx.checker.check_model(model)
     if len(model.graph.input) != 1 or len(model.graph.output) != 1:
         raise RuntimeError(
@@ -129,11 +135,85 @@ def validate_contract(model: onnx.ModelProto) -> dict[str, object]:
     }
 
 
+def validate_release_manifest(manifest: object) -> dict[str, object]:
+    if not isinstance(manifest, dict):
+        raise RuntimeError("model manifest must be a JSON object")
+
+    expected = {
+        "schemaVersion": MODEL_MANIFEST_SCHEMA_VERSION,
+        "model": MODEL_NAME,
+        "file": MODEL_FILE,
+        "sourceRelease": MODEL_SOURCE_RELEASE,
+        "input": [1, 11, "H", "W"],
+        "output": [1, 3, "H", "W"],
+        "precision": MODEL_PRECISION,
+    }
+    required = set(expected) | {"sourceArchiveSha256"}
+    actual = set(manifest)
+    missing = sorted(required - actual)
+    unexpected = sorted(actual - required)
+    if missing:
+        raise RuntimeError(f"model manifest is missing required fields: {missing}")
+    if unexpected:
+        raise RuntimeError(f"model manifest has unexpected fields: {unexpected}")
+
+    for key, value in expected.items():
+        if manifest[key] != value:
+            raise RuntimeError(f"model manifest field {key!r} must be {value!r}; got {manifest[key]!r}")
+
+    source_hash = manifest["sourceArchiveSha256"]
+    if not isinstance(source_hash, str) or not SHA256_PATTERN.fullmatch(source_hash):
+        raise RuntimeError("model manifest sourceArchiveSha256 must be a lowercase SHA-256 hex digest")
+
+    return manifest
+
+
+def write_release_manifest(archive: Path, output: Path) -> Path:
+    manifest = validate_release_manifest(
+        {
+            "schemaVersion": MODEL_MANIFEST_SCHEMA_VERSION,
+            "model": MODEL_NAME,
+            "file": MODEL_FILE,
+            "sourceRelease": MODEL_SOURCE_RELEASE,
+            "sourceArchiveSha256": sha256(archive),
+            "input": [1, 11, "H", "W"],
+            "output": [1, 3, "H", "W"],
+            "precision": MODEL_PRECISION,
+        }
+    )
+    manifest_path = output.with_name("model-manifest.json")
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return manifest_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("archive", type=Path, help="upstream vs-mlrt rife_v8.7z")
-    parser.add_argument("output", type=Path, help="destination rife_v4.6.onnx")
+    parser.add_argument("archive", nargs="?", type=Path, help="upstream vs-mlrt rife_v8.7z")
+    parser.add_argument("output", nargs="?", type=Path, help="destination rife_v4.6.onnx")
+    parser.add_argument(
+        "--validate-manifest",
+        type=Path,
+        metavar="PATH",
+        help="validate a release model-manifest.json without loading ONNX/model conversion dependencies",
+    )
     args = parser.parse_args()
+
+    if args.validate_manifest is not None:
+        if args.archive is not None or args.output is not None:
+            parser.error("--validate-manifest cannot be combined with archive/output conversion arguments")
+        manifest_path = args.validate_manifest.resolve()
+        if not manifest_path.is_file():
+            parser.error(f"manifest not found: {manifest_path}")
+        validate_release_manifest(json.loads(manifest_path.read_text(encoding="utf-8-sig")))
+        print(f"model manifest validation passed: {manifest_path}")
+        return 0
+
+    if args.archive is None or args.output is None:
+        parser.error("archive and output are required unless --validate-manifest is used")
+
+    import onnx
+    import py7zr
+    from modelopt.onnx.autocast import convert_to_mixed_precision
 
     archive = args.archive.resolve()
     output = args.output.resolve()
@@ -175,6 +255,8 @@ def main() -> int:
         contract = validate_contract(onnx.load(staged))
         shutil.copyfile(staged, output)
 
+    manifest_path = write_release_manifest(archive, output)
+
     metadata = {
         "source_archive_sha256": sha256(archive),
         "output_sha256": sha256(output),
@@ -182,6 +264,7 @@ def main() -> int:
         "contract": contract,
         "conversion": "NVIDIA Model Optimizer AutoCast fp16",
         "calibration_shape": [1, 11, CALIBRATION_HEIGHT, CALIBRATION_WIDTH],
+        "release_manifest": manifest_path.name,
     }
     metadata_path = output.with_name("model-metadata.json")
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
