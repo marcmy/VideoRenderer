@@ -3,7 +3,7 @@ setlocal
 cd /d %~dp0
 
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-for /f "usebackq delims=" %%A in (`"%VSWHERE%" -latest -property installationPath -requires Microsoft.Component.MSBuild`) do set "VS_PATH=%%A"
+for /f "usebackq delims=" %%A in (`"%VSWHERE%" -latest -products * -property installationPath -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64`) do set "VS_PATH=%%A"
 if not defined VS_PATH (
   echo Visual Studio not found.
   exit /b 1
