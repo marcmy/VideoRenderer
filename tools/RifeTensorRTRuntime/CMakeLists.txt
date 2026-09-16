@@ -81,7 +81,7 @@ target_compile_options(MPCVRRifeRuntime64 PRIVATE
 set_target_properties(MPCVRRifeRuntime64 PROPERTIES
     OUTPUT_NAME "MPCVRRifeRuntime64"
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "75;80;86;89"
+    CUDA_ARCHITECTURES "75-real;86-real;89-real;120"
 )
 
 target_link_libraries(MPCVRRifeRuntime64 PRIVATE

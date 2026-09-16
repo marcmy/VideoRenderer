@@ -17,6 +17,14 @@ void Check(bool condition, std::string_view message)
 
 int wmain()
 {
+    static_assert(MPCVR_RIFE_OK == 0);
+    static_assert(MPCVR_RIFE_INVALID_ARGUMENT == -1);
+    static_assert(MPCVR_RIFE_UNSUPPORTED == -2);
+    static_assert(MPCVR_RIFE_CUDA_FAILURE == -3);
+    static_assert(MPCVR_RIFE_TENSORRT_FAILURE == -4);
+    static_assert(MPCVR_RIFE_BUILDER_RESOURCE_MISSING == -5);
+    static_assert(MPCVR_RIFE_UNSUPPORTED_COMPUTE_CAPABILITY == -6);
+
     const auto missing = CRifeFrameInterpolation::Probe(L"missing-runtime");
     Check(!missing.available, "missing runtime must be reported as unavailable");
 
@@ -53,6 +61,30 @@ int wmain()
         L"rife_v4.6.onnx", L"cache"),
         "ABI mismatch must fail persistent initialization");
     Check(!badRuntime.IsReady(), "failed initialization must not leave a ready runtime");
+
+    CRifeFrameInterpolation unsupportedArchitecture;
+    Check(!unsupportedArchitecture.Initialize(
+        L"unsupported-cc-runtime", nullptr, 1920, 1080, UINT32_MAX, 2, false,
+        L"rife_v4.6.onnx", L"cache"),
+        "unsupported compute capability must fail initialization");
+    Check(unsupportedArchitecture.GetStatus() == L"RIFE runtime does not support this CUDA compute capability",
+        "unsupported architecture must identify compute capability");
+
+    CRifeFrameInterpolation missingBuilderResource;
+    Check(!missingBuilderResource.Initialize(
+        L"builder-missing-runtime", nullptr, 1920, 1080, UINT32_MAX, 2, false,
+        L"rife_v4.6.onnx", L"cache"),
+        "missing TensorRT builder resource must fail initialization");
+    Check(missingBuilderResource.GetStatus() == L"RIFE TensorRT builder resource for this GPU architecture is missing",
+        "missing TensorRT builder resource must be explicit");
+
+    CRifeFrameInterpolation futureFailure;
+    Check(!futureFailure.Initialize(
+        L"future-failure-runtime", nullptr, 1920, 1080, UINT32_MAX, 2, false,
+        L"rife_v4.6.onnx", L"cache"),
+        "unknown future runtime failure must fail initialization");
+    Check(futureFailure.GetStatus().find(L"-99") != std::wstring::npos,
+        "unknown future runtime failure must preserve its numeric code");
 
     if (g_failures) {
         std::cerr << g_failures << " RIFE runtime ABI test(s) failed\n";

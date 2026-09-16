@@ -17,6 +17,16 @@
 
 #define MPCVR_RIFE_RUNTIME_ABI 1u
 
+enum MpcvrRifeResult : int32_t {
+    MPCVR_RIFE_OK = 0,
+    MPCVR_RIFE_INVALID_ARGUMENT = -1,
+    MPCVR_RIFE_UNSUPPORTED = -2,
+    MPCVR_RIFE_CUDA_FAILURE = -3,
+    MPCVR_RIFE_TENSORRT_FAILURE = -4,
+    MPCVR_RIFE_BUILDER_RESOURCE_MISSING = -5,
+    MPCVR_RIFE_UNSUPPORTED_COMPUTE_CAPABILITY = -6,
+};
+
 struct MpcvrRifeCreateParams {
     uint32_t size = sizeof(MpcvrRifeCreateParams);
     uint32_t abiVersion = MPCVR_RIFE_RUNTIME_ABI;

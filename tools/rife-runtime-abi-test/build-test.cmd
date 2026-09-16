@@ -3,7 +3,7 @@ setlocal
 cd /d %~dp0
 
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-for /f "usebackq delims=" %%A in (`"%VSWHERE%" -latest -property installationPath -requires Microsoft.Component.MSBuild`) do set "VS_PATH=%%A"
+for /f "usebackq delims=" %%A in (`"%VSWHERE%" -latest -products * -property installationPath -requires Microsoft.Component.MSBuild`) do set "VS_PATH=%%A"
 if not defined VS_PATH (
   echo Visual Studio not found.
   exit /b 1
@@ -12,7 +12,7 @@ if not defined VS_PATH (
 call "%VS_PATH%\Common7\Tools\VsDevCmd.bat" -arch=amd64 >nul
 if errorlevel 1 exit /b %errorlevel%
 
-for %%D in (good-runtime bad-runtime missing-runtime) do (
+for %%D in (good-runtime bad-runtime unsupported-cc-runtime builder-missing-runtime future-failure-runtime missing-runtime) do (
   if exist "%%D" rmdir /s /q "%%D"
   mkdir "%%D"
 )
@@ -23,6 +23,18 @@ if errorlevel 1 exit /b %errorlevel%
 
 cl /nologo /std:c++20 /EHsc /W4 /WX /LD /DFAKE_ABI_VERSION=999 /I"..\..\Source" ^
   FakeRifeRuntime.cpp /link /OUT:bad-runtime\MPCVRRifeRuntime64.dll
+if errorlevel 1 exit /b %errorlevel%
+
+cl /nologo /std:c++20 /EHsc /W4 /WX /LD /DFAKE_CREATE_RESULT=MPCVR_RIFE_UNSUPPORTED_COMPUTE_CAPABILITY /I"..\..\Source" ^
+  FakeRifeRuntime.cpp /link /OUT:unsupported-cc-runtime\MPCVRRifeRuntime64.dll
+if errorlevel 1 exit /b %errorlevel%
+
+cl /nologo /std:c++20 /EHsc /W4 /WX /LD /DFAKE_CREATE_RESULT=MPCVR_RIFE_BUILDER_RESOURCE_MISSING /I"..\..\Source" ^
+  FakeRifeRuntime.cpp /link /OUT:builder-missing-runtime\MPCVRRifeRuntime64.dll
+if errorlevel 1 exit /b %errorlevel%
+
+cl /nologo /std:c++20 /EHsc /W4 /WX /LD /DFAKE_CREATE_RESULT=-99 /I"..\..\Source" ^
+  FakeRifeRuntime.cpp /link /OUT:future-failure-runtime\MPCVRRifeRuntime64.dll
 if errorlevel 1 exit /b %errorlevel%
 
 cl /nologo /std:c++20 /EHsc /W4 /WX /I"..\..\Source" ^

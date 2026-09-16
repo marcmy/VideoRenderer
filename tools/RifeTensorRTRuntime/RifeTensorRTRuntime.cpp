@@ -18,6 +18,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <format>
 #include <iomanip>
 #include <memory>
 #include <mutex>
@@ -31,11 +32,6 @@
 
 namespace {
 
-constexpr int kOk = 0;
-constexpr int kInvalidArgument = -1;
-constexpr int kUnsupported = -2;
-constexpr int kCudaFailure = -3;
-constexpr int kTensorRtFailure = -4;
 constexpr uint32_t kMaxContexts = 3;
 constexpr uint32_t kPadMultiple = 32;
 
@@ -252,7 +248,7 @@ public:
     int Initialize(const MpcvrRifeCreateParams& params)
     {
         if (!params.device || !params.modelPath || !params.cachePath || params.width == 0 || params.height == 0) {
-            return kInvalidArgument;
+            return MPCVR_RIFE_INVALID_ARGUMENT;
         }
 
         m_width = params.width;
@@ -268,61 +264,78 @@ public:
 
         ID3D11DeviceContext* immediate = nullptr;
         m_device->GetImmediateContext(&immediate);
-        if (!immediate) return kUnsupported;
+        if (!immediate) return MPCVR_RIFE_UNSUPPORTED;
         const HRESULT threadingResult = immediate->QueryInterface(IID_PPV_ARGS(&m_d3dMultithread));
         immediate->Release();
-        if (FAILED(threadingResult) || !m_d3dMultithread) return kUnsupported;
+        if (FAILED(threadingResult) || !m_d3dMultithread) return MPCVR_RIFE_UNSUPPORTED;
         m_d3dMultithread->SetMultithreadProtected(TRUE);
 
         const auto runtimeDirectory = ThisModuleDirectory();
-        if (runtimeDirectory.empty()) return kTensorRtFailure;
+        if (runtimeDirectory.empty()) return MPCVR_RIFE_TENSORRT_FAILURE;
         const std::string internalLibraryPath = runtimeDirectory.string();
         if (!nvinfer1::setInternalLibraryPath(internalLibraryPath.c_str())) {
-            return kTensorRtFailure;
+            return MPCVR_RIFE_TENSORRT_FAILURE;
         }
 
         unsigned cudaCount = 0;
         std::array<int, 8> cudaDevices{};
         const auto d3dResult = cudaD3D11GetDevices(&cudaCount, cudaDevices.data(), static_cast<unsigned>(cudaDevices.size()),
             params.device, cudaD3D11DeviceListAll);
-        if (d3dResult != cudaSuccess || cudaCount == 0) return kUnsupported;
+        if (d3dResult != cudaSuccess || cudaCount == 0) return MPCVR_RIFE_UNSUPPORTED;
 
         m_cudaDevice = cudaDevices[0];
         if (params.gpuIndex != UINT32_MAX && params.gpuIndex != static_cast<uint32_t>(m_cudaDevice)) {
-            return kUnsupported;
+            return MPCVR_RIFE_UNSUPPORTED;
         }
-        if (cudaSetDevice(m_cudaDevice) != cudaSuccess) return kCudaFailure;
+        if (cudaSetDevice(m_cudaDevice) != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
 
         cudaDeviceProp prop{};
-        if (cudaGetDeviceProperties(&prop, m_cudaDevice) != cudaSuccess) return kCudaFailure;
+        if (cudaGetDeviceProperties(&prop, m_cudaDevice) != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
         m_gpuName = prop.name;
         m_computeMajor = prop.major;
         m_computeMinor = prop.minor;
 
-        if (!LoadOrBuildEngine()) return kTensorRtFailure;
-        if (!PrepareContexts()) return kTensorRtFailure;
-        return kOk;
+        const bool supportedComputeCapability =
+            (prop.major == 7 && prop.minor == 5) ||
+            (prop.major == 8 && prop.minor == 6) ||
+            (prop.major == 8 && prop.minor == 9) ||
+            (prop.major == 12 && prop.minor == 0);
+        if (!supportedComputeCapability) {
+            return MPCVR_RIFE_UNSUPPORTED_COMPUTE_CAPABILITY;
+        }
+
+        const auto builder = runtimeDirectory /
+            std::filesystem::path(std::format(
+                L"nvinfer_builder_resource_sm{}{}_11.dll", prop.major, prop.minor));
+        std::error_code builderError;
+        if (!std::filesystem::exists(builder, builderError)) {
+            return MPCVR_RIFE_BUILDER_RESOURCE_MISSING;
+        }
+
+        if (!LoadOrBuildEngine()) return MPCVR_RIFE_TENSORRT_FAILURE;
+        if (!PrepareContexts()) return MPCVR_RIFE_TENSORRT_FAILURE;
+        return MPCVR_RIFE_OK;
     }
 
     int Interpolate(const MpcvrRifeRequest& request, MpcvrRifeStats& stats)
     {
         if (!request.first || !request.second || !request.output || request.timestep <= 0.0f || request.timestep >= 1.0f) {
-            return kInvalidArgument;
+            return MPCVR_RIFE_INVALID_ARGUMENT;
         }
-        if (request.contextIndex >= m_contexts.size()) return kInvalidArgument;
+        if (request.contextIndex >= m_contexts.size()) return MPCVR_RIFE_INVALID_ARGUMENT;
 
         std::scoped_lock lock(*m_contextMutexes[request.contextIndex]);
         auto& state = *m_contexts[request.contextIndex];
-        if (cudaSetDevice(m_cudaDevice) != cudaSuccess) return kCudaFailure;
+        if (cudaSetDevice(m_cudaDevice) != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
 
         std::array<cudaGraphicsResource_t, 3> resources{};
         {
             D3D11InteropLock interopLock(m_d3dMultithread);
             resources = {m_registrations.Get(request.first, false),
                 m_registrations.Get(request.second, false), m_registrations.Get(request.output, true)};
-            if (!resources[0] || !resources[1] || !resources[2]) return kCudaFailure;
+            if (!resources[0] || !resources[1] || !resources[2]) return MPCVR_RIFE_CUDA_FAILURE;
             if (cudaGraphicsMapResources(static_cast<int>(resources.size()), resources.data(), state.stream) != cudaSuccess) {
-                return kCudaFailure;
+                return MPCVR_RIFE_CUDA_FAILURE;
             }
         }
 
@@ -350,19 +363,19 @@ public:
             cudaGraphicsSubResourceGetMappedArray(&secondArray, resources[1], 0, 0) != cudaSuccess ||
             cudaGraphicsSubResourceGetMappedArray(&outputArray, resources[2], 0, 0) != cudaSuccess) {
             releaseMappings();
-            return kCudaFailure;
+            return MPCVR_RIFE_CUDA_FAILURE;
         }
 
         if (cudaEventRecord(state.startEvent, state.stream) != cudaSuccess) {
             releaseMappings();
-            return kCudaFailure;
+            return MPCVR_RIFE_CUDA_FAILURE;
         }
         if (MpcvrRifePackInput(firstArray, secondArray, state.input, m_inputIsFp16,
                 static_cast<int>(m_width), static_cast<int>(m_height),
                 static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
                 request.timestep, state.stream) != cudaSuccess) {
             releaseMappings();
-            return kCudaFailure;
+            return MPCVR_RIFE_CUDA_FAILURE;
         }
 
         const nvinfer1::Dims4 inputShape{1, 11, static_cast<int>(m_paddedHeight), static_cast<int>(m_paddedWidth)};
@@ -371,27 +384,27 @@ public:
             !state.context->setTensorAddress(m_outputName.c_str(), state.output) ||
             !state.context->enqueueV3(state.stream)) {
             const cudaError_t releaseResult = releaseMappings();
-            return releaseResult == cudaSuccess ? kTensorRtFailure : kCudaFailure;
+            return releaseResult == cudaSuccess ? MPCVR_RIFE_TENSORRT_FAILURE : MPCVR_RIFE_CUDA_FAILURE;
         }
 
         if (MpcvrRifeWriteOutput(state.output, m_outputIsFp16, outputArray,
                 static_cast<int>(m_width), static_cast<int>(m_height),
                 static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight), state.stream) != cudaSuccess) {
             releaseMappings();
-            return kCudaFailure;
+            return MPCVR_RIFE_CUDA_FAILURE;
         }
 
         if (cudaEventRecord(state.endEvent, state.stream) != cudaSuccess) {
             releaseMappings();
-            return kCudaFailure;
+            return MPCVR_RIFE_CUDA_FAILURE;
         }
-        if (releaseMappings() != cudaSuccess) return kCudaFailure;
+        if (releaseMappings() != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
 
         float elapsed = 0.0f;
-        if (cudaEventElapsedTime(&elapsed, state.startEvent, state.endEvent) != cudaSuccess) return kCudaFailure;
+        if (cudaEventElapsedTime(&elapsed, state.startEvent, state.endEvent) != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
         stats.inferenceMs = elapsed;
         stats.engineBytes = m_engineBytes;
-        return kOk;
+        return MPCVR_RIFE_OK;
     }
 
 private:
@@ -608,21 +621,21 @@ extern "C" __declspec(dllexport) uint32_t WINAPI MpcvrRifeGetAbiVersion()
 extern "C" __declspec(dllexport) int WINAPI MpcvrRifeCreate(const MpcvrRifeCreateParams* params, void** handle)
 {
     if (!params || !handle || params->size < sizeof(MpcvrRifeCreateParams) || params->abiVersion != MPCVR_RIFE_RUNTIME_ABI) {
-        return kInvalidArgument;
+        return MPCVR_RIFE_INVALID_ARGUMENT;
     }
     *handle = nullptr;
     auto runtime = std::make_unique<RifeRuntime>();
     const int result = runtime->Initialize(*params);
-    if (result != kOk) return result;
+    if (result != MPCVR_RIFE_OK) return result;
     *handle = runtime.release();
-    return kOk;
+    return MPCVR_RIFE_OK;
 }
 
 extern "C" __declspec(dllexport) int WINAPI MpcvrRifeInterpolate(
     void* handle, const MpcvrRifeRequest* request, MpcvrRifeStats* stats)
 {
     if (!handle || !request || !stats || request->size < sizeof(MpcvrRifeRequest) || stats->size < sizeof(MpcvrRifeStats)) {
-        return kInvalidArgument;
+        return MPCVR_RIFE_INVALID_ARGUMENT;
     }
     return static_cast<RifeRuntime*>(handle)->Interpolate(*request, *stats);
 }

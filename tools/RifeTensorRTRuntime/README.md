@@ -39,6 +39,13 @@ On Windows, TensorRT 10/11 uses versioned import-library names such as `nvinfer_
 
 The resulting file is `MPCVRRifeRuntime64.dll`.
 
+For the shipping runtime, CUDA code generation is limited to the supported GPU architecture set:
+
+- `sm_75`, `sm_86`, and `sm_89` machine code
+- `sm_120` machine code plus `compute_120` PTX for Blackwell
+
+At runtime, compute capabilities 7.5, 8.6, 8.9, and 12.0 are accepted. Other compute capabilities are rejected before TensorRT engine creation. Each accepted architecture also requires the matching TensorRT 11 builder resource beside the runtime DLL (`nvinfer_builder_resource_sm75_11.dll`, `nvinfer_builder_resource_sm86_11.dll`, `nvinfer_builder_resource_sm89_11.dll`, or `nvinfer_builder_resource_sm120_11.dll`). The common `nvinfer_builder_resource_ptx_11.dll` remains part of the runtime payload and is discovered through TensorRT's existing internal-library path.
+
 ## GPU path
 
 Steady-state interpolation is GPU-only:

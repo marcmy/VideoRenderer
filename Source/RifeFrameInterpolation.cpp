@@ -265,8 +265,30 @@ bool CRifeFrameInterpolation::LoadAndCreate(
 
     void* handle = nullptr;
     const int result = exports.create(&params, &handle);
-    if (result != 0 || !handle) {
-        m_status = std::format(L"RIFE runtime initialization failed with code {}", result);
+    if (result != MPCVR_RIFE_OK || !handle) {
+        switch (result) {
+            case MPCVR_RIFE_INVALID_ARGUMENT:
+                m_status = L"RIFE runtime initialization failed: invalid argument";
+                break;
+            case MPCVR_RIFE_UNSUPPORTED:
+                m_status = L"RIFE runtime initialization failed: unsupported configuration";
+                break;
+            case MPCVR_RIFE_CUDA_FAILURE:
+                m_status = L"RIFE runtime initialization failed: CUDA failure";
+                break;
+            case MPCVR_RIFE_TENSORRT_FAILURE:
+                m_status = L"RIFE runtime initialization failed: TensorRT failure";
+                break;
+            case MPCVR_RIFE_BUILDER_RESOURCE_MISSING:
+                m_status = L"RIFE TensorRT builder resource for this GPU architecture is missing";
+                break;
+            case MPCVR_RIFE_UNSUPPORTED_COMPUTE_CAPABILITY:
+                m_status = L"RIFE runtime does not support this CUDA compute capability";
+                break;
+            default:
+                m_status = std::format(L"RIFE runtime initialization failed with code {}", result);
+                break;
+        }
         FreeLibrary(module);
         return false;
     }
