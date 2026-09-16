@@ -171,10 +171,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $script = 'tools/RifeRuntimeInstaller/Install-MPCVRRifeRuntime.ps1'
           $inventory = '[{"name":"NVIDIA GeForce RTX 2070 SUPER","computeCapability":"7.5"},{"name":"NVIDIA GeForce RTX 5070","computeCapability":"12.0"}]'
+          $inventoryPath = Join-Path $env:RUNNER_TEMP 'rife-gpu-inventory.json'
+          Set-Content -LiteralPath $inventoryPath -Value $inventory -Encoding ASCII
 
           foreach ($hostExe in @('powershell.exe', 'pwsh.exe')) {
             $output = & $hostExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script `
-              -ValidateOnly -NoPause -GpuInventoryJson $inventory 2>&1 | Out-String
+              -ValidateOnly -NoPause -GpuInventoryJson $inventoryPath 2>&1 | Out-String
             $exitCode = $LASTEXITCODE
             Write-Host $output
             if ($exitCode -ne 0) { throw "$hostExe selector validation failed with $exitCode" }
@@ -184,8 +186,10 @@ jobs:
           }
 
           $unsupported = '[{"name":"Future GPU","computeCapability":"9.0"}]'
+          $unsupportedPath = Join-Path $env:RUNNER_TEMP 'rife-unsupported-gpu-inventory.json'
+          Set-Content -LiteralPath $unsupportedPath -Value $unsupported -Encoding ASCII
           $output = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script `
-            -ValidateOnly -NoPause -GpuInventoryJson $unsupported 2>&1 | Out-String
+            -ValidateOnly -NoPause -GpuInventoryJson $unsupportedPath 2>&1 | Out-String
           $exitCode = $LASTEXITCODE
           Write-Host $output
           if ($exitCode -eq 0) { throw 'Unsupported CUDA compute capability 9.0 was accepted.' }
