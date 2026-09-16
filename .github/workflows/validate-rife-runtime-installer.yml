@@ -1,0 +1,132 @@
+name: Validate RIFE runtime installer
+
+on:
+  push:
+    paths:
+      - 'tools/RifeRuntimeInstaller/**'
+      - '.github/workflows/rife-runtime.yml'
+      - '.github/workflows/validate-rife-runtime-installer.yml'
+  pull_request:
+    paths:
+      - 'tools/RifeRuntimeInstaller/**'
+      - '.github/workflows/rife-runtime.yml'
+      - '.github/workflows/validate-rife-runtime-installer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Parse RIFE package scripts with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($script in @(
+            'tools/RifeRuntimeInstaller/RifeRuntimeManifest.psm1',
+            'tools/RifeRuntimeInstaller/Test-RifeRuntimePackage.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path -LiteralPath $script),
+              [ref]$tokens,
+              [ref]$errors)
+            if ($errors.Count) {
+              $errors | Format-List | Out-String | Write-Error
+              throw "Windows PowerShell could not parse $script"
+            }
+          }
+
+      - name: Prove a missing sm120 pack is rejected
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixture = Join-Path $env:RUNNER_TEMP 'rife-runtime-fixture'
+          $staging = Join-Path $fixture '_staging'
+          Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $fixture -Force | Out-Null
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+
+          function New-MockArchive([string]$ArchiveName, [string[]]$Files) {
+            $source = Join-Path $staging ([IO.Path]::GetFileNameWithoutExtension($ArchiveName))
+            Remove-Item -LiteralPath $source -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Path $source -Force | Out-Null
+            foreach ($file in $Files) {
+              Set-Content -LiteralPath (Join-Path $source $file) -Value "mock $file" -Encoding ASCII
+            }
+            Compress-Archive -Path (Join-Path $source '*') -DestinationPath (Join-Path $fixture $ArchiveName) -Force
+          }
+
+          New-MockArchive 'MPCVR-RIFE-Common.zip' @(
+            'MPCVRRifeRuntime64.dll',
+            'cudart64_12.dll',
+            'nvinfer_11.dll',
+            'nvonnxparser_11.dll',
+            'nvinfer_builder_resource_ptx_11.dll',
+            'BUILD-INFO.txt'
+          )
+          foreach ($arch in @('sm75', 'sm86', 'sm89')) {
+            New-MockArchive "MPCVR-RIFE-$arch.zip" @("nvinfer_builder_resource_${arch}_11.dll")
+          }
+
+          [pscustomobject]@{
+            schemaVersion = 1
+            cudaVersion = '12.9.1'
+            cudaRuntimeVersion = '12.9.79'
+            tensorRtVersion = '11.2.1.2'
+            runtimeAbi = 1
+            architectures = @(
+              [pscustomobject]@{ computeCapability = '7.5'; key = 'sm75'; builderResource = 'nvinfer_builder_resource_sm75_11.dll' },
+              [pscustomobject]@{ computeCapability = '8.6'; key = 'sm86'; builderResource = 'nvinfer_builder_resource_sm86_11.dll' },
+              [pscustomobject]@{ computeCapability = '8.9'; key = 'sm89'; builderResource = 'nvinfer_builder_resource_sm89_11.dll' },
+              [pscustomobject]@{ computeCapability = '12.0'; key = 'sm120'; builderResource = 'nvinfer_builder_resource_sm120_11.dll' }
+            )
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $fixture 'runtime-manifest.json') -Encoding UTF8
+
+          $existingArchives = @('MPCVR-RIFE-Common.zip', 'MPCVR-RIFE-sm75.zip', 'MPCVR-RIFE-sm86.zip', 'MPCVR-RIFE-sm89.zip')
+          @(
+            foreach ($archive in $existingArchives) {
+              $hash = (Get-FileHash -LiteralPath (Join-Path $fixture $archive) -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $archive"
+            }
+          ) | Set-Content -LiteralPath (Join-Path $fixture 'SHA256SUMS.txt') -Encoding ASCII
+
+          $output = & tools/RifeRuntimeInstaller/Test-RifeRuntimePackage.ps1 -BundleRoot $fixture 2>&1 | Out-String
+          $exitCode = $LASTEXITCODE
+          Write-Host $output
+          if ($exitCode -eq 0) { throw 'Missing sm120 pack was not rejected.' }
+          if ($output -notmatch 'sm120') { throw 'Missing sm120 failure did not identify the missing architecture pack.' }
+          $global:LASTEXITCODE = 0
+
+      - name: Complete fixture and validate with both PowerShell hosts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixture = Join-Path $env:RUNNER_TEMP 'rife-runtime-fixture'
+          $source = Join-Path $fixture '_staging\MPCVR-RIFE-sm120'
+          New-Item -ItemType Directory -Path $source -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $source 'nvinfer_builder_resource_sm120_11.dll') -Value 'mock sm120' -Encoding ASCII
+          Compress-Archive -Path (Join-Path $source '*') -DestinationPath (Join-Path $fixture 'MPCVR-RIFE-sm120.zip') -Force
+
+          $archives = @('MPCVR-RIFE-Common.zip', 'MPCVR-RIFE-sm75.zip', 'MPCVR-RIFE-sm86.zip', 'MPCVR-RIFE-sm89.zip', 'MPCVR-RIFE-sm120.zip')
+          @(
+            foreach ($archive in $archives) {
+              $hash = (Get-FileHash -LiteralPath (Join-Path $fixture $archive) -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $archive"
+            }
+          ) | Set-Content -LiteralPath (Join-Path $fixture 'SHA256SUMS.txt') -Encoding ASCII
+
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
+            tools/RifeRuntimeInstaller/Test-RifeRuntimePackage.ps1 -BundleRoot $fixture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          pwsh.exe -NoLogo -NoProfile -File `
+            tools/RifeRuntimeInstaller/Test-RifeRuntimePackage.ps1 -BundleRoot $fixture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

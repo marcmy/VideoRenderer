@@ -1,6 +1,7 @@
 name: Build RIFE TensorRT runtime
 
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     branches:
@@ -8,6 +9,7 @@ on:
     paths:
       - .github/workflows/rife-runtime.yml
       - tools/RifeTensorRTRuntime/**
+      - tools/RifeRuntimeInstaller/**
       - Source/RifeRuntimeApi.h
 
 permissions:
@@ -19,6 +21,8 @@ jobs:
     timeout-minutes: 30
     env:
       CUDA_VERSION: 12.9.1
+      CUDA_COMPILER_VERSION: 12.9.86
+      CUDA_RUNTIME_VERSION: 12.9.79
       TENSORRT_VERSION: 11.2.1.2
       NVIDIA_DOWNLOAD_CACHE: ${{ github.workspace }}\_rife-download-cache
       CUDA_ROOT: ${{ github.workspace }}\_rife-deps\cuda-12.9
@@ -27,6 +31,7 @@ jobs:
       TENSORRT_EXTRACT: ${{ github.workspace }}\_rife-deps\tensorrt
       BUILD_DIR: ${{ github.workspace }}\_rife-runtime-build
       PACKAGE_DIR: ${{ github.workspace }}\_rife-runtime-package
+      BUNDLE_DIR: ${{ github.workspace }}\_rife-runtime-bundle
 
     steps:
       - name: Checkout repository
@@ -148,41 +153,129 @@ jobs:
           cmake --build $env:BUILD_DIR --parallel
           if ($LASTEXITCODE -ne 0) { throw 'RIFE runtime build failed' }
 
-      - name: Validate and package runtime
+      - name: Validate and package runtime bundle
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $dll = Get-ChildItem -Path $env:BUILD_DIR -Recurse -Filter 'MPCVRRifeRuntime64.dll' | Select-Object -First 1
           if (-not $dll) { throw 'MPCVRRifeRuntime64.dll was not produced' }
 
-          New-Item -ItemType Directory -Force -Path $env:PACKAGE_DIR | Out-Null
-          Copy-Item $dll.FullName (Join-Path $env:PACKAGE_DIR 'MPCVRRifeRuntime64.dll')
-
           $vs = $env:VS_INSTALL
           Import-Module (Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
           Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
           $depends = (& dumpbin /dependents $dll.FullName 2>&1 | Out-String)
-          $depends | Set-Content -Encoding utf8 (Join-Path $env:PACKAGE_DIR 'DEPENDENCIES.txt')
-          $hash = (Get-FileHash -Algorithm SHA256 $dll.FullName).Hash.ToLowerInvariant()
-          "$hash  MPCVRRifeRuntime64.dll" | Set-Content -Encoding ascii (Join-Path $env:PACKAGE_DIR 'SHA256SUMS.txt')
-          @"
+          foreach ($requiredDependency in @('cudart64_12.dll', 'nvinfer_11.dll', 'nvonnxparser_11.dll')) {
+              if ($depends -notmatch ('(?im)^\s*' + [regex]::Escape($requiredDependency) + '\s*$')) {
+                  throw "Built runtime is missing expected dependency: $requiredDependency"
+              }
+          }
+          if ($depends -match '(?im)^\s*nvinfer_plugin_11\.dll\s*$') {
+              throw 'MPCVRRifeRuntime64.dll unexpectedly depends on nvinfer_plugin_11.dll; update the audited common-runtime contract before packaging it.'
+          }
+
+          Remove-Item -LiteralPath $env:PACKAGE_DIR -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $env:BUNDLE_DIR -Recurse -Force -ErrorAction SilentlyContinue
+          $common = Join-Path $env:PACKAGE_DIR 'common'
+          $architectures = Join-Path $env:PACKAGE_DIR 'architecture'
+          New-Item -ItemType Directory -Force -Path $common | Out-Null
+          New-Item -ItemType Directory -Force -Path $architectures | Out-Null
+          New-Item -ItemType Directory -Force -Path $env:BUNDLE_DIR | Out-Null
+
+          function Resolve-RequiredFile([string]$Root, [string]$Name) {
+              $matches = @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter $Name)
+              if ($matches.Count -eq 0) { throw "Pinned NVIDIA package is missing required file '$Name' under '$Root'" }
+              if ($matches.Count -gt 1) { throw "Pinned NVIDIA package contains multiple '$Name' files under '$Root'; packaging is ambiguous" }
+              $matches[0].FullName
+          }
+
+          Copy-Item -LiteralPath $dll.FullName -Destination (Join-Path $common 'MPCVRRifeRuntime64.dll')
+          Copy-Item -LiteralPath (Resolve-RequiredFile $env:CUDA_ROOT 'cudart64_12.dll') -Destination $common
+          foreach ($name in @('nvinfer_11.dll', 'nvonnxparser_11.dll', 'nvinfer_builder_resource_ptx_11.dll')) {
+              Copy-Item -LiteralPath (Resolve-RequiredFile $env:TENSORRT_ROOT $name) -Destination $common
+          }
+
+          $buildInfo = @"
           MPCVR RIFE TensorRT runtime build
-          Runtime: TensorRT $env:TENSORRT_VERSION (mainline GA)
+          Runtime ABI: 1
+          TensorRT: $env:TENSORRT_VERSION
           TensorRT archive SHA-256: $env:TENSORRT_DOWNLOAD_SHA256
           CUDA toolkit: $env:CUDA_VERSION
-          CUDA compiler: 12.9.86
-          CUDA runtime: 12.9.79
-          Architectures: sm_75, sm_80, sm_86, sm_89
-          NVIDIA runtime DLLs are intentionally not redistributed in this artifact.
-          "@ | Set-Content -Encoding utf8 (Join-Path $env:PACKAGE_DIR 'BUILD-INFO.txt')
+          CUDA compiler: $env:CUDA_COMPILER_VERSION
+          CUDA runtime: $env:CUDA_RUNTIME_VERSION
+          Supported compute capabilities: 7.5 (sm75), 8.6 (sm86), 8.9 (sm89), 12.0 (sm120)
+          TensorRT engines: generated locally; no prebuilt .plan files are distributed.
+          "@
+          $buildInfo | Set-Content -Encoding utf8 (Join-Path $common 'BUILD-INFO.txt')
+          $buildInfo | Set-Content -Encoding utf8 (Join-Path $env:BUNDLE_DIR 'BUILD-INFO.txt')
+          $depends | Set-Content -Encoding utf8 (Join-Path $env:BUNDLE_DIR 'DEPENDENCIES.txt')
 
-          Get-Content (Join-Path $env:PACKAGE_DIR 'SHA256SUMS.txt')
-          Get-Content (Join-Path $env:PACKAGE_DIR 'DEPENDENCIES.txt')
+          $archEntries = @(
+              [pscustomobject]@{ computeCapability = '7.5'; key = 'sm75'; builderResource = 'nvinfer_builder_resource_sm75_11.dll' },
+              [pscustomobject]@{ computeCapability = '8.6'; key = 'sm86'; builderResource = 'nvinfer_builder_resource_sm86_11.dll' },
+              [pscustomobject]@{ computeCapability = '8.9'; key = 'sm89'; builderResource = 'nvinfer_builder_resource_sm89_11.dll' },
+              [pscustomobject]@{ computeCapability = '12.0'; key = 'sm120'; builderResource = 'nvinfer_builder_resource_sm120_11.dll' }
+          )
+          foreach ($entry in $archEntries) {
+              $destination = Join-Path $architectures $entry.key
+              New-Item -ItemType Directory -Force -Path $destination | Out-Null
+              Copy-Item -LiteralPath (Resolve-RequiredFile $env:TENSORRT_ROOT $entry.builderResource) -Destination $destination
+          }
+
+          [pscustomobject]@{
+              schemaVersion = 1
+              cudaVersion = $env:CUDA_VERSION
+              cudaRuntimeVersion = $env:CUDA_RUNTIME_VERSION
+              tensorRtVersion = $env:TENSORRT_VERSION
+              runtimeAbi = 1
+              architectures = $archEntries
+          } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 (Join-Path $env:BUNDLE_DIR 'runtime-manifest.json')
+
+          Compress-Archive -Path (Join-Path $common '*') -DestinationPath (Join-Path $env:BUNDLE_DIR 'MPCVR-RIFE-Common.zip')
+          foreach ($entry in $archEntries) {
+              $source = Join-Path $architectures $entry.key
+              Compress-Archive -Path (Join-Path $source '*') -DestinationPath (Join-Path $env:BUNDLE_DIR "MPCVR-RIFE-$($entry.key).zip")
+          }
+
+          $archives = @('MPCVR-RIFE-Common.zip', 'MPCVR-RIFE-sm75.zip', 'MPCVR-RIFE-sm86.zip', 'MPCVR-RIFE-sm89.zip', 'MPCVR-RIFE-sm120.zip')
+          @(
+              foreach ($archive in $archives) {
+                  $hash = (Get-FileHash -LiteralPath (Join-Path $env:BUNDLE_DIR $archive) -Algorithm SHA256).Hash.ToLowerInvariant()
+                  "$hash  $archive"
+              }
+          ) | Set-Content -Encoding ascii (Join-Path $env:BUNDLE_DIR 'SHA256SUMS.txt')
+
+          foreach ($sdk in @(
+              [pscustomobject]@{ Prefix = 'TensorRT'; Root = $env:TENSORRT_ROOT },
+              [pscustomobject]@{ Prefix = 'CUDA'; Root = $env:CUDA_ROOT }
+          )) {
+              $documents = @(Get-ChildItem -LiteralPath $sdk.Root -File | Where-Object {
+                  $_.Name -match '(?i)^(license|notice|third.?party)'
+              })
+              foreach ($document in $documents) {
+                  $targetName = '{0}-{1}' -f $sdk.Prefix, $document.Name
+                  Copy-Item -LiteralPath $document.FullName -Destination (Join-Path $env:BUNDLE_DIR $targetName)
+              }
+          }
+
+          Get-Content (Join-Path $env:BUNDLE_DIR 'SHA256SUMS.txt')
+          Get-Content (Join-Path $env:BUNDLE_DIR 'DEPENDENCIES.txt')
+
+      - name: Validate assembled runtime bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
+            tools/RifeRuntimeInstaller/Test-RifeRuntimePackage.ps1 -BundleRoot $env:BUNDLE_DIR
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          pwsh.exe -NoLogo -NoProfile -File `
+            tools/RifeRuntimeInstaller/Test-RifeRuntimePackage.ps1 -BundleRoot $env:BUNDLE_DIR
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload runtime artifact
         uses: actions/upload-artifact@v7
         with:
-          name: mpcvr-rife-tensorrt-runtime
-          path: ${{ github.workspace }}\_rife-runtime-package\
+          name: mpcvr-rife-runtime-bundle
+          path: ${{ github.workspace }}\_rife-runtime-bundle\
           if-no-files-found: error
           compression-level: 0
