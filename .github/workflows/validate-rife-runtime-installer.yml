@@ -4,11 +4,13 @@ on:
   push:
     paths:
       - 'tools/RifeRuntimeInstaller/**'
+      - 'tools/MaxineSetup/**'
       - '.github/workflows/rife-runtime.yml'
       - '.github/workflows/validate-rife-runtime-installer.yml'
   pull_request:
     paths:
       - 'tools/RifeRuntimeInstaller/**'
+      - 'tools/MaxineSetup/**'
       - '.github/workflows/rife-runtime.yml'
       - '.github/workflows/validate-rife-runtime-installer.yml'
   workflow_dispatch:
@@ -32,7 +34,9 @@ jobs:
             'tools/RifeRuntimeInstaller/RifeRuntimeManifest.psm1',
             'tools/RifeRuntimeInstaller/Test-RifeRuntimePackage.ps1',
             'tools/RifeRuntimeInstaller/Install-MPCVRRifeRuntime.ps1',
-            'tools/RifeRuntimeInstaller/Test-MPCVRRifePreflight.ps1'
+            'tools/RifeRuntimeInstaller/Test-MPCVRRifePreflight.ps1',
+            'tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1',
+            'tools/MaxineSetup/Install-MPCVR-Maxine.ps1'
           )) {
             $tokens = $null
             $errors = $null
@@ -43,6 +47,30 @@ jobs:
             if ($errors.Count) {
               $errors | Format-List | Out-String | Write-Error
               throw "Windows PowerShell could not parse $script"
+            }
+          }
+
+      - name: Parse RIFE and unified setup scripts with PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($script in @(
+            'tools/RifeRuntimeInstaller/RifeRuntimeManifest.psm1',
+            'tools/RifeRuntimeInstaller/Test-RifeRuntimePackage.ps1',
+            'tools/RifeRuntimeInstaller/Install-MPCVRRifeRuntime.ps1',
+            'tools/RifeRuntimeInstaller/Test-MPCVRRifePreflight.ps1',
+            'tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1',
+            'tools/MaxineSetup/Install-MPCVR-Maxine.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path -LiteralPath $script),
+              [ref]$tokens,
+              [ref]$errors)
+            if ($errors.Count) {
+              $errors | Format-List | Out-String | Write-Error
+              throw "PowerShell 7 could not parse $script"
             }
           }
 

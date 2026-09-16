@@ -36,7 +36,8 @@ jobs:
             'tools/MaxineRuntimeInstaller/Export-MPCVRMaxineRuntime.ps1',
             'tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1',
             'tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1',
-            'tools/MaxineSetup/Install-MPCVR-Maxine.ps1'
+            'tools/MaxineSetup/Install-MPCVR-Maxine.ps1',
+            'tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1'
           )
           foreach ($script in $scripts) {
             $tokens = $null
@@ -48,6 +49,30 @@ jobs:
             if ($errors.Count) {
               $errors | Format-List | Out-String | Write-Error
               throw "Windows PowerShell could not parse $script"
+            }
+          }
+
+      - name: Parse scripts with PowerShell 7
+        shell: pwsh
+        run: |
+          $scripts = @(
+            'tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1',
+            'tools/MaxineRuntimeInstaller/Export-MPCVRMaxineRuntime.ps1',
+            'tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1',
+            'tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1',
+            'tools/MaxineSetup/Install-MPCVR-Maxine.ps1',
+            'tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1'
+          )
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path -LiteralPath $script),
+              [ref]$tokens,
+              [ref]$errors)
+            if ($errors.Count) {
+              $errors | Format-List | Out-String | Write-Error
+              throw "PowerShell 7 could not parse $script"
             }
           }
 
@@ -145,43 +170,149 @@ jobs:
             }
           }
 
-      - name: Validate assembled one-click setup with Windows PowerShell 5.1
+      - name: Validate assembled Maxine plus RIFE setup with Windows PowerShell 5.1
         shell: powershell
         run: |
           $testRoot = Join-Path $env:RUNNER_TEMP 'maxine-runtime-test'
           $setupRoot = Join-Path $testRoot 'setup'
           $payloadRoot = Join-Path $setupRoot 'payload'
           $rendererSource = Join-Path $testRoot 'renderer-source'
+          $rifeArchiveSource = Join-Path $testRoot 'rife-archive-source'
           New-Item -ItemType Directory -Path $payloadRoot -Force | Out-Null
           New-Item -ItemType Directory -Path $rendererSource -Force | Out-Null
+          New-Item -ItemType Directory -Path $rifeArchiveSource -Force | Out-Null
 
+          Copy-Item tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1 $setupRoot
           Copy-Item tools/MaxineSetup/Install-MPCVR-Maxine.ps1 $setupRoot
           Copy-Item tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 $payloadRoot
+          Copy-Item tools/RifeRuntimeInstaller/Install-MPCVRRifeRuntime.ps1 $payloadRoot
+          Copy-Item tools/RifeRuntimeInstaller/Test-MPCVRRifePreflight.ps1 $payloadRoot
+          Copy-Item tools/RifeRuntimeInstaller/RifeRuntimeManifest.psm1 $payloadRoot
           Copy-Item tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1 $payloadRoot
           Copy-Item tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1 $payloadRoot
+          Copy-Item tools/KLiteMaxineUpdater/KLiteRendererInstall.psm1 $payloadRoot
           Copy-Item (Join-Path $testRoot 'exported\MPCVR-Maxine-Runtime.zip') $payloadRoot
-          Copy-Item (Join-Path $testRoot 'exported\MPCVR-Maxine-Runtime.zip.sha256') $payloadRoot
 
           Set-Content -LiteralPath (Join-Path $rendererSource 'MpcVideoRenderer.ax') -Value 'mock x86 renderer' -Encoding ASCII
           Set-Content -LiteralPath (Join-Path $rendererSource 'MpcVideoRenderer64.ax') -Value 'mock x64 renderer' -Encoding ASCII
-          $rendererArchive = Join-Path $payloadRoot 'MpcVideoRenderer-Maxine.zip'
+          $rendererArchive = Join-Path $payloadRoot 'MpcVideoRenderer-Maxine-RIFE.zip'
           Compress-Archive -Path (Join-Path $rendererSource '*') -DestinationPath $rendererArchive
+
+          Set-Content -LiteralPath (Join-Path $rifeArchiveSource 'fixture.txt') -Value 'mock RIFE payload' -Encoding ASCII
+          foreach ($archiveName in @(
+            'MPCVR-RIFE-Common.zip',
+            'MPCVR-RIFE-sm75.zip',
+            'MPCVR-RIFE-sm86.zip',
+            'MPCVR-RIFE-sm89.zip',
+            'MPCVR-RIFE-sm120.zip',
+            'MPCVR-RIFE-Model-v4.6.zip'
+          )) {
+            Compress-Archive -Path (Join-Path $rifeArchiveSource '*') -DestinationPath (Join-Path $payloadRoot $archiveName)
+          }
+
+          [pscustomobject]@{
+            schemaVersion = 1
+            cudaVersion = '12.9.1'
+            cudaRuntimeVersion = '12.9.79'
+            tensorRtVersion = '11.2.1.2'
+            runtimeAbi = 1
+            architectures = @(
+              [pscustomobject]@{ computeCapability = '7.5'; key = 'sm75'; builderResource = 'nvinfer_builder_resource_sm75_11.dll' },
+              [pscustomobject]@{ computeCapability = '8.6'; key = 'sm86'; builderResource = 'nvinfer_builder_resource_sm86_11.dll' },
+              [pscustomobject]@{ computeCapability = '8.9'; key = 'sm89'; builderResource = 'nvinfer_builder_resource_sm89_11.dll' },
+              [pscustomobject]@{ computeCapability = '12.0'; key = 'sm120'; builderResource = 'nvinfer_builder_resource_sm120_11.dll' }
+            )
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $payloadRoot 'RIFE-runtime-manifest.json') -Encoding UTF8
 
           Push-Location $payloadRoot
           try {
-            $rendererHash = (Get-FileHash -LiteralPath 'MpcVideoRenderer-Maxine.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
-            $runtimeHash = (Get-FileHash -LiteralPath 'MPCVR-Maxine-Runtime.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
             @(
-              "$rendererHash  MpcVideoRenderer-Maxine.zip",
-              "$runtimeHash  MPCVR-Maxine-Runtime.zip"
+              Get-ChildItem -File |
+                Sort-Object Name |
+                ForEach-Object {
+                  $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                  "$hash  $($_.Name)"
+                }
             ) | Set-Content -LiteralPath 'PAYLOAD-SHA256SUMS.txt' -Encoding ASCII
           }
           finally {
             Pop-Location
           }
 
+          $inventory = '[{"name":"NVIDIA GeForce RTX 2070 SUPER","computeCapability":"7.5"},{"name":"NVIDIA GeForce RTX 5070","computeCapability":"12.0"}]'
+          foreach ($hostExe in @('powershell.exe', 'pwsh.exe')) {
+            & $hostExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
+              (Join-Path $setupRoot 'Install-MPCVR-Maxine-RIFE.ps1') `
+              -ValidateOnly `
+              -GpuInventoryJson $inventory `
+              -NoPause
+            if ($LASTEXITCODE -ne 0) { throw "$hostExe unified setup validation failed with $LASTEXITCODE" }
+          }
+
           powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
             (Join-Path $setupRoot 'Install-MPCVR-Maxine.ps1') `
             -ValidateOnly `
+            -GpuInventoryJson $inventory `
             -NoPause
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Prove corrupt or missing setup payloads fail before mutation
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testRoot = Join-Path $env:RUNNER_TEMP 'maxine-runtime-test'
+          $sourceSetup = Join-Path $testRoot 'setup'
+          $inventory = '[{"name":"NVIDIA GeForce RTX 2070 SUPER","computeCapability":"7.5"}]'
+
+          function Set-MarkerInstaller([string]$SetupRoot, [string]$MarkerPath) {
+            $payloadRoot = Join-Path $SetupRoot 'payload'
+            @(
+              'param([string]$RuntimeArchive,[switch]$NoPause,[switch]$ValidateOnly)',
+              "Set-Content -LiteralPath '$MarkerPath' -Value 'mutated' -Encoding ASCII",
+              'exit 0'
+            ) | Set-Content -LiteralPath (Join-Path $payloadRoot 'Install-MPCVRMaxineRuntime.ps1') -Encoding ASCII
+
+            @(
+              Get-ChildItem -LiteralPath $payloadRoot -File |
+                Where-Object Name -ne 'PAYLOAD-SHA256SUMS.txt' |
+                Sort-Object Name |
+                ForEach-Object {
+                  $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                  "$hash  $($_.Name)"
+                }
+            ) | Set-Content -LiteralPath (Join-Path $payloadRoot 'PAYLOAD-SHA256SUMS.txt') -Encoding ASCII
+          }
+
+          $corruptRoot = Join-Path $testRoot 'setup-corrupt'
+          Copy-Item -LiteralPath $sourceSetup -Destination $corruptRoot -Recurse
+          $corruptMarker = Join-Path $corruptRoot 'MUTATION-MARKER.txt'
+          Set-MarkerInstaller -SetupRoot $corruptRoot -MarkerPath $corruptMarker
+          Add-Content -LiteralPath (Join-Path $corruptRoot 'payload\MPCVR-RIFE-sm86.zip') -Value 'corruption' -Encoding ASCII
+
+          $output = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
+            (Join-Path $corruptRoot 'Install-MPCVR-Maxine-RIFE.ps1') `
+            -GpuInventoryJson $inventory `
+            -NoPause 2>&1 | Out-String
+          $exitCode = $LASTEXITCODE
+          Write-Host $output
+          if ($exitCode -eq 0) { throw 'Corrupt setup payload unexpectedly passed.' }
+          if ($output -notmatch 'SHA-256 verification failed') { throw 'Corrupt setup payload did not fail hash verification.' }
+          if (Test-Path -LiteralPath $corruptMarker) { throw 'A component installer ran before corrupt payload rejection.' }
+          $global:LASTEXITCODE = 0
+
+          $missingRoot = Join-Path $testRoot 'setup-missing-checksum'
+          Copy-Item -LiteralPath $sourceSetup -Destination $missingRoot -Recurse
+          $missingMarker = Join-Path $missingRoot 'MUTATION-MARKER.txt'
+          Set-MarkerInstaller -SetupRoot $missingRoot -MarkerPath $missingMarker
+          Remove-Item -LiteralPath (Join-Path $missingRoot 'payload\PAYLOAD-SHA256SUMS.txt') -Force
+
+          $output = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
+            (Join-Path $missingRoot 'Install-MPCVR-Maxine-RIFE.ps1') `
+            -GpuInventoryJson $inventory `
+            -NoPause 2>&1 | Out-String
+          $exitCode = $LASTEXITCODE
+          Write-Host $output
+          if ($exitCode -eq 0) { throw 'Missing setup checksum unexpectedly passed.' }
+          if ($output -notmatch 'PAYLOAD-SHA256SUMS.txt') { throw 'Missing setup checksum failure did not identify the missing checksum file.' }
+          if (Test-Path -LiteralPath $missingMarker) { throw 'A component installer ran before missing checksum rejection.' }
+          $global:LASTEXITCODE = 0
