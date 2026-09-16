@@ -248,12 +248,22 @@ jobs:
               [pscustomobject]@{ Prefix = 'TensorRT'; Root = $env:TENSORRT_ROOT },
               [pscustomobject]@{ Prefix = 'CUDA'; Root = $env:CUDA_ROOT }
           )) {
-              $documents = @(Get-ChildItem -LiteralPath $sdk.Root -File | Where-Object {
+              $documents = @(Get-ChildItem -LiteralPath $sdk.Root -File -Recurse | Where-Object {
                   $_.Name -match '(?i)^(license|notice|third.?party)'
-              })
+              } | Sort-Object FullName)
+              if ($documents.Count -eq 0) {
+                  throw "Pinned $($sdk.Prefix) package did not contain a license or notice document."
+              }
               foreach ($document in $documents) {
-                  $targetName = '{0}-{1}' -f $sdk.Prefix, $document.Name
+                  $relative = $document.FullName.Substring($sdk.Root.Length).TrimStart('\', '/').Replace('\', '-').Replace('/', '-')
+                  $targetName = '{0}-{1}' -f $sdk.Prefix, $relative
                   Copy-Item -LiteralPath $document.FullName -Destination (Join-Path $env:BUNDLE_DIR $targetName)
+              }
+          }
+
+          foreach ($prefix in @('CUDA-', 'TensorRT-')) {
+              if (-not (Get-ChildItem -LiteralPath $env:BUNDLE_DIR -File | Where-Object Name -Like "$prefix*" | Select-Object -First 1)) {
+                  throw "Runtime bundle is missing required $prefix notice files."
               }
           }
 

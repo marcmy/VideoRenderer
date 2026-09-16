@@ -113,6 +113,19 @@ jobs:
             LICENSES/RIFE-model-license.txt > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      - name: Package RIFE 4.6 model release ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd _rife-model/output
+          sha256sum --check --strict SHA256SUMS.txt
+          zip -r MPCVR-RIFE-Model-v4.6.zip \
+            rife_v4.6.onnx \
+            model-manifest.json \
+            SOURCE.txt \
+            SHA256SUMS.txt \
+            LICENSES/RIFE-model-license.txt
+
       - name: Upload RIFE model artifact
         uses: actions/upload-artifact@v7
         with:
@@ -123,5 +136,6 @@ jobs:
             _rife-model/output/SHA256SUMS.txt
             _rife-model/output/model-manifest.json
             _rife-model/output/LICENSES/RIFE-model-license.txt
+            _rife-model/output/MPCVR-RIFE-Model-v4.6.zip
           if-no-files-found: error
           compression-level: 0

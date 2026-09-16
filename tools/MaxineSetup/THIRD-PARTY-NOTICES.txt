@@ -1,0 +1,27 @@
+MPC Video Renderer Maxine + RIFE third-party notice index
+
+This file identifies third-party components and the notice files distributed with
+the MPCVR Maxine + RIFE setup package. The bundled notice files are the
+authoritative license/notice text for those components.
+
+NVIDIA Maxine Video Effects / VideoSuperRes runtime
+Runtime version: 1.2.0
+Source: https://developer.nvidia.com/maxine
+Bundled notice: Maxine-LICENSE.txt
+
+NVIDIA CUDA Toolkit 12.9.1 / CUDA Runtime 12.9.79
+Source: https://developer.download.nvidia.com/compute/cuda/redist/
+Bundled notices: files in this payload whose names begin with CUDA-
+
+NVIDIA TensorRT 11.2.1.2 for CUDA 12.9
+Source: https://developer.nvidia.com/tensorrt
+Bundled notices: files in this payload whose names begin with TensorRT-
+
+RIFE 4.6 model
+Model source release: https://github.com/AmusementClub/vs-mlrt/releases/tag/model-20220923
+Model license source commit: https://github.com/hzwer/Practical-RIFE/tree/bbfd2ea90910789a860ea3e2b32a240cd577b75e
+Bundled notice: LICENSES/RIFE-model-license.txt
+
+The RIFE model package also contains SOURCE.txt with the pinned source archive,
+source SHA-256, model-license commit, and model-license SHA-256 used by the
+release workflow.

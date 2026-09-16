@@ -19,6 +19,10 @@ On first playback, TensorRT may build a GPU-specific engine under `%LOCALAPPDATA
 
 The older `Install-MPCVR-Maxine.cmd` and `.ps1` filenames remain compatibility wrappers and forward to the Maxine + RIFE setup when the unified payload is present.
 
+The TensorRT runtime package currently carries architecture resources for NVIDIA Turing (compute capability 7.5), Ampere (8.6), Ada (8.9), and Blackwell (12.0). The installer detects all NVIDIA adapters and installs the union of architecture packs required by the machine.
+
+`payload\THIRD-PARTY-NOTICES.txt` indexes the Maxine, CUDA, TensorRT, and RIFE model notice/license files bundled with the setup. Release assembly fails if any required notice class is missing.
+
 ## Release assets
 
 Normal releases expose:

@@ -16,6 +16,9 @@ on:
 permissions:
   contents: read
 
+env:
+  RIFE_MINIMUM_COMMIT: 4f76664a79510555f24d5c7f5d8a688ad1030238
+
 jobs:
   build:
     runs-on: windows-2022
@@ -54,9 +57,15 @@ jobs:
           compression-level: 0
           if-no-files-found: error
 
+  rife-runtime:
+    uses: ./.github/workflows/rife-runtime.yml
+
+  rife-model:
+    uses: ./.github/workflows/rife-model.yml
+
   publish-maxine:
-    name: Publish latest Maxine build
-    needs: build
+    name: Publish latest Maxine + RIFE build
+    needs: [build, rife-runtime, rife-model]
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master')
@@ -70,11 +79,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download build artifact
+      - name: Assert release ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$RIFE_MINIMUM_COMMIT" "$GITHUB_SHA"
+
+      - name: Download renderer artifact
         uses: actions/download-artifact@v8
         with:
           name: "MPC Video Renderer"
-          path: release
+          path: release/renderer-artifact
+
+      - name: Download RIFE runtime artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: mpcvr-rife-runtime-bundle
+          path: release/rife-runtime
+
+      - name: Download RIFE model artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: mpcvr-rife-v4.6-model
+          path: release/rife-model
 
       - name: Prepare release assets
         shell: bash
@@ -83,51 +110,101 @@ jobs:
         run: |
           set -euo pipefail
 
-          package="$(find release -maxdepth 1 -type f -name 'MpcVideoRenderer*.zip' -print -quit)"
+          package="$(find release/renderer-artifact -maxdepth 1 -type f -name 'MpcVideoRenderer*.zip' -print -quit)"
           if [[ -z "$package" ]]; then
             echo "No MPC Video Renderer package was found in the build artifact." >&2
             exit 1
           fi
-          cp "$package" release/MpcVideoRenderer-Maxine.zip
+          cp "$package" release/MpcVideoRenderer-Maxine-RIFE.zip
+
+          runtime_artifact='release/rife-runtime'
+          model_artifact='release/rife-model'
+          runtime_sums="$runtime_artifact/SHA256SUMS.txt"
+          model_sums="$model_artifact/SHA256SUMS.txt"
+          if [[ ! -f "$runtime_sums" || ! -f "$model_sums" ]]; then
+            echo "RIFE runtime/model artifact checksums are missing." >&2
+            exit 1
+          fi
+          (
+            cd "$runtime_artifact"
+            sha256sum --check --strict SHA256SUMS.txt
+          )
+          (
+            cd "$model_artifact"
+            sha256sum --check --strict SHA256SUMS.txt
+          )
+
+          for file in \
+            MPCVR-RIFE-Common.zip \
+            MPCVR-RIFE-sm75.zip \
+            MPCVR-RIFE-sm86.zip \
+            MPCVR-RIFE-sm89.zip \
+            MPCVR-RIFE-sm120.zip \
+            runtime-manifest.json; do
+            if [[ ! -f "$runtime_artifact/$file" ]]; then
+              echo "RIFE runtime artifact is missing $file." >&2
+              exit 1
+            fi
+          done
+          for file in \
+            MPCVR-RIFE-Model-v4.6.zip \
+            rife_v4.6.onnx \
+            model-manifest.json \
+            SOURCE.txt \
+            LICENSES/RIFE-model-license.txt; do
+            if [[ ! -f "$model_artifact/$file" ]]; then
+              echo "RIFE model artifact is missing $file." >&2
+              exit 1
+            fi
+          done
 
           mkdir -p release/runtime-source
 
-          # New releases carry the runtime inside the previous unified setup.
-          # The first unified release can migrate from the old standalone assets.
+          # Carry the previously verified Maxine runtime forward. Prefer the
+          # Maxine + RIFE setup, then its compatibility alias, then legacy
+          # standalone runtime assets for the first migration release.
           mkdir -p release/previous-setup
-          if gh release download \
-              --repo "$GITHUB_REPOSITORY" \
-              --pattern 'MPCVR-Maxine-Setup.zip' \
-              --dir release/previous-setup; then
-            previous_setup="$(find release/previous-setup -maxdepth 1 -type f -name 'MPCVR-Maxine-Setup.zip' -print -quit)"
-            if [[ -n "$previous_setup" ]]; then
-              unzip -j "$previous_setup" \
-                'payload/MPCVR-Maxine-Runtime.zip' \
-                'payload/MPCVR-Maxine-Runtime.zip.sha256' \
-                -d release/runtime-source || true
+          runtime_zip='release/runtime-source/MPCVR-Maxine-Runtime.zip'
+          runtime_expected=''
+          for setup_asset in MPCVR-Maxine-RIFE-Setup.zip MPCVR-Maxine-Setup.zip; do
+            rm -rf release/previous-setup/*
+            if gh release download \
+                --repo "$GITHUB_REPOSITORY" \
+                --pattern "$setup_asset" \
+                --dir release/previous-setup; then
+              previous_setup="$(find release/previous-setup -maxdepth 1 -type f -name "$setup_asset" -print -quit)"
+              if [[ -n "$previous_setup" ]] && unzip -p "$previous_setup" 'payload/MPCVR-Maxine-Runtime.zip' > "$runtime_zip"; then
+                if unzip -p "$previous_setup" 'payload/PAYLOAD-SHA256SUMS.txt' > release/runtime-source/PAYLOAD-SHA256SUMS.txt 2>/dev/null; then
+                  runtime_expected="$(awk '$2 ~ /(^|\/)MPCVR-Maxine-Runtime\.zip$/ {print tolower($1); exit}' release/runtime-source/PAYLOAD-SHA256SUMS.txt)"
+                fi
+                if [[ -z "$runtime_expected" ]] && unzip -p "$previous_setup" 'payload/MPCVR-Maxine-Runtime.zip.sha256' > release/runtime-source/MPCVR-Maxine-Runtime.zip.sha256 2>/dev/null; then
+                  runtime_expected="$(awk '{print tolower($1); exit}' release/runtime-source/MPCVR-Maxine-Runtime.zip.sha256)"
+                fi
+                if [[ -n "$runtime_expected" ]]; then
+                  break
+                fi
+              fi
             fi
-          fi
+          done
 
-          if [[ ! -f release/runtime-source/MPCVR-Maxine-Runtime.zip \
-                || ! -f release/runtime-source/MPCVR-Maxine-Runtime.zip.sha256 ]]; then
+          if [[ ! -f "$runtime_zip" || -z "$runtime_expected" ]]; then
             echo "No embedded runtime was found; trying the legacy standalone release assets."
+            rm -f "$runtime_zip" release/runtime-source/MPCVR-Maxine-Runtime.zip.sha256
             gh release download \
               --repo "$GITHUB_REPOSITORY" \
               --pattern 'MPCVR-Maxine-Runtime.zip' \
               --pattern 'MPCVR-Maxine-Runtime.zip.sha256' \
               --dir release/runtime-source
+            runtime_expected="$(awk '{print tolower($1); exit}' release/runtime-source/MPCVR-Maxine-Runtime.zip.sha256)"
           fi
 
-          runtime_zip='release/runtime-source/MPCVR-Maxine-Runtime.zip'
-          runtime_checksum='release/runtime-source/MPCVR-Maxine-Runtime.zip.sha256'
-          if [[ ! -f "$runtime_zip" || ! -f "$runtime_checksum" ]]; then
+          if [[ ! -f "$runtime_zip" || -z "$runtime_expected" ]]; then
             echo "A verified Maxine runtime bundle is required to publish the unified setup." >&2
             exit 1
           fi
 
-          expected="$(awk '{print tolower($1); exit}' "$runtime_checksum")"
           actual="$(sha256sum "$runtime_zip" | awk '{print tolower($1)}')"
-          if [[ ! "$expected" =~ ^[a-f0-9]{64}$ || "$actual" != "$expected" ]]; then
+          if [[ ! "$runtime_expected" =~ ^[a-f0-9]{64}$ || "$actual" != "$runtime_expected" ]]; then
             echo "The carried Maxine runtime checksum did not verify." >&2
             exit 1
           fi
@@ -135,43 +212,140 @@ jobs:
 
           setup_root='release/setup-root'
           payload_root="$setup_root/payload"
-          mkdir -p "$payload_root"
+          mkdir -p "$payload_root/LICENSES"
 
+          cp tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.cmd "$setup_root/"
+          cp tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1 "$setup_root/"
           cp tools/MaxineSetup/Install-MPCVR-Maxine.cmd "$setup_root/"
           cp tools/MaxineSetup/Install-MPCVR-Maxine.ps1 "$setup_root/"
           cp tools/MaxineSetup/README.md "$setup_root/README.md"
 
           cp tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 "$payload_root/"
+          cp tools/RifeRuntimeInstaller/Install-MPCVRRifeRuntime.ps1 "$payload_root/"
+          cp tools/RifeRuntimeInstaller/Test-MPCVRRifePreflight.ps1 "$payload_root/"
+          cp tools/RifeRuntimeInstaller/RifeRuntimeManifest.psm1 "$payload_root/"
           cp tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1 "$payload_root/"
           cp tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1 "$payload_root/"
-          cp release/MpcVideoRenderer-Maxine.zip "$payload_root/"
+          cp tools/KLiteMaxineUpdater/KLiteRendererInstall.psm1 "$payload_root/"
+          cp tools/MaxineSetup/THIRD-PARTY-NOTICES.txt "$payload_root/"
+
+          cp release/MpcVideoRenderer-Maxine-RIFE.zip "$payload_root/"
           cp "$runtime_zip" "$payload_root/"
-          cp "$runtime_checksum" "$payload_root/"
+          cp "$runtime_artifact/MPCVR-RIFE-Common.zip" "$payload_root/"
+          cp "$runtime_artifact/MPCVR-RIFE-sm75.zip" "$payload_root/"
+          cp "$runtime_artifact/MPCVR-RIFE-sm86.zip" "$payload_root/"
+          cp "$runtime_artifact/MPCVR-RIFE-sm89.zip" "$payload_root/"
+          cp "$runtime_artifact/MPCVR-RIFE-sm120.zip" "$payload_root/"
+          cp "$runtime_artifact/runtime-manifest.json" "$payload_root/RIFE-runtime-manifest.json"
+          cp "$model_artifact/MPCVR-RIFE-Model-v4.6.zip" "$payload_root/"
+          cp "$model_artifact/LICENSES/RIFE-model-license.txt" "$payload_root/LICENSES/"
+
+          if ! unzip -p "$runtime_zip" 'MPCVR-Maxine-Runtime/nvvfx/libs/LICENSE.txt' > "$payload_root/Maxine-LICENSE.txt"; then
+            echo "The carried Maxine runtime is missing nvvfx/libs/LICENSE.txt." >&2
+            exit 1
+          fi
+
+          runtime_notice_count=0
+          while IFS= read -r notice; do
+            cp "$notice" "$payload_root/"
+            runtime_notice_count=$((runtime_notice_count + 1))
+          done < <(find "$runtime_artifact" -maxdepth 1 -type f \( -name 'CUDA-*' -o -name 'TensorRT-*' \) -print | sort)
+          if (( runtime_notice_count == 0 )); then
+            echo "No CUDA/TensorRT notice files were found in the runtime artifact." >&2
+            exit 1
+          fi
 
           (
             cd "$payload_root"
-            sha256sum \
-              MpcVideoRenderer-Maxine.zip \
-              MPCVR-Maxine-Runtime.zip \
+            find . -type f ! -name 'PAYLOAD-SHA256SUMS.txt' -print0 \
+              | sort -z \
+              | xargs -0 sha256sum \
+              | sed 's#  \./#  #' \
               > PAYLOAD-SHA256SUMS.txt
+          )
+
+          for required in \
+            THIRD-PARTY-NOTICES.txt \
+            Maxine-LICENSE.txt \
+            LICENSES/RIFE-model-license.txt; do
+            if [[ ! -s "$payload_root/$required" ]]; then
+              echo "Release notice gate is missing $required." >&2
+              exit 1
+            fi
+          done
+          if ! find "$payload_root" -maxdepth 1 -type f -name 'CUDA-*' -print -quit | grep -q .; then
+            echo "Release notice gate is missing a CUDA notice file." >&2
+            exit 1
+          fi
+          if ! find "$payload_root" -maxdepth 1 -type f -name 'TensorRT-*' -print -quit | grep -q .; then
+            echo "Release notice gate is missing a TensorRT notice file." >&2
+            exit 1
+          fi
+
+          (
+            cd "$payload_root"
+            while read -r hash file; do
+              [[ -n "$file" ]] || continue
+              echo "$hash  $file" | sha256sum --check --strict
+            done < PAYLOAD-SHA256SUMS.txt
           )
 
           (
             cd "$setup_root"
-            zip -r ../MPCVR-Maxine-Setup.zip .
+            zip -r ../MPCVR-Maxine-RIFE-Setup.zip .
           )
+
+          cp release/MpcVideoRenderer-Maxine-RIFE.zip release/MpcVideoRenderer-Maxine.zip
+          cp release/MPCVR-Maxine-RIFE-Setup.zip release/MPCVR-Maxine-Setup.zip
+          cmp release/MpcVideoRenderer-Maxine-RIFE.zip release/MpcVideoRenderer-Maxine.zip
+          cmp release/MPCVR-Maxine-RIFE-Setup.zip release/MPCVR-Maxine-Setup.zip
 
           (
             cd release
             sha256sum \
+              MPCVR-Maxine-RIFE-Setup.zip \
               MPCVR-Maxine-Setup.zip \
+              MpcVideoRenderer-Maxine-RIFE.zip \
               MpcVideoRenderer-Maxine.zip \
               > SHA256SUMS.txt
 
-            # Keep one tiny compatibility checksum so updater scripts installed
-            # by older releases continue working after the asset cleanup.
             sha256sum MpcVideoRenderer-Maxine.zip > MpcVideoRenderer-Maxine.zip.sha256
+            sha256sum --check --strict SHA256SUMS.txt
           )
+
+          required_setup_paths=(
+            'Install-MPCVR-Maxine-RIFE.cmd'
+            'Install-MPCVR-Maxine-RIFE.ps1'
+            'Install-MPCVR-Maxine.cmd'
+            'Install-MPCVR-Maxine.ps1'
+            'README.md'
+            'payload/Install-MPCVRMaxineRuntime.ps1'
+            'payload/Install-MPCVRRifeRuntime.ps1'
+            'payload/Test-MPCVRRifePreflight.ps1'
+            'payload/RifeRuntimeManifest.psm1'
+            'payload/Install-KLiteMPCVRUpdater.ps1'
+            'payload/Update-KLiteMPCVR.ps1'
+            'payload/KLiteRendererInstall.psm1'
+            'payload/MpcVideoRenderer-Maxine-RIFE.zip'
+            'payload/MPCVR-Maxine-Runtime.zip'
+            'payload/MPCVR-RIFE-Common.zip'
+            'payload/MPCVR-RIFE-sm75.zip'
+            'payload/MPCVR-RIFE-sm86.zip'
+            'payload/MPCVR-RIFE-sm89.zip'
+            'payload/MPCVR-RIFE-sm120.zip'
+            'payload/MPCVR-RIFE-Model-v4.6.zip'
+            'payload/RIFE-runtime-manifest.json'
+            'payload/THIRD-PARTY-NOTICES.txt'
+            'payload/Maxine-LICENSE.txt'
+            'payload/LICENSES/RIFE-model-license.txt'
+            'payload/PAYLOAD-SHA256SUMS.txt'
+          )
+          for required in "${required_setup_paths[@]}"; do
+            if ! unzip -Z1 release/MPCVR-Maxine-RIFE-Setup.zip | grep -Fxq "$required"; then
+              echo "Assembled setup is missing $required." >&2
+              exit 1
+            fi
+          done
 
       - name: Publish immutable release
         shell: bash
@@ -180,26 +354,30 @@ jobs:
         run: |
           set -euo pipefail
           short_sha="${GITHUB_SHA:0:8}"
-          tag="maxine-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}-${short_sha}"
+          tag="maxine-rife-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}-${short_sha}"
           notes=$(cat <<EOF
-          Custom Maxine build from master commit ${GITHUB_SHA}.
+          Custom MPC Video Renderer Maxine + RIFE build from master commit ${GITHUB_SHA}.
 
           Recommended download:
-          - MPCVR-Maxine-Setup.zip: one-click K-Lite setup containing the custom renderer, five-DLL Maxine runtime, environment-variable setup, and restore shortcut.
+          - MPCVR-Maxine-RIFE-Setup.zip: one-click K-Lite setup containing the custom renderer, NVIDIA Maxine VSR runtime, RIFE 4.6 TensorRT runtime/model, architecture-specific TensorRT builder resources, environment setup, and restore shortcut.
 
           Advanced/manual download:
-          - MpcVideoRenderer-Maxine.zip: portable renderer files only.
+          - MpcVideoRenderer-Maxine-RIFE.zip: portable renderer files only.
 
-          SHA256SUMS.txt verifies both public ZIP files. The small per-renderer checksum remains only for compatibility with updater shortcuts installed by older releases.
+          RIFE TensorRT runtime support in this release covers NVIDIA Turing (compute capability 7.5), Ampere (8.6), Ada (8.9), and Blackwell (12.0) desktop GPUs.
+
+          SHA256SUMS.txt verifies the new public ZIPs and their one-release compatibility aliases. MpcVideoRenderer-Maxine.zip.sha256 remains temporarily for updater shortcuts installed by older releases.
           EOF
           )
 
           gh release create "$tag" \
+            release/MPCVR-Maxine-RIFE-Setup.zip \
             release/MPCVR-Maxine-Setup.zip \
+            release/MpcVideoRenderer-Maxine-RIFE.zip \
             release/MpcVideoRenderer-Maxine.zip \
             release/SHA256SUMS.txt \
             release/MpcVideoRenderer-Maxine.zip.sha256 \
             --target "$GITHUB_SHA" \
-            --title "MPC Video Renderer Maxine build ${GITHUB_RUN_NUMBER}" \
+            --title "MPC Video Renderer Maxine + RIFE build ${GITHUB_RUN_NUMBER}" \
             --notes "$notes" \
             --latest
