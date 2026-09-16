@@ -18,6 +18,8 @@ permissions:
 
 env:
   RIFE_MINIMUM_COMMIT: 4f76664a79510555f24d5c7f5d8a688ad1030238
+  MAXINE_LICENSE_URL: https://developer.nvidia.com/downloads/maxine-sdk-license
+  MAXINE_LICENSE_SHA256: 3749955ea638199e317d87261512dc9baa6d4d4be424f21a1f9b609e54154703
 
 jobs:
   build:
@@ -210,6 +212,16 @@ jobs:
           fi
           echo "Verified the carried Maxine runtime bundle: $actual"
 
+          maxine_license='release/runtime-source/Maxine-SDK-License.pdf'
+          curl --fail --location --silent --show-error \
+            "$MAXINE_LICENSE_URL" \
+            --output "$maxine_license"
+          echo "$MAXINE_LICENSE_SHA256  $maxine_license" | sha256sum --check --strict
+          if [[ "$(head -c 5 "$maxine_license")" != '%PDF-' ]]; then
+            echo "The pinned Maxine SDK license download is not a PDF." >&2
+            exit 1
+          fi
+
           setup_root='release/setup-root'
           payload_root="$setup_root/payload"
           mkdir -p "$payload_root/LICENSES"
@@ -239,11 +251,7 @@ jobs:
           cp "$runtime_artifact/runtime-manifest.json" "$payload_root/RIFE-runtime-manifest.json"
           cp "$model_artifact/MPCVR-RIFE-Model-v4.6.zip" "$payload_root/"
           cp "$model_artifact/LICENSES/RIFE-model-license.txt" "$payload_root/LICENSES/"
-
-          if ! unzip -p "$runtime_zip" 'MPCVR-Maxine-Runtime/nvvfx/libs/LICENSE.txt' > "$payload_root/Maxine-LICENSE.txt"; then
-            echo "The carried Maxine runtime is missing nvvfx/libs/LICENSE.txt." >&2
-            exit 1
-          fi
+          cp "$maxine_license" "$payload_root/"
 
           runtime_notice_count=0
           while IFS= read -r notice; do
@@ -266,7 +274,7 @@ jobs:
 
           for required in \
             THIRD-PARTY-NOTICES.txt \
-            Maxine-LICENSE.txt \
+            Maxine-SDK-License.pdf \
             LICENSES/RIFE-model-license.txt; do
             if [[ ! -s "$payload_root/$required" ]]; then
               echo "Release notice gate is missing $required." >&2
@@ -336,7 +344,7 @@ jobs:
             'payload/MPCVR-RIFE-Model-v4.6.zip'
             'payload/RIFE-runtime-manifest.json'
             'payload/THIRD-PARTY-NOTICES.txt'
-            'payload/Maxine-LICENSE.txt'
+            'payload/Maxine-SDK-License.pdf'
             'payload/LICENSES/RIFE-model-license.txt'
             'payload/PAYLOAD-SHA256SUMS.txt'
           )
