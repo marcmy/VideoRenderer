@@ -25,22 +25,29 @@ $sourceUpdater = Join-Path $PSScriptRoot 'Update-KLiteMPCVR.ps1'
 if (-not (Test-Path -LiteralPath $sourceUpdater -PathType Leaf)) {
     throw 'Update-KLiteMPCVR.ps1 was not found beside this installer.'
 }
+$sourceModule = Join-Path $PSScriptRoot 'KLiteRendererInstall.psm1'
+if (-not (Test-Path -LiteralPath $sourceModule -PathType Leaf)) {
+    throw 'KLiteRendererInstall.psm1 was not found beside this installer.'
+}
 
-$installDirectory = Join-Path $env:LOCALAPPDATA 'MPCVR Maxine Updater'
+$installDirectory = Join-Path $env:LOCALAPPDATA 'MPCVR Custom Updater'
 $installedUpdater = Join-Path $installDirectory 'Update-KLiteMPCVR.ps1'
+$installedModule = Join-Path $installDirectory 'KLiteRendererInstall.psm1'
 $desktop = [Environment]::GetFolderPath('Desktop')
-$shortcutPath = Join-Path $desktop 'Restore MPC-VR Maxine.lnk'
+$shortcutPath = Join-Path $desktop 'Restore MPC-VR Maxine + RIFE.lnk'
+$legacyShortcutPath = Join-Path $desktop 'Restore MPC-VR Maxine.lnk'
 $powerShellExecutable = Get-PowerShellExecutable
 
 New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
 Copy-Item -LiteralPath $sourceUpdater -Destination $installedUpdater -Force
+Copy-Item -LiteralPath $sourceModule -Destination $installedModule -Force
 
 $wshShell = New-Object -ComObject WScript.Shell
 $shortcut = $wshShell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $powerShellExecutable
 $shortcut.Arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $installedUpdater
 $shortcut.WorkingDirectory = $installDirectory
-$shortcut.Description = 'Download and restore the latest custom MPC Video Renderer Maxine build in K-Lite Codec Pack'
+$shortcut.Description = 'Download and restore the latest custom MPC Video Renderer Maxine + RIFE build in K-Lite Codec Pack'
 
 $mpcIcon = 'C:\Program Files (x86)\K-Lite Codec Pack\MPC-HC64\mpc-hc64.exe'
 if (Test-Path -LiteralPath $mpcIcon -PathType Leaf) {
@@ -48,13 +55,19 @@ if (Test-Path -LiteralPath $mpcIcon -PathType Leaf) {
 }
 
 $shortcut.Save()
+if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
+    throw "The new desktop shortcut was not created: $shortcutPath"
+}
+if (Test-Path -LiteralPath $legacyShortcutPath -PathType Leaf) {
+    Remove-Item -LiteralPath $legacyShortcutPath -Force
+}
 
 Write-Host 'Installed the updater and created this desktop shortcut:' -ForegroundColor Green
 Write-Host $shortcutPath
 Write-Host
 Write-Host "PowerShell host: $powerShellExecutable"
 Write-Host 'Double-click the shortcut after K-Lite updates overwrite your custom MPC-VR files.'
-Write-Host 'The updater will request administrator permission, download the newest rolling build, verify its SHA-256, and replace both K-Lite copies.'
+Write-Host 'The updater will request administrator permission, download the newest Maxine + RIFE build, verify its SHA-256, and transactionally replace both K-Lite copies.'
 
 if (-not $NoPause) {
     Write-Host
