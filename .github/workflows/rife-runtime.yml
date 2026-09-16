@@ -24,6 +24,8 @@ jobs:
       CUDA_COMPILER_VERSION: 12.9.86
       CUDA_RUNTIME_VERSION: 12.9.79
       TENSORRT_VERSION: 11.2.1.2
+      TENSORRT_SLA_SHA256: eea91074c3bb4db31015e9c4bece1a1ff7db3ca59bdc3ad0d5b3c344aeb5cba4
+      CUDA_LICENSE_SHA256: e2c71babfd18a8e69542dd7e9ca018f9caa438094001a58e6bc4d8c999bf0d07
       NVIDIA_DOWNLOAD_CACHE: ${{ github.workspace }}\_rife-download-cache
       CUDA_ROOT: ${{ github.workspace }}\_rife-deps\cuda-12.9
       TENSORRT_ARCHIVE: ${{ github.workspace }}\_rife-download-cache\TensorRT-11.2.1.2.zip
@@ -244,26 +246,28 @@ jobs:
               }
           ) | Set-Content -Encoding ascii (Join-Path $env:BUNDLE_DIR 'SHA256SUMS.txt')
 
-          foreach ($sdk in @(
-              [pscustomobject]@{ Prefix = 'TensorRT'; Root = $env:TENSORRT_ROOT },
-              [pscustomobject]@{ Prefix = 'CUDA'; Root = $env:CUDA_ROOT }
-          )) {
-              $documents = @(Get-ChildItem -LiteralPath $sdk.Root -File -Recurse | Where-Object {
-                  $_.Name -match '(?i)^(license|notice|third.?party)'
-              } | Sort-Object FullName)
-              if ($documents.Count -eq 0) {
-                  throw "Pinned $($sdk.Prefix) package did not contain a license or notice document."
+          $notices = @(
+              [pscustomobject]@{
+                  Name = 'TensorRT-SLA.html'
+                  Url = 'https://docs.nvidia.com/deeplearning/tensorrt/latest/reference/sla.html'
+                  Sha256 = $env:TENSORRT_SLA_SHA256
+              },
+              [pscustomobject]@{
+                  Name = 'CUDA-LICENSE.txt'
+                  Url = 'https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/LICENSE.txt'
+                  Sha256 = $env:CUDA_LICENSE_SHA256
               }
-              foreach ($document in $documents) {
-                  $relative = $document.FullName.Substring($sdk.Root.Length).TrimStart('\', '/').Replace('\', '-').Replace('/', '-')
-                  $targetName = '{0}-{1}' -f $sdk.Prefix, $relative
-                  Copy-Item -LiteralPath $document.FullName -Destination (Join-Path $env:BUNDLE_DIR $targetName)
+          )
+          foreach ($notice in $notices) {
+              $destination = Join-Path $env:BUNDLE_DIR $notice.Name
+              & curl.exe --fail --location --retry 3 --output $destination $notice.Url
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Failed to download required NVIDIA notice: $($notice.Name)"
               }
-          }
-
-          foreach ($prefix in @('CUDA-', 'TensorRT-')) {
-              if (-not (Get-ChildItem -LiteralPath $env:BUNDLE_DIR -File | Where-Object Name -Like "$prefix*" | Select-Object -First 1)) {
-                  throw "Runtime bundle is missing required $prefix notice files."
+              $actual = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($actual -ne $notice.Sha256) {
+                  Remove-Item -LiteralPath $destination -Force -ErrorAction SilentlyContinue
+                  throw "$($notice.Name) SHA-256 mismatch: $actual"
               }
           }
 

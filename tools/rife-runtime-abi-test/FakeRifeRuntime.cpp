@@ -19,12 +19,15 @@ extern "C" __declspec(dllexport) int WINAPI MpcvrRifeCreate(
     if (!params || !handle || params->abiVersion != MPCVR_RIFE_RUNTIME_ABI) {
         return MPCVR_RIFE_INVALID_ARGUMENT;
     }
-    if (FAKE_CREATE_RESULT != MPCVR_RIFE_OK) {
+    constexpr int fakeCreateResult = FAKE_CREATE_RESULT;
+    if constexpr (fakeCreateResult != MPCVR_RIFE_OK) {
         *handle = nullptr;
-        return FAKE_CREATE_RESULT;
+        return fakeCreateResult;
     }
-    *handle = reinterpret_cast<void*>(static_cast<uintptr_t>(1));
-    return MPCVR_RIFE_OK;
+    else {
+        *handle = reinterpret_cast<void*>(static_cast<uintptr_t>(1));
+        return MPCVR_RIFE_OK;
+    }
 }
 
 extern "C" __declspec(dllexport) int WINAPI MpcvrRifeInterpolate(
