@@ -65,6 +65,22 @@ constexpr unsigned NVCV_GPU = 1;
 
 struct CUstream_st;
 using CUstream = CUstream_st*;
+struct CUctx_st;
+using CUcontext = CUctx_st*;
+using CUdevice = int;
+using CUresult = int;
+
+constexpr CUresult CUDA_SUCCESS = 0;
+constexpr unsigned CU_STREAM_NON_BLOCKING = 1;
+
+using PFN_cuInit = CUresult (WINAPI*)(unsigned int flags);
+using PFN_cuD3D11GetDevice = CUresult (WINAPI*)(CUdevice* device, IDXGIAdapter* adapter);
+using PFN_cuDevicePrimaryCtxRetain = CUresult (WINAPI*)(CUcontext* context, CUdevice device);
+using PFN_cuDevicePrimaryCtxRelease = CUresult (WINAPI*)(CUdevice device);
+using PFN_cuCtxGetCurrent = CUresult (WINAPI*)(CUcontext* context);
+using PFN_cuCtxSetCurrent = CUresult (WINAPI*)(CUcontext context);
+using PFN_cuStreamCreate = CUresult (WINAPI*)(CUstream* stream, unsigned int flags);
+using PFN_cuStreamDestroy = CUresult (WINAPI*)(CUstream stream);
 
 struct NvCVImage {
 	unsigned int width;
@@ -230,8 +246,18 @@ struct CNvidiaMaxineVSR::Impl
 #ifdef _WIN64
 	HMODULE hNvCVImage = nullptr;
 	HMODULE hNvVideoEffects = nullptr;
+	HMODULE hCudaDriver = nullptr;
 	std::vector<HMODULE> hRuntimeDependencies;
 	std::wstring runtimeDirectory;
+
+	PFN_cuInit CuInit = nullptr;
+	PFN_cuD3D11GetDevice CuD3D11GetDevice = nullptr;
+	PFN_cuDevicePrimaryCtxRetain CuDevicePrimaryCtxRetain = nullptr;
+	PFN_cuDevicePrimaryCtxRelease CuDevicePrimaryCtxRelease = nullptr;
+	PFN_cuCtxGetCurrent CuCtxGetCurrent = nullptr;
+	PFN_cuCtxSetCurrent CuCtxSetCurrent = nullptr;
+	PFN_cuStreamCreate CuStreamCreate = nullptr;
+	PFN_cuStreamDestroy CuStreamDestroy = nullptr;
 
 	PFN_NvVFX_GetVersion NvVFX_GetVersion = nullptr;
 	PFN_NvVFX_CreateEffect NvVFX_CreateEffect = nullptr;
@@ -255,6 +281,9 @@ struct CNvidiaMaxineVSR::Impl
 
 	NvVFX_Handle effect = nullptr;
 	CUstream stream = nullptr;
+	CUcontext primaryCudaContext = nullptr;
+	CUdevice primaryCudaDevice = -1;
+	bool streamUsesPrimaryContext = false;
 	NvCVImage d3dInput = {};
 	NvCVImage d3dOutput = {};
 	NvCVImage gpuInput = {};
@@ -284,6 +313,121 @@ struct CNvidiaMaxineVSR::Impl
 		return proc != nullptr;
 	}
 
+	template<class T>
+	bool LoadCudaProc(const char* name, T& proc, const char* alternate = nullptr)
+	{
+		proc = hCudaDriver ? reinterpret_cast<T>(GetProcAddress(hCudaDriver, name)) : nullptr;
+		if (!proc && alternate && hCudaDriver) {
+			proc = reinterpret_cast<T>(GetProcAddress(hCudaDriver, alternate));
+		}
+		return proc != nullptr;
+	}
+
+	bool LoadCudaDriver()
+	{
+		if (hCudaDriver) {
+			return true;
+		}
+
+		hCudaDriver = LoadLibraryW(L"nvcuda.dll");
+		if (!hCudaDriver) {
+			return false;
+		}
+
+		const bool loaded = LoadCudaProc("cuInit", CuInit)
+			&& LoadCudaProc("cuD3D11GetDevice", CuD3D11GetDevice)
+			&& LoadCudaProc("cuDevicePrimaryCtxRetain", CuDevicePrimaryCtxRetain)
+			&& LoadCudaProc("cuDevicePrimaryCtxRelease_v2", CuDevicePrimaryCtxRelease, "cuDevicePrimaryCtxRelease")
+			&& LoadCudaProc("cuCtxGetCurrent", CuCtxGetCurrent)
+			&& LoadCudaProc("cuCtxSetCurrent", CuCtxSetCurrent)
+			&& LoadCudaProc("cuStreamCreate", CuStreamCreate)
+			&& LoadCudaProc("cuStreamDestroy_v2", CuStreamDestroy, "cuStreamDestroy");
+		if (!loaded || CuInit(0) != CUDA_SUCCESS) {
+			FreeLibrary(hCudaDriver);
+			hCudaDriver = nullptr;
+			CuInit = nullptr;
+			CuD3D11GetDevice = nullptr;
+			CuDevicePrimaryCtxRetain = nullptr;
+			CuDevicePrimaryCtxRelease = nullptr;
+			CuCtxGetCurrent = nullptr;
+			CuCtxSetCurrent = nullptr;
+			CuStreamCreate = nullptr;
+			CuStreamDestroy = nullptr;
+			return false;
+		}
+		return true;
+	}
+
+	bool GetCudaDeviceForTexture(ID3D11Texture2D* texture, CUdevice& cudaDevice)
+	{
+		cudaDevice = -1;
+		if (!texture || !LoadCudaDriver()) {
+			return false;
+		}
+
+		CComPtr<ID3D11Device> device;
+		texture->GetDevice(&device);
+		if (!device) {
+			return false;
+		}
+		CComPtr<IDXGIDevice> dxgiDevice;
+		if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
+			return false;
+		}
+		CComPtr<IDXGIAdapter> adapter;
+		if (FAILED(dxgiDevice->GetAdapter(&adapter))) {
+			return false;
+		}
+		return CuD3D11GetDevice(&cudaDevice, adapter) == CUDA_SUCCESS;
+	}
+
+	bool ActivatePrimaryCudaContext(CUcontext& previousContext)
+	{
+		previousContext = nullptr;
+		if (!streamUsesPrimaryContext) {
+			return true;
+		}
+		if (!primaryCudaContext || !CuCtxGetCurrent || !CuCtxSetCurrent
+				|| CuCtxGetCurrent(&previousContext) != CUDA_SUCCESS) {
+			return false;
+		}
+		return previousContext == primaryCudaContext
+			|| CuCtxSetCurrent(primaryCudaContext) == CUDA_SUCCESS;
+	}
+
+	void RestoreCudaContext(CUcontext previousContext)
+	{
+		if (CuCtxSetCurrent) {
+			CuCtxSetCurrent(previousContext);
+		}
+	}
+
+	class PrimaryCudaContextScope final
+	{
+	public:
+		explicit PrimaryCudaContextScope(Impl& owner) noexcept
+			: m_owner(owner)
+			, m_required(owner.streamUsesPrimaryContext)
+		{
+			m_valid = m_owner.ActivatePrimaryCudaContext(m_previousContext);
+		}
+
+		~PrimaryCudaContextScope()
+		{
+			if (m_valid && m_required) {
+				m_owner.RestoreCudaContext(m_previousContext);
+			}
+		}
+
+		bool IsValid() const noexcept { return m_valid; }
+
+	private:
+		Impl& m_owner;
+		CUcontext m_previousContext = nullptr;
+		bool m_required = false;
+		bool m_valid = false;
+	};
+
 	void SetError(const wchar_t* operation, NvCV_Status code)
 	{
 		std::wstring detail;
@@ -296,6 +440,24 @@ struct CNvidiaMaxineVSR::Impl
 			status = std::format(L"{} failed: {} ({})", operation, detail, code);
 		}
 		DLog(L"NVIDIA Maxine VSR: {}", status);
+	}
+
+	void UpdateRuntimeInfo()
+	{
+		if (!sdkVersion || runtimeDirectory.empty()) {
+			return;
+		}
+		const std::wstring gpuInfo = selectedGPU >= 0
+			? std::format(L" (GPU {})", selectedGPU)
+			: std::wstring(L" (GPU auto)");
+		const std::wstring streamInfo = stream
+			? (streamUsesPrimaryContext ? L", CUDA primary stream" : L", SDK CUDA stream")
+			: std::wstring();
+		runtimeInfo = std::format(L"{}.{}.{} from {}{}{}",
+			(sdkVersion >> 24) & 0xff,
+			(sdkVersion >> 16) & 0xff,
+			(sdkVersion >> 8) & 0xff,
+			runtimeDirectory, gpuInfo, streamInfo);
 	}
 
 	bool GetAdapterLuid(ID3D11Texture2D* texture, LUID& adapterLuid)
@@ -329,8 +491,95 @@ struct CNvidiaMaxineVSR::Impl
 		return true;
 	}
 
+	bool CreateEffectStream(ID3D11Texture2D* input, int requestedGPU)
+	{
+		if (stream) {
+			return true;
+		}
+
+		CUdevice cudaDevice = -1;
+		if (GetCudaDeviceForTexture(input, cudaDevice)
+				&& (requestedGPU < 0 || requestedGPU == cudaDevice)) {
+			CUcontext retainedContext = nullptr;
+			if (CuDevicePrimaryCtxRetain(&retainedContext, cudaDevice) == CUDA_SUCCESS && retainedContext) {
+				CUcontext previousContext = nullptr;
+				const bool gotCurrent = CuCtxGetCurrent(&previousContext) == CUDA_SUCCESS;
+				const bool activated = gotCurrent
+					&& (previousContext == retainedContext || CuCtxSetCurrent(retainedContext) == CUDA_SUCCESS);
+				CUstream primaryStream = nullptr;
+				const bool created = activated
+					&& CuStreamCreate(&primaryStream, CU_STREAM_NON_BLOCKING) == CUDA_SUCCESS
+					&& primaryStream;
+				if (gotCurrent && previousContext != retainedContext) {
+					CuCtxSetCurrent(previousContext);
+				}
+
+				if (created) {
+					stream = primaryStream;
+					primaryCudaContext = retainedContext;
+					primaryCudaDevice = cudaDevice;
+					streamUsesPrimaryContext = true;
+					UpdateRuntimeInfo();
+					DLog(L"NVIDIA Maxine VSR: using CUDA primary-context stream on device {}", cudaDevice);
+					return true;
+				}
+				CuDevicePrimaryCtxRelease(cudaDevice);
+			}
+		}
+
+		const NvCV_Status code = NvVFX_CudaStreamCreate(&stream);
+		if (code != NVCV_SUCCESS) {
+			SetError(L"NvVFX_CudaStreamCreate", code);
+			stream = nullptr;
+			return false;
+		}
+		streamUsesPrimaryContext = false;
+		primaryCudaContext = nullptr;
+		primaryCudaDevice = -1;
+		UpdateRuntimeInfo();
+		DLog(L"NVIDIA Maxine VSR: using SDK-created CUDA stream");
+		return true;
+	}
+
+	void DestroyEffectStream()
+	{
+		if (!stream) {
+			return;
+		}
+
+		if (streamUsesPrimaryContext) {
+			CUcontext previousContext = nullptr;
+			const bool activated = ActivatePrimaryCudaContext(previousContext);
+			if (activated && CuStreamDestroy) {
+				CuStreamDestroy(stream);
+			}
+			if (activated) {
+				RestoreCudaContext(previousContext);
+			}
+			stream = nullptr;
+			streamUsesPrimaryContext = false;
+			primaryCudaContext = nullptr;
+			if (primaryCudaDevice >= 0 && CuDevicePrimaryCtxRelease) {
+				CuDevicePrimaryCtxRelease(primaryCudaDevice);
+			}
+			primaryCudaDevice = -1;
+			UpdateRuntimeInfo();
+			return;
+		}
+
+		if (NvVFX_CudaStreamDestroy) {
+			NvVFX_CudaStreamDestroy(stream);
+		}
+		stream = nullptr;
+		UpdateRuntimeInfo();
+	}
+
 	void ReleaseD3DImages()
 	{
+		PrimaryCudaContextScope cudaContext(*this);
+		if (!cudaContext.IsValid()) {
+			return;
+		}
 		{
 			D3D11InteropLock interopLock(d3dMultithread);
 			if (NvCVImage_Dealloc) {
@@ -347,6 +596,10 @@ struct CNvidiaMaxineVSR::Impl
 
 	void ReleaseGpuImages()
 	{
+		PrimaryCudaContextScope cudaContext(*this);
+		if (!cudaContext.IsValid()) {
+			return;
+		}
 		if (NvCVImage_Dealloc) {
 			NvCVImage_Dealloc(&gpuInput);
 			NvCVImage_Dealloc(&gpuOutput);
@@ -368,6 +621,12 @@ struct CNvidiaMaxineVSR::Impl
 		}
 
 		ReleaseD3DImages();
+		PrimaryCudaContextScope cudaContext(*this);
+		if (!cudaContext.IsValid()) {
+			status = L"Could not activate the CUDA primary context for Maxine D3D11 interop";
+			DLog(L"NVIDIA Maxine VSR: {}", status);
+			return false;
+		}
 
 		CComPtr<ID3D11Device> inputDevice;
 		CComPtr<ID3D11Device> outputDevice;
@@ -423,6 +682,12 @@ struct CNvidiaMaxineVSR::Impl
 	bool AllocateGpuImages()
 	{
 		ReleaseGpuImages();
+		PrimaryCudaContextScope cudaContext(*this);
+		if (!cudaContext.IsValid()) {
+			status = L"Could not activate the CUDA primary context for Maxine GPU buffers";
+			DLog(L"NVIDIA Maxine VSR: {}", status);
+			return false;
+		}
 
 		NvCV_Status code = NvCVImage_Alloc(&gpuInput, d3dInput.width, d3dInput.height, d3dInput.pixelFormat,
 			NVCV_U8, NVCV_INTERLEAVED, NVCV_GPU, 32);
@@ -445,15 +710,15 @@ struct CNvidiaMaxineVSR::Impl
 
 	void ResetEffect()
 	{
-		if (effect && NvVFX_DestroyEffect) {
-			NvVFX_DestroyEffect(effect);
+		{
+			PrimaryCudaContextScope cudaContext(*this);
+			if (cudaContext.IsValid() && effect && NvVFX_DestroyEffect) {
+				NvVFX_DestroyEffect(effect);
+			}
 		}
 		effect = nullptr;
 		ReleaseImages();
-		if (stream && NvVFX_CudaStreamDestroy) {
-			NvVFX_CudaStreamDestroy(stream);
-		}
-		stream = nullptr;
+		DestroyEffectStream();
 		quality = 0;
 		failed = false;
 		effectAdapterLuid = {};
@@ -479,6 +744,18 @@ struct CNvidiaMaxineVSR::Impl
 			FreeLibrary(hNvCVImage);
 			hNvCVImage = nullptr;
 		}
+		if (hCudaDriver) {
+			FreeLibrary(hCudaDriver);
+			hCudaDriver = nullptr;
+		}
+		CuInit = nullptr;
+		CuD3D11GetDevice = nullptr;
+		CuDevicePrimaryCtxRetain = nullptr;
+		CuDevicePrimaryCtxRelease = nullptr;
+		CuCtxGetCurrent = nullptr;
+		CuCtxSetCurrent = nullptr;
+		CuStreamCreate = nullptr;
+		CuStreamDestroy = nullptr;
 		runtimeDirectory.clear();
 		runtimeInfo.clear();
 	}
@@ -624,14 +901,7 @@ struct CNvidiaMaxineVSR::Impl
 			}
 		}
 
-		const std::wstring gpuInfo = selectedGPU >= 0
-			? std::format(L" (GPU {})", selectedGPU)
-			: std::wstring(L" (GPU auto)");
-		runtimeInfo = std::format(L"{}.{}.{} from {}{}",
-			(sdkVersion >> 24) & 0xff,
-			(sdkVersion >> 16) & 0xff,
-			(sdkVersion >> 8) & 0xff,
-			runtimeDirectory, gpuInfo);
+		UpdateRuntimeInfo();
 		status = std::format(L"Runtime {} loaded", runtimeInfo);
 		DLog(L"NVIDIA Maxine VSR: {}", status);
 		return true;
@@ -680,6 +950,14 @@ struct CNvidiaMaxineVSR::Impl
 				return true;
 			}
 
+			PrimaryCudaContextScope cudaContext(*this);
+			if (!cudaContext.IsValid()) {
+				status = L"Could not activate the CUDA primary context for Maxine effect update";
+				ResetEffect();
+				failed = true;
+				return false;
+			}
+
 			if (!gpuImagesMatch) {
 				if (!AllocateGpuImages()) {
 					ResetEffect();
@@ -718,9 +996,7 @@ struct CNvidiaMaxineVSR::Impl
 			// dynamic rebinding, fall through to the original full effect build.
 		}
 
-		NvCV_Status code = NvVFX_CudaStreamCreate(&stream);
-		if (code != NVCV_SUCCESS) {
-			SetError(L"NvVFX_CudaStreamCreate", code);
+		if (!CreateEffectStream(input, requestedGPU)) {
 			failed = true;
 			return false;
 		}
@@ -737,7 +1013,15 @@ struct CNvidiaMaxineVSR::Impl
 			return false;
 		}
 
-		code = NvVFX_CreateEffect("VideoSuperRes", &effect);
+		PrimaryCudaContextScope cudaContext(*this);
+		if (!cudaContext.IsValid()) {
+			status = L"Could not activate the CUDA primary context for Maxine effect creation";
+			ResetEffect();
+			failed = true;
+			return false;
+		}
+
+		NvCV_Status code = NvVFX_CreateEffect("VideoSuperRes", &effect);
 		if (code != NVCV_SUCCESS) {
 			if (code == -2) {
 				status = std::format(L"VideoSuperRes feature did not register in runtime {}.{}.{} at {}",
@@ -843,6 +1127,14 @@ bool CNvidiaMaxineVSR::Process(
 	}
 
 	if (!m_impl->EnsureEffect(pInputTexture, pOutputTexture, mode, gpuIndex)) {
+		return Finish(false);
+	}
+
+	Impl::PrimaryCudaContextScope cudaContext(*m_impl);
+	if (!cudaContext.IsValid()) {
+		m_impl->status = L"Could not activate the CUDA primary context for Maxine processing";
+		m_impl->ResetEffect();
+		m_impl->failed = true;
 		return Finish(false);
 	}
 
