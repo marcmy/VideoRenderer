@@ -15,7 +15,9 @@ cudaError_t MpcvrRifePackInput(
     int paddedWidth,
     int paddedHeight,
     float timestep,
-    cudaStream_t stream, double* syncMs = nullptr);
+    cudaStream_t stream,
+    cudaTextureObject_t* firstTextureOut,
+    cudaTextureObject_t* secondTextureOut);
 
 cudaError_t MpcvrRifeWriteOutput(
     const void* tensor,
@@ -25,4 +27,5 @@ cudaError_t MpcvrRifeWriteOutput(
     int sourceHeight,
     int paddedWidth,
     int paddedHeight,
-    cudaStream_t stream, double* syncMs = nullptr);
+    cudaStream_t stream,
+    cudaSurfaceObject_t* surfaceOut);

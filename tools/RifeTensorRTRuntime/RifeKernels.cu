@@ -159,12 +159,18 @@ cudaError_t MpcvrRifePackInput(
     int paddedWidth,
     int paddedHeight,
     float timestep,
-    cudaStream_t stream, double* syncMs)
+    cudaStream_t stream,
+    cudaTextureObject_t* firstTextureOut,
+    cudaTextureObject_t* secondTextureOut)
 {
     if (!first || !second || !tensor || sourceWidth <= 0 || sourceHeight <= 0 ||
-        paddedWidth < sourceWidth || paddedHeight < sourceHeight) {
+        paddedWidth < sourceWidth || paddedHeight < sourceHeight ||
+        !firstTextureOut || !secondTextureOut) {
         return cudaErrorInvalidValue;
     }
+
+    *firstTextureOut = 0;
+    *secondTextureOut = 0;
 
     cudaTextureObject_t firstTexture = 0;
     cudaTextureObject_t secondTexture = 0;
@@ -186,19 +192,18 @@ cudaError_t MpcvrRifePackInput(
             static_cast<float*>(tensor), sourceWidth, sourceHeight, paddedWidth, paddedHeight, timestep);
     }
     err = cudaGetLastError();
-    if (err == cudaSuccess) {
-        // Texture objects are referenced by the asynchronous kernel above.
-        // Keep them alive until the stream has consumed that launch; destroying
-        // them immediately can invalidate the objects while the GPU is still
-        // reading the mapped D3D11 resources.
-        const auto syncStart = std::chrono::steady_clock::now();
-        err = cudaStreamSynchronize(stream);
-        if (syncMs) *syncMs = std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - syncStart).count();
+    if (err != cudaSuccess) {
+        cudaDestroyTextureObject(secondTexture);
+        cudaDestroyTextureObject(firstTexture);
+        return err;
     }
-    cudaDestroyTextureObject(secondTexture);
-    cudaDestroyTextureObject(firstTexture);
-    return err;
+
+    // The launch is asynchronous. The caller owns these texture objects until
+    // the request-level stream completion point so input unmap, TensorRT, and
+    // the other inference context can make progress without a host-side stall.
+    *firstTextureOut = firstTexture;
+    *secondTextureOut = secondTexture;
+    return cudaSuccess;
 }
 
 cudaError_t MpcvrRifeWriteOutput(
@@ -209,12 +214,15 @@ cudaError_t MpcvrRifeWriteOutput(
     int sourceHeight,
     int paddedWidth,
     int paddedHeight,
-    cudaStream_t stream, double* syncMs)
+    cudaStream_t stream,
+    cudaSurfaceObject_t* surfaceOut)
 {
     if (!tensor || !output || sourceWidth <= 0 || sourceHeight <= 0 ||
-        paddedWidth < sourceWidth || paddedHeight < sourceHeight) {
+        paddedWidth < sourceWidth || paddedHeight < sourceHeight || !surfaceOut) {
         return cudaErrorInvalidValue;
     }
+
+    *surfaceOut = 0;
 
     cudaSurfaceObject_t surface = 0;
     cudaError_t err = CreateSurface(output, &surface);
@@ -230,16 +238,13 @@ cudaError_t MpcvrRifeWriteOutput(
             sourceWidth, sourceHeight, paddedWidth, paddedHeight);
     }
     err = cudaGetLastError();
-    if (err == cudaSuccess) {
-        // The surface object must outlive the asynchronous write kernel. The
-        // caller will hand this D3D11 texture back to the renderer immediately
-        // after the request, so complete the write before destroying the CUDA
-        // view and transferring ownership back to D3D11.
-        const auto syncStart = std::chrono::steady_clock::now();
-        err = cudaStreamSynchronize(stream);
-        if (syncMs) *syncMs = std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - syncStart).count();
+    if (err != cudaSuccess) {
+        cudaDestroySurfaceObject(surface);
+        return err;
     }
-    cudaDestroySurfaceObject(surface);
-    return err;
+
+    // Keep the CUDA surface alive through the request-level stream completion
+    // point. D3D11 ownership is transferred back only after that point.
+    *surfaceOut = surface;
+    return cudaSuccess;
 }

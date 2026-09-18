@@ -1317,11 +1317,13 @@ struct CRifePlaybackPipeline::Impl
         const double accountedHostMs = host.contextLockWaitMs + host.cudaSetDeviceMs
             + host.registrationMs + host.inputPackLockWaitMs + host.inputMapMs
             + host.packHostMs + host.inputUnmapMs + host.outputMapMs
-            + host.tensorRtSubmitMs + host.writeHostMs + host.outputUnmapMs;
+            + host.tensorRtSubmitMs + host.writeHostMs + host.outputUnmapMs
+            + host.handoffSyncMs;
         diagnostics += std::format(
-            L"\nRIFE CPU     : ctx {}, pack {:.2f} (wait {:.2f}), write {:.2f} (wait {:.2f}), other {:.2f} ms",
+            L"\nRIFE CPU     : ctx {}, pack {:.2f} (wait {:.2f}), write {:.2f} (wait {:.2f}), handoff {:.2f}, other {:.2f} ms",
             lastTimingContext, host.packHostMs, host.packSyncMs, host.writeHostMs,
-            host.writeSyncMs, std::max(0.0, host.totalRuntimeMs - accountedHostMs));
+            host.writeSyncMs, host.handoffSyncMs,
+            std::max(0.0, host.totalRuntimeMs - accountedHostMs));
         const int ruleIndex = activeRule.load(std::memory_order_relaxed);
         if (ruleIndex >= 0) {
             diagnostics += std::format(L"\nRIFE rule    : #{}", ruleIndex + 1);

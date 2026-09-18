@@ -412,7 +412,31 @@ public:
         stats.registrationMs = elapsedMs(registrationStart, Clock::now());
         if (!inputResources[0] || !inputResources[1] || !outputResource) return MPCVR_RIFE_CUDA_FAILURE;
 
+        const auto inputPackLockStart = Clock::now();
+        InputResourceClaim inputResourceClaim(
+            m_inputResourceMutex, m_inputResourceCv, m_activeInputResources, inputResources);
+        stats.inputPackLockWaitMs = elapsedMs(inputPackLockStart, Clock::now());
+
+        bool inputsMapped = false;
         bool outputMapped = false;
+        cudaTextureObject_t firstTexture = 0;
+        cudaTextureObject_t secondTexture = 0;
+        cudaSurfaceObject_t outputSurface = 0;
+
+        auto releaseInputs = [&]() -> cudaError_t {
+            if (!inputsMapped) return cudaSuccess;
+            const auto unmapStart = Clock::now();
+            cudaError_t unmapResult;
+            {
+                D3D11InteropLock interopLock(m_d3dMultithread);
+                unmapResult = cudaGraphicsUnmapResources(
+                    static_cast<int>(inputResources.size()), inputResources.data(), state.stream);
+            }
+            inputsMapped = false;
+            stats.inputUnmapMs = elapsedMs(unmapStart, Clock::now());
+            return unmapResult;
+        };
+
         auto releaseOutput = [&]() -> cudaError_t {
             if (!outputMapped) return cudaSuccess;
             const auto unmapStart = Clock::now();
@@ -423,12 +447,32 @@ public:
                     1, &outputResource, state.stream);
             }
             outputMapped = false;
-            // Unmap is stream-ordered. The caller hands the output texture back to
-            // D3D11 immediately after this function returns, so wait for the
-            // ownership transition itself, not merely the preceding inference event.
-            const cudaError_t syncResult = cudaStreamSynchronize(state.stream);
             stats.outputUnmapMs = elapsedMs(unmapStart, Clock::now());
-            return unmapResult != cudaSuccess ? unmapResult : syncResult;
+            return unmapResult;
+        };
+
+        auto finishStream = [&]() -> cudaError_t {
+            const auto syncStart = Clock::now();
+            const cudaError_t syncResult = cudaStreamSynchronize(state.stream);
+            stats.handoffSyncMs = elapsedMs(syncStart, Clock::now());
+
+            cudaError_t destroyResult = cudaSuccess;
+            if (outputSurface) {
+                const cudaError_t result = cudaDestroySurfaceObject(outputSurface);
+                if (destroyResult == cudaSuccess && result != cudaSuccess) destroyResult = result;
+                outputSurface = 0;
+            }
+            if (secondTexture) {
+                const cudaError_t result = cudaDestroyTextureObject(secondTexture);
+                if (destroyResult == cudaSuccess && result != cudaSuccess) destroyResult = result;
+                secondTexture = 0;
+            }
+            if (firstTexture) {
+                const cudaError_t result = cudaDestroyTextureObject(firstTexture);
+                if (destroyResult == cudaSuccess && result != cudaSuccess) destroyResult = result;
+                firstTexture = 0;
+            }
+            return syncResult != cudaSuccess ? syncResult : destroyResult;
         };
 
         cudaArray_t firstArray = nullptr;
@@ -439,10 +483,6 @@ public:
             // graphics-resource rule intact for any caller that actually reuses
             // an input texture across concurrent requests by claiming only the
             // two resources used by this request.
-            const auto inputPackLockStart = Clock::now();
-            InputResourceClaim inputResourceClaim(
-                m_inputResourceMutex, m_inputResourceCv, m_activeInputResources, inputResources);
-            stats.inputPackLockWaitMs = elapsedMs(inputPackLockStart, Clock::now());
             const auto inputMapStart = Clock::now();
             {
                 D3D11InteropLock interopLock(m_d3dMultithread);
@@ -451,53 +491,46 @@ public:
                     return MPCVR_RIFE_CUDA_FAILURE;
                 }
             }
+            inputsMapped = true;
             stats.inputMapMs = elapsedMs(inputMapStart, Clock::now());
-
-            bool inputsMapped = true;
-            auto releaseInputs = [&]() -> cudaError_t {
-                if (!inputsMapped) return cudaSuccess;
-                const auto unmapStart = Clock::now();
-                cudaError_t unmapResult;
-                {
-                    D3D11InteropLock interopLock(m_d3dMultithread);
-                    unmapResult = cudaGraphicsUnmapResources(
-                        static_cast<int>(inputResources.size()), inputResources.data(), state.stream);
-                }
-                inputsMapped = false;
-                const cudaError_t syncResult = cudaStreamSynchronize(state.stream);
-                stats.inputUnmapMs = elapsedMs(unmapStart, Clock::now());
-                return unmapResult != cudaSuccess ? unmapResult : syncResult;
-            };
 
             if (cudaGraphicsSubResourceGetMappedArray(&firstArray, inputResources[0], 0, 0) != cudaSuccess ||
                     cudaGraphicsSubResourceGetMappedArray(&secondArray, inputResources[1], 0, 0) != cudaSuccess) {
                 releaseInputs();
+                finishStream();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
             if (cudaEventRecord(state.startEvent, state.stream) != cudaSuccess) {
                 releaseInputs();
+                finishStream();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
             const auto packHostStart = Clock::now();
             if (MpcvrRifePackInput(firstArray, secondArray, state.input, m_inputIsFp16,
                     static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
                     static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
-                    request.timestep, state.stream, &stats.packSyncMs) != cudaSuccess) {
+                    request.timestep, state.stream, &firstTexture, &secondTexture) != cudaSuccess) {
                 releaseInputs();
+                finishStream();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
             stats.packHostMs = elapsedMs(packHostStart, Clock::now());
             if (cudaEventRecord(state.packEndEvent, state.stream) != cudaSuccess) {
                 releaseInputs();
+                finishStream();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
-            if (releaseInputs() != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
+            if (releaseInputs() != cudaSuccess) {
+                finishStream();
+                return MPCVR_RIFE_CUDA_FAILURE;
+            }
         }
 
         const auto outputMapStart = Clock::now();
         {
             D3D11InteropLock interopLock(m_d3dMultithread);
             if (cudaGraphicsMapResources(1, &outputResource, state.stream) != cudaSuccess) {
+                finishStream();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
         }
@@ -507,12 +540,14 @@ public:
         cudaArray_t outputArray = nullptr;
         if (cudaGraphicsSubResourceGetMappedArray(&outputArray, outputResource, 0, 0) != cudaSuccess) {
             releaseOutput();
+            finishStream();
             return MPCVR_RIFE_CUDA_FAILURE;
         }
 
         if (cudaEventRecord(state.trtStartEvent, state.stream) != cudaSuccess) {
-            const cudaError_t releaseResult = releaseOutput();
-            return releaseResult == cudaSuccess ? MPCVR_RIFE_TENSORRT_FAILURE : MPCVR_RIFE_CUDA_FAILURE;
+            releaseOutput();
+            finishStream();
+            return MPCVR_RIFE_TENSORRT_FAILURE;
         }
         const auto tensorRtSubmitStart = Clock::now();
         const bool graphUsed = state.tensorRtGraphExec != nullptr;
@@ -523,24 +558,29 @@ public:
         stats.tensorRtGraphUsed = graphUsed ? 1u : 0u;
         if (!tensorRtSubmitted
                 || cudaEventRecord(state.trtEndEvent, state.stream) != cudaSuccess) {
-            const cudaError_t releaseResult = releaseOutput();
-            return releaseResult == cudaSuccess ? MPCVR_RIFE_TENSORRT_FAILURE : MPCVR_RIFE_CUDA_FAILURE;
+            releaseOutput();
+            finishStream();
+            return MPCVR_RIFE_TENSORRT_FAILURE;
         }
 
         const auto writeHostStart = Clock::now();
         if (MpcvrRifeWriteOutput(state.output, m_outputIsFp16, outputArray,
                 static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
-                static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight), state.stream, &stats.writeSyncMs) != cudaSuccess) {
+                static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight), state.stream, &outputSurface) != cudaSuccess) {
             releaseOutput();
+            finishStream();
             return MPCVR_RIFE_CUDA_FAILURE;
         }
 
         stats.writeHostMs = elapsedMs(writeHostStart, Clock::now());
         if (cudaEventRecord(state.endEvent, state.stream) != cudaSuccess) {
             releaseOutput();
+            finishStream();
             return MPCVR_RIFE_CUDA_FAILURE;
         }
-        if (releaseOutput() != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
+        const cudaError_t releaseResult = releaseOutput();
+        const cudaError_t finishResult = finishStream();
+        if (releaseResult != cudaSuccess || finishResult != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
 
         float elapsed = 0.0f;
         if (cudaEventElapsedTime(&elapsed, state.startEvent, state.endEvent) != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
