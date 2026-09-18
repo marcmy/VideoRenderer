@@ -253,12 +253,12 @@ public:
             return MPCVR_RIFE_INVALID_ARGUMENT;
         }
 
-        m_width = params.contentWidth;
-        m_height = params.contentHeight;
+        m_contentWidth = params.contentWidth;
+        m_contentHeight = params.contentHeight;
         m_paddedWidth = params.width;
         m_paddedHeight = params.height;
-        if (m_paddedWidth != RoundUp(m_width, kPadMultiple)
-                || m_paddedHeight != RoundUp(m_height, kPadMultiple)) {
+        if (m_paddedWidth != RoundUp(m_contentWidth, kPadMultiple)
+                || m_paddedHeight != RoundUp(m_contentHeight, kPadMultiple)) {
             return MPCVR_RIFE_INVALID_ARGUMENT;
         }
         m_contextCount = std::clamp(params.contextCount, 1u, kMaxContexts);
@@ -403,7 +403,7 @@ public:
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
             if (MpcvrRifePackInput(firstArray, secondArray, state.input, m_inputIsFp16,
-                    static_cast<int>(m_width), static_cast<int>(m_height),
+                    static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
                     static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
                     request.timestep, state.stream) != cudaSuccess) {
                 releaseInputs();
@@ -436,7 +436,7 @@ public:
         }
 
         if (MpcvrRifeWriteOutput(state.output, m_outputIsFp16, outputArray,
-                static_cast<int>(m_width), static_cast<int>(m_height),
+                static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
                 static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight), state.stream) != cudaSuccess) {
             releaseOutput();
             return MPCVR_RIFE_CUDA_FAILURE;
@@ -620,8 +620,8 @@ private:
     ID3D11Device* m_device = nullptr;
     ID3D11Multithread* m_d3dMultithread = nullptr;
     int m_cudaDevice = -1;
-    uint32_t m_width = 0;
-    uint32_t m_height = 0;
+    uint32_t m_contentWidth = 0;
+    uint32_t m_contentHeight = 0;
     uint32_t m_paddedWidth = 0;
     uint32_t m_paddedHeight = 0;
     uint32_t m_contextCount = 0;

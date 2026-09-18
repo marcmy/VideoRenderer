@@ -57,9 +57,12 @@ __global__ void PackInputKernel(
     float multiplierX = 0.0f;
     float multiplierY = 0.0f;
 
-    // RIFE v1 auxiliary clips are constructed at the original video size
-    // before padding to the model's 32-pixel multiple. Keep source-space
-    // normalization for visible pixels and zero-fill the padded tail.
+    // The auxiliary grid must use the same spatial extent as the tensor fed
+    // to RIFE. MPC-VR prepares an aligned D3D texture for that tensor and
+    // crops it back to the logical content rectangle only at presentation.
+    // Keeping model-space normalization here avoids shifting inferred frames
+    // when content height (for example 1080) differs from the aligned texture
+    // height (1088).
     if (x < sourceWidth && y < sourceHeight) {
         const uchar4 a = tex2D<uchar4>(first, static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f);
         const uchar4 b = tex2D<uchar4>(second, static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f);

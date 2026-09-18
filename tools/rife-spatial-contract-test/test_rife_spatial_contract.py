@@ -113,8 +113,13 @@ assert "contentWidth" in rife_api and "contentHeight" in rife_api, (
 assert "params.contentWidth = contentWidth" in rife_loader and "params.contentHeight = contentHeight" in rife_loader, (
     "the renderer runtime loader must forward logical content dimensions through the ABI"
 )
-assert "m_width = params.contentWidth" in runtime and "m_paddedHeight = params.height" in runtime, (
-    "CUDA pack/unpack coordinates must use logical content while TensorRT keeps the aligned allocation"
+assert "m_contentWidth = params.contentWidth" in runtime and "m_paddedHeight = params.height" in runtime, (
+    "the runtime must retain logical content dimensions separately from the aligned tensor surface"
+)
+assert runtime.count(
+    "static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),"
+) >= 4, (
+    "RIFE CUDA pack/write must use aligned model-space geometry for both texture coordinates and tensor strides"
 )
 assert '"_abi" << MPCVR_RIFE_RUNTIME_ABI' in runtime, (
     "TensorRT engine cache keys must be isolated by the renderer/runtime ABI"
