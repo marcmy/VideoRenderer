@@ -9,6 +9,7 @@ dx11_header = (repo / "Source" / "DX11VideoProcessor.h").read_text(encoding="utf
 dx11_processor = (repo / "Source" / "DX11VideoProcessor.cpp").read_text(encoding="utf-8")
 rife_pipeline = (repo / "Source" / "RifePlaybackPipeline.cpp").read_text(encoding="utf-8")
 rife_bridge = (repo / "Source" / "RifeDX11Bridge.cpp").read_text(encoding="utf-8")
+rife_runtime = (repo / "tools" / "RifeTensorRTRuntime" / "RifeTensorRTRuntime.cpp").read_text(encoding="utf-8")
 
 
 def function_body(source: str, marker: str) -> str:
@@ -56,6 +57,12 @@ prepare_inputs = function_body(rife_pipeline, "bool PrepareInferenceInputs(")
 assert "CopyResource(workerState.inferenceFirst, first)" in prepare_inputs
 assert "CopyResource(workerState.inferenceSecond, second)" in prepare_inputs, (
     "each context worker must isolate shared A/B source textures before CUDA maps them"
+)
+assert "InputResourceClaim inputResourceClaim" in rife_runtime, (
+    "the runtime must protect only genuinely shared CUDA graphics resources"
+)
+assert "m_inputPackMutex" not in rife_runtime, (
+    "worker-owned input copies must not be serialized by a process-wide input-pack mutex"
 )
 acquire_output = function_body(rife_pipeline, "ID3D11Texture2D* AcquireInferenceOutput(")
 assert "workerState.inferenceOutputs" in acquire_output and "CreateBgraTexture" in acquire_output, (

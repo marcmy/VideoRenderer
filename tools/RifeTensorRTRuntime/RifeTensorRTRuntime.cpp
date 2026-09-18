@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -27,6 +28,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -36,6 +38,47 @@ namespace {
 
 constexpr uint32_t kMaxContexts = 3;
 constexpr uint32_t kPadMultiple = 32;
+
+class InputResourceClaim final {
+public:
+    InputResourceClaim(
+        std::mutex& mutex,
+        std::condition_variable& cv,
+        std::unordered_set<cudaGraphicsResource_t>& active,
+        const std::array<cudaGraphicsResource_t, 2>& resources)
+        : m_mutex(mutex)
+        , m_cv(cv)
+        , m_active(active)
+        , m_resources(resources)
+    {
+        std::unique_lock lock(m_mutex);
+        m_cv.wait(lock, [&] {
+            return !m_active.contains(m_resources[0])
+                && !m_active.contains(m_resources[1]);
+        });
+        m_active.insert(m_resources[0]);
+        m_active.insert(m_resources[1]);
+    }
+
+    ~InputResourceClaim()
+    {
+        {
+            std::lock_guard lock(m_mutex);
+            m_active.erase(m_resources[0]);
+            m_active.erase(m_resources[1]);
+        }
+        m_cv.notify_all();
+    }
+
+    InputResourceClaim(const InputResourceClaim&) = delete;
+    InputResourceClaim& operator=(const InputResourceClaim&) = delete;
+
+private:
+    std::mutex& m_mutex;
+    std::condition_variable& m_cv;
+    std::unordered_set<cudaGraphicsResource_t>& m_active;
+    std::array<cudaGraphicsResource_t, 2> m_resources{};
+};
 
 std::filesystem::path ThisModuleDirectory()
 {
@@ -387,14 +430,14 @@ public:
         cudaArray_t firstArray = nullptr;
         cudaArray_t secondArray = nullptr;
         {
-            // Adjacent source pairs share their middle texture (A/B, then B/C).
-            // CUDA graphics resources cannot be mapped twice concurrently, so
-            // serialize only the short map/pack/unmap ownership window. Once the
-            // pixels are packed into this context's private CUDA buffer, TensorRT
-            // can run concurrently with the next context packing B/C.
-            std::unique_lock inputPackLock(m_inputPackMutex, std::defer_lock);
+            // MPC-VR normally passes worker-owned input copies, so different
+            // inference contexts can map and pack concurrently. Keep the CUDA
+            // graphics-resource rule intact for any caller that actually reuses
+            // an input texture across concurrent requests by claiming only the
+            // two resources used by this request.
             const auto inputPackLockStart = Clock::now();
-            inputPackLock.lock();
+            InputResourceClaim inputResourceClaim(
+                m_inputResourceMutex, m_inputResourceCv, m_activeInputResources, inputResources);
             stats.inputPackLockWaitMs = elapsedMs(inputPackLockStart, Clock::now());
             const auto inputMapStart = Clock::now();
             {
@@ -690,7 +733,9 @@ private:
     TrtPtr<nvinfer1::ICudaEngine> m_engine;
     std::vector<std::unique_ptr<ContextState>> m_contexts;
     std::vector<std::unique_ptr<std::mutex>> m_contextMutexes;
-    std::mutex m_inputPackMutex;
+    std::mutex m_inputResourceMutex;
+    std::condition_variable m_inputResourceCv;
+    std::unordered_set<cudaGraphicsResource_t> m_activeInputResources;
     GraphicsRegistrationCache m_registrations;
 };
 
