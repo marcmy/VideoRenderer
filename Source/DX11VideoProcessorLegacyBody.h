@@ -252,7 +252,7 @@ private:
 		bool retirePending = false;
 		int64_t retireStartTick = 0;
 	};
-	static constexpr UINT FrameInterpolationSurfaceCount = 4;
+	static constexpr UINT FrameInterpolationSurfaceCount = 8;
 	std::array<FrameInterpolationPresentationSurface, FrameInterpolationSurfaceCount> m_FrameInterpolationPresentationSurfaces;
 	std::atomic_uint64_t m_RifePresentationRetireLastUs = 0;
 	std::atomic_uint64_t m_RifePresentationRetireMaxUs = 0;
