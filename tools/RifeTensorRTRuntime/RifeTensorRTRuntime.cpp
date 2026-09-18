@@ -217,6 +217,8 @@ std::string Sanitize(std::string text)
 struct ContextState {
     TrtPtr<nvinfer1::IExecutionContext> context;
     cudaStream_t stream = nullptr;
+    cudaGraph_t tensorRtGraph = nullptr;
+    cudaGraphExec_t tensorRtGraphExec = nullptr;
     cudaEvent_t startEvent = nullptr;
     cudaEvent_t packEndEvent = nullptr;
     cudaEvent_t trtStartEvent = nullptr;
@@ -227,6 +229,8 @@ struct ContextState {
 
     ~ContextState()
     {
+        if (tensorRtGraphExec) cudaGraphExecDestroy(tensorRtGraphExec);
+        if (tensorRtGraph) cudaGraphDestroy(tensorRtGraph);
         if (output) cudaFree(output);
         if (input) cudaFree(input);
         if (endEvent) cudaEventDestroy(endEvent);
@@ -504,13 +508,19 @@ public:
             return MPCVR_RIFE_CUDA_FAILURE;
         }
 
-        const nvinfer1::Dims4 inputShape{1, 11, static_cast<int>(m_paddedHeight), static_cast<int>(m_paddedWidth)};
-        if (!state.context->setInputShape(m_inputName.c_str(), inputShape) ||
-            !state.context->setTensorAddress(m_inputName.c_str(), state.input) ||
-            !state.context->setTensorAddress(m_outputName.c_str(), state.output) ||
-            cudaEventRecord(state.trtStartEvent, state.stream) != cudaSuccess ||
-            !state.context->enqueueV3(state.stream) ||
-            cudaEventRecord(state.trtEndEvent, state.stream) != cudaSuccess) {
+        if (cudaEventRecord(state.trtStartEvent, state.stream) != cudaSuccess) {
+            const cudaError_t releaseResult = releaseOutput();
+            return releaseResult == cudaSuccess ? MPCVR_RIFE_TENSORRT_FAILURE : MPCVR_RIFE_CUDA_FAILURE;
+        }
+        const auto tensorRtSubmitStart = Clock::now();
+        const bool graphUsed = state.tensorRtGraphExec != nullptr;
+        const bool tensorRtSubmitted = graphUsed
+            ? cudaGraphLaunch(state.tensorRtGraphExec, state.stream) == cudaSuccess
+            : state.context->enqueueV3(state.stream);
+        stats.tensorRtSubmitMs = elapsedMs(tensorRtSubmitStart, Clock::now());
+        stats.tensorRtGraphUsed = graphUsed ? 1u : 0u;
+        if (!tensorRtSubmitted
+                || cudaEventRecord(state.trtEndEvent, state.stream) != cudaSuccess) {
             const cudaError_t releaseResult = releaseOutput();
             return releaseResult == cudaSuccess ? MPCVR_RIFE_TENSORRT_FAILURE : MPCVR_RIFE_CUDA_FAILURE;
         }
@@ -685,6 +695,45 @@ private:
                     || cudaEventCreate(&state->trtEndEvent) != cudaSuccess
                     || cudaEventCreate(&state->endEvent) != cudaSuccess) return false;
             if (cudaMalloc(&state->input, inputBytes) != cudaSuccess || cudaMalloc(&state->output, outputBytes) != cudaSuccess) return false;
+
+            // Each execution context owns fixed input/output device buffers for
+            // its entire lifetime, and this runtime is keyed to one exact input
+            // geometry. Bind the shape and addresses once rather than rebuilding
+            // the execution state on every frame.
+            if (!state->context->setInputShape(m_inputName.c_str(), inputShape)
+                    || !state->context->setTensorAddress(m_inputName.c_str(), state->input)
+                    || !state->context->setTensorAddress(m_outputName.c_str(), state->output)) {
+                return false;
+            }
+
+            // TensorRT can be enqueue-bound on Windows/WDDM: host kernel-launch
+            // overhead can substantially exceed the GPU execution time. Prime
+            // deferred shape state once, then capture only the TensorRT section
+            // into a per-context CUDA graph. Pack/write kernels remain outside
+            // the graph because they operate on per-frame mapped D3D11 arrays.
+            //
+            // Graph capture is an optimization only. If this engine contains an
+            // operation that cannot be captured, leave graph handles null and
+            // Interpolate() will continue using enqueueV3().
+            if (cudaMemsetAsync(state->input, 0, inputBytes, state->stream) == cudaSuccess
+                    && state->context->enqueueV3(state->stream)
+                    && cudaStreamSynchronize(state->stream) == cudaSuccess
+                    && cudaStreamBeginCapture(state->stream, cudaStreamCaptureModeGlobal) == cudaSuccess) {
+                const bool captureEnqueued = state->context->enqueueV3(state->stream);
+                cudaGraph_t graph = nullptr;
+                const cudaError_t captureResult = cudaStreamEndCapture(state->stream, &graph);
+                if (captureEnqueued && captureResult == cudaSuccess && graph) {
+                    cudaGraphExec_t graphExec = nullptr;
+                    if (cudaGraphInstantiate(&graphExec, graph, 0) == cudaSuccess && graphExec) {
+                        state->tensorRtGraph = graph;
+                        state->tensorRtGraphExec = graphExec;
+                    } else {
+                        cudaGraphDestroy(graph);
+                    }
+                } else if (graph) {
+                    cudaGraphDestroy(graph);
+                }
+            }
             m_contexts.push_back(std::move(state));
             m_contextMutexes.push_back(std::make_unique<std::mutex>());
         }

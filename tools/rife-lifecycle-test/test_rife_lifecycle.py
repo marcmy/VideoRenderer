@@ -64,6 +64,12 @@ assert "InputResourceClaim inputResourceClaim" in rife_runtime, (
 assert "m_inputPackMutex" not in rife_runtime, (
     "worker-owned input copies must not be serialized by a process-wide input-pack mutex"
 )
+assert "cudaStreamBeginCapture" in rife_runtime and "cudaGraphLaunch" in rife_runtime, (
+    "TensorRT submission should use a per-context CUDA graph when capture is supported"
+)
+assert "state->context->setTensorAddress" in rife_runtime and "PrepareContexts()" in rife_runtime, (
+    "fixed per-context tensor buffers should be bound during runtime preparation"
+)
 acquire_output = function_body(rife_pipeline, "ID3D11Texture2D* AcquireInferenceOutput(")
 assert "workerState.inferenceOutputs" in acquire_output and "CreateBgraTexture" in acquire_output, (
     "CUDA outputs must come from a stable per-context pool instead of creating a registered texture every frame"

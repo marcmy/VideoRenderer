@@ -456,6 +456,8 @@ struct CRifePlaybackPipeline::Impl
     std::atomic_uint64_t lastRegistrationUs = 0;
     std::atomic_uint64_t lastInputPackLockWaitUs = 0;
     std::atomic_uint64_t lastRuntimeInternalUs = 0;
+    std::atomic_uint64_t lastTensorRtSubmitUs = 0;
+    std::atomic_bool tensorRtGraphUsed = false;
     std::atomic_uint64_t presentationSurfaceWaitUs = 0;
     std::atomic_uint64_t presentationSurfaceWaitCount = 0;
     std::atomic_uint64_t presentationSurfaceWaitMaxUs = 0;
@@ -1028,6 +1030,8 @@ struct CRifePlaybackPipeline::Impl
         lastRegistrationUs.store(MsToUs(stats.registrationMs), std::memory_order_relaxed);
         lastInputPackLockWaitUs.store(MsToUs(stats.inputPackLockWaitMs), std::memory_order_relaxed);
         lastRuntimeInternalUs.store(MsToUs(stats.totalRuntimeMs), std::memory_order_relaxed);
+        lastTensorRtSubmitUs.store(MsToUs(stats.tensorRtSubmitMs), std::memory_order_relaxed);
+        tensorRtGraphUsed.store(stats.tensorRtGraphUsed != 0, std::memory_order_relaxed);
         activeInferences.fetch_sub(1, std::memory_order_acq_rel);
         if (!ok) {
             return false;
@@ -1293,12 +1297,14 @@ struct CRifePlaybackPipeline::Impl
             presentationSurfaceWaitMaxUs.load(std::memory_order_relaxed) / 1000.0,
             surfaceWaitCount);
         diagnostics += std::format(
-            L"\nRIFE host    : internal {:.2f} ms, ctx-lock {:.2f}, set-device {:.2f}, register {:.2f}, pack-lock {:.2f}",
+            L"\nRIFE host    : internal {:.2f} ms, ctx-lock {:.2f}, set-device {:.2f}, register {:.2f}, pack-lock {:.2f}, TRT-submit {:.2f} ({})",
             lastRuntimeInternalUs.load(std::memory_order_relaxed) / 1000.0,
             lastContextLockWaitUs.load(std::memory_order_relaxed) / 1000.0,
             lastCudaSetDeviceUs.load(std::memory_order_relaxed) / 1000.0,
             lastRegistrationUs.load(std::memory_order_relaxed) / 1000.0,
-            lastInputPackLockWaitUs.load(std::memory_order_relaxed) / 1000.0);
+            lastInputPackLockWaitUs.load(std::memory_order_relaxed) / 1000.0,
+            lastTensorRtSubmitUs.load(std::memory_order_relaxed) / 1000.0,
+            tensorRtGraphUsed.load(std::memory_order_relaxed) ? L"graph" : L"enqueueV3");
         const int ruleIndex = activeRule.load(std::memory_order_relaxed);
         if (ruleIndex >= 0) {
             diagnostics += std::format(L"\nRIFE rule    : #{}", ruleIndex + 1);
