@@ -250,9 +250,14 @@ private:
 		CComPtr<ID3D11Query> retireQuery;
 		bool inUse = false;
 		bool retirePending = false;
+		int64_t retireStartTick = 0;
 	};
 	static constexpr UINT FrameInterpolationSurfaceCount = 4;
 	std::array<FrameInterpolationPresentationSurface, FrameInterpolationSurfaceCount> m_FrameInterpolationPresentationSurfaces;
+	std::atomic_uint64_t m_RifePresentationRetireLastUs = 0;
+	std::atomic_uint64_t m_RifePresentationRetireMaxUs = 0;
+	std::atomic_uint64_t m_RifePresentationRetireCount = 0;
+	std::atomic_uint64_t m_RifePresentationRetireBusyChecks = 0;
 	std::atomic_uint m_RifeD3DFailureStage = RIFE_D3D_FAILURE_NONE;
 	std::atomic_long m_RifeD3DFailureHr = S_OK;
 	std::atomic_long m_RifeDeviceRemovedReason = S_OK;

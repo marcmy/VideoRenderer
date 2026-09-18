@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
@@ -441,6 +442,18 @@ struct CRifePlaybackPipeline::Impl
     std::atomic_uint64_t presentationReclaims = 0;
     std::atomic_uint64_t sourceResyncs = 0;
     std::atomic_uint64_t lastInferenceUs = 0;
+    std::atomic_uint64_t lastInputCopySubmitUs = 0;
+    std::atomic_uint64_t lastRuntimeWallUs = 0;
+    std::atomic_uint64_t lastInputMapUs = 0;
+    std::atomic_uint64_t lastInputPackUs = 0;
+    std::atomic_uint64_t lastInputUnmapUs = 0;
+    std::atomic_uint64_t lastOutputMapUs = 0;
+    std::atomic_uint64_t lastTensorRtUs = 0;
+    std::atomic_uint64_t lastOutputWriteUs = 0;
+    std::atomic_uint64_t lastOutputUnmapUs = 0;
+    std::atomic_uint64_t presentationSurfaceWaitUs = 0;
+    std::atomic_uint64_t presentationSurfaceWaitCount = 0;
+    std::atomic_uint64_t presentationSurfaceWaitMaxUs = 0;
     std::atomic_uint32_t activeInferences = 0;
     std::atomic_uint32_t maxConcurrentInferences = 0;
     std::atomic_uint32_t configuredInferenceContexts = RIFE_GPU_THREADS_DEF;
@@ -449,6 +462,28 @@ struct CRifePlaybackPipeline::Impl
     std::atomic_bool ruleBypass = false;
     std::atomic_uint32_t ruleMaxMultiplierMilli = 0;
     std::atomic_uint32_t ruleMaxOutputFpsMilli = 0;
+
+    static uint64_t MsToUs(const double ms)
+    {
+        return static_cast<uint64_t>(std::max(0.0, ms) * 1000.0);
+    }
+
+    static void UpdateMax(std::atomic_uint64_t& target, const uint64_t value)
+    {
+        uint64_t observed = target.load(std::memory_order_relaxed);
+        while (observed < value
+                && !target.compare_exchange_weak(observed, value, std::memory_order_relaxed)) {
+        }
+    }
+
+    void RecordPresentationSurfaceWait(const std::chrono::steady_clock::time_point start)
+    {
+        const auto us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - start).count());
+        presentationSurfaceWaitUs.fetch_add(us, std::memory_order_relaxed);
+        presentationSurfaceWaitCount.fetch_add(1, std::memory_order_relaxed);
+        UpdateMax(presentationSurfaceWaitMaxUs, us);
+    }
 
     void ClearQueuedFrames()
     {
@@ -644,6 +679,8 @@ struct CRifePlaybackPipeline::Impl
         }
 
         const ULONGLONG waitStart = GetTickCount64();
+        const auto waitStartPrecise = std::chrono::steady_clock::now();
+        bool waitedForSurface = false;
         for (;;) {
             if (!IsCurrent(frame)) {
                 return false;
@@ -657,6 +694,9 @@ struct CRifePlaybackPipeline::Impl
 
             UINT handle = UINT_MAX;
             if (frame.processor->ReserveRifePresentationSurface(texture, handle)) {
+                if (waitedForSurface) {
+                    RecordPresentationSurfaceWait(waitStartPrecise);
+                }
                 if (owner->QueueFrameInterpolationSource(
                         handle, time, synthetic, frame.presenterGeneration)) {
                     return true;
@@ -664,9 +704,11 @@ struct CRifePlaybackPipeline::Impl
                 frame.processor->ReleaseFrameInterpolationSource(handle);
                 return false;
             }
+            waitedForSurface = true;
 
             const bool waitExpired = GetTickCount64() - waitStart >= kPresentationCapacityWaitMs;
             if (synthetic && waitExpired) {
+                RecordPresentationSurfaceWait(waitStartPrecise);
                 presentationDrops.fetch_add(1, std::memory_order_relaxed);
                 return false;
             }
@@ -681,6 +723,7 @@ struct CRifePlaybackPipeline::Impl
                     presentationReclaims.fetch_add(1, std::memory_order_relaxed);
                     continue;
                 }
+                RecordPresentationSurfaceWait(waitStartPrecise);
                 presentationDrops.fetch_add(1, std::memory_order_relaxed);
                 return false;
             }
@@ -962,14 +1005,24 @@ struct CRifePlaybackPipeline::Impl
                 && !maxConcurrentInferences.compare_exchange_weak(
                     observedMax, active, std::memory_order_relaxed)) {
         }
+        const auto runtimeStart = std::chrono::steady_clock::now();
         const bool ok = runtime->Interpolate(contextIndex, first, second,
             output, timestep, stats);
+        const auto runtimeUs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - runtimeStart).count());
+        lastRuntimeWallUs.store(runtimeUs, std::memory_order_relaxed);
+        lastInputMapUs.store(MsToUs(stats.inputMapMs), std::memory_order_relaxed);
+        lastInputPackUs.store(MsToUs(stats.inputPackMs), std::memory_order_relaxed);
+        lastInputUnmapUs.store(MsToUs(stats.inputUnmapMs), std::memory_order_relaxed);
+        lastOutputMapUs.store(MsToUs(stats.outputMapMs), std::memory_order_relaxed);
+        lastTensorRtUs.store(MsToUs(stats.tensorRtMs), std::memory_order_relaxed);
+        lastOutputWriteUs.store(MsToUs(stats.outputWriteMs), std::memory_order_relaxed);
+        lastOutputUnmapUs.store(MsToUs(stats.outputUnmapMs), std::memory_order_relaxed);
         activeInferences.fetch_sub(1, std::memory_order_acq_rel);
         if (!ok) {
             return false;
         }
-        lastInferenceUs.store(static_cast<uint64_t>(std::max(0.0, stats.inferenceMs) * 1000.0),
-            std::memory_order_relaxed);
+        lastInferenceUs.store(MsToUs(stats.inferenceMs), std::memory_order_relaxed);
         return true;
     }
 
@@ -984,8 +1037,12 @@ struct CRifePlaybackPipeline::Impl
         if (!device || !job.width || !job.height) {
             return;
         }
-        if (!PrepareInferenceInputs(workerState, device, first.texture, second.texture,
-                job.width, job.height)) {
+        const auto inputCopyStart = std::chrono::steady_clock::now();
+        const bool inputsReady = PrepareInferenceInputs(workerState, device, first.texture, second.texture,
+            job.width, job.height);
+        lastInputCopySubmitUs.store(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - inputCopyStart).count()), std::memory_order_relaxed);
+        if (!inputsReady) {
             for (const auto& target : job.targets) {
                 TargetResult result;
                 result.target = target;
@@ -1203,6 +1260,28 @@ struct CRifePlaybackPipeline::Impl
             maxConcurrentInferences.load(std::memory_order_relaxed),
             configuredInferenceContexts.load(std::memory_order_relaxed),
             tensorIoLinearValidated.load(std::memory_order_relaxed) ? L"LINEAR" : L"pending");
+        const auto gpuUs = lastInferenceUs.load(std::memory_order_relaxed);
+        const auto packUs = lastInputPackUs.load(std::memory_order_relaxed);
+        const auto trtUs = lastTensorRtUs.load(std::memory_order_relaxed);
+        const auto writeUs = lastOutputWriteUs.load(std::memory_order_relaxed);
+        const auto knownGpuUs = packUs + trtUs + writeUs;
+        const auto gpuGapUs = gpuUs > knownGpuUs ? gpuUs - knownGpuUs : 0;
+        diagnostics += std::format(
+            L"\nRIFE timing  : wall {:.2f} ms, copy-submit {:.2f}, GPU {:.2f} [pack {:.2f}, TRT {:.2f}, write {:.2f}, gap {:.2f}]",
+            lastRuntimeWallUs.load(std::memory_order_relaxed) / 1000.0,
+            lastInputCopySubmitUs.load(std::memory_order_relaxed) / 1000.0,
+            gpuUs / 1000.0, packUs / 1000.0, trtUs / 1000.0, writeUs / 1000.0, gpuGapUs / 1000.0);
+        const auto surfaceWaitCount = presentationSurfaceWaitCount.load(std::memory_order_relaxed);
+        const auto surfaceWaitUs = presentationSurfaceWaitUs.load(std::memory_order_relaxed);
+        diagnostics += std::format(
+            L"\nRIFE interop : in map {:.2f}/unmap {:.2f} ms, out map {:.2f}/unmap {:.2f}, surface-wait avg {:.2f}/max {:.2f} ms ({})",
+            lastInputMapUs.load(std::memory_order_relaxed) / 1000.0,
+            lastInputUnmapUs.load(std::memory_order_relaxed) / 1000.0,
+            lastOutputMapUs.load(std::memory_order_relaxed) / 1000.0,
+            lastOutputUnmapUs.load(std::memory_order_relaxed) / 1000.0,
+            surfaceWaitCount ? (surfaceWaitUs / static_cast<double>(surfaceWaitCount)) / 1000.0 : 0.0,
+            presentationSurfaceWaitMaxUs.load(std::memory_order_relaxed) / 1000.0,
+            surfaceWaitCount);
         const int ruleIndex = activeRule.load(std::memory_order_relaxed);
         if (ruleIndex >= 0) {
             diagnostics += std::format(L"\nRIFE rule    : #{}", ruleIndex + 1);

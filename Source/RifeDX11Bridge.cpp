@@ -101,6 +101,7 @@ bool CDX11VideoProcessor::ReserveRifePresentationSurface(
                 const HRESULT queryHr = m_pDeviceContext->GetData(
                     candidate.retireQuery, nullptr, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH);
                 if (queryHr == S_FALSE) {
+                    m_RifePresentationRetireBusyChecks.fetch_add(1, std::memory_order_relaxed);
                     continue;
                 }
                 if (FAILED(queryHr)) {
@@ -108,6 +109,19 @@ bool CDX11VideoProcessor::ReserveRifePresentationSurface(
                     continue;
                 }
                 candidate.retirePending = false;
+                if (candidate.retireStartTick) {
+                    const auto elapsedTicks = GetPreciseTick() - candidate.retireStartTick;
+                    const uint64_t elapsedUs = static_cast<uint64_t>(
+                        elapsedTicks * 1000000 / GetPreciseTicksPerSecondI());
+                    candidate.retireStartTick = 0;
+                    m_RifePresentationRetireLastUs.store(elapsedUs, std::memory_order_relaxed);
+                    m_RifePresentationRetireCount.fetch_add(1, std::memory_order_relaxed);
+                    uint64_t observedMax = m_RifePresentationRetireMaxUs.load(std::memory_order_relaxed);
+                    while (observedMax < elapsedUs
+                            && !m_RifePresentationRetireMaxUs.compare_exchange_weak(
+                                observedMax, elapsedUs, std::memory_order_relaxed)) {
+                    }
+                }
             }
         }
         freeSurface = i;
@@ -187,6 +201,7 @@ bool CDX11VideoProcessor::AcquireRifePresentationSurface(
                 const HRESULT queryHr = m_pDeviceContext->GetData(
                     candidate.retireQuery, nullptr, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH);
                 if (queryHr == S_FALSE) {
+                    m_RifePresentationRetireBusyChecks.fetch_add(1, std::memory_order_relaxed);
                     continue;
                 }
                 if (FAILED(queryHr)) {
@@ -194,6 +209,19 @@ bool CDX11VideoProcessor::AcquireRifePresentationSurface(
                     continue;
                 }
                 candidate.retirePending = false;
+                if (candidate.retireStartTick) {
+                    const auto elapsedTicks = GetPreciseTick() - candidate.retireStartTick;
+                    const uint64_t elapsedUs = static_cast<uint64_t>(
+                        elapsedTicks * 1000000 / GetPreciseTicksPerSecondI());
+                    candidate.retireStartTick = 0;
+                    m_RifePresentationRetireLastUs.store(elapsedUs, std::memory_order_relaxed);
+                    m_RifePresentationRetireCount.fetch_add(1, std::memory_order_relaxed);
+                    uint64_t observedMax = m_RifePresentationRetireMaxUs.load(std::memory_order_relaxed);
+                    while (observedMax < elapsedUs
+                            && !m_RifePresentationRetireMaxUs.compare_exchange_weak(
+                                observedMax, elapsedUs, std::memory_order_relaxed)) {
+                    }
+                }
             }
         }
         freeSurface = i;

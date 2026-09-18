@@ -150,6 +150,12 @@ private:
 	CAMEvent m_FrameInterpolationPresenterWake;
 	std::atomic_bool m_bStopFrameInterpolationPresenter = false;
 	std::atomic<uint64_t> m_FrameInterpolationPresenterGeneration = 0;
+	std::atomic_uint32_t m_FrameInterpolationPresenterDepth = 0;
+	std::atomic_uint32_t m_FrameInterpolationPresenterMaxDepth = 0;
+	std::atomic_uint64_t m_FrameInterpolationPresenterLastLateUs = 0;
+	std::atomic_uint64_t m_FrameInterpolationPresenterMaxLateUs = 0;
+	std::atomic_uint64_t m_FrameInterpolationPresenterLastRenderUs = 0;
+	std::atomic_uint64_t m_FrameInterpolationPresenterMaxRenderUs = 0;
 
 	void FrameInterpolationPresenter();
 	bool WaitForFrameInterpolationTime(const FrameInterpolationPresentation& frame);

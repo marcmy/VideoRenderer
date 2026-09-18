@@ -58,6 +58,15 @@ struct MpcvrRifeStats {
     uint32_t size = sizeof(MpcvrRifeStats);
     double inferenceMs = 0.0;
     uint64_t engineBytes = 0;
+    // ABI-2 optional tail. New runtimes accept the original ABI-2 stats size
+    // and only write these fields when the caller supplied enough space.
+    double inputMapMs = 0.0;
+    double inputPackMs = 0.0;
+    double inputUnmapMs = 0.0;
+    double outputMapMs = 0.0;
+    double tensorRtMs = 0.0;
+    double outputWriteMs = 0.0;
+    double outputUnmapMs = 0.0;
 };
 
 using MpcvrRifeGetAbiVersionFn = uint32_t(WINAPI*)();

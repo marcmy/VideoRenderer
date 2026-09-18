@@ -2687,6 +2687,7 @@ HRESULT CDX11VideoProcessor::RenderFrameInterpolationSource(UINT sourceSurface, 
 	if (surface.retireQuery) {
 		m_pDeviceContext->End(surface.retireQuery);
 		surface.retirePending = true;
+		surface.retireStartTick = GetPreciseTick();
 	}
 	m_pFrameInterpolationTexture = nullptr;
 	m_pFrameInterpolationView = nullptr;
@@ -5602,6 +5603,18 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 			str += std::format(L"\nRIFE D3D11 : {} failed {}, removed-reason {}",
 				RifeD3DFailureStageName(failureStage), HR2Str(failureHr), HR2Str(removedReason));
 		}
+		str += std::format(
+			L"\nRIFE present : queue {}/max {}, late {:.2f}/max {:.2f} ms, render {:.2f}/max {:.2f} ms, retire {:.2f}/max {:.2f} ms ({}, busy {})",
+			m_pFilter->m_FrameInterpolationPresenterDepth.load(std::memory_order_relaxed),
+			m_pFilter->m_FrameInterpolationPresenterMaxDepth.load(std::memory_order_relaxed),
+			m_pFilter->m_FrameInterpolationPresenterLastLateUs.load(std::memory_order_relaxed) / 1000.0,
+			m_pFilter->m_FrameInterpolationPresenterMaxLateUs.load(std::memory_order_relaxed) / 1000.0,
+			m_pFilter->m_FrameInterpolationPresenterLastRenderUs.load(std::memory_order_relaxed) / 1000.0,
+			m_pFilter->m_FrameInterpolationPresenterMaxRenderUs.load(std::memory_order_relaxed) / 1000.0,
+			m_RifePresentationRetireLastUs.load(std::memory_order_relaxed) / 1000.0,
+			m_RifePresentationRetireMaxUs.load(std::memory_order_relaxed) / 1000.0,
+			m_RifePresentationRetireCount.load(std::memory_order_relaxed),
+			m_RifePresentationRetireBusyChecks.load(std::memory_order_relaxed));
 	}
 
 	if (m_strCorrection || m_pPostScaleShaders.size() || m_bDitherUsed) {

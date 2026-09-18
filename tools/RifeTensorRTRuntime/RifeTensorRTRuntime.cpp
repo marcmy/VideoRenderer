@@ -14,6 +14,8 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -173,6 +175,9 @@ struct ContextState {
     TrtPtr<nvinfer1::IExecutionContext> context;
     cudaStream_t stream = nullptr;
     cudaEvent_t startEvent = nullptr;
+    cudaEvent_t packEndEvent = nullptr;
+    cudaEvent_t trtStartEvent = nullptr;
+    cudaEvent_t trtEndEvent = nullptr;
     cudaEvent_t endEvent = nullptr;
     void* input = nullptr;
     void* output = nullptr;
@@ -182,6 +187,9 @@ struct ContextState {
         if (output) cudaFree(output);
         if (input) cudaFree(input);
         if (endEvent) cudaEventDestroy(endEvent);
+        if (trtEndEvent) cudaEventDestroy(trtEndEvent);
+        if (trtStartEvent) cudaEventDestroy(trtStartEvent);
+        if (packEndEvent) cudaEventDestroy(packEndEvent);
         if (startEvent) cudaEventDestroy(startEvent);
         if (stream) cudaStreamDestroy(stream);
     }
@@ -326,6 +334,10 @@ public:
 
     int Interpolate(const MpcvrRifeRequest& request, MpcvrRifeStats& stats)
     {
+        using Clock = std::chrono::steady_clock;
+        const auto elapsedMs = [](const Clock::time_point start, const Clock::time_point end) {
+            return std::chrono::duration<double, std::milli>(end - start).count();
+        };
         if (!request.first || !request.second || !request.output || request.timestep <= 0.0f || request.timestep >= 1.0f) {
             return MPCVR_RIFE_INVALID_ARGUMENT;
         }
@@ -348,6 +360,7 @@ public:
         bool outputMapped = false;
         auto releaseOutput = [&]() -> cudaError_t {
             if (!outputMapped) return cudaSuccess;
+            const auto unmapStart = Clock::now();
             cudaError_t unmapResult;
             {
                 D3D11InteropLock interopLock(m_d3dMultithread);
@@ -359,6 +372,7 @@ public:
             // D3D11 immediately after this function returns, so wait for the
             // ownership transition itself, not merely the preceding inference event.
             const cudaError_t syncResult = cudaStreamSynchronize(state.stream);
+            stats.outputUnmapMs = elapsedMs(unmapStart, Clock::now());
             return unmapResult != cudaSuccess ? unmapResult : syncResult;
         };
 
@@ -371,6 +385,7 @@ public:
             // pixels are packed into this context's private CUDA buffer, TensorRT
             // can run concurrently with the next context packing B/C.
             std::scoped_lock inputPackLock(m_inputPackMutex);
+            const auto inputMapStart = Clock::now();
             {
                 D3D11InteropLock interopLock(m_d3dMultithread);
                 if (cudaGraphicsMapResources(
@@ -378,10 +393,12 @@ public:
                     return MPCVR_RIFE_CUDA_FAILURE;
                 }
             }
+            stats.inputMapMs = elapsedMs(inputMapStart, Clock::now());
 
             bool inputsMapped = true;
             auto releaseInputs = [&]() -> cudaError_t {
                 if (!inputsMapped) return cudaSuccess;
+                const auto unmapStart = Clock::now();
                 cudaError_t unmapResult;
                 {
                     D3D11InteropLock interopLock(m_d3dMultithread);
@@ -390,6 +407,7 @@ public:
                 }
                 inputsMapped = false;
                 const cudaError_t syncResult = cudaStreamSynchronize(state.stream);
+                stats.inputUnmapMs = elapsedMs(unmapStart, Clock::now());
                 return unmapResult != cudaSuccess ? unmapResult : syncResult;
             };
 
@@ -409,15 +427,21 @@ public:
                 releaseInputs();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
+            if (cudaEventRecord(state.packEndEvent, state.stream) != cudaSuccess) {
+                releaseInputs();
+                return MPCVR_RIFE_CUDA_FAILURE;
+            }
             if (releaseInputs() != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
         }
 
+        const auto outputMapStart = Clock::now();
         {
             D3D11InteropLock interopLock(m_d3dMultithread);
             if (cudaGraphicsMapResources(1, &outputResource, state.stream) != cudaSuccess) {
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
         }
+        stats.outputMapMs = elapsedMs(outputMapStart, Clock::now());
         outputMapped = true;
 
         cudaArray_t outputArray = nullptr;
@@ -430,7 +454,9 @@ public:
         if (!state.context->setInputShape(m_inputName.c_str(), inputShape) ||
             !state.context->setTensorAddress(m_inputName.c_str(), state.input) ||
             !state.context->setTensorAddress(m_outputName.c_str(), state.output) ||
-            !state.context->enqueueV3(state.stream)) {
+            cudaEventRecord(state.trtStartEvent, state.stream) != cudaSuccess ||
+            !state.context->enqueueV3(state.stream) ||
+            cudaEventRecord(state.trtEndEvent, state.stream) != cudaSuccess) {
             const cudaError_t releaseResult = releaseOutput();
             return releaseResult == cudaSuccess ? MPCVR_RIFE_TENSORRT_FAILURE : MPCVR_RIFE_CUDA_FAILURE;
         }
@@ -451,6 +477,13 @@ public:
         float elapsed = 0.0f;
         if (cudaEventElapsedTime(&elapsed, state.startEvent, state.endEvent) != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
         stats.inferenceMs = elapsed;
+        float stageElapsed = 0.0f;
+        if (cudaEventElapsedTime(&stageElapsed, state.startEvent, state.packEndEvent) != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
+        stats.inputPackMs = stageElapsed;
+        if (cudaEventElapsedTime(&stageElapsed, state.trtStartEvent, state.trtEndEvent) != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
+        stats.tensorRtMs = stageElapsed;
+        if (cudaEventElapsedTime(&stageElapsed, state.trtEndEvent, state.endEvent) != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
+        stats.outputWriteMs = stageElapsed;
         stats.engineBytes = m_engineBytes;
         return MPCVR_RIFE_OK;
     }
@@ -591,7 +624,11 @@ private:
             state->context.reset(m_engine->createExecutionContext());
             if (!state->context) return false;
             if (cudaStreamCreateWithFlags(&state->stream, cudaStreamNonBlocking) != cudaSuccess) return false;
-            if (cudaEventCreate(&state->startEvent) != cudaSuccess || cudaEventCreate(&state->endEvent) != cudaSuccess) return false;
+            if (cudaEventCreate(&state->startEvent) != cudaSuccess
+                    || cudaEventCreate(&state->packEndEvent) != cudaSuccess
+                    || cudaEventCreate(&state->trtStartEvent) != cudaSuccess
+                    || cudaEventCreate(&state->trtEndEvent) != cudaSuccess
+                    || cudaEventCreate(&state->endEvent) != cudaSuccess) return false;
             if (cudaMalloc(&state->input, inputBytes) != cudaSuccess || cudaMalloc(&state->output, outputBytes) != cudaSuccess) return false;
             m_contexts.push_back(std::move(state));
             m_contextMutexes.push_back(std::make_unique<std::mutex>());
@@ -668,10 +705,17 @@ extern "C" __declspec(dllexport) int WINAPI MpcvrRifeCreate(const MpcvrRifeCreat
 extern "C" __declspec(dllexport) int WINAPI MpcvrRifeInterpolate(
     void* handle, const MpcvrRifeRequest* request, MpcvrRifeStats* stats)
 {
-    if (!handle || !request || !stats || request->size < sizeof(MpcvrRifeRequest) || stats->size < sizeof(MpcvrRifeStats)) {
+    constexpr size_t kAbi2BaseStatsSize = offsetof(MpcvrRifeStats, inputMapMs);
+    if (!handle || !request || !stats || request->size < sizeof(MpcvrRifeRequest) || stats->size < kAbi2BaseStatsSize) {
         return MPCVR_RIFE_INVALID_ARGUMENT;
     }
-    return static_cast<RifeRuntime*>(handle)->Interpolate(*request, *stats);
+    const uint32_t callerStatsSize = stats->size;
+    MpcvrRifeStats localStats = {};
+    const int result = static_cast<RifeRuntime*>(handle)->Interpolate(*request, localStats);
+    const size_t copySize = std::min<size_t>(callerStatsSize, sizeof(localStats));
+    std::memcpy(stats, &localStats, copySize);
+    stats->size = callerStatsSize;
+    return result;
 }
 
 extern "C" __declspec(dllexport) void WINAPI MpcvrRifeDestroy(void* handle)

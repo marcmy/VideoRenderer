@@ -707,6 +707,13 @@ bool CMpcVideoRenderer::QueueFrameInterpolationSource(
 				generation,
 				synthetic
 			});
+			const uint32_t depth = static_cast<uint32_t>(m_FrameInterpolationPresenterQueue.size());
+			m_FrameInterpolationPresenterDepth.store(depth, std::memory_order_relaxed);
+			uint32_t observedMax = m_FrameInterpolationPresenterMaxDepth.load(std::memory_order_relaxed);
+			while (observedMax < depth
+					&& !m_FrameInterpolationPresenterMaxDepth.compare_exchange_weak(
+						observedMax, depth, std::memory_order_relaxed)) {
+			}
 			queued = true;
 		}
 	}
@@ -741,6 +748,8 @@ bool CMpcVideoRenderer::ReclaimFrameInterpolationPresentationSource()
 		}
 		staleFrame = *stale;
 		m_FrameInterpolationPresenterQueue.erase(stale);
+		m_FrameInterpolationPresenterDepth.store(
+			static_cast<uint32_t>(m_FrameInterpolationPresenterQueue.size()), std::memory_order_relaxed);
 		haveFrame = true;
 	}
 
@@ -764,6 +773,7 @@ void CMpcVideoRenderer::ResetFrameInterpolationPresenterQueue()
 	{
 		std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
 		staleFrames.swap(m_FrameInterpolationPresenterQueue);
+		m_FrameInterpolationPresenterDepth.store(0, std::memory_order_relaxed);
 	}
 	m_FrameInterpolationPresenterWake.Set();
 
@@ -791,6 +801,7 @@ void CMpcVideoRenderer::StopFrameInterpolationPresenter()
 	{
 		std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
 		staleFrames.swap(m_FrameInterpolationPresenterQueue);
+		m_FrameInterpolationPresenterDepth.store(0, std::memory_order_relaxed);
 	}
 	if (m_VideoProcessor && !staleFrames.empty()) {
 		CAutoLock cRendererLock(&m_RendererLock);
@@ -869,6 +880,8 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 			if (!m_FrameInterpolationPresenterQueue.empty()) {
 				frame = m_FrameInterpolationPresenterQueue.front();
 				m_FrameInterpolationPresenterQueue.pop_front();
+				m_FrameInterpolationPresenterDepth.store(
+					static_cast<uint32_t>(m_FrameInterpolationPresenterQueue.size()), std::memory_order_relaxed);
 				haveFrame = true;
 			}
 		}
@@ -879,7 +892,22 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 		}
 
 		const bool due = WaitForFrameInterpolationTime(frame);
+		if (due && frame.clock) {
+			REFERENCE_TIME currentTime = 0;
+			if (SUCCEEDED(frame.clock->GetTime(&currentTime))) {
+				const REFERENCE_TIME targetTime = frame.graphStart + frame.streamTime;
+				const uint64_t lateUs = currentTime > targetTime
+					? static_cast<uint64_t>((currentTime - targetTime) / 10) : 0;
+				m_FrameInterpolationPresenterLastLateUs.store(lateUs, std::memory_order_relaxed);
+				uint64_t observedMax = m_FrameInterpolationPresenterMaxLateUs.load(std::memory_order_relaxed);
+				while (observedMax < lateUs
+						&& !m_FrameInterpolationPresenterMaxLateUs.compare_exchange_weak(
+							observedMax, lateUs, std::memory_order_relaxed)) {
+				}
+			}
+		}
 		bool rendered = false;
+		const auto renderStart = GetPreciseTick();
 		{
 			// Only serialize with D3D11 work. Never acquire m_InterfaceLock on
 			// the presenter thread; seek/flush already owns that lock.
@@ -898,6 +926,14 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 			if (m_VideoProcessor) {
 				m_VideoProcessor->ReleaseFrameInterpolationSource(frame.sourceSurface);
 			}
+		}
+		const auto renderTicks = GetPreciseTick() - renderStart;
+		const uint64_t renderUs = static_cast<uint64_t>(renderTicks * 1000000 / GetPreciseTicksPerSecondI());
+		m_FrameInterpolationPresenterLastRenderUs.store(renderUs, std::memory_order_relaxed);
+		uint64_t observedRenderMax = m_FrameInterpolationPresenterMaxRenderUs.load(std::memory_order_relaxed);
+		while (observedRenderMax < renderUs
+				&& !m_FrameInterpolationPresenterMaxRenderUs.compare_exchange_weak(
+					observedRenderMax, renderUs, std::memory_order_relaxed)) {
 		}
 
 		if (!rendered && due && !m_bStopFrameInterpolationPresenter.load()) {
