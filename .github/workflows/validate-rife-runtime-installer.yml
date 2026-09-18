@@ -1,0 +1,363 @@
+name: Validate RIFE runtime installer
+
+on:
+  push:
+    paths:
+      - 'tools/RifeRuntimeInstaller/**'
+      - 'tools/MaxineSetup/**'
+      - '.github/workflows/rife-runtime.yml'
+      - '.github/workflows/validate-rife-runtime-installer.yml'
+  pull_request:
+    paths:
+      - 'tools/RifeRuntimeInstaller/**'
+      - 'tools/MaxineSetup/**'
+      - '.github/workflows/rife-runtime.yml'
+      - '.github/workflows/validate-rife-runtime-installer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Parse RIFE package scripts with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($script in @(
+            'tools/RifeRuntimeInstaller/RifeRuntimeManifest.psm1',
+            'tools/RifeRuntimeInstaller/Test-RifeRuntimePackage.ps1',
+            'tools/RifeRuntimeInstaller/Install-MPCVRRifeRuntime.ps1',
+            'tools/RifeRuntimeInstaller/Test-MPCVRRifePreflight.ps1',
+            'tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1',
+            'tools/MaxineSetup/Install-MPCVR-Maxine.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path -LiteralPath $script),
+              [ref]$tokens,
+              [ref]$errors)
+            if ($errors.Count) {
+              $errors | Format-List | Out-String | Write-Error
+              throw "Windows PowerShell could not parse $script"
+            }
+          }
+
+      - name: Parse RIFE and unified setup scripts with PowerShell 7
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($script in @(
+            'tools/RifeRuntimeInstaller/RifeRuntimeManifest.psm1',
+            'tools/RifeRuntimeInstaller/Test-RifeRuntimePackage.ps1',
+            'tools/RifeRuntimeInstaller/Install-MPCVRRifeRuntime.ps1',
+            'tools/RifeRuntimeInstaller/Test-MPCVRRifePreflight.ps1',
+            'tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1',
+            'tools/MaxineSetup/Install-MPCVR-Maxine.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path -LiteralPath $script),
+              [ref]$tokens,
+              [ref]$errors)
+            if ($errors.Count) {
+              $errors | Format-List | Out-String | Write-Error
+              throw "PowerShell 7 could not parse $script"
+            }
+          }
+
+      - name: Prove a missing sm120 pack is rejected
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixture = Join-Path $env:RUNNER_TEMP 'rife-runtime-fixture'
+          $staging = Join-Path $fixture '_staging'
+          Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $fixture -Force | Out-Null
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+
+          function New-MockArchive([string]$ArchiveName, [string[]]$Files) {
+            $source = Join-Path $staging ([IO.Path]::GetFileNameWithoutExtension($ArchiveName))
+            Remove-Item -LiteralPath $source -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Path $source -Force | Out-Null
+            foreach ($file in $Files) {
+              Set-Content -LiteralPath (Join-Path $source $file) -Value "mock $file" -Encoding ASCII
+            }
+            Compress-Archive -Path (Join-Path $source '*') -DestinationPath (Join-Path $fixture $ArchiveName) -Force
+          }
+
+          New-MockArchive 'MPCVR-RIFE-Common.zip' @(
+            'MPCVRRifeRuntime64.dll',
+            'cudart64_12.dll',
+            'nvinfer_11.dll',
+            'nvonnxparser_11.dll',
+            'nvinfer_builder_resource_ptx_11.dll',
+            'BUILD-INFO.txt'
+          )
+          foreach ($arch in @('sm75', 'sm86', 'sm89')) {
+            New-MockArchive "MPCVR-RIFE-$arch.zip" @("nvinfer_builder_resource_${arch}_11.dll")
+          }
+
+          [pscustomobject]@{
+            schemaVersion = 1
+            cudaVersion = '12.9.1'
+            cudaRuntimeVersion = '12.9.79'
+            tensorRtVersion = '11.2.1.2'
+            runtimeAbi = 1
+            architectures = @(
+              [pscustomobject]@{ computeCapability = '7.5'; key = 'sm75'; builderResource = 'nvinfer_builder_resource_sm75_11.dll' },
+              [pscustomobject]@{ computeCapability = '8.6'; key = 'sm86'; builderResource = 'nvinfer_builder_resource_sm86_11.dll' },
+              [pscustomobject]@{ computeCapability = '8.9'; key = 'sm89'; builderResource = 'nvinfer_builder_resource_sm89_11.dll' },
+              [pscustomobject]@{ computeCapability = '12.0'; key = 'sm120'; builderResource = 'nvinfer_builder_resource_sm120_11.dll' }
+            )
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $fixture 'runtime-manifest.json') -Encoding UTF8
+
+          $existingArchives = @('MPCVR-RIFE-Common.zip', 'MPCVR-RIFE-sm75.zip', 'MPCVR-RIFE-sm86.zip', 'MPCVR-RIFE-sm89.zip')
+          @(
+            foreach ($archive in $existingArchives) {
+              $hash = (Get-FileHash -LiteralPath (Join-Path $fixture $archive) -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $archive"
+            }
+          ) | Set-Content -LiteralPath (Join-Path $fixture 'SHA256SUMS.txt') -Encoding ASCII
+
+          $output = & tools/RifeRuntimeInstaller/Test-RifeRuntimePackage.ps1 -BundleRoot $fixture 2>&1 | Out-String
+          $exitCode = $LASTEXITCODE
+          Write-Host $output
+          if ($exitCode -eq 0) { throw 'Missing sm120 pack was not rejected.' }
+          if ($output -notmatch 'sm120') { throw 'Missing sm120 failure did not identify the missing architecture pack.' }
+          $global:LASTEXITCODE = 0
+
+      - name: Complete fixture and validate with both PowerShell hosts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixture = Join-Path $env:RUNNER_TEMP 'rife-runtime-fixture'
+          $source = Join-Path $fixture '_staging\MPCVR-RIFE-sm120'
+          New-Item -ItemType Directory -Path $source -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $source 'nvinfer_builder_resource_sm120_11.dll') -Value 'mock sm120' -Encoding ASCII
+          Compress-Archive -Path (Join-Path $source '*') -DestinationPath (Join-Path $fixture 'MPCVR-RIFE-sm120.zip') -Force
+
+          $archives = @('MPCVR-RIFE-Common.zip', 'MPCVR-RIFE-sm75.zip', 'MPCVR-RIFE-sm86.zip', 'MPCVR-RIFE-sm89.zip', 'MPCVR-RIFE-sm120.zip')
+          @(
+            foreach ($archive in $archives) {
+              $hash = (Get-FileHash -LiteralPath (Join-Path $fixture $archive) -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $archive"
+            }
+          ) | Set-Content -LiteralPath (Join-Path $fixture 'SHA256SUMS.txt') -Encoding ASCII
+
+          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
+            tools/RifeRuntimeInstaller/Test-RifeRuntimePackage.ps1 -BundleRoot $fixture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          pwsh.exe -NoLogo -NoProfile -File `
+            tools/RifeRuntimeInstaller/Test-RifeRuntimePackage.ps1 -BundleRoot $fixture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build fake ABI-1 RIFE runtime for installer fixtures
+        shell: cmd
+        run: tools\rife-runtime-abi-test\build-test.cmd
+
+      - name: Validate GPU architecture selection with both PowerShell hosts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = 'tools/RifeRuntimeInstaller/Install-MPCVRRifeRuntime.ps1'
+          $inventory = '[{"name":"NVIDIA GeForce RTX 2070 SUPER","computeCapability":"7.5"},{"name":"NVIDIA GeForce RTX 5070","computeCapability":"12.0"}]'
+          $inventoryPath = Join-Path $env:RUNNER_TEMP 'rife-gpu-inventory.json'
+          Set-Content -LiteralPath $inventoryPath -Value $inventory -Encoding ASCII
+
+          foreach ($hostExe in @('powershell.exe', 'pwsh.exe')) {
+            $output = & $hostExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script `
+              -ValidateOnly -NoPause -GpuInventoryJson $inventoryPath 2>&1 | Out-String
+            $exitCode = $LASTEXITCODE
+            Write-Host $output
+            if ($exitCode -ne 0) { throw "$hostExe selector validation failed with $exitCode" }
+            if ($output -notmatch 'sm75' -or $output -notmatch 'sm120') {
+              throw "$hostExe selector output did not contain sm75 and sm120"
+            }
+          }
+
+          $unsupported = '[{"name":"Future GPU","computeCapability":"9.0"}]'
+          $unsupportedPath = Join-Path $env:RUNNER_TEMP 'rife-unsupported-gpu-inventory.json'
+          Set-Content -LiteralPath $unsupportedPath -Value $unsupported -Encoding ASCII
+          $output = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script `
+            -ValidateOnly -NoPause -GpuInventoryJson $unsupportedPath 2>&1 | Out-String
+          $exitCode = $LASTEXITCODE
+          Write-Host $output
+          if ($exitCode -eq 0) { throw 'Unsupported CUDA compute capability 9.0 was accepted.' }
+          if ($output -notmatch 'Unsupported CUDA compute capability: 9\.0') {
+            throw 'Unsupported compute-capability failure did not contain the expected diagnostic.'
+          }
+          $global:LASTEXITCODE = 0
+
+      - name: Assemble transactional installer fixture
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'rife-installer-fixture'
+          $bundle = Join-Path $root 'bundle'
+          $common = Join-Path $root 'common'
+          $architectures = Join-Path $root 'architectures'
+          $model = Join-Path $root 'model'
+          Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $bundle, $common, $architectures, $model -Force | Out-Null
+
+          Copy-Item `
+            -LiteralPath 'tools/rife-runtime-abi-test/good-runtime/MPCVRRifeRuntime64.dll' `
+            -Destination (Join-Path $common 'MPCVRRifeRuntime64.dll')
+          foreach ($file in @('cudart64_12.dll', 'nvinfer_11.dll', 'nvonnxparser_11.dll', 'nvinfer_builder_resource_ptx_11.dll')) {
+            Set-Content -LiteralPath (Join-Path $common $file) -Value "mock $file" -Encoding ASCII
+          }
+          Set-Content -LiteralPath (Join-Path $common 'BUILD-INFO.txt') -Value 'mock runtime build' -Encoding ASCII
+          Compress-Archive -Path (Join-Path $common '*') -DestinationPath (Join-Path $bundle 'MPCVR-RIFE-Common.zip')
+
+          foreach ($key in @('sm75', 'sm86', 'sm89', 'sm120')) {
+            $directory = Join-Path $architectures $key
+            New-Item -ItemType Directory -Path $directory -Force | Out-Null
+            Set-Content `
+              -LiteralPath (Join-Path $directory "nvinfer_builder_resource_${key}_11.dll") `
+              -Value "mock $key" `
+              -Encoding ASCII
+            Compress-Archive `
+              -Path (Join-Path $directory '*') `
+              -DestinationPath (Join-Path $bundle "MPCVR-RIFE-$key.zip")
+          }
+
+          [pscustomobject]@{
+            schemaVersion = 1
+            cudaVersion = '12.9.1'
+            cudaRuntimeVersion = '12.9.79'
+            tensorRtVersion = '11.2.1.2'
+            runtimeAbi = 1
+            architectures = @(
+              [pscustomobject]@{ computeCapability = '7.5'; key = 'sm75'; builderResource = 'nvinfer_builder_resource_sm75_11.dll' },
+              [pscustomobject]@{ computeCapability = '8.6'; key = 'sm86'; builderResource = 'nvinfer_builder_resource_sm86_11.dll' },
+              [pscustomobject]@{ computeCapability = '8.9'; key = 'sm89'; builderResource = 'nvinfer_builder_resource_sm89_11.dll' },
+              [pscustomobject]@{ computeCapability = '12.0'; key = 'sm120'; builderResource = 'nvinfer_builder_resource_sm120_11.dll' }
+            )
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $bundle 'runtime-manifest.json') -Encoding UTF8
+
+          $runtimeArchives = @(
+            'MPCVR-RIFE-Common.zip',
+            'MPCVR-RIFE-sm75.zip',
+            'MPCVR-RIFE-sm86.zip',
+            'MPCVR-RIFE-sm89.zip',
+            'MPCVR-RIFE-sm120.zip'
+          )
+          @(
+            foreach ($archive in $runtimeArchives) {
+              $hash = (Get-FileHash -LiteralPath (Join-Path $bundle $archive) -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $archive"
+            }
+          ) | Set-Content -LiteralPath (Join-Path $bundle 'SHA256SUMS.txt') -Encoding ASCII
+
+          Set-Content -LiteralPath (Join-Path $model 'rife_v4.6.onnx') -Value 'mock model' -Encoding ASCII
+          New-Item -ItemType Directory -Path (Join-Path $model 'LICENSES') -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $model 'SOURCE.txt') -Value 'mock provenance' -Encoding ASCII
+          Set-Content -LiteralPath (Join-Path $model 'LICENSES\RIFE-model-license.txt') -Value 'mock license' -Encoding ASCII
+          [pscustomobject]@{
+            schemaVersion = 1
+            model = 'RIFE 4.6'
+            file = 'rife_v4.6.onnx'
+            sourceRelease = 'model-20220923'
+            sourceArchiveSha256 = ('a' * 64)
+            input = @(1, 11, 'H', 'W')
+            output = @(1, 3, 'H', 'W')
+            precision = 'mixed-fp16-fp32'
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $model 'model-manifest.json') -Encoding UTF8
+
+          @(
+            foreach ($file in @('rife_v4.6.onnx', 'model-manifest.json', 'SOURCE.txt', 'LICENSES/RIFE-model-license.txt')) {
+              $nativePath = $file.Replace('/', [IO.Path]::DirectorySeparatorChar)
+              $hash = (Get-FileHash -LiteralPath (Join-Path $model $nativePath) -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $file"
+            }
+          ) | Set-Content -LiteralPath (Join-Path $model 'SHA256SUMS.txt') -Encoding ASCII
+
+          Compress-Archive `
+            -Path (Join-Path $model '*') `
+            -DestinationPath (Join-Path $root 'MPCVR-RIFE-Model-v4.6.zip')
+
+      - name: Verify idempotence, cache preservation, and rollback with both PowerShell hosts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'rife-installer-fixture'
+          $bundle = Join-Path $root 'bundle'
+          $modelArchive = Join-Path $root 'MPCVR-RIFE-Model-v4.6.zip'
+          $script = 'tools/RifeRuntimeInstaller/Install-MPCVRRifeRuntime.ps1'
+          $inventory = '[{"name":"NVIDIA GeForce RTX 2070 SUPER","computeCapability":"7.5"},{"name":"NVIDIA GeForce RTX 5070","computeCapability":"12.0"}]'
+          $inventoryPath = Join-Path $root 'gpu-inventory.json'
+          Set-Content -LiteralPath $inventoryPath -Value $inventory -Encoding ASCII
+
+          function Get-TreeHashes([string]$Path) {
+            @(
+              Get-ChildItem -LiteralPath $Path -Recurse -File |
+                Sort-Object FullName |
+                ForEach-Object {
+                  $relative = $_.FullName.Substring($Path.Length).TrimStart('\')
+                  $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                  "$hash  $relative"
+                }
+            )
+          }
+
+          foreach ($hostExe in @('powershell.exe', 'pwsh.exe')) {
+            $hostKey = if ($hostExe -eq 'powershell.exe') { 'winps' } else { 'pwsh' }
+            $installRoot = Join-Path $root "installed-$hostKey"
+            Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath "$installRoot.backup" -Recurse -Force -ErrorAction SilentlyContinue
+
+            & $hostExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script `
+              -RuntimeBundleRoot $bundle `
+              -ModelArchive $modelArchive `
+              -InstallRoot $installRoot `
+              -GpuInventoryJson $inventoryPath `
+              -NoPause
+            if ($LASTEXITCODE -ne 0) { throw "$hostExe first fixture install failed with $LASTEXITCODE" }
+
+            Set-Content -LiteralPath (Join-Path $installRoot 'cache\fixture.plan') -Value 'cached engine' -Encoding ASCII
+            $before = Get-TreeHashes -Path $installRoot
+
+            & $hostExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script `
+              -RuntimeBundleRoot $bundle `
+              -ModelArchive $modelArchive `
+              -InstallRoot $installRoot `
+              -GpuInventoryJson $inventoryPath `
+              -NoPause
+            if ($LASTEXITCODE -ne 0) { throw "$hostExe repeated fixture install failed with $LASTEXITCODE" }
+
+            $after = Get-TreeHashes -Path $installRoot
+            if (@(Compare-Object $before $after).Count -ne 0) {
+              throw "$hostExe repeated install changed installed hashes or lost the compatible cache."
+            }
+
+            $rollbackBefore = Get-TreeHashes -Path $installRoot
+            $failureOutput = & $hostExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script `
+              -RuntimeBundleRoot $bundle `
+              -ModelArchive $modelArchive `
+              -InstallRoot $installRoot `
+              -GpuInventoryJson $inventoryPath `
+              -NoPause `
+              -TestInjectInvalidInstalledModelHash 2>&1 | Out-String
+            $failureCode = $LASTEXITCODE
+            Write-Host $failureOutput
+            if ($failureCode -eq 0) { throw "$hostExe injected post-swap failure unexpectedly passed." }
+            if ($failureOutput -notmatch 'SHA-256 mismatch') {
+              throw "$hostExe injected failure did not fail model-hash preflight."
+            }
+
+            $rollbackAfter = Get-TreeHashes -Path $installRoot
+            if (@(Compare-Object $rollbackBefore $rollbackAfter).Count -ne 0) {
+              throw "$hostExe rollback did not restore the original installed tree."
+            }
+            $global:LASTEXITCODE = 0
+          }

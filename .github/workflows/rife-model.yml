@@ -1,0 +1,141 @@
+name: Build RIFE 4.6 model
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/rife-tensorrt-interpolation
+    paths:
+      - .github/workflows/rife-model.yml
+      - tools/RifeTensorRTRuntime/prepare_model.py
+      - tools/RifeRuntimeInstaller/model-manifest.schema.json
+
+permissions:
+  contents: read
+
+jobs:
+  model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RIFE_SOURCE_RELEASE: model-20220923
+      RIFE_SOURCE_SHA256: 1a18614e72164c61d60861199fc8be6b0003110f747646b3dafb9acd632f6ef7
+      RIFE_SOURCE_BYTES: 195245748
+      RIFE_LICENSE_COMMIT: bbfd2ea90910789a860ea3e2b32a240cd577b75e
+      RIFE_LICENSE_SHA256: 7932fb49341512b959b1744a6d9cbb39e5a1ec89da438a34d0454d5d8df9fecd
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Validate release manifest contract without ONNX dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="${RUNNER_TEMP}/rife-model-manifest.json"
+          cat > "${fixture}" <<EOF
+          {
+            "schemaVersion": 1,
+            "model": "RIFE 4.6",
+            "file": "rife_v4.6.onnx",
+            "sourceRelease": "model-20220923",
+            "sourceArchiveSha256": "${RIFE_SOURCE_SHA256}",
+            "input": [1, 11, "H", "W"],
+            "output": [1, 3, "H", "W"],
+            "precision": "mixed-fp16-fp32"
+          }
+          EOF
+          python tools/RifeTensorRTRuntime/prepare_model.py --validate-manifest "${fixture}"
+
+      - name: Install model preparation dependencies
+        run: python -m pip install --upgrade "nvidia-modelopt[onnx]" py7zr
+
+      - name: Download and verify pinned RIFE source and license
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p _rife-model/source _rife-model/output/LICENSES
+          curl --fail --location --retry 3 \
+            --output _rife-model/rife_v8.7z \
+            https://github.com/AmusementClub/vs-mlrt/releases/download/model-20220923/rife_v8.7z
+          echo "${RIFE_SOURCE_SHA256}  _rife-model/rife_v8.7z" | sha256sum --check --strict
+          test "$(stat -c%s _rife-model/rife_v8.7z)" = "${RIFE_SOURCE_BYTES}"
+
+          curl --fail --location --retry 3 \
+            --output _rife-model/output/LICENSES/RIFE-model-license.txt \
+            "https://raw.githubusercontent.com/hzwer/Practical-RIFE/${RIFE_LICENSE_COMMIT}/LICENSE"
+          echo "${RIFE_LICENSE_SHA256}  _rife-model/output/LICENSES/RIFE-model-license.txt" | sha256sum --check --strict
+
+      - name: Convert RIFE 4.6 to mixed FP16
+        run: python tools/RifeTensorRTRuntime/prepare_model.py _rife-model/rife_v8.7z _rife-model/output/rife_v4.6.onnx
+
+      - name: Validate manifest, write provenance, and checksum release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/RifeTensorRTRuntime/prepare_model.py --validate-manifest _rife-model/output/model-manifest.json
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = json.loads(Path('_rife-model/output/model-manifest.json').read_text(encoding='utf-8'))
+          expected = os.environ['RIFE_SOURCE_SHA256']
+          if manifest['sourceArchiveSha256'] != expected:
+              raise SystemExit(f"manifest sourceArchiveSha256 mismatch: {manifest['sourceArchiveSha256']} != {expected}")
+          PY
+
+          cd _rife-model/output
+          cat > SOURCE.txt <<EOF
+          Model: RIFE v4.6 (fastmode=True, ensemble=False)
+          Upstream model collection: AmusementClub/vs-mlrt
+          Release: ${RIFE_SOURCE_RELEASE}
+          Archive: rife_v8.7z
+          Archive SHA-256: ${RIFE_SOURCE_SHA256}
+          Source model: rife/rife_v4.6.onnx
+          Training/model lineage: hzwer/Practical-RIFE
+          Model license source: hzwer/Practical-RIFE LICENSE
+          Model license commit: ${RIFE_LICENSE_COMMIT}
+          Model license SHA-256: ${RIFE_LICENSE_SHA256}
+          Conversion: NVIDIA Model Optimizer AutoCast, mixed FP16/FP32
+          Public I/O precision: FP16
+          Expected contract: input [1,11,H,W], output [1,3,H,W]
+          EOF
+          sha256sum \
+            rife_v4.6.onnx \
+            model-manifest.json \
+            SOURCE.txt \
+            LICENSES/RIFE-model-license.txt > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Package RIFE 4.6 model release ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd _rife-model/output
+          sha256sum --check --strict SHA256SUMS.txt
+          zip -r MPCVR-RIFE-Model-v4.6.zip \
+            rife_v4.6.onnx \
+            model-manifest.json \
+            SOURCE.txt \
+            SHA256SUMS.txt \
+            LICENSES/RIFE-model-license.txt
+
+      - name: Upload RIFE model artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: mpcvr-rife-v4.6-model
+          path: |
+            _rife-model/output/rife_v4.6.onnx
+            _rife-model/output/SOURCE.txt
+            _rife-model/output/SHA256SUMS.txt
+            _rife-model/output/model-manifest.json
+            _rife-model/output/LICENSES/RIFE-model-license.txt
+            _rife-model/output/MPCVR-RIFE-Model-v4.6.zip
+          if-no-files-found: error
+          compression-level: 0

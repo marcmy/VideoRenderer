@@ -1,0 +1,62 @@
+name: Probe RIFE TensorRT runtime libraries
+
+on:
+  push:
+    branches:
+      - feature/rife-tensorrt-interpolation
+    paths:
+      - .github/workflows/rife-runtime-libs-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: windows-2022
+    steps:
+      - name: Download pinned NVIDIA TensorRT runtime wheel
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $wheel = Join-Path $env:RUNNER_TEMP 'tensorrt_cu12_libs-11.2.1.2-py3-none-win_amd64.whl'
+          $url = 'https://pypi.nvidia.com/tensorrt-cu12-libs/tensorrt_cu12_libs-11.2.1.2-py3-none-win_amd64.whl'
+          & curl.exe --fail --location --retry 3 --output $wheel $url
+          if ($LASTEXITCODE -ne 0) { throw 'TensorRT wheel download failed' }
+          $hash = (Get-FileHash -Algorithm SHA256 $wheel).Hash.ToLowerInvariant()
+          $size = (Get-Item $wheel).Length
+          Write-Host "WHEEL_SHA256=$hash"
+          Write-Host "WHEEL_BYTES=$size"
+          "WHEEL_PATH=$wheel" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Enumerate runtime DLLs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $extract = Join-Path $env:RUNNER_TEMP 'tensorrt-wheel'
+          New-Item -ItemType Directory -Force -Path $extract | Out-Null
+          python -c "import zipfile,os; p=os.environ['WHEEL_PATH']; d=r'$extract'; zipfile.ZipFile(p).extractall(d)"
+          $dlls = Get-ChildItem -Path $extract -Recurse -File -Filter '*.dll' | Sort-Object Name
+          if (-not $dlls) { throw 'No DLLs found in TensorRT runtime wheel' }
+          foreach ($dll in $dlls) {
+              $hash = (Get-FileHash -Algorithm SHA256 $dll.FullName).Hash.ToLowerInvariant()
+              Write-Host ("DLL {0} bytes={1} sha256={2}" -f $dll.Name, $dll.Length, $hash)
+          }
+          "EXTRACT_DIR=$extract" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Inspect core TensorRT dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          Import-Module (Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          foreach ($name in @('nvinfer_11.dll','nvonnxparser_11.dll','nvinfer_builder_resource_11.dll')) {
+              $dll = Get-ChildItem -Path $env:EXTRACT_DIR -Recurse -File -Filter $name | Select-Object -First 1
+              if (-not $dll) {
+                  Write-Host "MISSING $name"
+                  continue
+              }
+              Write-Host "===== $name ====="
+              & dumpbin /dependents $dll.FullName
+          }

@@ -21,6 +21,7 @@
 #pragma once
 
 #include <dxva2api.h>
+#include "RifeRateRules.h"
 
 enum :int {
 	TEXFMT_AUTOINT = 0,
@@ -107,7 +108,8 @@ constexpr inline int MAXINE_AUTO_BITRATE_DEF = 20;
 constexpr inline int MAXINE_AUTO_BITRATE_MIN = 1;
 constexpr inline int MAXINE_AUTO_BITRATE_MAX = 1000;
 
-
+// Legacy NvOFFRUC settings. Kept temporarily for migration while the production
+// interpolation path moves to RIFE/TensorRT.
 enum :int {
 	FRUC_MODE_Disabled = 0,
 	FRUC_MODE_Double,
@@ -129,6 +131,54 @@ enum :int {
 };
 
 constexpr inline int FRUC_GPU_Auto = -1;
+
+// RIFE/TensorRT interpolation settings.
+enum :int {
+	RIFE_MODE_Disabled = 0,
+	RIFE_MODE_ToScreen,
+	RIFE_MODE_Movie2x,
+	RIFE_MODE_Movie2_5x,
+	RIFE_MODE_Movie3x,
+	RIFE_MODE_Movie4x,
+	RIFE_MODE_Movie5x,
+	RIFE_MODE_Fixed60,
+	RIFE_MODE_Fixed72,
+	RIFE_MODE_Fixed90,
+	RIFE_MODE_Fixed120,
+	RIFE_MODE_Custom,
+	RIFE_MODE_COUNT
+};
+
+enum :int {
+	RIFE_SCENE_NVOF = 0,
+	RIFE_SCENE_Image,
+	RIFE_SCENE_Disabled,
+	RIFE_SCENE_COUNT
+};
+
+enum :int {
+	RIFE_SCENE_PROCESS_Blend = 0,
+	RIFE_SCENE_PROCESS_Repeat,
+	RIFE_SCENE_PROCESS_COUNT
+};
+
+enum :int {
+	RIFE_DUPLICATES_Keep = 0,
+	RIFE_DUPLICATES_RemoveEveryOther,
+	RIFE_DUPLICATES_COUNT
+};
+
+enum :int {
+	RIFE_MODEL_46 = 46,
+};
+
+constexpr inline int RIFE_GPU_Auto = -1;
+constexpr inline int RIFE_CUSTOM_FPS_DEF = 60;
+constexpr inline int RIFE_CUSTOM_FPS_MIN = 24;
+constexpr inline int RIFE_CUSTOM_FPS_MAX = 240;
+constexpr inline int RIFE_GPU_THREADS_DEF = 2;
+constexpr inline int RIFE_GPU_THREADS_MIN = 1;
+constexpr inline int RIFE_GPU_THREADS_MAX = 3;
 
 enum :int {
 	CHROMA_Nearest = 0,
@@ -229,11 +279,25 @@ struct Settings_t {
 	int iMaxinePipeline;
 	int iMaxineGPU;
 	int iMaxineAutoBitrate;
+
+	// Legacy NvOFFRUC settings retained for one-way migration.
 	int iFrameInterpolationMode;
 	int iFrameInterpolationSourceLimit;
 	int iFrameInterpolationMaxOutput;
 	int iFrameInterpolationGPU;
 	bool bFrameInterpolationFallback;
+
+	// RIFE settings.
+	int iRifeMode;
+	int iRifeCustomFps;
+	int iRifeGpuThreads;
+	int iRifeModel;
+	int iRifeGPU;
+	bool bRifePerformanceBoost;
+	int iRifeSceneDetection;
+	int iRifeSceneProcessing;
+	int iRifeDuplicateRemoval;
+	RifeRateRules rifeRules;
 
 	Settings_t() {
 		SetDefault();
@@ -295,11 +359,23 @@ struct Settings_t {
 		iMaxinePipeline                 = MAXINE_PIPELINE_UpscaleDenoiseDeblur;
 		iMaxineGPU                      = MAXINE_GPU_Auto;
 		iMaxineAutoBitrate              = MAXINE_AUTO_BITRATE_DEF;
+
 		iFrameInterpolationMode         = FRUC_MODE_Disabled;
 		iFrameInterpolationSourceLimit  = FRUC_SOURCE_LIMIT_1080p;
 		iFrameInterpolationMaxOutput    = FRUC_MAX_OUTPUT_60;
 		iFrameInterpolationGPU          = FRUC_GPU_Auto;
 		bFrameInterpolationFallback     = true;
+
+		iRifeMode                       = RIFE_MODE_Disabled;
+		iRifeCustomFps                  = RIFE_CUSTOM_FPS_DEF;
+		iRifeGpuThreads                 = RIFE_GPU_THREADS_DEF;
+		iRifeModel                      = RIFE_MODEL_46;
+		iRifeGPU                        = RIFE_GPU_Auto;
+		bRifePerformanceBoost           = false;
+		iRifeSceneDetection             = RIFE_SCENE_NVOF;
+		iRifeSceneProcessing            = RIFE_SCENE_PROCESS_Repeat;
+		iRifeDuplicateRemoval           = RIFE_DUPLICATES_Keep;
+		rifeRules                       = {};
 	}
 };
 

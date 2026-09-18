@@ -142,7 +142,7 @@ ENDLOCAL
 EXIT
 
 :SubVSPath
-SET "PARAMS=-property installationPath -requires Microsoft.Component.MSBuild"
+SET "PARAMS=-products * -property installationPath -requires Microsoft.Component.MSBuild"
 IF /I "%COMPILER%" == "VS2019" (
   SET "PARAMS=%PARAMS% -version [16.0,17.0)"
 ) ELSE IF /I "%COMPILER%" == "VS2022" (

@@ -1,6 +1,8 @@
 @cd /d "%~dp0"
-@regsvr32.exe "%~dp0/MpcVideoRenderer64.ax" /u /s
+@set "TARGET_DIR=%ProgramFiles(x86)%\K-Lite Codec Pack\MPC-HC64\MPCVR"
+@regsvr32.exe "%TARGET_DIR%\MpcVideoRenderer64.ax" /u /s
 @if %errorlevel% NEQ 0 goto error
+@del /Q "%TARGET_DIR%\MpcVideoRenderer64.ax" >NUL 2>&1
 :success
 @echo.
 @echo.

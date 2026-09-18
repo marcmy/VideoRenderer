@@ -29,7 +29,8 @@ jobs:
         run: |
           $files = @(
               'tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1',
-              'tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1'
+              'tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1',
+              'tools/KLiteMaxineUpdater/KLiteRendererInstall.psm1'
           )
           foreach ($file in $files) {
               $tokens = $null
@@ -52,7 +53,8 @@ jobs:
         run: |
           $files = @(
               'tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1',
-              'tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1'
+              'tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1',
+              'tools/KLiteMaxineUpdater/KLiteRendererInstall.psm1'
           )
           foreach ($file in $files) {
               $tokens = $null
@@ -68,4 +70,105 @@ jobs:
           & .\tools\KLiteMaxineUpdater\Update-KLiteMPCVR.ps1 -ValidateOnly -NoPause
           if ($LASTEXITCODE -ne 0) {
               throw "PowerShell 7 validation returned $LASTEXITCODE"
+          }
+
+      - name: Validate transactional renderer replacement with both PowerShell hosts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixtureScript = Join-Path $env:RUNNER_TEMP 'Test-KLiteRendererInstall.ps1'
+          @'
+          param(
+              [Parameter(Mandatory = $true)][string]$ModulePath,
+              [Parameter(Mandatory = $true)][string]$Root
+          )
+
+          $ErrorActionPreference = 'Stop'
+          Import-Module $ModulePath -Force
+
+          function Get-Hash([string]$Path) {
+              (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
+
+          Remove-Item -LiteralPath $Root -Recurse -Force -ErrorAction SilentlyContinue
+          $sourceRoot = Join-Path $Root 'source'
+          $targetRoot = Join-Path $Root 'target'
+          New-Item -ItemType Directory -Path $sourceRoot, $targetRoot -Force | Out-Null
+
+          $sources = @{
+              'MpcVideoRenderer.ax' = (Join-Path $sourceRoot 'MpcVideoRenderer.ax')
+              'MpcVideoRenderer64.ax' = (Join-Path $sourceRoot 'MpcVideoRenderer64.ax')
+          }
+          $targets = @{
+              'MpcVideoRenderer.ax' = (Join-Path $targetRoot 'MpcVideoRenderer.ax')
+              'MpcVideoRenderer64.ax' = (Join-Path $targetRoot 'MpcVideoRenderer64.ax')
+          }
+
+          Set-Content -LiteralPath $sources['MpcVideoRenderer.ax'] -Value 'new-x86' -Encoding ASCII
+          Set-Content -LiteralPath $sources['MpcVideoRenderer64.ax'] -Value 'new-x64' -Encoding ASCII
+          Set-Content -LiteralPath $targets['MpcVideoRenderer.ax'] -Value 'old-x86' -Encoding ASCII
+          Set-Content -LiteralPath $targets['MpcVideoRenderer64.ax'] -Value 'old-x64' -Encoding ASCII
+
+          $oldX86 = Get-Hash $targets['MpcVideoRenderer.ax']
+          $oldX64 = Get-Hash $targets['MpcVideoRenderer64.ax']
+          $lock = [IO.File]::Open(
+              $targets['MpcVideoRenderer64.ax'],
+              [IO.FileMode]::Open,
+              [IO.FileAccess]::ReadWrite,
+              [IO.FileShare]::None)
+          try {
+              $failed = $false
+              try {
+                  Install-KLiteRendererFiles -Sources $sources -Targets $targets | Out-Null
+              }
+              catch {
+                  $failed = $true
+              }
+              if (-not $failed) {
+                  throw 'Injected second-target failure unexpectedly succeeded.'
+              }
+          }
+          finally {
+              $lock.Dispose()
+          }
+
+          if ((Get-Hash $targets['MpcVideoRenderer.ax']) -ne $oldX86) {
+              throw 'Rollback did not restore the original x86 renderer.'
+          }
+          if ((Get-Hash $targets['MpcVideoRenderer64.ax']) -ne $oldX64) {
+              throw 'Rollback did not preserve the original x64 renderer.'
+          }
+
+          $firstInstall = @(Install-KLiteRendererFiles -Sources $sources -Targets $targets)
+          if ($firstInstall.Count -ne 2) {
+              throw "Expected metadata for two installed renderer files, got $($firstInstall.Count)."
+          }
+          $installedX86 = Get-Hash $targets['MpcVideoRenderer.ax']
+          $installedX64 = Get-Hash $targets['MpcVideoRenderer64.ax']
+          if ($installedX86 -ne (Get-Hash $sources['MpcVideoRenderer.ax'])) {
+              throw 'x86 renderer hash does not match its source after install.'
+          }
+          if ($installedX64 -ne (Get-Hash $sources['MpcVideoRenderer64.ax'])) {
+              throw 'x64 renderer hash does not match its source after install.'
+          }
+
+          [void](Install-KLiteRendererFiles -Sources $sources -Targets $targets)
+          if ((Get-Hash $targets['MpcVideoRenderer.ax']) -ne $installedX86 -or
+              (Get-Hash $targets['MpcVideoRenderer64.ax']) -ne $installedX64) {
+              throw 'Repeated install changed renderer hashes.'
+          }
+
+          $leftovers = @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter '*.mpcvr-backup-*' -ErrorAction SilentlyContinue)
+          if ($leftovers.Count -ne 0) {
+              throw "Transactional installer left $($leftovers.Count) backup file(s) behind."
+          }
+          '@ | Set-Content -LiteralPath $fixtureScript -Encoding UTF8
+
+          $module = (Resolve-Path 'tools/KLiteMaxineUpdater/KLiteRendererInstall.psm1').Path
+          foreach ($hostExe in @('powershell.exe', 'pwsh.exe')) {
+              $root = Join-Path $env:RUNNER_TEMP ("klite-renderer-$($hostExe.Replace('.exe', ''))")
+              & $hostExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $fixtureScript -ModulePath $module -Root $root
+              if ($LASTEXITCODE -ne 0) {
+                  throw "$hostExe transactional fixture returned $LASTEXITCODE"
+              }
           }

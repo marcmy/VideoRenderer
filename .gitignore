@@ -5,3 +5,5 @@
 /_bin
 /revision.h
 /signinfo.txt
+
+.worktrees/

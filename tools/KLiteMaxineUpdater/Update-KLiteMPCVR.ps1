@@ -11,10 +11,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+Import-Module (Join-Path $PSScriptRoot 'KLiteRendererInstall.psm1') -Force
+
 $releaseBaseUrl = 'https://github.com/marcmy/VideoRenderer/releases/latest/download'
-$assetName = 'MpcVideoRenderer-Maxine.zip'
+$primaryAssetName = 'MpcVideoRenderer-Maxine-RIFE.zip'
+$legacyAssetName = 'MpcVideoRenderer-Maxine.zip'
 $checksumListName = 'SHA256SUMS.txt'
-$legacyChecksumName = "$assetName.sha256"
 
 $targets = [ordered]@{
     'MpcVideoRenderer.ax' = 'C:\Program Files (x86)\K-Lite Codec Pack\Filters\MPCVR\MpcVideoRenderer.ax'
@@ -127,6 +129,7 @@ if ($ValidateOnly) {
     }
 
     [void](Get-PowerShellExecutable)
+    [void](Get-Command Install-KLiteRendererFiles -CommandType Function -ErrorAction Stop)
     if (-not [string]::IsNullOrWhiteSpace($PackageArchive)) {
         $resolvedArchive = (Resolve-Path -LiteralPath $PackageArchive).Path
         $resolvedChecksum = (Resolve-Path -LiteralPath $ChecksumFile).Path
@@ -168,9 +171,10 @@ if ($PSVersionTable.PSEdition -eq 'Desktop') {
 }
 
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("MPCVR-Maxine-Updater-{0}" -f [guid]::NewGuid())
-$archivePath = Join-Path $tempRoot $assetName
 $checksumPath = Join-Path $tempRoot $checksumListName
 $extractPath = Join-Path $tempRoot 'extracted'
+$archivePath = $null
+$selectedAssetName = $primaryAssetName
 $exitCode = 0
 
 try {
@@ -191,20 +195,39 @@ try {
     if (-not [string]::IsNullOrWhiteSpace($PackageArchive)) {
         $resolvedArchive = (Resolve-Path -LiteralPath $PackageArchive).Path
         $resolvedChecksum = (Resolve-Path -LiteralPath $ChecksumFile).Path
+        $selectedAssetName = [IO.Path]::GetFileName($resolvedArchive)
+        $archivePath = Join-Path $tempRoot $selectedAssetName
         Copy-Item -LiteralPath $resolvedArchive -Destination $archivePath -Force
         Copy-Item -LiteralPath $resolvedChecksum -Destination $checksumPath -Force
-        Write-Host 'Using the renderer package included with MPCVR Maxine Setup...'
+        Write-Host 'Using the renderer package included with MPCVR Maxine + RIFE Setup...'
     }
     else {
-        Write-Host 'Downloading the latest custom Maxine build...'
-        $archiveRequest = @{
-            Uri = "$releaseBaseUrl/$assetName"
-            OutFile = $archivePath
+        Write-Host 'Downloading the latest custom Maxine + RIFE build...'
+        try {
+            $selectedAssetName = $primaryAssetName
+            $archivePath = Join-Path $tempRoot $selectedAssetName
+            $archiveRequest = @{
+                Uri = "$releaseBaseUrl/$selectedAssetName"
+                OutFile = $archivePath
+            }
+            if ($PSVersionTable.PSEdition -eq 'Desktop') {
+                $archiveRequest.UseBasicParsing = $true
+            }
+            Invoke-WebRequest @archiveRequest
         }
-        if ($PSVersionTable.PSEdition -eq 'Desktop') {
-            $archiveRequest.UseBasicParsing = $true
+        catch {
+            Write-Host 'The Maxine + RIFE renderer asset was unavailable; trying the legacy Maxine renderer asset.' -ForegroundColor Yellow
+            $selectedAssetName = $legacyAssetName
+            $archivePath = Join-Path $tempRoot $selectedAssetName
+            $archiveRequest = @{
+                Uri = "$releaseBaseUrl/$selectedAssetName"
+                OutFile = $archivePath
+            }
+            if ($PSVersionTable.PSEdition -eq 'Desktop') {
+                $archiveRequest.UseBasicParsing = $true
+            }
+            Invoke-WebRequest @archiveRequest
         }
-        Invoke-WebRequest @archiveRequest
 
         try {
             $checksumRequest = @{
@@ -218,6 +241,7 @@ try {
         }
         catch {
             Write-Host 'The combined checksum list was unavailable; trying the legacy checksum asset.' -ForegroundColor Yellow
+            $legacyChecksumName = "$selectedAssetName.sha256"
             $legacyRequest = @{
                 Uri = "$releaseBaseUrl/$legacyChecksumName"
                 OutFile = $checksumPath
@@ -229,7 +253,7 @@ try {
         }
     }
 
-    $expectedHash = Get-ExpectedHash -ChecksumPath $checksumPath -FileName $assetName
+    $expectedHash = Get-ExpectedHash -ChecksumPath $checksumPath -FileName $selectedAssetName
     $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actualHash -ne $expectedHash) {
         throw "SHA-256 verification failed. Expected $expectedHash but found $actualHash."
@@ -237,34 +261,25 @@ try {
 
     Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath -Force
 
+    $sources = @{}
     foreach ($fileName in $targets.Keys) {
         $source = Join-Path $extractPath $fileName
-        $destination = $targets[$fileName]
-
         if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
             throw "The renderer package does not contain $fileName."
         }
-
-        Write-Host "Installing $fileName..."
-        Copy-Item -LiteralPath $source -Destination $destination -Force
-
-        $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
-        $destinationHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
-        if ($sourceHash -ne $destinationHash) {
-            throw "Verification failed after copying $fileName."
-        }
+        $sources[$fileName] = $source
     }
 
+    $installTargets = @{}
+    foreach ($fileName in $targets.Keys) {
+        $installTargets[$fileName] = $targets[$fileName]
+        Write-Host "Installing $fileName..."
+    }
+    $installedFiles = @(Install-KLiteRendererFiles -Sources $sources -Targets $installTargets)
+
     Write-Host
-    Write-Host 'Custom MPC Video Renderer restored successfully.' -ForegroundColor Green
-    $targets.Values | ForEach-Object {
-        $item = Get-Item -LiteralPath $_
-        [pscustomobject]@{
-            File = $item.Name
-            Version = $item.VersionInfo.FileVersion
-            Path = $item.FullName
-        }
-    } | Format-Table -AutoSize
+    Write-Host 'Custom MPC Video Renderer Maxine + RIFE build restored successfully.' -ForegroundColor Green
+    $installedFiles | Select-Object File, Version, Path | Format-Table -AutoSize
 }
 catch {
     $exitCode = 1
