@@ -247,14 +247,20 @@ public:
 
     int Initialize(const MpcvrRifeCreateParams& params)
     {
-        if (!params.device || !params.modelPath || !params.cachePath || params.width == 0 || params.height == 0) {
+        if (!params.device || !params.modelPath || !params.cachePath
+                || params.width == 0 || params.height == 0
+                || params.contentWidth == 0 || params.contentHeight == 0) {
             return MPCVR_RIFE_INVALID_ARGUMENT;
         }
 
-        m_width = params.width;
-        m_height = params.height;
-        m_paddedWidth = RoundUp(m_width, kPadMultiple);
-        m_paddedHeight = RoundUp(m_height, kPadMultiple);
+        m_width = params.contentWidth;
+        m_height = params.contentHeight;
+        m_paddedWidth = params.width;
+        m_paddedHeight = params.height;
+        if (m_paddedWidth != RoundUp(m_width, kPadMultiple)
+                || m_paddedHeight != RoundUp(m_height, kPadMultiple)) {
+            return MPCVR_RIFE_INVALID_ARGUMENT;
+        }
         m_contextCount = std::clamp(params.contextCount, 1u, kMaxContexts);
         m_performanceBoost = params.performanceBoost != 0;
         m_modelPath = params.modelPath;
@@ -312,7 +318,8 @@ public:
             return MPCVR_RIFE_BUILDER_RESOURCE_MISSING;
         }
 
-        if (!LoadOrBuildEngine()) return MPCVR_RIFE_TENSORRT_FAILURE;
+        m_initializationFailure = MPCVR_RIFE_TENSORRT_FAILURE;
+        if (!LoadOrBuildEngine()) return m_initializationFailure;
         if (!PrepareContexts()) return MPCVR_RIFE_TENSORRT_FAILURE;
         return MPCVR_RIFE_OK;
     }
@@ -328,27 +335,26 @@ public:
         auto& state = *m_contexts[request.contextIndex];
         if (cudaSetDevice(m_cudaDevice) != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
 
-        std::array<cudaGraphicsResource_t, 3> resources{};
+        std::array<cudaGraphicsResource_t, 2> inputResources{};
+        cudaGraphicsResource_t outputResource = nullptr;
         {
             D3D11InteropLock interopLock(m_d3dMultithread);
-            resources = {m_registrations.Get(request.first, false),
-                m_registrations.Get(request.second, false), m_registrations.Get(request.output, true)};
-            if (!resources[0] || !resources[1] || !resources[2]) return MPCVR_RIFE_CUDA_FAILURE;
-            if (cudaGraphicsMapResources(static_cast<int>(resources.size()), resources.data(), state.stream) != cudaSuccess) {
-                return MPCVR_RIFE_CUDA_FAILURE;
-            }
+            inputResources = {m_registrations.Get(request.first, false),
+                m_registrations.Get(request.second, false)};
+            outputResource = m_registrations.Get(request.output, true);
         }
+        if (!inputResources[0] || !inputResources[1] || !outputResource) return MPCVR_RIFE_CUDA_FAILURE;
 
-        bool mapped = true;
-        auto releaseMappings = [&]() -> cudaError_t {
-            if (!mapped) return cudaSuccess;
+        bool outputMapped = false;
+        auto releaseOutput = [&]() -> cudaError_t {
+            if (!outputMapped) return cudaSuccess;
             cudaError_t unmapResult;
             {
                 D3D11InteropLock interopLock(m_d3dMultithread);
                 unmapResult = cudaGraphicsUnmapResources(
-                    static_cast<int>(resources.size()), resources.data(), state.stream);
+                    1, &outputResource, state.stream);
             }
-            mapped = false;
+            outputMapped = false;
             // Unmap is stream-ordered. The caller hands the output texture back to
             // D3D11 immediately after this function returns, so wait for the
             // ownership transition itself, not merely the preceding inference event.
@@ -358,23 +364,65 @@ public:
 
         cudaArray_t firstArray = nullptr;
         cudaArray_t secondArray = nullptr;
-        cudaArray_t outputArray = nullptr;
-        if (cudaGraphicsSubResourceGetMappedArray(&firstArray, resources[0], 0, 0) != cudaSuccess ||
-            cudaGraphicsSubResourceGetMappedArray(&secondArray, resources[1], 0, 0) != cudaSuccess ||
-            cudaGraphicsSubResourceGetMappedArray(&outputArray, resources[2], 0, 0) != cudaSuccess) {
-            releaseMappings();
-            return MPCVR_RIFE_CUDA_FAILURE;
+        {
+            // Adjacent source pairs share their middle texture (A/B, then B/C).
+            // CUDA graphics resources cannot be mapped twice concurrently, so
+            // serialize only the short map/pack/unmap ownership window. Once the
+            // pixels are packed into this context's private CUDA buffer, TensorRT
+            // can run concurrently with the next context packing B/C.
+            std::scoped_lock inputPackLock(m_inputPackMutex);
+            {
+                D3D11InteropLock interopLock(m_d3dMultithread);
+                if (cudaGraphicsMapResources(
+                        static_cast<int>(inputResources.size()), inputResources.data(), state.stream) != cudaSuccess) {
+                    return MPCVR_RIFE_CUDA_FAILURE;
+                }
+            }
+
+            bool inputsMapped = true;
+            auto releaseInputs = [&]() -> cudaError_t {
+                if (!inputsMapped) return cudaSuccess;
+                cudaError_t unmapResult;
+                {
+                    D3D11InteropLock interopLock(m_d3dMultithread);
+                    unmapResult = cudaGraphicsUnmapResources(
+                        static_cast<int>(inputResources.size()), inputResources.data(), state.stream);
+                }
+                inputsMapped = false;
+                const cudaError_t syncResult = cudaStreamSynchronize(state.stream);
+                return unmapResult != cudaSuccess ? unmapResult : syncResult;
+            };
+
+            if (cudaGraphicsSubResourceGetMappedArray(&firstArray, inputResources[0], 0, 0) != cudaSuccess ||
+                    cudaGraphicsSubResourceGetMappedArray(&secondArray, inputResources[1], 0, 0) != cudaSuccess) {
+                releaseInputs();
+                return MPCVR_RIFE_CUDA_FAILURE;
+            }
+            if (cudaEventRecord(state.startEvent, state.stream) != cudaSuccess) {
+                releaseInputs();
+                return MPCVR_RIFE_CUDA_FAILURE;
+            }
+            if (MpcvrRifePackInput(firstArray, secondArray, state.input, m_inputIsFp16,
+                    static_cast<int>(m_width), static_cast<int>(m_height),
+                    static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
+                    request.timestep, state.stream) != cudaSuccess) {
+                releaseInputs();
+                return MPCVR_RIFE_CUDA_FAILURE;
+            }
+            if (releaseInputs() != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
         }
 
-        if (cudaEventRecord(state.startEvent, state.stream) != cudaSuccess) {
-            releaseMappings();
-            return MPCVR_RIFE_CUDA_FAILURE;
+        {
+            D3D11InteropLock interopLock(m_d3dMultithread);
+            if (cudaGraphicsMapResources(1, &outputResource, state.stream) != cudaSuccess) {
+                return MPCVR_RIFE_CUDA_FAILURE;
+            }
         }
-        if (MpcvrRifePackInput(firstArray, secondArray, state.input, m_inputIsFp16,
-                static_cast<int>(m_width), static_cast<int>(m_height),
-                static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
-                request.timestep, state.stream) != cudaSuccess) {
-            releaseMappings();
+        outputMapped = true;
+
+        cudaArray_t outputArray = nullptr;
+        if (cudaGraphicsSubResourceGetMappedArray(&outputArray, outputResource, 0, 0) != cudaSuccess) {
+            releaseOutput();
             return MPCVR_RIFE_CUDA_FAILURE;
         }
 
@@ -383,22 +431,22 @@ public:
             !state.context->setTensorAddress(m_inputName.c_str(), state.input) ||
             !state.context->setTensorAddress(m_outputName.c_str(), state.output) ||
             !state.context->enqueueV3(state.stream)) {
-            const cudaError_t releaseResult = releaseMappings();
+            const cudaError_t releaseResult = releaseOutput();
             return releaseResult == cudaSuccess ? MPCVR_RIFE_TENSORRT_FAILURE : MPCVR_RIFE_CUDA_FAILURE;
         }
 
         if (MpcvrRifeWriteOutput(state.output, m_outputIsFp16, outputArray,
                 static_cast<int>(m_width), static_cast<int>(m_height),
                 static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight), state.stream) != cudaSuccess) {
-            releaseMappings();
+            releaseOutput();
             return MPCVR_RIFE_CUDA_FAILURE;
         }
 
         if (cudaEventRecord(state.endEvent, state.stream) != cudaSuccess) {
-            releaseMappings();
+            releaseOutput();
             return MPCVR_RIFE_CUDA_FAILURE;
         }
-        if (releaseMappings() != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
+        if (releaseOutput() != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
 
         float elapsed = 0.0f;
         if (cudaEventElapsedTime(&elapsed, state.startEvent, state.endEvent) != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
@@ -421,23 +469,6 @@ private:
         if (!plan.empty() && DeserializeEngine(plan)) {
             m_engineBytes = plan.size();
             return ConfigureEngineContract();
-        }
-
-        // Older builds unnecessarily keyed dynamic TensorRT plans by the
-        // current window size even though their optimization profile already
-        // spans 128x128 through 3840x2176. Migrate the matching legacy plan on
-        // first use so switching between windowed and fullscreen does not
-        // trigger another expensive engine build.
-        if (!m_performanceBoost) {
-            const std::string legacyKey = BuildLegacyCacheKey(modelHash);
-            const auto legacyPath = m_cachePath / std::filesystem::path(
-                std::wstring(legacyKey.begin(), legacyKey.end()) + L".plan");
-            plan = ReadFile(legacyPath);
-            if (!plan.empty() && DeserializeEngine(plan) && ConfigureEngineContract()) {
-                m_engineBytes = plan.size();
-                WriteFileAtomically(planPath, plan.data(), plan.size());
-                return true;
-            }
         }
 
         TrtPtr<nvinfer1::IBuilder> builder(nvinfer1::createInferBuilder(g_logger));
@@ -463,6 +494,10 @@ private:
         if (inputDims.nbDims != 4 || outputDims.nbDims != 4 || inputDims.d[1] != 11 || outputDims.d[1] != 3) {
             return false;
         }
+
+        const uint32_t linearFormatMask = 1u << static_cast<uint32_t>(nvinfer1::TensorFormat::kLINEAR);
+        input->setAllowedFormats(linearFormatMask);
+        output->setAllowedFormats(linearFormatMask);
 
         nvinfer1::IOptimizationProfile* profile = builder->createOptimizationProfile();
         if (!profile) return false;
@@ -526,6 +561,14 @@ private:
             return type == nvinfer1::DataType::kFLOAT || type == nvinfer1::DataType::kHALF;
         };
         if (!supportedType(inputType) || !supportedType(outputType)) return false;
+        const auto linearTensor = [&](const char* name) {
+            return m_engine->getTensorFormat(name) == nvinfer1::TensorFormat::kLINEAR
+                && m_engine->getTensorVectorizedDim(name) == -1;
+        };
+        if (!linearTensor(inputName) || !linearTensor(outputName)) {
+            m_initializationFailure = MPCVR_RIFE_UNSUPPORTED_TENSOR_FORMAT;
+            return false;
+        }
         m_inputIsFp16 = inputType == nvinfer1::DataType::kHALF;
         m_outputIsFp16 = outputType == nvinfer1::DataType::kHALF;
         return true;
@@ -560,6 +603,7 @@ private:
     {
         std::ostringstream out;
         out << "rife46_" << modelHash.substr(0, 16)
+            << "_abi" << MPCVR_RIFE_RUNTIME_ABI
             << "_trt" << NV_TENSORRT_MAJOR << '_' << NV_TENSORRT_MINOR
             << "_cc" << m_computeMajor << m_computeMinor
             << '_' << Sanitize(m_gpuName);
@@ -570,18 +614,6 @@ private:
             const uint32_t maxHeight = std::max<uint32_t>(2176, m_paddedHeight);
             out << "_dynamic_max" << maxWidth << 'x' << maxHeight;
         }
-        return out.str();
-    }
-
-    std::string BuildLegacyCacheKey(const std::string& modelHash) const
-    {
-        std::ostringstream out;
-        out << "rife46_" << modelHash.substr(0, 16)
-            << "_trt" << NV_TENSORRT_MAJOR << '_' << NV_TENSORRT_MINOR
-            << "_cc" << m_computeMajor << m_computeMinor
-            << '_' << Sanitize(m_gpuName)
-            << '_' << m_paddedWidth << 'x' << m_paddedHeight
-            << "_dynamic";
         return out.str();
     }
 
@@ -604,10 +636,12 @@ private:
     std::string m_inputName;
     std::string m_outputName;
     uint64_t m_engineBytes = 0;
+    int m_initializationFailure = MPCVR_RIFE_TENSORRT_FAILURE;
     TrtPtr<nvinfer1::IRuntime> m_runtime;
     TrtPtr<nvinfer1::ICudaEngine> m_engine;
     std::vector<std::unique_ptr<ContextState>> m_contexts;
     std::vector<std::unique_ptr<std::mutex>> m_contextMutexes;
+    std::mutex m_inputPackMutex;
     GraphicsRegistrationCache m_registrations;
 };
 

@@ -20,15 +20,15 @@ def function_body(text: str, marker: str) -> str:
     raise AssertionError(f"{marker} implementation end was not found")
 
 
-process_pair = function_body(source, "void ProcessPair(")
+process_pair = function_body(source, "void ProcessPairJob(")
 
 guard_pos = process_pair.find("hasTimelySyntheticTarget")
-nvof_pos = process_pair.find("nvofDetector.BeginAnalyze(")
-image_pos = process_pair.find("DetectImageSceneCut(first, second)")
-late_pos = process_pair.find("if (IsLate(second, target.presentationTime))")
+nvof_pos = process_pair.find("workerState.nvofDetector.BeginAnalyze(")
+image_pos = process_pair.find("DetectImageSceneCut(workerState.imageDetector, first, second)")
+late_pos = process_pair.find("IsLate(second, target.presentationTime)")
 
 assert guard_pos != -1, (
-    "ProcessPair must detect whether any synthetic target is still timely before running scene detection"
+    "ProcessPairJob must detect whether any synthetic target is still timely before running scene detection"
 )
 assert nvof_pos != -1 and guard_pos < nvof_pos and late_pos != -1 and late_pos < nvof_pos, (
     "late synthetic targets must be filtered before NVOF analysis is launched"

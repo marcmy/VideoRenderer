@@ -64,7 +64,7 @@ function Assert-Manifest {
     if ([string]$Manifest.tensorRtVersion -ne '11.2.1.2') {
         throw "runtime-manifest.json has unexpected tensorRtVersion '$($Manifest.tensorRtVersion)'"
     }
-    if ([int]$Manifest.runtimeAbi -ne 1) {
+    if ([int]$Manifest.runtimeAbi -ne 2) {
         throw "runtime-manifest.json has unsupported runtimeAbi '$($Manifest.runtimeAbi)'"
     }
 

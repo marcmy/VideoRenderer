@@ -22,6 +22,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -119,6 +120,8 @@ struct RuntimeKey {
     ID3D11Device* device = nullptr;
     UINT width = 0;
     UINT height = 0;
+    UINT contentWidth = 0;
+    UINT contentHeight = 0;
     int gpu = RIFE_GPU_Auto;
     int contexts = RIFE_GPU_THREADS_DEF;
     bool performanceBoost = false;
@@ -126,6 +129,7 @@ struct RuntimeKey {
     bool operator==(const RuntimeKey& other) const noexcept
     {
         return device == other.device && width == other.width && height == other.height
+            && contentWidth == other.contentWidth && contentHeight == other.contentHeight
             && gpu == other.gpu && contexts == other.contexts
             && performanceBoost == other.performanceBoost;
     }
@@ -287,6 +291,8 @@ struct CRifePlaybackPipeline::Impl
         CDX11VideoProcessor* processor = nullptr;
         REFERENCE_TIME time = INVALID_TIME;
         REFERENCE_TIME frameDuration = 0;
+        UINT contentWidth = 0;
+        UINT contentHeight = 0;
         uint64_t presenterGeneration = 0;
         uint64_t resetSerial = 0;
         Settings_t settings;
@@ -295,6 +301,43 @@ struct CRifePlaybackPipeline::Impl
         uint32_t maxOutputFpsMilli = 0;
         CComPtr<IReferenceClock> clock;
         REFERENCE_TIME graphStart = 0;
+    };
+
+    using SourceFramePtr = std::shared_ptr<SourceFrame>;
+
+    struct TargetResult {
+        FrameInterpolationTarget target;
+        CComPtr<ID3D11Texture2D> generated;
+        bool inferenceFailed = false;
+        bool skippedLate = false;
+    };
+
+    struct PairJob {
+        uint64_t sequence = 0;
+        uint32_t contextIndex = 0;
+        SourceFramePtr first;
+        SourceFramePtr second;
+        std::shared_ptr<CRifeFrameInterpolation> runtime;
+        std::vector<FrameInterpolationTarget> targets;
+        std::vector<TargetResult> results;
+        UINT width = 0;
+        UINT height = 0;
+        bool sceneCut = false;
+        std::atomic_bool done = false;
+    };
+
+    struct InferenceWorkerState {
+        uint32_t index = 0;
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::deque<std::shared_ptr<PairJob>> queue;
+        std::thread thread;
+        bool stop = false;
+        CNvidiaSceneChangeDetector nvofDetector;
+        ImageCutDetector imageDetector;
+        CComPtr<ID3D11Texture2D> inferenceFirst;
+        CComPtr<ID3D11Texture2D> inferenceSecond;
+        std::vector<CComPtr<ID3D11Texture2D>> inferenceOutputs;
     };
 
     static bool RifeFramesCompatible(const SourceFrame& first, const SourceFrame& second)
@@ -324,8 +367,14 @@ struct CRifePlaybackPipeline::Impl
 
     explicit Impl(CMpcVideoRenderer* renderer)
         : owner(renderer)
-        , worker(&Impl::WorkerMain, this)
     {
+        for (uint32_t i = 0; i < inferenceWorkers.size(); ++i) {
+            auto state = std::make_unique<InferenceWorkerState>();
+            state->index = i;
+            state->thread = std::thread(&Impl::InferenceWorkerMain, this, state.get());
+            inferenceWorkers[i] = std::move(state);
+        }
+        worker = std::thread(&Impl::WorkerMain, this);
     }
 
     ~Impl()
@@ -334,6 +383,19 @@ struct CRifePlaybackPipeline::Impl
         cv.notify_all();
         if (worker.joinable()) {
             worker.join();
+        }
+        for (auto& state : inferenceWorkers) {
+            if (!state) continue;
+            {
+                std::lock_guard lock(state->mutex);
+                state->stop = true;
+            }
+            state->cv.notify_all();
+        }
+        for (auto& state : inferenceWorkers) {
+            if (state && state->thread.joinable()) {
+                state->thread.join();
+            }
         }
         ClearQueuedFrames();
     }
@@ -344,6 +406,7 @@ struct CRifePlaybackPipeline::Impl
     std::condition_variable cv;
     std::deque<SourceFrame> queue;
     std::thread worker;
+    std::array<std::unique_ptr<InferenceWorkerState>, RIFE_GPU_THREADS_MAX> inferenceWorkers;
     std::atomic_bool stop = false;
     std::atomic_uint64_t resetSerial = 1;
     uint64_t lastSubmittedGeneration = UINT64_MAX;
@@ -357,8 +420,6 @@ struct CRifePlaybackPipeline::Impl
     uint32_t schedulerMaxMultiplierMilli = 0;
     uint32_t schedulerMaxOutputFpsMilli = 0;
 
-    CNvidiaSceneChangeDetector nvofDetector;
-    ImageCutDetector imageDetector;
     CRifeSceneBlender sceneBlender;
     CComPtr<ID3D11Texture2D> outputTexture;
     CComPtr<ID3D11Device> outputDevice;
@@ -368,7 +429,6 @@ struct CRifePlaybackPipeline::Impl
     std::shared_ptr<RuntimeBuildState> runtimeBuild;
     std::optional<RuntimeKey> runtimeKey;
     std::deque<std::pair<RuntimeKey, std::shared_ptr<RuntimeBuildState>>> runtimeCache;
-    uint32_t nextContext = 0;
     bool removeEveryOtherToggle = false;
 
     std::atomic_uint64_t generatedFrames = 0;
@@ -381,6 +441,10 @@ struct CRifePlaybackPipeline::Impl
     std::atomic_uint64_t presentationReclaims = 0;
     std::atomic_uint64_t sourceResyncs = 0;
     std::atomic_uint64_t lastInferenceUs = 0;
+    std::atomic_uint32_t activeInferences = 0;
+    std::atomic_uint32_t maxConcurrentInferences = 0;
+    std::atomic_uint32_t configuredInferenceContexts = RIFE_GPU_THREADS_DEF;
+    std::atomic_bool tensorIoLinearValidated = false;
     std::atomic_int activeRule = -1;
     std::atomic_bool ruleBypass = false;
     std::atomic_uint32_t ruleMaxMultiplierMilli = 0;
@@ -411,8 +475,6 @@ struct CRifePlaybackPipeline::Impl
     {
         scheduler.Reset();
         schedulerConfigured = false;
-        nvofDetector.Reset();
-        imageDetector.Reset();
         sceneBlender.Reset();
         removeEveryOtherToggle = false;
     }
@@ -533,12 +595,17 @@ struct CRifePlaybackPipeline::Impl
         frame.processor = processor;
         frame.time = sourceTime;
         frame.frameDuration = frameDuration;
+        frame.contentWidth = static_cast<UINT>(contentSize.cx);
+        frame.contentHeight = static_cast<UINT>(contentSize.cy);
         frame.presenterGeneration = presenterGeneration;
         frame.resetSerial = resetSerial.load(std::memory_order_acquire);
         frame.settings = settings;
         frame.displayRate = displayRate;
         frame.maxMultiplierMilli = maxMultiplierMilli;
         frame.maxOutputFpsMilli = maxOutputFpsMilli;
+        configuredInferenceContexts.store(static_cast<uint32_t>(std::clamp(
+            settings.iRifeGpuThreads, RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX)),
+            std::memory_order_relaxed);
         frame.clock = owner->m_pClock;
         frame.graphStart = static_cast<REFERENCE_TIME>(owner->m_tStart);
 
@@ -621,63 +688,6 @@ struct CRifePlaybackPipeline::Impl
         }
     }
 
-    bool AcquireRifePresentationSurfaceWithBackpressure(const SourceFrame& frame, UINT width, UINT height,
-        REFERENCE_TIME time, ID3D11Texture2D** target, UINT& handle)
-    {
-        if (!frame.processor || !target) {
-            return false;
-        }
-
-        const ULONGLONG waitStart = GetTickCount64();
-        for (;;) {
-            if (!IsCurrent(frame)) {
-                return false;
-            }
-            if (IsLate(frame, time)) {
-                lateSyntheticDrops.fetch_add(1, std::memory_order_relaxed);
-                return false;
-            }
-            if (frame.processor->AcquireRifePresentationSurface(width, height, target, handle)) {
-                return true;
-            }
-            if (GetTickCount64() - waitStart >= kPresentationCapacityWaitMs) {
-                presentationDrops.fetch_add(1, std::memory_order_relaxed);
-                return false;
-            }
-            Sleep(1);
-        }
-    }
-
-    bool QueueReservedSurface(const SourceFrame& frame, UINT handle, REFERENCE_TIME time,
-        bool synthetic, bool dropIfLate = true)
-    {
-        if (handle == UINT_MAX || !frame.processor) {
-            return false;
-        }
-
-        const auto release = [&]() {
-            frame.processor->ReleaseFrameInterpolationSource(handle);
-        };
-
-        if (!IsCurrent(frame)) {
-            release();
-            return false;
-        }
-        if (synthetic && dropIfLate && IsLate(frame, time)) {
-            lateSyntheticDrops.fetch_add(1, std::memory_order_relaxed);
-            release();
-            return false;
-        }
-        if (owner->QueueFrameInterpolationSource(
-                handle, time, synthetic, frame.presenterGeneration)) {
-            return true;
-        }
-
-        presentationDrops.fetch_add(1, std::memory_order_relaxed);
-        release();
-        return false;
-    }
-
     void ConfigureScheduler(const SourceFrame& frame)
     {
         const bool changed = !schedulerConfigured
@@ -736,6 +746,8 @@ struct CRifePlaybackPipeline::Impl
         key.device = device;
         key.width = width;
         key.height = height;
+        key.contentWidth = frame.contentWidth;
+        key.contentHeight = frame.contentHeight;
         key.gpu = frame.settings.iRifeGPU;
         key.contexts = std::clamp(frame.settings.iRifeGpuThreads, RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX);
         key.performanceBoost = frame.settings.bRifePerformanceBoost;
@@ -768,7 +780,6 @@ struct CRifePlaybackPipeline::Impl
                     ++it;
                 }
             }
-            nextContext = 0;
         }
 
         for (auto it = runtimeCache.begin(); it != runtimeCache.end(); ++it) {
@@ -782,6 +793,10 @@ struct CRifePlaybackPipeline::Impl
             if (!failed || GetTickCount64() < cached->retryAfterTick.load(std::memory_order_acquire)) {
                 runtimeKey = key;
                 runtimeBuild = cached;
+                if (cached->done.load(std::memory_order_acquire)
+                        && cached->success.load(std::memory_order_acquire)) {
+                    tensorIoLinearValidated.store(true, std::memory_order_relaxed);
+                }
                 return;
             }
 
@@ -793,7 +808,7 @@ struct CRifePlaybackPipeline::Impl
         }
 
         runtimeKey = key;
-        nextContext = 0;
+        tensorIoLinearValidated.store(false, std::memory_order_relaxed);
 
         auto state = std::make_shared<RuntimeBuildState>();
         runtimeBuild = state;
@@ -819,7 +834,7 @@ struct CRifePlaybackPipeline::Impl
         std::thread([state, device, width, height, gpuIndex, key, model, cache]() {
             auto runtime = std::make_shared<CRifeFrameInterpolation>();
             const bool ok = runtime->Initialize(
-                L"", device, width, height, gpuIndex,
+                L"", device, width, height, key.contentWidth, key.contentHeight, gpuIndex,
                 static_cast<uint32_t>(key.contexts), key.performanceBoost,
                 model.wstring(), cache.wstring());
             device->Release();
@@ -840,7 +855,7 @@ struct CRifePlaybackPipeline::Impl
         }).detach();
     }
 
-    bool DetectImageSceneCut(const SourceFrame& first, const SourceFrame& second)
+    bool DetectImageSceneCut(ImageCutDetector& detector, const SourceFrame& first, const SourceFrame& second)
     {
         ID3D11Device* device = second.processor ? second.processor->GetRifeDevice() : nullptr;
         if (!device) {
@@ -848,30 +863,92 @@ struct CRifePlaybackPipeline::Impl
         }
 
         bool cut = false;
-        return imageDetector.Analyze(device, first.texture, second.texture, cut) && cut;
+        return detector.Analyze(device, first.texture, second.texture, cut) && cut;
+    }
+
+    bool PrepareInferenceInputs(
+        InferenceWorkerState& workerState,
+        ID3D11Device* device,
+        ID3D11Texture2D* first,
+        ID3D11Texture2D* second,
+        const UINT width,
+        const UINT height)
+    {
+        if (!device || !first || !second || !width || !height) {
+            return false;
+        }
+
+        const bool recreate = !SameTextureShape(workerState.inferenceFirst, device, width, height)
+            || !SameTextureShape(workerState.inferenceSecond, device, width, height);
+        if (recreate) {
+            workerState.inferenceFirst.Release();
+            workerState.inferenceSecond.Release();
+            workerState.inferenceOutputs.clear();
+            if (FAILED(CreateBgraTexture(device, width, height, &workerState.inferenceFirst))
+                    || FAILED(CreateBgraTexture(device, width, height, &workerState.inferenceSecond))) {
+                workerState.inferenceFirst.Release();
+                workerState.inferenceSecond.Release();
+                return false;
+            }
+        }
+
+        CComPtr<ID3D11DeviceContext> context;
+        device->GetImmediateContext(&context);
+        if (!context) {
+            return false;
+        }
+        CComPtr<ID3D11Multithread> multithread;
+        if (SUCCEEDED(context->QueryInterface(IID_PPV_ARGS(&multithread))) && multithread) {
+            multithread->SetMultithreadProtected(TRUE);
+        }
+
+        // Source-pool textures are shared by adjacent jobs (A/B, B/C). Copy
+        // them into context-owned textures before CUDA interop so no worker
+        // maps a source texture while another worker's scene detector reads it.
+        context->CopyResource(workerState.inferenceFirst, first);
+        context->CopyResource(workerState.inferenceSecond, second);
+        return true;
+    }
+
+    ID3D11Texture2D* AcquireInferenceOutput(
+        InferenceWorkerState& workerState,
+        ID3D11Device* device,
+        const UINT width,
+        const UINT height,
+        const size_t index)
+    {
+        if (!device || !width || !height) {
+            return nullptr;
+        }
+        if (workerState.inferenceOutputs.size() <= index) {
+            workerState.inferenceOutputs.resize(index + 1);
+        }
+        auto& output = workerState.inferenceOutputs[index];
+        if (!SameTextureShape(output, device, width, height)) {
+            output.Release();
+            if (FAILED(CreateBgraTexture(device, width, height, &output))) {
+                return nullptr;
+            }
+        }
+        return output;
     }
 
     bool GenerateRife(
-        const SourceFrame& first,
-        const SourceFrame& second,
+        const std::shared_ptr<CRifeFrameInterpolation>& runtime,
+        const uint32_t contextIndex,
+        ID3D11Texture2D* first,
+        ID3D11Texture2D* second,
         float timestep,
         ID3D11Texture2D* output)
     {
-        if (!output || !second.processor) {
-            return false;
-        }
-        ID3D11Device* device = second.processor->GetRifeDevice();
-        if (!device) {
+        if (!runtime || !first || !second || !output) {
             return false;
         }
         D3D11_TEXTURE2D_DESC desc = {};
-        second.texture->GetDesc(&desc);
-        EnsureRuntimeBuild(second, device, desc.Width, desc.Height);
-        auto runtime = ReadyRuntime();
+        second->GetDesc(&desc);
         D3D11_TEXTURE2D_DESC outputDesc = {};
         output->GetDesc(&outputDesc);
-        if (!runtime
-                || outputDesc.Width != desc.Width
+        if (outputDesc.Width != desc.Width
                 || outputDesc.Height != desc.Height
                 || outputDesc.Format != DXGI_FORMAT_B8G8R8A8_UNORM
                 || outputDesc.SampleDesc.Count != 1) {
@@ -879,11 +956,16 @@ struct CRifePlaybackPipeline::Impl
         }
 
         MpcvrRifeStats stats = {};
-        const uint32_t contextCount = static_cast<uint32_t>(std::clamp(
-            second.settings.iRifeGpuThreads, RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX));
-        const uint32_t context = nextContext++ % std::max(1u, contextCount);
-        if (!runtime->Interpolate(context, first.texture, second.texture,
-                output, timestep, stats)) {
+        const uint32_t active = activeInferences.fetch_add(1, std::memory_order_acq_rel) + 1;
+        uint32_t observedMax = maxConcurrentInferences.load(std::memory_order_relaxed);
+        while (observedMax < active
+                && !maxConcurrentInferences.compare_exchange_weak(
+                    observedMax, active, std::memory_order_relaxed)) {
+        }
+        const bool ok = runtime->Interpolate(contextIndex, first, second,
+            output, timestep, stats);
+        activeInferences.fetch_sub(1, std::memory_order_acq_rel);
+        if (!ok) {
             return false;
         }
         lastInferenceUs.store(static_cast<uint64_t>(std::max(0.0, stats.inferenceMs) * 1000.0),
@@ -891,53 +973,170 @@ struct CRifePlaybackPipeline::Impl
         return true;
     }
 
-    void ProcessPair(SourceFrame& first, SourceFrame& second)
+    void ProcessPairJob(InferenceWorkerState& workerState, PairJob& job)
     {
-        if (!IsCurrent(second) || second.time <= first.time) {
+        if (!job.first || !job.second || !job.runtime || !IsCurrent(*job.second)) {
             return;
         }
-
-        ConfigureScheduler(second);
-        const FrameRate sourceRate = SourceRateFromDuration(
-            second.frameDuration > 0 ? second.frameDuration : second.time - first.time);
-        const auto targets = scheduler.Schedule(first.time, second.time, sourceRate);
-
+        auto& first = *job.first;
+        auto& second = *job.second;
         ID3D11Device* device = second.processor ? second.processor->GetRifeDevice() : nullptr;
-        D3D11_TEXTURE2D_DESC desc = {};
-        if (second.texture) {
-            second.texture->GetDesc(&desc);
+        if (!device || !job.width || !job.height) {
+            return;
         }
-        if (device && desc.Width && desc.Height) {
-            EnsureRuntimeBuild(second, device, desc.Width, desc.Height);
-        }
-        const bool runtimeReady = static_cast<bool>(ReadyRuntime());
-
-        // During first-run TensorRT optimization or when the optional runtime
-        // is absent, preserve ordinary video playback rather than holding B.
-        if (!runtimeReady) {
-            runtimeWaitPairs.fetch_add(1, std::memory_order_relaxed);
-            QueueTexture(second, second.texture, second.time, false);
+        if (!PrepareInferenceInputs(workerState, device, first.texture, second.texture,
+                job.width, job.height)) {
+            for (const auto& target : job.targets) {
+                TargetResult result;
+                result.target = target;
+                result.inferenceFailed = !target.exactSource;
+                if (result.inferenceFailed) {
+                    inferenceFallbackFrames.fetch_add(1, std::memory_order_relaxed);
+                }
+                job.results.push_back(std::move(result));
+            }
             return;
         }
 
         bool hasTimelySyntheticTarget = false;
-        for (const auto& target : targets) {
+        for (const auto& target : job.targets) {
             if (!target.exactSource && !IsLate(second, target.presentationTime)) {
                 hasTimelySyntheticTarget = true;
                 break;
             }
         }
 
-        bool queuedOutput = false;
         bool sceneDecisionReady = second.settings.iRifeSceneDetection != RIFE_SCENE_NVOF;
         bool sceneCut = hasTimelySyntheticTarget
             && second.settings.iRifeSceneDetection == RIFE_SCENE_Image
-            && DetectImageSceneCut(first, second);
+            && DetectImageSceneCut(workerState.imageDetector, first, second);
+
+        job.results.reserve(job.targets.size());
+        size_t outputIndex = 0;
+        for (const auto& target : job.targets) {
+            TargetResult result;
+            result.target = target;
+
+            if (target.exactSource) {
+                job.results.push_back(std::move(result));
+                continue;
+            }
+            if (!IsCurrent(second) || IsLate(second, target.presentationTime)) {
+                result.skippedLate = true;
+                lateSyntheticDrops.fetch_add(1, std::memory_order_relaxed);
+                job.results.push_back(std::move(result));
+                continue;
+            }
+            if (sceneDecisionReady && sceneCut) {
+                job.results.push_back(std::move(result));
+                continue;
+            }
+
+            ID3D11Texture2D* generated = AcquireInferenceOutput(
+                workerState, device, job.width, job.height, outputIndex++);
+            if (!generated) {
+                result.inferenceFailed = true;
+                inferenceFallbackFrames.fetch_add(1, std::memory_order_relaxed);
+                job.results.push_back(std::move(result));
+                continue;
+            }
+
+            bool nvofStarted = false;
+            if (!sceneDecisionReady) {
+                const bool nvofReady = workerState.nvofDetector.Initialize(device, job.width, job.height);
+                nvofStarted = nvofReady
+                    && workerState.nvofDetector.BeginAnalyze(first.texture, second.texture);
+                if (!nvofStarted) {
+                    sceneCut = DetectImageSceneCut(workerState.imageDetector, first, second);
+                    sceneDecisionReady = true;
+                    if (sceneCut) {
+                        job.results.push_back(std::move(result));
+                        continue;
+                    }
+                }
+            }
+
+            const bool generatedOk = GenerateRife(job.runtime, job.contextIndex,
+                workerState.inferenceFirst, workerState.inferenceSecond,
+                static_cast<float>(target.timestep), generated);
+
+            if (nvofStarted) {
+                CNvidiaSceneChangeDetector::Metrics metrics;
+                if (workerState.nvofDetector.FinishAnalyze(metrics) && metrics.valid) {
+                    sceneCut = metrics.likelyCut;
+                } else {
+                    sceneCut = DetectImageSceneCut(workerState.imageDetector, first, second);
+                }
+                sceneDecisionReady = true;
+                if (sceneCut) {
+                    job.results.push_back(std::move(result));
+                    continue;
+                }
+            }
+
+            if (generatedOk) {
+                result.generated = generated;
+            } else {
+                result.inferenceFailed = true;
+                inferenceFallbackFrames.fetch_add(1, std::memory_order_relaxed);
+            }
+            job.results.push_back(std::move(result));
+        }
+        job.sceneCut = sceneCut;
+    }
+
+    void InferenceWorkerMain(InferenceWorkerState* state)
+    {
+        if (!state) return;
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+        for (;;) {
+            std::shared_ptr<PairJob> job;
+            {
+                std::unique_lock lock(state->mutex);
+                state->cv.wait(lock, [&] { return state->stop || !state->queue.empty(); });
+                if (state->stop && state->queue.empty()) {
+                    break;
+                }
+                job = std::move(state->queue.front());
+                state->queue.pop_front();
+            }
+            if (job) {
+                ProcessPairJob(*state, *job);
+                job->done.store(true, std::memory_order_release);
+                cv.notify_all();
+            }
+        }
+    }
+
+    void DispatchPairJob(const std::shared_ptr<PairJob>& job)
+    {
+        if (!job || job->contextIndex >= inferenceWorkers.size() || !inferenceWorkers[job->contextIndex]) {
+            if (job) job->done.store(true, std::memory_order_release);
+            cv.notify_all();
+            return;
+        }
+        auto& state = *inferenceWorkers[job->contextIndex];
+        {
+            std::lock_guard lock(state.mutex);
+            state.queue.push_back(job);
+        }
+        state.cv.notify_one();
+    }
+
+    bool PresentPairJob(PairJob& job)
+    {
+        if (!job.first || !job.second || !IsCurrent(*job.second)) {
+            return false;
+        }
+        auto& first = *job.first;
+        auto& second = *job.second;
+        ID3D11Device* device = second.processor ? second.processor->GetRifeDevice() : nullptr;
+        bool queuedOutput = false;
 
         const auto queueSceneCutTarget = [&](const FrameInterpolationTarget& target) {
             if (second.settings.iRifeSceneProcessing == RIFE_SCENE_PROCESS_Blend
-                    && device && desc.Width && desc.Height
-                    && EnsureOutputTexture(device, desc.Width, desc.Height)
+                    && device && job.width && job.height
+                    && EnsureOutputTexture(device, job.width, job.height)
                     && sceneBlender.Blend(device, first.texture, second.texture,
                         outputTexture, static_cast<float>(target.timestep))) {
                 return QueueTexture(second, outputTexture, target.presentationTime, true);
@@ -951,99 +1150,38 @@ struct CRifePlaybackPipeline::Impl
             return QueueTexture(second, repeated, target.presentationTime, true);
         };
 
-        for (const auto& target : targets) {
+        for (auto& result : job.results) {
+            const auto& target = result.target;
             if (!IsCurrent(second)) {
-                return;
+                return queuedOutput;
             }
-
             if (target.exactSource) {
                 queuedOutput |= QueueTexture(second, second.texture, target.presentationTime, false);
                 continue;
             }
-
-            if (IsLate(second, target.presentationTime)) {
-                lateSyntheticDrops.fetch_add(1, std::memory_order_relaxed);
+            if (result.skippedLate) {
                 continue;
             }
-
-            if (sceneDecisionReady && sceneCut) {
+            if (job.sceneCut) {
                 queuedOutput |= queueSceneCutTarget(target);
                 continue;
             }
-
-            UINT generatedSurface = UINT_MAX;
-            CComPtr<ID3D11Texture2D> generated;
-            if (!AcquireRifePresentationSurfaceWithBackpressure(second, desc.Width, desc.Height,
-                    target.presentationTime, &generated, generatedSurface)) {
-                continue;
-            }
-
-            bool nvofStarted = false;
-            if (!sceneDecisionReady && device && desc.Width && desc.Height) {
-                const bool nvofReady = nvofDetector.Initialize(device, desc.Width, desc.Height);
-                if (nvofReady && IsLate(second, target.presentationTime)) {
-                    second.processor->ReleaseFrameInterpolationSource(generatedSurface);
-                    lateSyntheticDrops.fetch_add(1, std::memory_order_relaxed);
-                    continue;
-                }
-                nvofStarted = nvofReady
-                    && nvofDetector.BeginAnalyze(first.texture, second.texture);
-                if (!nvofStarted) {
-                    // Driver/API failures retain cut protection through the
-                    // existing image-comparison path.
-                    sceneCut = DetectImageSceneCut(first, second);
-                    sceneDecisionReady = true;
-                    if (sceneCut) {
-                        second.processor->ReleaseFrameInterpolationSource(generatedSurface);
-                        queuedOutput |= queueSceneCutTarget(target);
-                        continue;
-                    }
-                }
-            }
-
-            const bool generatedOk = GenerateRife(
-                first, second, static_cast<float>(target.timestep), generated);
-
-            if (nvofStarted) {
-                CNvidiaSceneChangeDetector::Metrics metrics;
-                if (nvofDetector.FinishAnalyze(metrics) && metrics.valid) {
-                    sceneCut = metrics.likelyCut;
-                } else {
-                    sceneCut = DetectImageSceneCut(first, second);
-                }
-                sceneDecisionReady = true;
-                if (sceneCut) {
-                    second.processor->ReleaseFrameInterpolationSource(generatedSurface);
-                    queuedOutput |= queueSceneCutTarget(target);
-                    continue;
-                }
-            }
-
-            if (generatedOk) {
+            if (result.generated) {
                 generatedFrames.fetch_add(1, std::memory_order_relaxed);
-                // CUDA writes directly into a presentation surface whose D3D11
-                // retirement query controls reuse. This avoids re-mapping one
-                // shared CUDA output while an asynchronous D3D11 copy from the
-                // preceding inference may still be reading it.
-                queuedOutput |= QueueReservedSurface(
-                    second, generatedSurface, target.presentationTime, true, false);
+                queuedOutput |= QueueTexture(
+                    second, result.generated, target.presentationTime, true, false);
             } else {
-                second.processor->ReleaseFrameInterpolationSource(generatedSurface);
-                // A transient inference failure must degrade to a real frame,
-                // never stall the graph or audio clock.
                 ID3D11Texture2D* fallback = target.timestep < 0.5
                     ? first.texture.p : second.texture.p;
-                inferenceFallbackFrames.fetch_add(1, std::memory_order_relaxed);
                 queuedOutput |= QueueTexture(second, fallback, target.presentationTime, true);
             }
         }
-        // Rounded source timestamps need not coincide with the output grid.
-        // Keep source video moving if every scheduled output was discarded.
-        if (!targets.empty() && !queuedOutput && IsCurrent(second)) {
+        if (!job.targets.empty() && !queuedOutput && IsCurrent(second)) {
             if (QueueTexture(second, second.texture, second.time, false)) {
                 sourceContinuityFrames.fetch_add(1, std::memory_order_relaxed);
             }
         }
+        return queuedOutput;
     }
 
     std::wstring Diagnostics() const
@@ -1060,6 +1198,11 @@ struct CRifePlaybackPipeline::Impl
             presentationReclaims.load(std::memory_order_relaxed),
             sourceResyncs.load(std::memory_order_relaxed),
             lastInferenceUs.load(std::memory_order_relaxed) / 1000.0);
+        diagnostics += std::format(L"\nRIFE parallel: active {}, max {}, contexts {}, TensorRT I/O {}",
+            activeInferences.load(std::memory_order_relaxed),
+            maxConcurrentInferences.load(std::memory_order_relaxed),
+            configuredInferenceContexts.load(std::memory_order_relaxed),
+            tensorIoLinearValidated.load(std::memory_order_relaxed) ? L"LINEAR" : L"pending");
         const int ruleIndex = activeRule.load(std::memory_order_relaxed);
         if (ruleIndex >= 0) {
             diagnostics += std::format(L"\nRIFE rule    : #{}", ruleIndex + 1);
@@ -1084,38 +1227,108 @@ struct CRifePlaybackPipeline::Impl
         ReleaseSourceSlot(slot);
     }
 
+    SourceFramePtr AdoptFrame(SourceFrame&& frame)
+    {
+        return SourceFramePtr(new SourceFrame(std::move(frame)), [this](SourceFrame* owned) {
+            if (!owned) return;
+            ReleaseFrame(*owned);
+            delete owned;
+        });
+    }
+
     void WorkerMain()
     {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
-        std::optional<SourceFrame> previous;
-        uint64_t activeSerial = 0;
+        SourceFramePtr previous;
+        std::deque<std::shared_ptr<PairJob>> pendingPairs;
+        uint64_t activeSerial = resetSerial.load(std::memory_order_acquire);
+        uint64_t nextSequence = 1;
+        uint32_t nextWorker = 0;
 
-        while (!stop.load(std::memory_order_acquire)) {
-            SourceFrame current;
+        const auto presentCompletedFront = [&]() -> bool {
+            if (pendingPairs.empty()
+                    || !pendingPairs.front()->done.load(std::memory_order_acquire)) {
+                return false;
+            }
+            auto job = std::move(pendingPairs.front());
+            pendingPairs.pop_front();
+            if (!stop.load(std::memory_order_acquire) && job && job->second && IsCurrent(*job->second)) {
+                PresentPairJob(*job);
+            }
+            return true;
+        };
+
+        const auto waitForFront = [&](const bool present) {
+            if (pendingPairs.empty()) return;
+            auto job = pendingPairs.front();
             {
                 std::unique_lock lock(mutex);
                 cv.wait(lock, [&] {
-                    return stop.load(std::memory_order_acquire) || !queue.empty();
+                    return job->done.load(std::memory_order_acquire);
+                });
+            }
+            pendingPairs.pop_front();
+            if (present && !stop.load(std::memory_order_acquire)
+                    && job->second && IsCurrent(*job->second)) {
+                PresentPairJob(*job);
+            }
+        };
+
+        const auto drainPending = [&](const bool present) {
+            while (!pendingPairs.empty()) {
+                waitForFront(present);
+            }
+        };
+
+        while (!stop.load(std::memory_order_acquire)) {
+            while (presentCompletedFront()) {
+            }
+
+            const uint64_t currentSerial = resetSerial.load(std::memory_order_acquire);
+            if (currentSerial != activeSerial) {
+                drainPending(false);
+                previous.reset();
+                activeSerial = currentSerial;
+                nextWorker = 0;
+                ResetSequenceState();
+                continue;
+            }
+
+            const uint32_t configuredContexts = previous
+                ? static_cast<uint32_t>(std::clamp(previous->settings.iRifeGpuThreads,
+                    RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX))
+                : static_cast<uint32_t>(RIFE_GPU_THREADS_MAX);
+            const bool canConsumeSource = !previous || pendingPairs.size() < configuredContexts;
+            SourceFrame current;
+            bool haveCurrent = false;
+            {
+                std::unique_lock lock(mutex);
+                cv.wait(lock, [&] {
+                    return stop.load(std::memory_order_acquire)
+                        || resetSerial.load(std::memory_order_acquire) != activeSerial
+                        || (!pendingPairs.empty()
+                            && pendingPairs.front()->done.load(std::memory_order_acquire))
+                        || (canConsumeSource && !queue.empty());
                 });
                 if (stop.load(std::memory_order_acquire)) {
                     break;
                 }
-                current = std::move(queue.front());
-                queue.pop_front();
+                if (resetSerial.load(std::memory_order_acquire) != activeSerial
+                        || (!pendingPairs.empty()
+                            && pendingPairs.front()->done.load(std::memory_order_acquire))) {
+                    continue;
+                }
+                if (canConsumeSource && !queue.empty()) {
+                    current = std::move(queue.front());
+                    queue.pop_front();
+                    haveCurrent = true;
+                }
             }
+            if (!haveCurrent) continue;
 
             if (!IsCurrent(current)) {
                 ReleaseFrame(current);
                 continue;
-            }
-
-            if (activeSerial != current.resetSerial) {
-                if (previous) {
-                    ReleaseFrame(*previous);
-                    previous.reset();
-                }
-                activeSerial = current.resetSerial;
-                ResetSequenceState();
             }
 
             if (current.settings.iRifeDuplicateRemoval == RIFE_DUPLICATES_RemoveEveryOther) {
@@ -1128,32 +1341,92 @@ struct CRifePlaybackPipeline::Impl
                 removeEveryOtherToggle = false;
             }
 
+            auto currentFrame = AdoptFrame(std::move(current));
             if (!previous) {
                 // The scheduler anchors its target grid at this real frame.
-                ConfigureScheduler(current);
-                QueueTexture(current, current.texture, current.time, false);
-                previous = std::move(current);
+                ConfigureScheduler(*currentFrame);
+                QueueTexture(*currentFrame, currentFrame->texture, currentFrame->time, false);
+                previous = std::move(currentFrame);
                 continue;
             }
 
-            if (!RifeFramesCompatible(*previous, current)) {
+            if (!RifeFramesCompatible(*previous, *currentFrame)) {
+                drainPending(true);
                 sourceResyncs.fetch_add(1, std::memory_order_relaxed);
                 ResetSequenceState();
-                ConfigureScheduler(current);
-                QueueTexture(current, current.texture, current.time, false);
-                ReleaseFrame(*previous);
-                previous = std::move(current);
+                ConfigureScheduler(*currentFrame);
+                QueueTexture(*currentFrame, currentFrame->texture, currentFrame->time, false);
+                previous = std::move(currentFrame);
                 continue;
             }
 
-            ProcessPair(*previous, current);
-            ReleaseFrame(*previous);
-            previous = std::move(current);
+            ConfigureScheduler(*currentFrame);
+            const FrameRate sourceRate = SourceRateFromDuration(
+                currentFrame->frameDuration > 0
+                    ? currentFrame->frameDuration : currentFrame->time - previous->time);
+            const auto targets = scheduler.Schedule(previous->time, currentFrame->time, sourceRate);
+
+            ID3D11Device* device = currentFrame->processor
+                ? currentFrame->processor->GetRifeDevice() : nullptr;
+            D3D11_TEXTURE2D_DESC desc = {};
+            if (currentFrame->texture) currentFrame->texture->GetDesc(&desc);
+            if (!device || !desc.Width || !desc.Height) {
+                drainPending(true);
+                QueueTexture(*currentFrame, currentFrame->texture, currentFrame->time, false);
+                previous = std::move(currentFrame);
+                continue;
+            }
+
+            const int contextCount = std::clamp(currentFrame->settings.iRifeGpuThreads,
+                RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX);
+            const bool runtimeSettingsChanged = runtimeKey
+                && (runtimeKey->device != device
+                    || runtimeKey->width != desc.Width
+                    || runtimeKey->height != desc.Height
+                    || runtimeKey->contentWidth != currentFrame->contentWidth
+                    || runtimeKey->contentHeight != currentFrame->contentHeight
+                    || runtimeKey->gpu != currentFrame->settings.iRifeGPU
+                    || runtimeKey->contexts != contextCount
+                    || runtimeKey->performanceBoost != currentFrame->settings.bRifePerformanceBoost);
+            if (runtimeSettingsChanged) {
+                // Retire all work using the previous runtime before switching a
+                // setting that can create another registration cache for the
+                // same D3D11 source pool.
+                drainPending(true);
+                nextWorker = 0;
+            }
+
+            EnsureRuntimeBuild(*currentFrame, device, desc.Width, desc.Height);
+            auto runtime = ReadyRuntime();
+            if (!runtime) {
+                drainPending(true);
+                runtimeWaitPairs.fetch_add(1, std::memory_order_relaxed);
+                QueueTexture(*currentFrame, currentFrame->texture, currentFrame->time, false);
+                previous = std::move(currentFrame);
+                continue;
+            }
+            tensorIoLinearValidated.store(true, std::memory_order_relaxed);
+
+            while (pendingPairs.size() >= static_cast<size_t>(contextCount)) {
+                waitForFront(true);
+            }
+
+            auto job = std::make_shared<PairJob>();
+            job->sequence = nextSequence++;
+            job->contextIndex = nextWorker++ % static_cast<uint32_t>(contextCount);
+            job->first = previous;
+            job->second = currentFrame;
+            job->runtime = std::move(runtime);
+            job->targets = targets;
+            job->width = desc.Width;
+            job->height = desc.Height;
+            pendingPairs.push_back(job);
+            DispatchPairJob(job);
+            previous = std::move(currentFrame);
         }
 
-        if (previous) {
-            ReleaseFrame(*previous);
-        }
+        drainPending(false);
+        previous.reset();
     }
 };
 

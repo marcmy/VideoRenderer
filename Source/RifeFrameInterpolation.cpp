@@ -187,6 +187,8 @@ bool CRifeFrameInterpolation::Initialize(
     ID3D11Device* device,
     const uint32_t width,
     const uint32_t height,
+    const uint32_t contentWidth,
+    const uint32_t contentHeight,
     const uint32_t gpuIndex,
     const uint32_t contextCount,
     const bool performanceBoost,
@@ -199,7 +201,7 @@ bool CRifeFrameInterpolation::Initialize(
     m_status = L"RIFE TensorRT runtime requires a 64-bit renderer";
     return false;
 #else
-    if (!width || !height || !contextCount || modelPath.empty()) {
+    if (!width || !height || !contentWidth || !contentHeight || !contextCount || modelPath.empty()) {
         m_status = L"Invalid RIFE runtime initialization parameters";
         return false;
     }
@@ -209,7 +211,7 @@ bool CRifeFrameInterpolation::Initialize(
     for (const auto& directory : directories) {
         bool abiCompatibleRuntime = false;
         if (LoadAndCreate(
-                AbsoluteModulePath(directory).wstring(), device, width, height, gpuIndex,
+                AbsoluteModulePath(directory).wstring(), device, width, height, contentWidth, contentHeight, gpuIndex,
                 contextCount, performanceBoost, modelPath, cachePath, &abiCompatibleRuntime)) {
             return true;
         }
@@ -233,6 +235,8 @@ bool CRifeFrameInterpolation::LoadAndCreate(
     ID3D11Device* device,
     const uint32_t width,
     const uint32_t height,
+    const uint32_t contentWidth,
+    const uint32_t contentHeight,
     const uint32_t gpuIndex,
     const uint32_t contextCount,
     const bool performanceBoost,
@@ -273,6 +277,8 @@ bool CRifeFrameInterpolation::LoadAndCreate(
     params.device = device;
     params.width = width;
     params.height = height;
+    params.contentWidth = contentWidth;
+    params.contentHeight = contentHeight;
     params.gpuIndex = gpuIndex;
     params.contextCount = contextCount;
     params.performanceBoost = performanceBoost ? 1u : 0u;
@@ -301,6 +307,9 @@ bool CRifeFrameInterpolation::LoadAndCreate(
             case MPCVR_RIFE_UNSUPPORTED_COMPUTE_CAPABILITY:
                 m_status = L"RIFE runtime does not support this CUDA compute capability";
                 break;
+            case MPCVR_RIFE_UNSUPPORTED_TENSOR_FORMAT:
+                m_status = L"RIFE TensorRT engine I/O is not linear NCHW";
+                break;
             default:
                 m_status = std::format(L"RIFE runtime initialization failed with code {}", result);
                 break;
@@ -314,7 +323,7 @@ bool CRifeFrameInterpolation::LoadAndCreate(
     m_interpolate = exports.interpolate;
     m_destroy = exports.destroy;
     m_modulePath = modulePath;
-    m_status = std::format(L"RIFE runtime ready (ABI {}, {} contexts)",
+    m_status = std::format(L"RIFE runtime ready (ABI {}, {} contexts, LINEAR I/O)",
         abiVersion, contextCount);
     return true;
 }
@@ -340,11 +349,10 @@ bool CRifeFrameInterpolation::Interpolate(
 
     stats = {};
     const int result = m_interpolate(m_handle, &request, &stats);
-    if (result != 0) {
-        m_status = std::format(L"RIFE inference failed with code {}", result);
-        return false;
-    }
-    return true;
+    // Interpolate() is intentionally callable from multiple renderer workers.
+    // Initialization status is immutable while those workers are active; do
+    // not race on m_status when independent contexts report a transient error.
+    return result == 0;
 }
 
 void CRifeFrameInterpolation::Reset() noexcept

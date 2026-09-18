@@ -186,8 +186,8 @@ try {
     if ([int](Get-RequiredProperty $runtimeManifest 'schemaVersion' 'runtime-manifest.json') -ne 1) {
         throw 'RIFE runtime manifest schemaVersion must be 1.'
     }
-    if ([int](Get-RequiredProperty $runtimeManifest 'runtimeAbi' 'runtime-manifest.json') -ne 1) {
-        throw 'RIFE runtime manifest runtimeAbi must be 1.'
+    if ([int](Get-RequiredProperty $runtimeManifest 'runtimeAbi' 'runtime-manifest.json') -ne 2) {
+        throw 'RIFE runtime manifest runtimeAbi must be 2.'
     }
     $tensorRtVersion = [string](Get-RequiredProperty $runtimeManifest 'tensorRtVersion' 'runtime-manifest.json')
     $tensorRtMajorMinor = Get-RifeTensorRtMajorMinor -Version $tensorRtVersion

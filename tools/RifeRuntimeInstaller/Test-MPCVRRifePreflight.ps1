@@ -105,8 +105,8 @@ function Invoke-RifePreflight {
     if ([int](Get-RequiredProperty $manifest 'schemaVersion' 'installed manifest') -ne 1) {
         throw 'Installed RIFE manifest schemaVersion must be 1.'
     }
-    if ([int](Get-RequiredProperty $manifest 'runtimeAbi' 'installed manifest') -ne 1) {
-        throw 'Installed RIFE manifest runtimeAbi must be 1.'
+    if ([int](Get-RequiredProperty $manifest 'runtimeAbi' 'installed manifest') -ne 2) {
+        throw 'Installed RIFE manifest runtimeAbi must be 2.'
     }
 
     foreach ($fileName in @(
@@ -159,8 +159,8 @@ function Invoke-RifePreflight {
     Initialize-RifePreflightNativeHelper
     $runtimeDll = Join-Path $runtimeRoot 'MPCVRRifeRuntime64.dll'
     $abi = [MpcVrRifePreflight.NativeMethods]::GetAbiVersion($runtimeDll)
-    if ($abi -ne 1) {
-        throw "MPCVRRifeRuntime64.dll reports unsupported ABI $abi; expected 1."
+    if ($abi -ne 2) {
+        throw "MPCVRRifeRuntime64.dll reports unsupported ABI $abi; expected 2."
     }
 
     Write-Host 'RIFE runtime preflight passed.' -ForegroundColor Green

@@ -216,7 +216,7 @@ jobs:
             cudaVersion = '12.9.1'
             cudaRuntimeVersion = '12.9.79'
             tensorRtVersion = '11.2.1.2'
-            runtimeAbi = 1
+            runtimeAbi = 2
             architectures = @(
               [pscustomobject]@{ computeCapability = '7.5'; key = 'sm75'; builderResource = 'nvinfer_builder_resource_sm75_11.dll' },
               [pscustomobject]@{ computeCapability = '8.6'; key = 'sm86'; builderResource = 'nvinfer_builder_resource_sm86_11.dll' },

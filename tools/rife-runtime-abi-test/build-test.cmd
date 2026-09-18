@@ -19,7 +19,7 @@ for %%D in (good-runtime bad-runtime unsupported-cc-runtime builder-missing-runt
 if exist "RIFE" rmdir /s /q "RIFE"
 mkdir "RIFE\runtime"
 
-cl /nologo /std:c++20 /EHsc /W4 /WX /LD /DFAKE_ABI_VERSION=1 /I"..\..\Source" ^
+cl /nologo /std:c++20 /EHsc /W4 /WX /LD /DFAKE_ABI_VERSION=2 /I"..\..\Source" ^
   FakeRifeRuntime.cpp /link /OUT:good-runtime\MPCVRRifeRuntime64.dll
 if errorlevel 1 exit /b %errorlevel%
 

@@ -29,17 +29,17 @@ assert "constexpr UINT kAnalysisStride = 2;" in detector, (
     "scene-cut statistics should subsample the full bidirectional 4x4 flow field instead of reducing every vector"
 )
 
-process_pair = function_body(pipeline, "void ProcessPair(")
-begin_pos = process_pair.find("nvofDetector.BeginAnalyze(")
+process_pair = function_body(pipeline, "void ProcessPairJob(")
+begin_pos = process_pair.find("workerState.nvofDetector.BeginAnalyze(")
 generate_pos = process_pair.find("GenerateRife(")
-finish_pos = process_pair.find("nvofDetector.FinishAnalyze(")
+finish_pos = process_pair.find("workerState.nvofDetector.FinishAnalyze(")
 assert begin_pos != -1 and generate_pos != -1 and finish_pos != -1, (
-    "ProcessPair must launch NVOF, run RIFE, then finish the NVOF scene decision"
+    "each parallel pair worker must launch NVOF, run RIFE, then finish the NVOF scene decision"
 )
 assert begin_pos < generate_pos < finish_pos, (
     "bidirectional NVOF must overlap the first RIFE inference rather than serialize before it"
 )
-assert "DetectImageSceneCut(first, second)" in process_pair[finish_pos:], (
+assert "DetectImageSceneCut(workerState.imageDetector, first, second)" in process_pair[finish_pos:], (
     "an NVOF completion failure must retain image-comparison fallback"
 )
 

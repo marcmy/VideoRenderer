@@ -15,7 +15,7 @@
 #include <cstdint>
 #include <type_traits>
 
-#define MPCVR_RIFE_RUNTIME_ABI 1u
+#define MPCVR_RIFE_RUNTIME_ABI 2u
 
 enum MpcvrRifeResult : int32_t {
     MPCVR_RIFE_OK = 0,
@@ -25,14 +25,19 @@ enum MpcvrRifeResult : int32_t {
     MPCVR_RIFE_TENSORRT_FAILURE = -4,
     MPCVR_RIFE_BUILDER_RESOURCE_MISSING = -5,
     MPCVR_RIFE_UNSUPPORTED_COMPUTE_CAPABILITY = -6,
+    MPCVR_RIFE_UNSUPPORTED_TENSOR_FORMAT = -7,
 };
 
 struct MpcvrRifeCreateParams {
     uint32_t size = sizeof(MpcvrRifeCreateParams);
     uint32_t abiVersion = MPCVR_RIFE_RUNTIME_ABI;
     ID3D11Device* device = nullptr;
+    // width/height describe the allocated D3D11/tensor surface. The logical
+    // video content can be smaller because RIFE surfaces are aligned to 32 px.
     uint32_t width = 0;
     uint32_t height = 0;
+    uint32_t contentWidth = 0;
+    uint32_t contentHeight = 0;
     uint32_t gpuIndex = UINT32_MAX;
     uint32_t contextCount = 2;
     uint32_t performanceBoost = 0;

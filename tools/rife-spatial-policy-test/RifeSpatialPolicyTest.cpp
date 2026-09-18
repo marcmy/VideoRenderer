@@ -13,6 +13,13 @@ int main()
     }
 
     {
+        const auto size = ResolveRifeContentSize(3840, 2160, false, 0, 0, 0);
+        assert(size.width == 3840 && size.height == 2160);
+        const auto aligned = AlignRifeSize(size);
+        assert(aligned.width == 3840 && aligned.height == 2176);
+    }
+
+    {
         const auto size = ResolveRifeContentSize(720, 480, true, 16, 9, 0);
         assert(size.width == 853 && size.height == 480);
 

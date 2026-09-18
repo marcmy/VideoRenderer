@@ -40,7 +40,7 @@ assert "GetRifeContentSize()" in prepared_branch and "ResizeShaderPass" in prepa
     "aligned RIFE surfaces must crop padding and scale the content into the presentation rectangle"
 )
 
-assert "static bool RifeFramesCompatible" in rife_pipeline and "RifeFramesCompatible(*previous, current)" in rife_pipeline, (
+assert "static bool RifeFramesCompatible" in rife_pipeline and "RifeFramesCompatible(*previous, *currentFrame)" in rife_pipeline, (
     "the worker must never pair RIFE source textures from different device/size generations"
 )
 
@@ -48,13 +48,34 @@ assert "AcquireRifePresentationSurface" in dx11_header and "AcquireRifePresentat
     "generated RIFE frames need a presentation surface whose retirement query owns texture reuse"
 )
 generate_rife = function_body(rife_pipeline, "bool GenerateRife(")
-assert "runtime->Interpolate(context, first.texture, second.texture," in generate_rife
+assert "runtime->Interpolate(contextIndex, first, second," in generate_rife
 assert "outputTexture" not in generate_rife, (
-    "RIFE inference must write into the reserved presentation surface instead of a shared CUDA output texture"
+    "parallel RIFE inference must write into a context-owned texture instead of the shared scene-blend texture"
 )
-process_pair = function_body(rife_pipeline, "void ProcessPair(")
-assert "AcquireRifePresentationSurface" in process_pair and "QueueReservedSurface" in process_pair, (
-    "generated output must remain on the same retired presentation surface from inference through queueing"
+prepare_inputs = function_body(rife_pipeline, "bool PrepareInferenceInputs(")
+assert "CopyResource(workerState.inferenceFirst, first)" in prepare_inputs
+assert "CopyResource(workerState.inferenceSecond, second)" in prepare_inputs, (
+    "each context worker must isolate shared A/B source textures before CUDA maps them"
+)
+acquire_output = function_body(rife_pipeline, "ID3D11Texture2D* AcquireInferenceOutput(")
+assert "workerState.inferenceOutputs" in acquire_output and "CreateBgraTexture" in acquire_output, (
+    "CUDA outputs must come from a stable per-context pool instead of creating a registered texture every frame"
+)
+process_pair = function_body(rife_pipeline, "void ProcessPairJob(")
+assert "PrepareInferenceInputs" in process_pair and "AcquireInferenceOutput" in process_pair and "result.generated" in process_pair, (
+    "parallel pair workers must use isolated reusable inference surfaces and retain results until ordered presentation"
+)
+present_pair = function_body(rife_pipeline, "bool PresentPairJob(")
+assert "QueueTexture(" in present_pair and "result.generated" in present_pair, (
+    "completed pair jobs must enter presentation through the ordered source-copy path"
+)
+worker_main = function_body(rife_pipeline, "void WorkerMain(")
+assert "pendingPairs.front()" in worker_main and "PresentPairJob(*job)" in worker_main, (
+    "parallel pair completion must be drained in source-pair order"
+)
+adopt_frame = function_body(rife_pipeline, "SourceFramePtr AdoptFrame(")
+assert "ReleaseFrame(*owned)" in adopt_frame, (
+    "shared source frames must retain their source-pool slot until every adjacent pair job releases them"
 )
 
 assert "ForgetRifeSettings(this)" in legacy_renderer, (

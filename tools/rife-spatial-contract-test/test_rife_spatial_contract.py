@@ -7,6 +7,9 @@ dx11_header = (repo / "Source" / "DX11VideoProcessor.h").read_text(encoding="utf
 dx11_legacy_header = (repo / "Source" / "DX11VideoProcessorLegacyBody.h").read_text(encoding="utf-8")
 rife_bridge = (repo / "Source" / "RifeDX11Bridge.cpp").read_text(encoding="utf-8")
 rife_pipeline = (repo / "Source" / "RifePlaybackPipeline.cpp").read_text(encoding="utf-8")
+rife_api = (repo / "Source" / "RifeRuntimeApi.h").read_text(encoding="utf-8")
+rife_loader = (repo / "Source" / "RifeFrameInterpolation.cpp").read_text(encoding="utf-8")
+runtime = (repo / "tools" / "RifeTensorRTRuntime" / "RifeTensorRTRuntime.cpp").read_text(encoding="utf-8")
 dx11_processor = (repo / "Source" / "DX11VideoProcessor.cpp").read_text(encoding="utf-8")
 renderer_header = (repo / "Source" / "VideoRendererLegacy.h").read_text(encoding="utf-8")
 renderer_legacy = (repo / "Source" / "VideoRendererLegacy.inl").read_text(encoding="utf-8")
@@ -102,6 +105,22 @@ assert "ResizeShaderPass" in prepared_branch, (
 
 assert "RIFE input" in dx11_processor and "GetRifeFrameSize()" in dx11_processor, (
     "Ctrl+J diagnostics must expose the stable RIFE working dimensions for fullscreen verification"
+)
+
+assert "contentWidth" in rife_api and "contentHeight" in rife_api, (
+    "the runtime ABI must carry logical content dimensions separately from the aligned tensor surface"
+)
+assert "params.contentWidth = contentWidth" in rife_loader and "params.contentHeight = contentHeight" in rife_loader, (
+    "the renderer runtime loader must forward logical content dimensions through the ABI"
+)
+assert "m_width = params.contentWidth" in runtime and "m_paddedHeight = params.height" in runtime, (
+    "CUDA pack/unpack coordinates must use logical content while TensorRT keeps the aligned allocation"
+)
+assert '"_abi" << MPCVR_RIFE_RUNTIME_ABI' in runtime, (
+    "TensorRT engine cache keys must be isolated by the renderer/runtime ABI"
+)
+assert "BuildLegacyCacheKey" not in runtime, (
+    "ABI2 must not migrate pre-ABI TensorRT plans built under the old tensor-layout contract"
 )
 
 render_start = dx11_processor.find("HRESULT CDX11VideoProcessor::Render(int field")

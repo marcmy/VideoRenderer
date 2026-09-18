@@ -198,7 +198,7 @@ jobs:
 
           $buildInfo = @"
           MPCVR RIFE TensorRT runtime build
-          Runtime ABI: 1
+          Runtime ABI: 2
           TensorRT: $env:TENSORRT_VERSION
           TensorRT archive SHA-256: $env:TENSORRT_DOWNLOAD_SHA256
           CUDA toolkit: $env:CUDA_VERSION
@@ -228,7 +228,7 @@ jobs:
               cudaVersion = $env:CUDA_VERSION
               cudaRuntimeVersion = $env:CUDA_RUNTIME_VERSION
               tensorRtVersion = $env:TENSORRT_VERSION
-              runtimeAbi = 1
+              runtimeAbi = 2
               architectures = $archEntries
           } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 (Join-Path $env:BUNDLE_DIR 'runtime-manifest.json')
 
