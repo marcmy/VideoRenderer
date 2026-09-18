@@ -63,9 +63,11 @@ bool CDX11VideoProcessor::PrepareRifeSource(
         return false;
     }
 
-    // Publish D3D11 writes before handing the source to NVOF/CUDA on the
-    // worker thread. Interop APIs provide resource ownership synchronization.
-    m_pDeviceContext->Flush();
+    // The worker copies this source through the same multithread-protected
+    // immediate context before CUDA maps its private inference textures.
+    // CUDA/D3D11 interop supplies the ownership synchronization at that map,
+    // so forcing an immediate-context flush here only serializes the graphics
+    // queue once per decoded source frame.
     return true;
 #else
     UNREFERENCED_PARAMETER(pSample);
@@ -140,8 +142,12 @@ bool CDX11VideoProcessor::ReserveRifePresentationSurface(
         }
     }
 
+    // Presentation consumes this texture through the same immediate context,
+    // which preserves CopyResource ordering.  Avoid flushing once per queued
+    // output frame; Maxine/CUDA interop will synchronize at its resource map
+    // when enabled, while the ordinary D3D presentation path is ordered by the
+    // immediate context itself.
     m_pDeviceContext->CopyResource(surface.texture.pTexture, source);
-    m_pDeviceContext->Flush();
     surface.inUse = true;
     sourceSurface = freeSurface;
     return true;
