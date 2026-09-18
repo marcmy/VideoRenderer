@@ -263,6 +263,8 @@ jobs:
           }
 
           $inventory = '[{"name":"NVIDIA GeForce RTX 2070 SUPER","computeCapability":"7.5"},{"name":"NVIDIA GeForce RTX 5070","computeCapability":"12.0"}]'
+          $inventoryPath = Join-Path $testRoot 'gpu-inventory.json'
+          Set-Content -LiteralPath $inventoryPath -Value $inventory -Encoding UTF8
           foreach ($architecture in @('sm75', 'sm86', 'sm89', 'sm120')) {
             if (Test-Path -LiteralPath (Join-Path $payloadRoot "MPCVR-RIFE-$architecture.zip")) {
               throw "Unified setup unexpectedly embeds architecture pack $architecture"
@@ -272,7 +274,7 @@ jobs:
             $output = & $hostExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
               (Join-Path $setupRoot 'Install-MPCVR-Maxine-RIFE.ps1') `
               -ValidateOnly `
-              -GpuInventoryJson $inventory `
+              -GpuInventoryJson $inventoryPath `
               -NoPause 2>&1 | Out-String
             Write-Host $output
             if ($LASTEXITCODE -ne 0) { throw "$hostExe unified setup validation failed with $LASTEXITCODE" }
@@ -284,7 +286,7 @@ jobs:
           powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
             (Join-Path $setupRoot 'Install-MPCVR-Maxine.ps1') `
             -ValidateOnly `
-            -GpuInventoryJson $inventory `
+            -GpuInventoryJson $inventoryPath `
             -NoPause
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -295,6 +297,8 @@ jobs:
           $testRoot = Join-Path $env:RUNNER_TEMP 'maxine-runtime-test'
           $sourceSetup = Join-Path $testRoot 'setup'
           $inventory = '[{"name":"NVIDIA GeForce RTX 2070 SUPER","computeCapability":"7.5"}]'
+          $inventoryPath = Join-Path $testRoot 'gpu-inventory-single.json'
+          Set-Content -LiteralPath $inventoryPath -Value $inventory -Encoding UTF8
 
           function Set-MarkerInstaller([string]$SetupRoot, [string]$MarkerPath) {
             $payloadRoot = Join-Path $SetupRoot 'payload'
@@ -323,7 +327,7 @@ jobs:
 
           $output = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
             (Join-Path $corruptRoot 'Install-MPCVR-Maxine-RIFE.ps1') `
-            -GpuInventoryJson $inventory `
+            -GpuInventoryJson $inventoryPath `
             -NoPause 2>&1 | Out-String
           $exitCode = $LASTEXITCODE
           Write-Host $output
@@ -340,7 +344,7 @@ jobs:
 
           $output = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
             (Join-Path $missingRoot 'Install-MPCVR-Maxine-RIFE.ps1') `
-            -GpuInventoryJson $inventory `
+            -GpuInventoryJson $inventoryPath `
             -NoPause 2>&1 | Out-String
           $exitCode = $LASTEXITCODE
           Write-Host $output
