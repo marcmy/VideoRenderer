@@ -74,6 +74,10 @@ struct MpcvrRifeStats {
     double totalRuntimeMs = 0.0;
     double tensorRtSubmitMs = 0.0;
     uint32_t tensorRtGraphUsed = 0;
+    double packHostMs = 0.0;
+    double writeHostMs = 0.0;
+    double packSyncMs = 0.0;
+    double writeSyncMs = 0.0;
 };
 
 using MpcvrRifeGetAbiVersionFn = uint32_t(WINAPI*)();

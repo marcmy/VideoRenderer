@@ -478,13 +478,15 @@ public:
                 releaseInputs();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
+            const auto packHostStart = Clock::now();
             if (MpcvrRifePackInput(firstArray, secondArray, state.input, m_inputIsFp16,
                     static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
                     static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
-                    request.timestep, state.stream) != cudaSuccess) {
+                    request.timestep, state.stream, &stats.packSyncMs) != cudaSuccess) {
                 releaseInputs();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
+            stats.packHostMs = elapsedMs(packHostStart, Clock::now());
             if (cudaEventRecord(state.packEndEvent, state.stream) != cudaSuccess) {
                 releaseInputs();
                 return MPCVR_RIFE_CUDA_FAILURE;
@@ -525,13 +527,15 @@ public:
             return releaseResult == cudaSuccess ? MPCVR_RIFE_TENSORRT_FAILURE : MPCVR_RIFE_CUDA_FAILURE;
         }
 
+        const auto writeHostStart = Clock::now();
         if (MpcvrRifeWriteOutput(state.output, m_outputIsFp16, outputArray,
                 static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
-                static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight), state.stream) != cudaSuccess) {
+                static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight), state.stream, &stats.writeSyncMs) != cudaSuccess) {
             releaseOutput();
             return MPCVR_RIFE_CUDA_FAILURE;
         }
 
+        stats.writeHostMs = elapsedMs(writeHostStart, Clock::now());
         if (cudaEventRecord(state.endEvent, state.stream) != cudaSuccess) {
             releaseOutput();
             return MPCVR_RIFE_CUDA_FAILURE;

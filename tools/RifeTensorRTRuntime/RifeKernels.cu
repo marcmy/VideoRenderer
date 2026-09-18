@@ -2,6 +2,7 @@
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <chrono>
 
 namespace {
 
@@ -158,7 +159,7 @@ cudaError_t MpcvrRifePackInput(
     int paddedWidth,
     int paddedHeight,
     float timestep,
-    cudaStream_t stream)
+    cudaStream_t stream, double* syncMs)
 {
     if (!first || !second || !tensor || sourceWidth <= 0 || sourceHeight <= 0 ||
         paddedWidth < sourceWidth || paddedHeight < sourceHeight) {
@@ -190,7 +191,10 @@ cudaError_t MpcvrRifePackInput(
         // Keep them alive until the stream has consumed that launch; destroying
         // them immediately can invalidate the objects while the GPU is still
         // reading the mapped D3D11 resources.
+        const auto syncStart = std::chrono::steady_clock::now();
         err = cudaStreamSynchronize(stream);
+        if (syncMs) *syncMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - syncStart).count();
     }
     cudaDestroyTextureObject(secondTexture);
     cudaDestroyTextureObject(firstTexture);
@@ -205,7 +209,7 @@ cudaError_t MpcvrRifeWriteOutput(
     int sourceHeight,
     int paddedWidth,
     int paddedHeight,
-    cudaStream_t stream)
+    cudaStream_t stream, double* syncMs)
 {
     if (!tensor || !output || sourceWidth <= 0 || sourceHeight <= 0 ||
         paddedWidth < sourceWidth || paddedHeight < sourceHeight) {
@@ -231,7 +235,10 @@ cudaError_t MpcvrRifeWriteOutput(
         // caller will hand this D3D11 texture back to the renderer immediately
         // after the request, so complete the write before destroying the CUDA
         // view and transferring ownership back to D3D11.
+        const auto syncStart = std::chrono::steady_clock::now();
         err = cudaStreamSynchronize(stream);
+        if (syncMs) *syncMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - syncStart).count();
     }
     cudaDestroySurfaceObject(surface);
     return err;

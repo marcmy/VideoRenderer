@@ -441,6 +441,10 @@ struct CRifePlaybackPipeline::Impl
     std::atomic_uint64_t presentationDrops = 0;
     std::atomic_uint64_t presentationReclaims = 0;
     std::atomic_uint64_t sourceResyncs = 0;
+    // Publish/read a complete inference sample; workers finish independently.
+    mutable std::mutex timingMutex;
+    MpcvrRifeStats lastHostStats{};
+    uint32_t lastTimingContext = 0;
     std::atomic_uint64_t lastInferenceUs = 0;
     std::atomic_uint64_t lastInputCopySubmitUs = 0;
     std::atomic_uint64_t lastRuntimeWallUs = 0;
@@ -1017,6 +1021,13 @@ struct CRifePlaybackPipeline::Impl
             output, timestep, stats);
         const auto runtimeUs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - runtimeStart).count());
+        activeInferences.fetch_sub(1, std::memory_order_acq_rel);
+        if (!ok) {
+            return false;
+        }
+        std::lock_guard timingLock(timingMutex);
+        lastHostStats = stats;
+        lastTimingContext = contextIndex;
         lastRuntimeWallUs.store(runtimeUs, std::memory_order_relaxed);
         lastInputMapUs.store(MsToUs(stats.inputMapMs), std::memory_order_relaxed);
         lastInputPackUs.store(MsToUs(stats.inputPackMs), std::memory_order_relaxed);
@@ -1032,10 +1043,6 @@ struct CRifePlaybackPipeline::Impl
         lastRuntimeInternalUs.store(MsToUs(stats.totalRuntimeMs), std::memory_order_relaxed);
         lastTensorRtSubmitUs.store(MsToUs(stats.tensorRtSubmitMs), std::memory_order_relaxed);
         tensorRtGraphUsed.store(stats.tensorRtGraphUsed != 0, std::memory_order_relaxed);
-        activeInferences.fetch_sub(1, std::memory_order_acq_rel);
-        if (!ok) {
-            return false;
-        }
         lastInferenceUs.store(MsToUs(stats.inferenceMs), std::memory_order_relaxed);
         return true;
     }
@@ -1257,6 +1264,7 @@ struct CRifePlaybackPipeline::Impl
 
     std::wstring Diagnostics() const
     {
+        std::lock_guard timingLock(timingMutex);
         std::wstring diagnostics = std::format(
             L"generated {}, scene-repeat {}, infer-fallback {}, runtime-wait {}, late-drop {}, source-fallback {}, present-drop {}, present-reclaim {}, source-resync {}, last infer {:.2f} ms",
             generatedFrames.load(std::memory_order_relaxed),
@@ -1305,6 +1313,15 @@ struct CRifePlaybackPipeline::Impl
             lastInputPackLockWaitUs.load(std::memory_order_relaxed) / 1000.0,
             lastTensorRtSubmitUs.load(std::memory_order_relaxed) / 1000.0,
             tensorRtGraphUsed.load(std::memory_order_relaxed) ? L"graph" : L"enqueueV3");
+        const auto& host = lastHostStats;
+        const double accountedHostMs = host.contextLockWaitMs + host.cudaSetDeviceMs
+            + host.registrationMs + host.inputPackLockWaitMs + host.inputMapMs
+            + host.packHostMs + host.inputUnmapMs + host.outputMapMs
+            + host.tensorRtSubmitMs + host.writeHostMs + host.outputUnmapMs;
+        diagnostics += std::format(
+            L"\nRIFE CPU     : ctx {}, pack {:.2f} (wait {:.2f}), write {:.2f} (wait {:.2f}), other {:.2f} ms",
+            lastTimingContext, host.packHostMs, host.packSyncMs, host.writeHostMs,
+            host.writeSyncMs, std::max(0.0, host.totalRuntimeMs - accountedHostMs));
         const int ruleIndex = activeRule.load(std::memory_order_relaxed);
         if (ruleIndex >= 0) {
             diagnostics += std::format(L"\nRIFE rule    : #{}", ruleIndex + 1);
