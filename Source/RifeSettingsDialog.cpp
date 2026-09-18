@@ -412,7 +412,7 @@ void InitializeDialog(HWND hwnd, const Settings_t& settings)
 		{L"Disabled", RIFE_MODE_Disabled},
 		{L"To screen", RIFE_MODE_ToScreen},
 		{L"Movie x2", RIFE_MODE_Movie2x},
-		{L"Movie x2½", RIFE_MODE_Movie2_5x},
+		{L"Movie x2\u00BD", RIFE_MODE_Movie2_5x},
 		{L"Movie x3", RIFE_MODE_Movie3x},
 		{L"Movie x4", RIFE_MODE_Movie4x},
 		{L"Movie x5", RIFE_MODE_Movie5x},
