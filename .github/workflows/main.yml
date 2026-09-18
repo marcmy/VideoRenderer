@@ -228,8 +228,6 @@ jobs:
 
           cp tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.cmd "$setup_root/"
           cp tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1 "$setup_root/"
-          cp tools/MaxineSetup/Install-MPCVR-Maxine.cmd "$setup_root/"
-          cp tools/MaxineSetup/Install-MPCVR-Maxine.ps1 "$setup_root/"
           cp tools/MaxineSetup/README.md "$setup_root/README.md"
 
           cp tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 "$payload_root/"
@@ -252,11 +250,12 @@ jobs:
 
           short_sha="${GITHUB_SHA:0:8}"
           release_tag="maxine-rife-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}-${short_sha}"
+          runtime_release_tag="${release_tag}-rife-runtime"
           cat > "$payload_root/RIFE-runtime-release.json" <<EOF
           {
             "schemaVersion": 1,
-            "releaseTag": "$release_tag",
-            "assetBaseUrl": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}"
+            "releaseTag": "$runtime_release_tag",
+            "assetBaseUrl": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${runtime_release_tag}"
           }
           EOF
 
@@ -323,10 +322,6 @@ jobs:
               MPCVR-Maxine-RIFE-Setup.zip \
               MpcVideoRenderer-Maxine-RIFE.zip \
               MpcVideoRenderer-Maxine.zip \
-              MPCVR-RIFE-sm75.zip \
-              MPCVR-RIFE-sm86.zip \
-              MPCVR-RIFE-sm89.zip \
-              MPCVR-RIFE-sm120.zip \
               > SHA256SUMS.txt
 
             sha256sum MpcVideoRenderer-Maxine.zip > MpcVideoRenderer-Maxine.zip.sha256
@@ -336,8 +331,6 @@ jobs:
           required_setup_paths=(
             'Install-MPCVR-Maxine-RIFE.cmd'
             'Install-MPCVR-Maxine-RIFE.ps1'
-            'Install-MPCVR-Maxine.cmd'
-            'Install-MPCVR-Maxine.ps1'
             'README.md'
             'payload/Install-MPCVRMaxineRuntime.ps1'
             'payload/Install-MPCVRRifeRuntime.ps1'
@@ -373,6 +366,7 @@ jobs:
           set -euo pipefail
           short_sha="${GITHUB_SHA:0:8}"
           tag="maxine-rife-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}-${short_sha}"
+          runtime_tag="${tag}-rife-runtime"
           notes=$(cat <<EOF
           Custom MPC Video Renderer Maxine + RIFE build from master commit ${GITHUB_SHA}.
 
@@ -382,20 +376,33 @@ jobs:
           Advanced/manual download:
           - MpcVideoRenderer-Maxine-RIFE.zip: portable renderer files only.
 
-          RIFE TensorRT runtime support in this release covers NVIDIA Turing (compute capability 7.5), Ampere (8.6), Ada (8.9), and Blackwell (12.0) desktop GPUs. The MPCVR-RIFE-sm*.zip assets are architecture packs consumed automatically by Setup.
+          RIFE TensorRT runtime support covers NVIDIA Turing (compute capability 7.5), Ampere (8.6), Ada (8.9), and Blackwell (12.0) desktop GPUs. Setup detects the installed GPU and fetches the required architecture pack automatically from the pinned companion runtime release.
 
-          SHA256SUMS.txt verifies the setup, renderer packages, and architecture packs. MpcVideoRenderer-Maxine.zip plus its .sha256 remain temporarily for updater shortcuts installed by older releases.
+          SHA256SUMS.txt verifies the setup and renderer packages. MpcVideoRenderer-Maxine.zip plus its .sha256 remain temporarily for updater shortcuts installed by older releases.
           EOF
           )
+
+          runtime_notes=$(cat <<EOF
+          Architecture-specific RIFE TensorRT runtime packs for ${tag}.
+
+          These assets are consumed automatically by MPCVR-Maxine-RIFE-Setup.zip after GPU detection and SHA-256 verification. Normal users do not need to download anything from this companion release manually.
+          EOF
+          )
+
+          gh release create "$runtime_tag" \
+            release/MPCVR-RIFE-sm75.zip \
+            release/MPCVR-RIFE-sm86.zip \
+            release/MPCVR-RIFE-sm89.zip \
+            release/MPCVR-RIFE-sm120.zip \
+            --target "$GITHUB_SHA" \
+            --title "RIFE runtime packs for build ${GITHUB_RUN_NUMBER}" \
+            --notes "$runtime_notes" \
+            --prerelease
 
           gh release create "$tag" \
             release/MPCVR-Maxine-RIFE-Setup.zip \
             release/MpcVideoRenderer-Maxine-RIFE.zip \
             release/MpcVideoRenderer-Maxine.zip \
-            release/MPCVR-RIFE-sm75.zip \
-            release/MPCVR-RIFE-sm86.zip \
-            release/MPCVR-RIFE-sm89.zip \
-            release/MPCVR-RIFE-sm120.zip \
             release/SHA256SUMS.txt \
             release/MpcVideoRenderer-Maxine.zip.sha256 \
             --target "$GITHUB_SHA" \

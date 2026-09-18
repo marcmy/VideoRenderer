@@ -17,8 +17,6 @@ Every declared file in `payload\PAYLOAD-SHA256SUMS.txt` is verified before any i
 
 On first playback, TensorRT may build a GPU-specific engine under `%LOCALAPPDATA%\MPCVideoRenderer\RIFE\cache`. Press `Ctrl+J` in MPC-HC to confirm the loaded Maxine runtime, `RIFE runtime: ready`, and `RIFE model: 4.6`.
 
-The older `Install-MPCVR-Maxine.cmd` and `.ps1` filenames remain compatibility wrappers and forward to the Maxine + RIFE setup when the unified payload is present.
-
 The TensorRT runtime supports NVIDIA Turing (compute capability 7.5), Ampere (8.6), Ada (8.9), and Blackwell (12.0). Architecture packs are no longer embedded in the setup ZIP. The installer detects all NVIDIA adapters and downloads only the union of packs required by the machine, so installation requires Internet access for the architecture-specific fetch.
 
 `payload\THIRD-PARTY-NOTICES.txt` indexes the Maxine, CUDA, TensorRT, and RIFE model notice/license files bundled with the setup. Release assembly fails if any required notice class is missing.
@@ -29,7 +27,6 @@ Normal releases expose:
 
 - `MPCVR-Maxine-RIFE-Setup.zip` for K-Lite users
 - `MpcVideoRenderer-Maxine-RIFE.zip` for manual or portable installation
-- `MPCVR-RIFE-sm75.zip`, `MPCVR-RIFE-sm86.zip`, `MPCVR-RIFE-sm89.zip`, and `MPCVR-RIFE-sm120.zip` as installer-consumed architecture packs
-- `SHA256SUMS.txt` covering the public release ZIPs and architecture packs
+- `SHA256SUMS.txt` covering the public setup and renderer ZIPs
 
-`MpcVideoRenderer-Maxine.zip` remains temporarily as a byte-identical renderer alias so older installed restore shortcuts continue to work. Its legacy `.sha256` asset also remains temporarily for older updater scripts. The redundant `MPCVR-Maxine-Setup.zip` setup alias is no longer published.
+The architecture-specific RIFE packs live in a pinned companion prerelease and are downloaded automatically after GPU detection; normal users do not need to choose one. `MpcVideoRenderer-Maxine.zip` remains temporarily as a byte-identical renderer alias so older installed restore shortcuts continue to work. Its legacy `.sha256` asset also remains temporarily for older updater scripts. The redundant `MPCVR-Maxine-Setup.zip` setup alias is no longer published.

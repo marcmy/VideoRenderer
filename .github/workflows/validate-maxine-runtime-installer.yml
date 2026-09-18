@@ -36,7 +36,6 @@ jobs:
             'tools/MaxineRuntimeInstaller/Export-MPCVRMaxineRuntime.ps1',
             'tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1',
             'tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1',
-            'tools/MaxineSetup/Install-MPCVR-Maxine.ps1',
             'tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1'
           )
           foreach ($script in $scripts) {
@@ -60,7 +59,6 @@ jobs:
             'tools/MaxineRuntimeInstaller/Export-MPCVRMaxineRuntime.ps1',
             'tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1',
             'tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1',
-            'tools/MaxineSetup/Install-MPCVR-Maxine.ps1',
             'tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1'
           )
           foreach ($script in $scripts) {
@@ -183,7 +181,6 @@ jobs:
           New-Item -ItemType Directory -Path $rifeArchiveSource -Force | Out-Null
 
           Copy-Item tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1 $setupRoot
-          Copy-Item tools/MaxineSetup/Install-MPCVR-Maxine.ps1 $setupRoot
           Copy-Item tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1 $payloadRoot
           Copy-Item tools/RifeRuntimeInstaller/Install-MPCVRRifeRuntime.ps1 $payloadRoot
           Copy-Item tools/RifeRuntimeInstaller/Test-MPCVRRifePreflight.ps1 $payloadRoot
@@ -282,13 +279,6 @@ jobs:
               throw "$hostExe unified setup did not select exactly sm75 and sm120 for the test inventory"
             }
           }
-
-          powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
-            (Join-Path $setupRoot 'Install-MPCVR-Maxine.ps1') `
-            -ValidateOnly `
-            -GpuInventoryJson $inventoryPath `
-            -NoPause
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Prove corrupt or missing setup payloads fail before mutation
         shell: powershell

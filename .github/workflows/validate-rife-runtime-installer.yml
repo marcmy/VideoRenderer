@@ -35,8 +35,7 @@ jobs:
             'tools/RifeRuntimeInstaller/Test-RifeRuntimePackage.ps1',
             'tools/RifeRuntimeInstaller/Install-MPCVRRifeRuntime.ps1',
             'tools/RifeRuntimeInstaller/Test-MPCVRRifePreflight.ps1',
-            'tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1',
-            'tools/MaxineSetup/Install-MPCVR-Maxine.ps1'
+            'tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1'
           )) {
             $tokens = $null
             $errors = $null
@@ -59,8 +58,7 @@ jobs:
             'tools/RifeRuntimeInstaller/Test-RifeRuntimePackage.ps1',
             'tools/RifeRuntimeInstaller/Install-MPCVRRifeRuntime.ps1',
             'tools/RifeRuntimeInstaller/Test-MPCVRRifePreflight.ps1',
-            'tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1',
-            'tools/MaxineSetup/Install-MPCVR-Maxine.ps1'
+            'tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1'
           )) {
             $tokens = $null
             $errors = $null
