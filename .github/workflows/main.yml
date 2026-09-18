@@ -244,14 +244,25 @@ jobs:
           cp release/MpcVideoRenderer-Maxine-RIFE.zip "$payload_root/"
           cp "$runtime_zip" "$payload_root/"
           cp "$runtime_artifact/MPCVR-RIFE-Common.zip" "$payload_root/"
-          cp "$runtime_artifact/MPCVR-RIFE-sm75.zip" "$payload_root/"
-          cp "$runtime_artifact/MPCVR-RIFE-sm86.zip" "$payload_root/"
-          cp "$runtime_artifact/MPCVR-RIFE-sm89.zip" "$payload_root/"
-          cp "$runtime_artifact/MPCVR-RIFE-sm120.zip" "$payload_root/"
           cp "$runtime_artifact/runtime-manifest.json" "$payload_root/RIFE-runtime-manifest.json"
+          cp "$runtime_sums" "$payload_root/RIFE-runtime-SHA256SUMS.txt"
           cp "$model_artifact/MPCVR-RIFE-Model-v4.6.zip" "$payload_root/"
           cp "$model_artifact/LICENSES/RIFE-model-license.txt" "$payload_root/LICENSES/"
           cp "$maxine_license" "$payload_root/"
+
+          short_sha="${GITHUB_SHA:0:8}"
+          release_tag="maxine-rife-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}-${short_sha}"
+          cat > "$payload_root/RIFE-runtime-release.json" <<EOF
+          {
+            "schemaVersion": 1,
+            "releaseTag": "$release_tag",
+            "assetBaseUrl": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}"
+          }
+          EOF
+
+          for architecture in sm75 sm86 sm89 sm120; do
+            cp "$runtime_artifact/MPCVR-RIFE-${architecture}.zip" "release/MPCVR-RIFE-${architecture}.zip"
+          done
 
           runtime_notice_count=0
           while IFS= read -r notice; do
@@ -304,17 +315,18 @@ jobs:
           )
 
           cp release/MpcVideoRenderer-Maxine-RIFE.zip release/MpcVideoRenderer-Maxine.zip
-          cp release/MPCVR-Maxine-RIFE-Setup.zip release/MPCVR-Maxine-Setup.zip
           cmp release/MpcVideoRenderer-Maxine-RIFE.zip release/MpcVideoRenderer-Maxine.zip
-          cmp release/MPCVR-Maxine-RIFE-Setup.zip release/MPCVR-Maxine-Setup.zip
 
           (
             cd release
             sha256sum \
               MPCVR-Maxine-RIFE-Setup.zip \
-              MPCVR-Maxine-Setup.zip \
               MpcVideoRenderer-Maxine-RIFE.zip \
               MpcVideoRenderer-Maxine.zip \
+              MPCVR-RIFE-sm75.zip \
+              MPCVR-RIFE-sm86.zip \
+              MPCVR-RIFE-sm89.zip \
+              MPCVR-RIFE-sm120.zip \
               > SHA256SUMS.txt
 
             sha256sum MpcVideoRenderer-Maxine.zip > MpcVideoRenderer-Maxine.zip.sha256
@@ -337,12 +349,10 @@ jobs:
             'payload/MpcVideoRenderer-Maxine-RIFE.zip'
             'payload/MPCVR-Maxine-Runtime.zip'
             'payload/MPCVR-RIFE-Common.zip'
-            'payload/MPCVR-RIFE-sm75.zip'
-            'payload/MPCVR-RIFE-sm86.zip'
-            'payload/MPCVR-RIFE-sm89.zip'
-            'payload/MPCVR-RIFE-sm120.zip'
             'payload/MPCVR-RIFE-Model-v4.6.zip'
             'payload/RIFE-runtime-manifest.json'
+            'payload/RIFE-runtime-SHA256SUMS.txt'
+            'payload/RIFE-runtime-release.json'
             'payload/THIRD-PARTY-NOTICES.txt'
             'payload/Maxine-SDK-License.pdf'
             'payload/LICENSES/RIFE-model-license.txt'
@@ -367,22 +377,25 @@ jobs:
           Custom MPC Video Renderer Maxine + RIFE build from master commit ${GITHUB_SHA}.
 
           Recommended download:
-          - MPCVR-Maxine-RIFE-Setup.zip: one-click K-Lite setup containing the custom renderer, NVIDIA Maxine VSR runtime, RIFE 4.6 TensorRT runtime/model, architecture-specific TensorRT builder resources, environment setup, and restore shortcut.
+          - MPCVR-Maxine-RIFE-Setup.zip: one-click K-Lite setup containing the custom renderer, NVIDIA Maxine VSR runtime, RIFE 4.6 common TensorRT runtime/model, environment setup, and restore shortcut. During installation it detects the NVIDIA GPU compute capability and downloads only the matching architecture pack from this immutable release.
 
           Advanced/manual download:
           - MpcVideoRenderer-Maxine-RIFE.zip: portable renderer files only.
 
-          RIFE TensorRT runtime support in this release covers NVIDIA Turing (compute capability 7.5), Ampere (8.6), Ada (8.9), and Blackwell (12.0) desktop GPUs.
+          RIFE TensorRT runtime support in this release covers NVIDIA Turing (compute capability 7.5), Ampere (8.6), Ada (8.9), and Blackwell (12.0) desktop GPUs. The MPCVR-RIFE-sm*.zip assets are architecture packs consumed automatically by Setup.
 
-          SHA256SUMS.txt verifies the new public ZIPs and their one-release compatibility aliases. MpcVideoRenderer-Maxine.zip.sha256 remains temporarily for updater shortcuts installed by older releases.
+          SHA256SUMS.txt verifies the setup, renderer packages, and architecture packs. MpcVideoRenderer-Maxine.zip plus its .sha256 remain temporarily for updater shortcuts installed by older releases.
           EOF
           )
 
           gh release create "$tag" \
             release/MPCVR-Maxine-RIFE-Setup.zip \
-            release/MPCVR-Maxine-Setup.zip \
             release/MpcVideoRenderer-Maxine-RIFE.zip \
             release/MpcVideoRenderer-Maxine.zip \
+            release/MPCVR-RIFE-sm75.zip \
+            release/MPCVR-RIFE-sm86.zip \
+            release/MPCVR-RIFE-sm89.zip \
+            release/MPCVR-RIFE-sm120.zip \
             release/SHA256SUMS.txt \
             release/MpcVideoRenderer-Maxine.zip.sha256 \
             --target "$GITHUB_SHA" \

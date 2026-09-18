@@ -25,14 +25,9 @@ $rendererArchive = Join-Path $payloadRoot 'MpcVideoRenderer-Maxine-RIFE.zip'
 $maxineRuntimeArchive = Join-Path $payloadRoot 'MPCVR-Maxine-Runtime.zip'
 $rifeModelArchive = Join-Path $payloadRoot 'MPCVR-RIFE-Model-v4.6.zip'
 $rifeRuntimeManifest = Join-Path $payloadRoot 'RIFE-runtime-manifest.json'
-
-$rifeRuntimeArchiveNames = @(
-    'MPCVR-RIFE-Common.zip',
-    'MPCVR-RIFE-sm75.zip',
-    'MPCVR-RIFE-sm86.zip',
-    'MPCVR-RIFE-sm89.zip',
-    'MPCVR-RIFE-sm120.zip'
-)
+$rifeRuntimeChecksums = Join-Path $payloadRoot 'RIFE-runtime-SHA256SUMS.txt'
+$rifeRuntimeSource = Join-Path $payloadRoot 'RIFE-runtime-release.json'
+$rifeManifestModule = Join-Path $payloadRoot 'RifeRuntimeManifest.psm1'
 
 $requiredPayloadNames = @(
     'Install-MPCVRMaxineRuntime.ps1',
@@ -45,12 +40,10 @@ $requiredPayloadNames = @(
     'MpcVideoRenderer-Maxine-RIFE.zip',
     'MPCVR-Maxine-Runtime.zip',
     'MPCVR-RIFE-Common.zip',
-    'MPCVR-RIFE-sm75.zip',
-    'MPCVR-RIFE-sm86.zip',
-    'MPCVR-RIFE-sm89.zip',
-    'MPCVR-RIFE-sm120.zip',
     'MPCVR-RIFE-Model-v4.6.zip',
     'RIFE-runtime-manifest.json',
+    'RIFE-runtime-SHA256SUMS.txt',
+    'RIFE-runtime-release.json',
     'PAYLOAD-SHA256SUMS.txt'
 )
 
@@ -213,19 +206,104 @@ catch {
     }
 }
 
-function New-RifeRuntimeBundle {
-    param([Parameter(Mandatory = $true)][string]$Destination)
-
-    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
-    foreach ($archiveName in $rifeRuntimeArchiveNames) {
-        Copy-Item -LiteralPath (Join-Path $payloadRoot $archiveName) -Destination (Join-Path $Destination $archiveName)
+function Get-RifeRuntimeAssetBaseUrl {
+    if (-not (Test-Path -LiteralPath $rifeRuntimeSource -PathType Leaf)) {
+        throw "RIFE runtime release metadata is missing: $rifeRuntimeSource"
     }
-    Copy-Item -LiteralPath $rifeRuntimeManifest -Destination (Join-Path $Destination 'runtime-manifest.json')
 
+    try {
+        $source = Get-Content -LiteralPath $rifeRuntimeSource -Raw | ConvertFrom-Json
+    }
+    catch {
+        throw "RIFE runtime release metadata is invalid JSON: $($_.Exception.Message)"
+    }
+
+    $schemaProperty = $source.PSObject.Properties['schemaVersion']
+    $tagProperty = $source.PSObject.Properties['releaseTag']
+    $urlProperty = $source.PSObject.Properties['assetBaseUrl']
+    if (-not $schemaProperty -or [int]$schemaProperty.Value -ne 1) {
+        throw 'RIFE runtime release metadata schemaVersion must be 1.'
+    }
+    if (-not $urlProperty -or [string]::IsNullOrWhiteSpace([string]$urlProperty.Value)) {
+        throw 'RIFE runtime release metadata is missing assetBaseUrl.'
+    }
+    if (-not $tagProperty -or [string]::IsNullOrWhiteSpace([string]$tagProperty.Value)) {
+        throw 'RIFE runtime release metadata is missing releaseTag.'
+    }
+
+    $uri = $null
+    if (-not [Uri]::TryCreate(([string]$urlProperty.Value).TrimEnd('/'), [UriKind]::Absolute, [ref]$uri)) {
+        throw 'RIFE runtime assetBaseUrl is not an absolute URL.'
+    }
+    if ($uri.Scheme -ne 'https' -or $uri.Host -ne 'github.com' -or $uri.AbsolutePath -notmatch '/releases/download/') {
+        throw "RIFE runtime assetBaseUrl is not a GitHub HTTPS release URL: $uri"
+    }
+    $releaseTag = ([string]$tagProperty.Value).Trim()
+    if (-not $uri.AbsolutePath.EndsWith("/releases/download/$releaseTag", [StringComparison]::Ordinal)) {
+        throw 'RIFE runtime assetBaseUrl does not match its pinned releaseTag.'
+    }
+
+    return $uri.AbsoluteUri.TrimEnd('/')
+}
+
+function Assert-RifeRuntimeDownloadContract {
+    param([Parameter(Mandatory = $true)][string[]]$ArchitectureKeys)
+
+    $assetBaseUrl = Get-RifeRuntimeAssetBaseUrl
+    $checksums = Read-RifeChecksumList -Path $rifeRuntimeChecksums
+    foreach ($archiveName in @('MPCVR-RIFE-Common.zip') + @($ArchitectureKeys | ForEach-Object { "MPCVR-RIFE-$_.zip" })) {
+        if (-not $checksums.ContainsKey($archiveName)) {
+            throw "RIFE runtime checksum list is missing $archiveName."
+        }
+        $hash = [string]$checksums[$archiveName]
+        if ($hash -notmatch '^[0-9a-fA-F]{64}$') {
+            throw "RIFE runtime checksum is invalid for $archiveName."
+        }
+    }
+
+    return $assetBaseUrl
+}
+
+function New-RifeRuntimeBundle {
+    param(
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string[]]$ArchitectureKeys
+    )
+
+    $assetBaseUrl = Assert-RifeRuntimeDownloadContract -ArchitectureKeys $ArchitectureKeys
+    $checksums = Read-RifeChecksumList -Path $rifeRuntimeChecksums
+    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+
+    $commonArchiveName = 'MPCVR-RIFE-Common.zip'
+    $commonArchive = Join-Path $Destination $commonArchiveName
+    Copy-Item -LiteralPath (Join-Path $payloadRoot $commonArchiveName) -Destination $commonArchive
+    [void](Assert-RifeFileHash -Path $commonArchive -ExpectedHash ([string]$checksums[$commonArchiveName]) -DisplayName $commonArchiveName)
+
+    foreach ($architectureKey in $ArchitectureKeys) {
+        $archiveName = "MPCVR-RIFE-$architectureKey.zip"
+        $archivePath = Join-Path $Destination $archiveName
+        $archiveUrl = "$assetBaseUrl/$archiveName"
+        Write-Host "Downloading RIFE architecture pack $architectureKey..."
+        $request = @{
+            Uri = $archiveUrl
+            OutFile = $archivePath
+        }
+        if ($PSVersionTable.PSEdition -eq 'Desktop') {
+            $request.UseBasicParsing = $true
+        }
+        try {
+            Invoke-WebRequest @request
+        }
+        catch {
+            throw "Failed to download $archiveName from pinned release ${assetBaseUrl}: $($_.Exception.Message)"
+        }
+        [void](Assert-RifeFileHash -Path $archivePath -ExpectedHash ([string]$checksums[$archiveName]) -DisplayName $archiveName)
+    }
+
+    Copy-Item -LiteralPath $rifeRuntimeManifest -Destination (Join-Path $Destination 'runtime-manifest.json')
     @(
-        foreach ($archiveName in $rifeRuntimeArchiveNames) {
-            $hash = Get-ExpectedHash -ChecksumPath $payloadChecksums -FileName $archiveName
-            "$hash  $archiveName"
+        foreach ($archiveName in @($commonArchiveName) + @($ArchitectureKeys | ForEach-Object { "MPCVR-RIFE-$_.zip" })) {
+            "{0}  {1}" -f ([string]$checksums[$archiveName]), $archiveName
         }
     ) | Set-Content -LiteralPath (Join-Path $Destination 'SHA256SUMS.txt') -Encoding ASCII
 }
@@ -279,6 +357,17 @@ try {
     Assert-PayloadHashes
 
     Write-Host 'Verified all declared Maxine + RIFE setup payload hashes.' -ForegroundColor Green
+    Import-Module $rifeManifestModule -Force
+
+    $gpuInventory = @(Get-RifeGpuInventory -GpuInventoryJson $GpuInventoryJson)
+    $architectureKeys = @(Get-RifeArchitectureKeysForInventory -GpuInventory $gpuInventory)
+    if ($architectureKeys.Count -eq 0) {
+        throw 'No RIFE architecture packs were selected.'
+    }
+    [void](Assert-RifeRuntimeDownloadContract -ArchitectureKeys $architectureKeys)
+    $normalizedGpuInventoryJson = $gpuInventory | ConvertTo-Json -Compress
+    Write-Host ('Detected NVIDIA GPUs: {0}' -f (($gpuInventory | ForEach-Object { '{0} (CC {1})' -f $_.Name, $_.ComputeCapability }) -join '; '))
+    Write-Host ('RIFE architecture downloads: {0}' -f ($architectureKeys -join ', '))
 
     if ($ValidateOnly) {
         Invoke-SetupStep -Name 'Validating the Maxine runtime installer...' -ScriptPath $maxineRuntimeInstaller -Parameters @{
@@ -289,9 +378,7 @@ try {
         $rifeValidationParameters = @{
             ValidateOnly = $true
             NoPause = $true
-        }
-        if (-not [string]::IsNullOrWhiteSpace($GpuInventoryJson)) {
-            $rifeValidationParameters['GpuInventoryJson'] = $GpuInventoryJson
+            GpuInventoryJson = $normalizedGpuInventoryJson
         }
         Invoke-SetupStep -Name 'Validating the RIFE runtime installer...' -ScriptPath $rifeRuntimeInstaller -Parameters $rifeValidationParameters
 
@@ -314,6 +401,11 @@ try {
         throw 'Close MPC-HC before running MPCVR Maxine + RIFE Setup.'
     }
 
+    if ($PSVersionTable.PSEdition -eq 'Desktop') {
+        [Net.ServicePointManager]::SecurityProtocol =
+            [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    }
+
     $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("MPCVR-Maxine-RIFE-Setup-{0}" -f [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
@@ -323,7 +415,7 @@ try {
     "$maxineHash  MPCVR-Maxine-Runtime.zip" | Set-Content -LiteralPath "$stagedMaxineArchive.sha256" -Encoding ASCII
 
     $rifeBundleRoot = Join-Path $tempRoot 'rife-runtime'
-    New-RifeRuntimeBundle -Destination $rifeBundleRoot
+    New-RifeRuntimeBundle -Destination $rifeBundleRoot -ArchitectureKeys $architectureKeys
 
     Invoke-SetupStep `
         -Name '1/4 Installing NVIDIA Maxine runtime...' `
@@ -337,9 +429,7 @@ try {
         RuntimeBundleRoot = $rifeBundleRoot
         ModelArchive = $rifeModelArchive
         NoPause = $true
-    }
-    if (-not [string]::IsNullOrWhiteSpace($GpuInventoryJson)) {
-        $rifeInstallParameters['GpuInventoryJson'] = $GpuInventoryJson
+        GpuInventoryJson = $normalizedGpuInventoryJson
     }
     Invoke-SetupStep `
         -Name '2/4 Installing RIFE 4.6 TensorRT runtime...' `
@@ -361,9 +451,9 @@ try {
         }
 
     $rifeInstallRoot = Join-Path $env:LOCALAPPDATA 'MPCVideoRenderer\RIFE'
-    $rifePreflightParameters = @{ InstallRoot = $rifeInstallRoot }
-    if (-not [string]::IsNullOrWhiteSpace($GpuInventoryJson)) {
-        $rifePreflightParameters['GpuInventoryJson'] = $GpuInventoryJson
+    $rifePreflightParameters = @{
+        InstallRoot = $rifeInstallRoot
+        GpuInventoryJson = $normalizedGpuInventoryJson
     }
     Invoke-SetupStep -Name 'Running RIFE post-install preflight...' -ScriptPath $rifePreflight -Parameters $rifePreflightParameters
     $maxineRuntimePath = Assert-MaxinePreflight

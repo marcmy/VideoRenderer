@@ -198,16 +198,20 @@ jobs:
           $rendererArchive = Join-Path $payloadRoot 'MpcVideoRenderer-Maxine-RIFE.zip'
           Compress-Archive -Path (Join-Path $rendererSource '*') -DestinationPath $rendererArchive
 
-          Set-Content -LiteralPath (Join-Path $rifeArchiveSource 'fixture.txt') -Value 'mock RIFE payload' -Encoding ASCII
-          foreach ($archiveName in @(
+          $rifeFixture = Join-Path $rifeArchiveSource 'fixture.txt'
+          Set-Content -LiteralPath $rifeFixture -Value 'mock RIFE payload' -Encoding ASCII
+          Compress-Archive -LiteralPath $rifeFixture -DestinationPath (Join-Path $payloadRoot 'MPCVR-RIFE-Common.zip')
+          Compress-Archive -LiteralPath $rifeFixture -DestinationPath (Join-Path $payloadRoot 'MPCVR-RIFE-Model-v4.6.zip')
+
+          $runtimeArchiveNames = @(
             'MPCVR-RIFE-Common.zip',
             'MPCVR-RIFE-sm75.zip',
             'MPCVR-RIFE-sm86.zip',
             'MPCVR-RIFE-sm89.zip',
-            'MPCVR-RIFE-sm120.zip',
-            'MPCVR-RIFE-Model-v4.6.zip'
-          )) {
-            Compress-Archive -Path (Join-Path $rifeArchiveSource '*') -DestinationPath (Join-Path $payloadRoot $archiveName)
+            'MPCVR-RIFE-sm120.zip'
+          )
+          foreach ($archiveName in $runtimeArchiveNames | Where-Object { $_ -ne 'MPCVR-RIFE-Common.zip' }) {
+            Compress-Archive -LiteralPath $rifeFixture -DestinationPath (Join-Path $rifeArchiveSource $archiveName)
           }
 
           [pscustomobject]@{
@@ -223,6 +227,25 @@ jobs:
               [pscustomobject]@{ computeCapability = '12.0'; key = 'sm120'; builderResource = 'nvinfer_builder_resource_sm120_11.dll' }
             )
           } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $payloadRoot 'RIFE-runtime-manifest.json') -Encoding UTF8
+
+          @(
+            foreach ($archiveName in $runtimeArchiveNames) {
+              $archivePath = if ($archiveName -eq 'MPCVR-RIFE-Common.zip') {
+                Join-Path $payloadRoot $archiveName
+              }
+              else {
+                Join-Path $rifeArchiveSource $archiveName
+              }
+              $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $archiveName"
+            }
+          ) | Set-Content -LiteralPath (Join-Path $payloadRoot 'RIFE-runtime-SHA256SUMS.txt') -Encoding ASCII
+
+          [pscustomobject]@{
+            schemaVersion = 1
+            releaseTag = 'test-release'
+            assetBaseUrl = 'https://github.com/marcmy/VideoRenderer/releases/download/test-release'
+          } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $payloadRoot 'RIFE-runtime-release.json') -Encoding UTF8
 
           Push-Location $payloadRoot
           try {
@@ -240,13 +263,22 @@ jobs:
           }
 
           $inventory = '[{"name":"NVIDIA GeForce RTX 2070 SUPER","computeCapability":"7.5"},{"name":"NVIDIA GeForce RTX 5070","computeCapability":"12.0"}]'
+          foreach ($architecture in @('sm75', 'sm86', 'sm89', 'sm120')) {
+            if (Test-Path -LiteralPath (Join-Path $payloadRoot "MPCVR-RIFE-$architecture.zip")) {
+              throw "Unified setup unexpectedly embeds architecture pack $architecture"
+            }
+          }
           foreach ($hostExe in @('powershell.exe', 'pwsh.exe')) {
-            & $hostExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
+            $output = & $hostExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
               (Join-Path $setupRoot 'Install-MPCVR-Maxine-RIFE.ps1') `
               -ValidateOnly `
               -GpuInventoryJson $inventory `
-              -NoPause
+              -NoPause 2>&1 | Out-String
+            Write-Host $output
             if ($LASTEXITCODE -ne 0) { throw "$hostExe unified setup validation failed with $LASTEXITCODE" }
+            if ($output -notmatch 'RIFE architecture downloads: sm75, sm120') {
+              throw "$hostExe unified setup did not select exactly sm75 and sm120 for the test inventory"
+            }
           }
 
           powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
@@ -287,7 +319,7 @@ jobs:
           Copy-Item -LiteralPath $sourceSetup -Destination $corruptRoot -Recurse
           $corruptMarker = Join-Path $corruptRoot 'MUTATION-MARKER.txt'
           Set-MarkerInstaller -SetupRoot $corruptRoot -MarkerPath $corruptMarker
-          Add-Content -LiteralPath (Join-Path $corruptRoot 'payload\MPCVR-RIFE-sm86.zip') -Value 'corruption' -Encoding ASCII
+          Add-Content -LiteralPath (Join-Path $corruptRoot 'payload\MPCVR-RIFE-Common.zip') -Value 'corruption' -Encoding ASCII
 
           $output = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
             (Join-Path $corruptRoot 'Install-MPCVR-Maxine-RIFE.ps1') `
