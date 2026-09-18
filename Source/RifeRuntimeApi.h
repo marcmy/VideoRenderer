@@ -67,6 +67,11 @@ struct MpcvrRifeStats {
     double tensorRtMs = 0.0;
     double outputWriteMs = 0.0;
     double outputUnmapMs = 0.0;
+    double contextLockWaitMs = 0.0;
+    double cudaSetDeviceMs = 0.0;
+    double registrationMs = 0.0;
+    double inputPackLockWaitMs = 0.0;
+    double totalRuntimeMs = 0.0;
 };
 
 using MpcvrRifeGetAbiVersionFn = uint32_t(WINAPI*)();

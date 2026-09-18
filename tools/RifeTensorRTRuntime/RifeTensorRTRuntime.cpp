@@ -335,6 +335,7 @@ public:
     int Interpolate(const MpcvrRifeRequest& request, MpcvrRifeStats& stats)
     {
         using Clock = std::chrono::steady_clock;
+        const auto runtimeStart = Clock::now();
         const auto elapsedMs = [](const Clock::time_point start, const Clock::time_point end) {
             return std::chrono::duration<double, std::milli>(end - start).count();
         };
@@ -343,18 +344,25 @@ public:
         }
         if (request.contextIndex >= m_contexts.size()) return MPCVR_RIFE_INVALID_ARGUMENT;
 
-        std::scoped_lock lock(*m_contextMutexes[request.contextIndex]);
+        std::unique_lock contextLock(*m_contextMutexes[request.contextIndex], std::defer_lock);
+        const auto contextLockStart = Clock::now();
+        contextLock.lock();
+        stats.contextLockWaitMs = elapsedMs(contextLockStart, Clock::now());
         auto& state = *m_contexts[request.contextIndex];
+        const auto setDeviceStart = Clock::now();
         if (cudaSetDevice(m_cudaDevice) != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
+        stats.cudaSetDeviceMs = elapsedMs(setDeviceStart, Clock::now());
 
         std::array<cudaGraphicsResource_t, 2> inputResources{};
         cudaGraphicsResource_t outputResource = nullptr;
+        const auto registrationStart = Clock::now();
         {
             D3D11InteropLock interopLock(m_d3dMultithread);
             inputResources = {m_registrations.Get(request.first, false),
                 m_registrations.Get(request.second, false)};
             outputResource = m_registrations.Get(request.output, true);
         }
+        stats.registrationMs = elapsedMs(registrationStart, Clock::now());
         if (!inputResources[0] || !inputResources[1] || !outputResource) return MPCVR_RIFE_CUDA_FAILURE;
 
         bool outputMapped = false;
@@ -384,7 +392,10 @@ public:
             // serialize only the short map/pack/unmap ownership window. Once the
             // pixels are packed into this context's private CUDA buffer, TensorRT
             // can run concurrently with the next context packing B/C.
-            std::scoped_lock inputPackLock(m_inputPackMutex);
+            std::unique_lock inputPackLock(m_inputPackMutex, std::defer_lock);
+            const auto inputPackLockStart = Clock::now();
+            inputPackLock.lock();
+            stats.inputPackLockWaitMs = elapsedMs(inputPackLockStart, Clock::now());
             const auto inputMapStart = Clock::now();
             {
                 D3D11InteropLock interopLock(m_d3dMultithread);
@@ -485,6 +496,7 @@ public:
         if (cudaEventElapsedTime(&stageElapsed, state.trtEndEvent, state.endEvent) != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
         stats.outputWriteMs = stageElapsed;
         stats.engineBytes = m_engineBytes;
+        stats.totalRuntimeMs = elapsedMs(runtimeStart, Clock::now());
         return MPCVR_RIFE_OK;
     }
 

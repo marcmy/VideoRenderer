@@ -451,6 +451,11 @@ struct CRifePlaybackPipeline::Impl
     std::atomic_uint64_t lastTensorRtUs = 0;
     std::atomic_uint64_t lastOutputWriteUs = 0;
     std::atomic_uint64_t lastOutputUnmapUs = 0;
+    std::atomic_uint64_t lastContextLockWaitUs = 0;
+    std::atomic_uint64_t lastCudaSetDeviceUs = 0;
+    std::atomic_uint64_t lastRegistrationUs = 0;
+    std::atomic_uint64_t lastInputPackLockWaitUs = 0;
+    std::atomic_uint64_t lastRuntimeInternalUs = 0;
     std::atomic_uint64_t presentationSurfaceWaitUs = 0;
     std::atomic_uint64_t presentationSurfaceWaitCount = 0;
     std::atomic_uint64_t presentationSurfaceWaitMaxUs = 0;
@@ -1018,6 +1023,11 @@ struct CRifePlaybackPipeline::Impl
         lastTensorRtUs.store(MsToUs(stats.tensorRtMs), std::memory_order_relaxed);
         lastOutputWriteUs.store(MsToUs(stats.outputWriteMs), std::memory_order_relaxed);
         lastOutputUnmapUs.store(MsToUs(stats.outputUnmapMs), std::memory_order_relaxed);
+        lastContextLockWaitUs.store(MsToUs(stats.contextLockWaitMs), std::memory_order_relaxed);
+        lastCudaSetDeviceUs.store(MsToUs(stats.cudaSetDeviceMs), std::memory_order_relaxed);
+        lastRegistrationUs.store(MsToUs(stats.registrationMs), std::memory_order_relaxed);
+        lastInputPackLockWaitUs.store(MsToUs(stats.inputPackLockWaitMs), std::memory_order_relaxed);
+        lastRuntimeInternalUs.store(MsToUs(stats.totalRuntimeMs), std::memory_order_relaxed);
         activeInferences.fetch_sub(1, std::memory_order_acq_rel);
         if (!ok) {
             return false;
@@ -1282,6 +1292,13 @@ struct CRifePlaybackPipeline::Impl
             surfaceWaitCount ? (surfaceWaitUs / static_cast<double>(surfaceWaitCount)) / 1000.0 : 0.0,
             presentationSurfaceWaitMaxUs.load(std::memory_order_relaxed) / 1000.0,
             surfaceWaitCount);
+        diagnostics += std::format(
+            L"\nRIFE host    : internal {:.2f} ms, ctx-lock {:.2f}, set-device {:.2f}, register {:.2f}, pack-lock {:.2f}",
+            lastRuntimeInternalUs.load(std::memory_order_relaxed) / 1000.0,
+            lastContextLockWaitUs.load(std::memory_order_relaxed) / 1000.0,
+            lastCudaSetDeviceUs.load(std::memory_order_relaxed) / 1000.0,
+            lastRegistrationUs.load(std::memory_order_relaxed) / 1000.0,
+            lastInputPackLockWaitUs.load(std::memory_order_relaxed) / 1000.0);
         const int ruleIndex = activeRule.load(std::memory_order_relaxed);
         if (ruleIndex >= 0) {
             diagnostics += std::format(L"\nRIFE rule    : #{}", ruleIndex + 1);
