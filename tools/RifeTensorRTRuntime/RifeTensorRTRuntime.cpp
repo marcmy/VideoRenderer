@@ -795,11 +795,16 @@ private:
             auto state = std::make_unique<ContextState>();
             state->context.reset(m_engine->createExecutionContext());
             if (!state->context) return false;
-            if (cudaStreamCreateWithFlags(&state->stream, cudaStreamNonBlocking) != cudaSuccess) return false;
             int leastPriority = 0;
             int greatestPriority = 0;
             const cudaError_t priorityRangeResult =
                 cudaDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority);
+            const cudaError_t inferenceStreamResult = priorityRangeResult == cudaSuccess
+                ? cudaStreamCreateWithPriority(
+                    &state->stream, cudaStreamNonBlocking, greatestPriority)
+                : cudaStreamCreateWithFlags(
+                    &state->stream, cudaStreamNonBlocking);
+            if (inferenceStreamResult != cudaSuccess) return false;
             const cudaError_t releaseStreamResult = priorityRangeResult == cudaSuccess
                 ? cudaStreamCreateWithPriority(
                     &state->inputReleaseStream, cudaStreamNonBlocking, greatestPriority)
