@@ -558,25 +558,27 @@ public:
                 finishStream();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
-            // The packed TensorRT input buffer no longer depends on the D3D11
-            // input textures after packEndEvent. Retire D3D11/CUDA ownership on
-            // a second stream so the potentially expensive interop transition
-            // can overlap TensorRT and output work on the main inference stream.
-            if (cudaStreamWaitEvent(state.inputReleaseStream, state.packEndEvent, 0) != cudaSuccess) {
-                releaseInputs(state.stream);
-                finishStream();
-                return MPCVR_RIFE_CUDA_FAILURE;
-            }
-            if (releaseInputs(state.inputReleaseStream) != cudaSuccess) {
-                finishStream();
-                return MPCVR_RIFE_CUDA_FAILURE;
-            }
-            if (cudaEventRecord(state.inputReleasedEvent, state.inputReleaseStream) != cudaSuccess) {
-                finishStream();
-                return MPCVR_RIFE_CUDA_FAILURE;
-            }
-            if (m_deferInputRelease) {
-                state.inputReleasePending = true;
+            // Generic callers still need their input ownership returned before
+            // Interpolate() exits. The renderer's deferred mode intentionally
+            // keeps the staged input textures mapped through inference instead:
+            // on D3D11, an asynchronous cudaGraphicsUnmapResources() running on
+            // this second stream can serialize unrelated graphics interop and
+            // starve the main TensorRT/output stream. Deferred mode queues that
+            // ownership transition only after the current output is handed back.
+            if (!m_deferInputRelease) {
+                if (cudaStreamWaitEvent(state.inputReleaseStream, state.packEndEvent, 0) != cudaSuccess) {
+                    releaseInputs(state.stream);
+                    finishStream();
+                    return MPCVR_RIFE_CUDA_FAILURE;
+                }
+                if (releaseInputs(state.inputReleaseStream) != cudaSuccess) {
+                    finishStream();
+                    return MPCVR_RIFE_CUDA_FAILURE;
+                }
+                if (cudaEventRecord(state.inputReleasedEvent, state.inputReleaseStream) != cudaSuccess) {
+                    finishStream();
+                    return MPCVR_RIFE_CUDA_FAILURE;
+                }
             }
         }
 
@@ -648,7 +650,9 @@ public:
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
         }
-        inputResourceClaim.Release();
+        if (!m_deferInputRelease) {
+            inputResourceClaim.Release();
+        }
 
         // We only need to wait until the RIFE kernels have finished using the
         // texture/surface objects. Do not synchronize the whole stream after
@@ -667,7 +671,25 @@ public:
         const cudaError_t destroyResult = destroyCudaViews();
         const cudaError_t releaseResult = releaseOutput();
         if (destroyResult != cudaSuccess || releaseResult != cudaSuccess) {
+            releaseInputs(state.stream);
+            finishStream();
             return MPCVR_RIFE_CUDA_FAILURE;
+        }
+
+        if (m_deferInputRelease) {
+            // Output ownership is already queued back to D3D11 on state.stream.
+            // Queue the input ownership transition after it on that same stream,
+            // then return without waiting. The renderer retains these source
+            // slots until this context advances, so this normally completes in
+            // the inter-frame interval without contending with the inference that
+            // produced the current output.
+            if (releaseInputs(state.stream) != cudaSuccess
+                    || cudaEventRecord(state.inputReleasedEvent, state.stream) != cudaSuccess) {
+                finishStream();
+                return MPCVR_RIFE_CUDA_FAILURE;
+            }
+            state.inputReleasePending = true;
+            inputResourceClaim.Release();
         }
 
         float elapsed = 0.0f;

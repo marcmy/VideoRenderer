@@ -70,6 +70,11 @@ assert "inputResourceClaim.Release()" in rife_runtime and "inputReleasedEvent" i
 assert "MPCVR_RIFE_CREATE_DEFER_INPUT_RELEASE" in rife_runtime and "state.inputReleasePending" in rife_runtime, (
     "the renderer runtime must carry a deferred input ownership release into the next invocation of that context"
 )
+deferred_release = rife_runtime.index("if (m_deferInputRelease) {", rife_runtime.index("const cudaError_t releaseResult = releaseOutput();"))
+output_release = rife_runtime.index("const cudaError_t releaseResult = releaseOutput();")
+assert deferred_release > output_release and "releaseInputs(state.stream)" in rife_runtime[deferred_release:deferred_release + 1400], (
+    "renderer deferred input ownership must be queued after output handoff instead of contending with TensorRT/output work"
+)
 assert "offsetof(MpcvrRifeCreateParams, flags)" in rife_runtime, (
     "ABI-2 runtimes must continue accepting the original create-params size before the optional flags tail"
 )
