@@ -53,16 +53,21 @@ assert "runtime->Interpolate(contextIndex, first, second," in generate_rife
 assert "outputTexture" not in generate_rife, (
     "parallel RIFE inference must write into a context-owned texture instead of the shared scene-blend texture"
 )
-prepare_inputs = function_body(rife_pipeline, "bool PrepareInferenceInputs(")
-assert "CopyResource(workerState.inferenceFirst, first)" in prepare_inputs
-assert "CopyResource(workerState.inferenceSecond, second)" in prepare_inputs, (
-    "each context worker must isolate shared A/B source textures before CUDA maps them"
+submit = function_body(rife_pipeline, "bool Submit(")
+assert "CopyResource(inferenceTexture, texture)" in submit, (
+    "each source frame must stage its CUDA input copy immediately after source preparation"
+)
+assert "frame.inferenceTexture = inferenceTexture" in submit, (
+    "the early-staged CUDA input must follow the source frame through adjacent pair jobs"
 )
 assert "InputResourceClaim inputResourceClaim" in rife_runtime, (
     "the runtime must protect only genuinely shared CUDA graphics resources"
 )
+assert "inputResourceClaim.Release()" in rife_runtime and "inputReleasedEvent" in rife_runtime, (
+    "shared A/B inputs must be released after map/pack/unmap instead of serializing full TensorRT requests"
+)
 assert "m_inputPackMutex" not in rife_runtime, (
-    "worker-owned input copies must not be serialized by a process-wide input-pack mutex"
+    "pre-staged input copies must not be serialized by a process-wide input-pack mutex"
 )
 assert "cudaStreamBeginCapture" in rife_runtime and "cudaGraphLaunch" in rife_runtime, (
     "TensorRT submission should use a per-context CUDA graph when capture is supported"
@@ -75,8 +80,9 @@ assert "workerState.inferenceOutputs" in acquire_output and "CreateBgraTexture" 
     "CUDA outputs must come from a stable per-context pool instead of creating a registered texture every frame"
 )
 process_pair = function_body(rife_pipeline, "void ProcessPairJob(")
-assert "PrepareInferenceInputs" in process_pair and "AcquireInferenceOutput" in process_pair and "result.generated" in process_pair, (
-    "parallel pair workers must use isolated reusable inference surfaces and retain results until ordered presentation"
+assert "first.inferenceTexture" in process_pair and "second.inferenceTexture" in process_pair
+assert "AcquireInferenceOutput" in process_pair and "result.generated" in process_pair, (
+    "parallel pair workers must use pre-staged CUDA inputs and retain results until ordered presentation"
 )
 present_pair = function_body(rife_pipeline, "bool PresentPairJob(")
 assert "QueueTexture(" in present_pair and "result.generated" in present_pair, (

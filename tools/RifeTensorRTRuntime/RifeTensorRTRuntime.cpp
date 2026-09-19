@@ -62,11 +62,18 @@ public:
 
     ~InputResourceClaim()
     {
+        Release();
+    }
+
+    void Release()
+    {
+        if (m_released) return;
         {
             std::lock_guard lock(m_mutex);
             m_active.erase(m_resources[0]);
             m_active.erase(m_resources[1]);
         }
+        m_released = true;
         m_cv.notify_all();
     }
 
@@ -78,6 +85,7 @@ private:
     std::condition_variable& m_cv;
     std::unordered_set<cudaGraphicsResource_t>& m_active;
     std::array<cudaGraphicsResource_t, 2> m_resources{};
+    bool m_released = false;
 };
 
 std::filesystem::path ThisModuleDirectory()
@@ -221,6 +229,7 @@ struct ContextState {
     cudaGraphExec_t tensorRtGraphExec = nullptr;
     cudaEvent_t startEvent = nullptr;
     cudaEvent_t packEndEvent = nullptr;
+    cudaEvent_t inputReleasedEvent = nullptr;
     cudaEvent_t trtStartEvent = nullptr;
     cudaEvent_t trtEndEvent = nullptr;
     cudaEvent_t endEvent = nullptr;
@@ -236,6 +245,7 @@ struct ContextState {
         if (endEvent) cudaEventDestroy(endEvent);
         if (trtEndEvent) cudaEventDestroy(trtEndEvent);
         if (trtStartEvent) cudaEventDestroy(trtStartEvent);
+        if (inputReleasedEvent) cudaEventDestroy(inputReleasedEvent);
         if (packEndEvent) cudaEventDestroy(packEndEvent);
         if (startEvent) cudaEventDestroy(startEvent);
         if (stream) cudaStreamDestroy(stream);
@@ -528,6 +538,10 @@ public:
                 finishStream();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
+            if (cudaEventRecord(state.inputReleasedEvent, state.stream) != cudaSuccess) {
+                finishStream();
+                return MPCVR_RIFE_CUDA_FAILURE;
+            }
         }
 
         const auto outputMapStart = Clock::now();
@@ -582,6 +596,21 @@ public:
             finishStream();
             return MPCVR_RIFE_CUDA_FAILURE;
         }
+
+        // Adjacent A/B and B/C jobs intentionally share the pre-staged B input.
+        // Release that resource claim as soon as this stream has finished its
+        // input pack/unmap, while TensorRT and output write continue on the same
+        // stream. This preserves interop ownership without serializing the full
+        // inference request across contexts.
+        const auto inputReleaseStart = Clock::now();
+        const cudaError_t inputReleaseResult = cudaEventSynchronize(state.inputReleasedEvent);
+        stats.inputReleaseSyncMs = elapsedMs(inputReleaseStart, Clock::now());
+        if (inputReleaseResult != cudaSuccess) {
+            releaseOutput();
+            finishStream();
+            return MPCVR_RIFE_CUDA_FAILURE;
+        }
+        inputResourceClaim.Release();
 
         // We only need to wait until the RIFE kernels have finished using the
         // texture/surface objects. Do not synchronize the whole stream after
@@ -756,6 +785,7 @@ private:
             if (cudaStreamCreateWithFlags(&state->stream, cudaStreamNonBlocking) != cudaSuccess) return false;
             if (cudaEventCreate(&state->startEvent) != cudaSuccess
                     || cudaEventCreate(&state->packEndEvent) != cudaSuccess
+                    || cudaEventCreate(&state->inputReleasedEvent) != cudaSuccess
                     || cudaEventCreate(&state->trtStartEvent) != cudaSuccess
                     || cudaEventCreate(&state->trtEndEvent) != cudaSuccess
                     || cudaEventCreate(&state->endEvent) != cudaSuccess) return false;

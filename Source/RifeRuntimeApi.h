@@ -79,6 +79,7 @@ struct MpcvrRifeStats {
     double packSyncMs = 0.0;
     double writeSyncMs = 0.0;
     double handoffSyncMs = 0.0;
+    double inputReleaseSyncMs = 0.0;
 };
 
 using MpcvrRifeGetAbiVersionFn = uint32_t(WINAPI*)();

@@ -283,12 +283,14 @@ struct CRifePlaybackPipeline::Impl
 {
     struct SourceSlot {
         CComPtr<ID3D11Texture2D> texture;
+        CComPtr<ID3D11Texture2D> inferenceTexture;
         bool inUse = false;
     };
 
     struct SourceFrame {
         size_t slot = SIZE_MAX;
         CComPtr<ID3D11Texture2D> texture;
+        CComPtr<ID3D11Texture2D> inferenceTexture;
         CDX11VideoProcessor* processor = nullptr;
         REFERENCE_TIME time = INVALID_TIME;
         REFERENCE_TIME frameDuration = 0;
@@ -336,8 +338,6 @@ struct CRifePlaybackPipeline::Impl
         bool stop = false;
         CNvidiaSceneChangeDetector nvofDetector;
         ImageCutDetector imageDetector;
-        CComPtr<ID3D11Texture2D> inferenceFirst;
-        CComPtr<ID3D11Texture2D> inferenceSecond;
         std::vector<CComPtr<ID3D11Texture2D>> inferenceOutputs;
     };
 
@@ -525,10 +525,11 @@ struct CRifePlaybackPipeline::Impl
         removeEveryOtherToggle = false;
     }
 
-    bool AcquireSourceSlot(ID3D11Device* device, UINT width, UINT height, size_t& index, ID3D11Texture2D** texture)
+    bool AcquireSourceSlot(ID3D11Device* device, UINT width, UINT height, size_t& index,
+        ID3D11Texture2D** texture, ID3D11Texture2D** inferenceTexture)
     {
         index = SIZE_MAX;
-        if (!device || !width || !height || !texture) {
+        if (!device || !width || !height || !texture || !inferenceTexture) {
             return false;
         }
 
@@ -544,10 +545,18 @@ struct CRifePlaybackPipeline::Impl
                     continue;
                 }
             }
+            if (!SameTextureShape(slot.inferenceTexture, device, width, height)) {
+                slot.inferenceTexture.Release();
+                if (FAILED(CreateBgraTexture(device, width, height, &slot.inferenceTexture))) {
+                    continue;
+                }
+            }
             slot.inUse = true;
             index = i;
             *texture = slot.texture;
             (*texture)->AddRef();
+            *inferenceTexture = slot.inferenceTexture;
+            (*inferenceTexture)->AddRef();
             return true;
         }
         return false;
@@ -625,7 +634,9 @@ struct CRifePlaybackPipeline::Impl
 
         size_t slot = SIZE_MAX;
         CComPtr<ID3D11Texture2D> texture;
-        if (!AcquireSourceSlot(device, static_cast<UINT>(size.cx), static_cast<UINT>(size.cy), slot, &texture)) {
+        CComPtr<ID3D11Texture2D> inferenceTexture;
+        if (!AcquireSourceSlot(device, static_cast<UINT>(size.cx), static_cast<UINT>(size.cy), slot,
+                &texture, &inferenceTexture)) {
             return false;
         }
 
@@ -635,9 +646,30 @@ struct CRifePlaybackPipeline::Impl
             return false;
         }
 
+        // Stage one CUDA-only copy immediately after the source image is
+        // produced, while its D3D work is still near the front of the queue.
+        // Adjacent pair jobs may share this texture, but the runtime claims it
+        // only through map/pack/unmap and releases it before TensorRT runs.
+        const auto inputCopyStart = std::chrono::steady_clock::now();
+        CComPtr<ID3D11DeviceContext> inputCopyContext;
+        device->GetImmediateContext(&inputCopyContext);
+        if (!inputCopyContext) {
+            ReleaseSourceSlot(slot);
+            return false;
+        }
+        CComPtr<ID3D11Multithread> inputCopyMultithread;
+        if (SUCCEEDED(inputCopyContext->QueryInterface(IID_PPV_ARGS(&inputCopyMultithread)))
+                && inputCopyMultithread) {
+            inputCopyMultithread->SetMultithreadProtected(TRUE);
+        }
+        inputCopyContext->CopyResource(inferenceTexture, texture);
+        lastInputCopySubmitUs.store(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - inputCopyStart).count()), std::memory_order_relaxed);
+
         SourceFrame frame;
         frame.slot = slot;
         frame.texture = texture;
+        frame.inferenceTexture = inferenceTexture;
         frame.processor = processor;
         frame.time = sourceTime;
         frame.frameDuration = frameDuration;
@@ -920,50 +952,6 @@ struct CRifePlaybackPipeline::Impl
         return detector.Analyze(device, first.texture, second.texture, cut) && cut;
     }
 
-    bool PrepareInferenceInputs(
-        InferenceWorkerState& workerState,
-        ID3D11Device* device,
-        ID3D11Texture2D* first,
-        ID3D11Texture2D* second,
-        const UINT width,
-        const UINT height)
-    {
-        if (!device || !first || !second || !width || !height) {
-            return false;
-        }
-
-        const bool recreate = !SameTextureShape(workerState.inferenceFirst, device, width, height)
-            || !SameTextureShape(workerState.inferenceSecond, device, width, height);
-        if (recreate) {
-            workerState.inferenceFirst.Release();
-            workerState.inferenceSecond.Release();
-            workerState.inferenceOutputs.clear();
-            if (FAILED(CreateBgraTexture(device, width, height, &workerState.inferenceFirst))
-                    || FAILED(CreateBgraTexture(device, width, height, &workerState.inferenceSecond))) {
-                workerState.inferenceFirst.Release();
-                workerState.inferenceSecond.Release();
-                return false;
-            }
-        }
-
-        CComPtr<ID3D11DeviceContext> context;
-        device->GetImmediateContext(&context);
-        if (!context) {
-            return false;
-        }
-        CComPtr<ID3D11Multithread> multithread;
-        if (SUCCEEDED(context->QueryInterface(IID_PPV_ARGS(&multithread))) && multithread) {
-            multithread->SetMultithreadProtected(TRUE);
-        }
-
-        // Source-pool textures are shared by adjacent jobs (A/B, B/C). Copy
-        // them into context-owned textures before CUDA interop so no worker
-        // maps a source texture while another worker's scene detector reads it.
-        context->CopyResource(workerState.inferenceFirst, first);
-        context->CopyResource(workerState.inferenceSecond, second);
-        return true;
-    }
-
     ID3D11Texture2D* AcquireInferenceOutput(
         InferenceWorkerState& workerState,
         ID3D11Device* device,
@@ -1058,12 +1046,7 @@ struct CRifePlaybackPipeline::Impl
         if (!device || !job.width || !job.height) {
             return;
         }
-        const auto inputCopyStart = std::chrono::steady_clock::now();
-        const bool inputsReady = PrepareInferenceInputs(workerState, device, first.texture, second.texture,
-            job.width, job.height);
-        lastInputCopySubmitUs.store(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - inputCopyStart).count()), std::memory_order_relaxed);
-        if (!inputsReady) {
+        if (!first.inferenceTexture || !second.inferenceTexture) {
             for (const auto& target : job.targets) {
                 TargetResult result;
                 result.target = target;
@@ -1135,7 +1118,7 @@ struct CRifePlaybackPipeline::Impl
             }
 
             const bool generatedOk = GenerateRife(job.runtime, job.contextIndex,
-                workerState.inferenceFirst, workerState.inferenceSecond,
+                first.inferenceTexture, second.inferenceTexture,
                 static_cast<float>(target.timestep), generated);
 
             if (nvofStarted) {
@@ -1318,11 +1301,11 @@ struct CRifePlaybackPipeline::Impl
             + host.registrationMs + host.inputPackLockWaitMs + host.inputMapMs
             + host.packHostMs + host.inputUnmapMs + host.outputMapMs
             + host.tensorRtSubmitMs + host.writeHostMs + host.outputUnmapMs
-            + host.handoffSyncMs;
+            + host.inputReleaseSyncMs + host.handoffSyncMs;
         diagnostics += std::format(
-            L"\nRIFE CPU     : ctx {}, pack {:.2f} (wait {:.2f}), write {:.2f} (wait {:.2f}), handoff {:.2f}, other {:.2f} ms",
+            L"\nRIFE CPU     : ctx {}, pack {:.2f} (wait {:.2f}), write {:.2f} (wait {:.2f}), input-release {:.2f}, handoff {:.2f}, other {:.2f} ms",
             lastTimingContext, host.packHostMs, host.packSyncMs, host.writeHostMs,
-            host.writeSyncMs, host.handoffSyncMs,
+            host.writeSyncMs, host.inputReleaseSyncMs, host.handoffSyncMs,
             std::max(0.0, host.totalRuntimeMs - accountedHostMs));
         const int ruleIndex = activeRule.load(std::memory_order_relaxed);
         if (ruleIndex >= 0) {
