@@ -43,6 +43,16 @@ struct MpcvrRifeCreateParams {
     uint32_t performanceBoost = 0;
     const wchar_t* modelPath = nullptr;
     const wchar_t* cachePath = nullptr;
+    // ABI-2 optional tail. When enabled, the renderer guarantees that input
+    // textures are retained and are not reused by another context until this
+    // context is invoked again. This lets the runtime defer the expensive
+    // D3D11/CUDA input ownership release instead of synchronizing it at the end
+    // of every interpolation call.
+    uint32_t flags = 0;
+};
+
+enum MpcvrRifeCreateFlags : uint32_t {
+    MPCVR_RIFE_CREATE_DEFER_INPUT_RELEASE = 1u << 0,
 };
 
 struct MpcvrRifeRequest {
@@ -85,6 +95,7 @@ struct MpcvrRifeStats {
 using MpcvrRifeGetAbiVersionFn = uint32_t(WINAPI*)();
 using MpcvrRifeCreateFn = int(WINAPI*)(const MpcvrRifeCreateParams*, void**);
 using MpcvrRifeInterpolateFn = int(WINAPI*)(void*, const MpcvrRifeRequest*, MpcvrRifeStats*);
+using MpcvrRifeDrainContextFn = int(WINAPI*)(void*, uint32_t);
 using MpcvrRifeDestroyFn = void(WINAPI*)(void*);
 
 static_assert(std::is_standard_layout_v<MpcvrRifeCreateParams>);

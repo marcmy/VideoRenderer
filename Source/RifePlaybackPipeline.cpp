@@ -340,6 +340,9 @@ struct CRifePlaybackPipeline::Impl
         bool stop = false;
         ImageCutDetector imageDetector;
         std::vector<CComPtr<ID3D11Texture2D>> inferenceOutputs;
+        SourceFramePtr retainedInputFirst;
+        SourceFramePtr retainedInputSecond;
+        std::shared_ptr<CRifeFrameInterpolation> retainedInputRuntime;
     };
 
     static bool RifeFramesCompatible(const SourceFrame& first, const SourceFrame& second)
@@ -386,6 +389,7 @@ struct CRifePlaybackPipeline::Impl
         if (worker.joinable()) {
             worker.join();
         }
+        DrainAllRetainedInputs();
         for (auto& state : inferenceWorkers) {
             if (!state) continue;
             {
@@ -1071,6 +1075,27 @@ struct CRifePlaybackPipeline::Impl
         return true;
     }
 
+    bool DrainRetainedInputs(InferenceWorkerState& workerState)
+    {
+        if (workerState.retainedInputRuntime
+                && !workerState.retainedInputRuntime->DrainContext(workerState.index)) {
+            return false;
+        }
+        workerState.retainedInputFirst.reset();
+        workerState.retainedInputSecond.reset();
+        workerState.retainedInputRuntime.reset();
+        return true;
+    }
+
+    void DrainAllRetainedInputs()
+    {
+        for (auto& workerState : inferenceWorkers) {
+            if (workerState) {
+                DrainRetainedInputs(*workerState);
+            }
+        }
+    }
+
     void ProcessPairJob(InferenceWorkerState& workerState, PairJob& job)
     {
         if (!job.first || !job.second || !job.runtime || !IsCurrent(*job.second)) {
@@ -1080,6 +1105,20 @@ struct CRifePlaybackPipeline::Impl
         auto& second = *job.second;
         ID3D11Device* device = second.processor ? second.processor->GetRifeDevice() : nullptr;
         if (!device || !job.width || !job.height) {
+            return;
+        }
+        if (workerState.retainedInputRuntime
+                && workerState.retainedInputRuntime != job.runtime
+                && !DrainRetainedInputs(workerState)) {
+            for (const auto& target : job.targets) {
+                TargetResult result;
+                result.target = target;
+                result.inferenceFailed = !target.exactSource;
+                if (result.inferenceFailed) {
+                    inferenceFallbackFrames.fetch_add(1, std::memory_order_relaxed);
+                }
+                job.results.push_back(std::move(result));
+            }
             return;
         }
         ID3D11Texture2D* firstInference = first.inferenceAsFirst;
@@ -1110,6 +1149,14 @@ struct CRifePlaybackPipeline::Impl
         bool sceneCut = hasTimelySyntheticTarget
             && second.settings.iRifeSceneDetection == RIFE_SCENE_Image
             && DetectImageSceneCut(workerState.imageDetector, first, second);
+        bool advancedDeferredInputs = false;
+        const auto retainDeferredInputs = [&]() {
+            if (advancedDeferredInputs) return;
+            workerState.retainedInputFirst = job.first;
+            workerState.retainedInputSecond = job.second;
+            workerState.retainedInputRuntime = job.runtime;
+            advancedDeferredInputs = true;
+        };
 
         job.results.reserve(job.targets.size());
         size_t outputIndex = 0;
@@ -1169,6 +1216,11 @@ struct CRifePlaybackPipeline::Impl
             const bool generatedOk = GenerateRife(job.runtime, job.contextIndex,
                 firstInference, secondInference,
                 static_cast<float>(target.timestep), generated);
+            // GenerateRife() first retires any deferred input release left by
+            // the previous request on this same context. Only now is it safe to
+            // let those old source-pool slots go; retain this pair until the
+            // context advances again.
+            retainDeferredInputs();
 
             if (nvofStarted) {
                 CNvidiaSceneChangeDetector::Metrics metrics;
@@ -1460,6 +1512,7 @@ struct CRifePlaybackPipeline::Impl
             const uint64_t currentSerial = resetSerial.load(std::memory_order_acquire);
             if (currentSerial != activeSerial) {
                 drainPending(false);
+                DrainAllRetainedInputs();
                 previous.reset();
                 activeSerial = currentSerial;
                 nextWorker = 0;
@@ -1566,6 +1619,7 @@ struct CRifePlaybackPipeline::Impl
                 // setting that can create another registration cache for the
                 // same D3D11 source pool.
                 drainPending(true);
+                DrainAllRetainedInputs();
                 nextWorker = 0;
             }
 

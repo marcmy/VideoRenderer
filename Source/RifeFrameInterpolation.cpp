@@ -93,6 +93,7 @@ struct RuntimeExports {
     MpcvrRifeGetAbiVersionFn getAbi = nullptr;
     MpcvrRifeCreateFn create = nullptr;
     MpcvrRifeInterpolateFn interpolate = nullptr;
+    MpcvrRifeDrainContextFn drainContext = nullptr;
     MpcvrRifeDestroyFn destroy = nullptr;
 
     [[nodiscard]] bool Complete() const noexcept
@@ -110,6 +111,8 @@ RuntimeExports ResolveExports(HMODULE module)
         GetProcAddress(module, "MpcvrRifeCreate"));
     exports.interpolate = reinterpret_cast<MpcvrRifeInterpolateFn>(
         GetProcAddress(module, "MpcvrRifeInterpolate"));
+    exports.drainContext = reinterpret_cast<MpcvrRifeDrainContextFn>(
+        GetProcAddress(module, "MpcvrRifeDrainContext"));
     exports.destroy = reinterpret_cast<MpcvrRifeDestroyFn>(
         GetProcAddress(module, "MpcvrRifeDestroy"));
     return exports;
@@ -284,6 +287,9 @@ bool CRifeFrameInterpolation::LoadAndCreate(
     params.performanceBoost = performanceBoost ? 1u : 0u;
     params.modelPath = modelPath.c_str();
     params.cachePath = cachePath.empty() ? nullptr : cachePath.c_str();
+    // Deferred input ownership requires the optional drain export so the
+    // renderer can safely retire a context before switching runtime instances.
+    params.flags = exports.drainContext ? MPCVR_RIFE_CREATE_DEFER_INPUT_RELEASE : 0u;
 
     void* handle = nullptr;
     const int result = exports.create(&params, &handle);
@@ -321,6 +327,7 @@ bool CRifeFrameInterpolation::LoadAndCreate(
     m_module = module;
     m_handle = handle;
     m_interpolate = exports.interpolate;
+    m_drainContext = exports.drainContext;
     m_destroy = exports.destroy;
     m_modulePath = modulePath;
     m_status = std::format(L"RIFE runtime ready (ABI {}, {} contexts, LINEAR I/O)",
@@ -355,6 +362,16 @@ bool CRifeFrameInterpolation::Interpolate(
     return result == 0;
 }
 
+bool CRifeFrameInterpolation::DrainContext(const uint32_t contextIndex) noexcept
+{
+    if (!m_handle) {
+        return true;
+    }
+    // Runtimes without this optional ABI-2 export never receive the deferred
+    // release flag, so their Interpolate() calls are already synchronous.
+    return !m_drainContext || m_drainContext(m_handle, contextIndex) == MPCVR_RIFE_OK;
+}
+
 void CRifeFrameInterpolation::Reset() noexcept
 {
     if (m_handle && m_destroy) {
@@ -362,6 +379,7 @@ void CRifeFrameInterpolation::Reset() noexcept
     }
     m_handle = nullptr;
     m_interpolate = nullptr;
+    m_drainContext = nullptr;
     m_destroy = nullptr;
 
     if (m_module) {

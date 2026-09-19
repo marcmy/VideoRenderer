@@ -48,6 +48,8 @@ public:
         float timestep,
         MpcvrRifeStats& stats);
 
+    bool DrainContext(uint32_t contextIndex) noexcept;
+
     void Reset() noexcept;
 
     [[nodiscard]] bool IsReady() const noexcept { return m_module && m_handle && m_interpolate; }
@@ -72,6 +74,7 @@ private:
     HMODULE m_module = nullptr;
     void* m_handle = nullptr;
     MpcvrRifeInterpolateFn m_interpolate = nullptr;
+    MpcvrRifeDrainContextFn m_drainContext = nullptr;
     MpcvrRifeDestroyFn m_destroy = nullptr;
     std::wstring m_modulePath;
     std::wstring m_status;

@@ -236,6 +236,7 @@ struct ContextState {
     cudaEvent_t endEvent = nullptr;
     void* input = nullptr;
     void* output = nullptr;
+    bool inputReleasePending = false;
 
     ~ContextState()
     {
@@ -301,6 +302,9 @@ public:
     ~RifeRuntime()
     {
         if (m_cudaDevice >= 0) cudaSetDevice(m_cudaDevice);
+        for (uint32_t i = 0; i < m_contexts.size(); ++i) {
+            DrainContext(i);
+        }
         {
             D3D11InteropLock interopLock(m_d3dMultithread);
             m_registrations.Clear();
@@ -330,6 +334,8 @@ public:
         }
         m_contextCount = std::clamp(params.contextCount, 1u, kMaxContexts);
         m_performanceBoost = params.performanceBoost != 0;
+        m_deferInputRelease = params.size >= sizeof(MpcvrRifeCreateParams)
+            && (params.flags & MPCVR_RIFE_CREATE_DEFER_INPUT_RELEASE) != 0;
         m_modelPath = params.modelPath;
         m_cachePath = params.cachePath;
         m_device = params.device;
@@ -411,6 +417,19 @@ public:
         const auto setDeviceStart = Clock::now();
         if (cudaSetDevice(m_cudaDevice) != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
         stats.cudaSetDeviceMs = elapsedMs(setDeviceStart, Clock::now());
+
+        // In deferred-release mode, the previous request on this context may
+        // still be finishing the D3D11/CUDA ownership transition for its input
+        // textures. Contexts are round-robin and own disjoint staged inputs, so
+        // waiting here gives that transition the entire intervening frame to
+        // complete instead of charging it to the request that launched it.
+        if (m_deferInputRelease && state.inputReleasePending) {
+            const auto inputReleaseStart = Clock::now();
+            const cudaError_t inputReleaseResult = cudaEventSynchronize(state.inputReleasedEvent);
+            stats.inputReleaseSyncMs = elapsedMs(inputReleaseStart, Clock::now());
+            if (inputReleaseResult != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
+            state.inputReleasePending = false;
+        }
 
         std::array<cudaGraphicsResource_t, 2> inputResources{};
         cudaGraphicsResource_t outputResource = nullptr;
@@ -556,6 +575,9 @@ public:
                 finishStream();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
+            if (m_deferInputRelease) {
+                state.inputReleasePending = true;
+            }
         }
 
         const auto outputMapStart = Clock::now();
@@ -611,17 +633,20 @@ public:
             return MPCVR_RIFE_CUDA_FAILURE;
         }
 
-        // Adjacent A/B and B/C jobs intentionally share the pre-staged B input.
-        // Release that resource claim once the independent input-release stream
-        // has completed the D3D11/CUDA ownership transition. TensorRT and output
-        // work are allowed to overlap that transition on the inference stream.
-        const auto inputReleaseStart = Clock::now();
-        const cudaError_t inputReleaseResult = cudaEventSynchronize(state.inputReleasedEvent);
-        stats.inputReleaseSyncMs = elapsedMs(inputReleaseStart, Clock::now());
-        if (inputReleaseResult != cudaSuccess) {
-            releaseOutput();
-            finishStream();
-            return MPCVR_RIFE_CUDA_FAILURE;
+        // The renderer's role-specific staged inputs are disjoint across
+        // parallel contexts. In deferred mode it retains their source-pool slots
+        // until this context is invoked again, so the ownership transition may
+        // finish asynchronously. Generic callers keep the original synchronous
+        // behavior.
+        if (!m_deferInputRelease) {
+            const auto inputReleaseStart = Clock::now();
+            const cudaError_t inputReleaseResult = cudaEventSynchronize(state.inputReleasedEvent);
+            stats.inputReleaseSyncMs = elapsedMs(inputReleaseStart, Clock::now());
+            if (inputReleaseResult != cudaSuccess) {
+                releaseOutput();
+                finishStream();
+                return MPCVR_RIFE_CUDA_FAILURE;
+            }
         }
         inputResourceClaim.Release();
 
@@ -657,6 +682,20 @@ public:
         stats.outputWriteMs = stageElapsed;
         stats.engineBytes = m_engineBytes;
         stats.totalRuntimeMs = elapsedMs(runtimeStart, Clock::now());
+        return MPCVR_RIFE_OK;
+    }
+
+    int DrainContext(const uint32_t contextIndex)
+    {
+        if (contextIndex >= m_contexts.size()) return MPCVR_RIFE_INVALID_ARGUMENT;
+        std::unique_lock contextLock(*m_contextMutexes[contextIndex]);
+        if (cudaSetDevice(m_cudaDevice) != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
+        auto& state = *m_contexts[contextIndex];
+        if (!state.inputReleasePending) return MPCVR_RIFE_OK;
+        if (cudaEventSynchronize(state.inputReleasedEvent) != cudaSuccess) {
+            return MPCVR_RIFE_CUDA_FAILURE;
+        }
+        state.inputReleasePending = false;
         return MPCVR_RIFE_OK;
     }
 
@@ -905,6 +944,7 @@ private:
     TrtPtr<nvinfer1::ICudaEngine> m_engine;
     std::vector<std::unique_ptr<ContextState>> m_contexts;
     std::vector<std::unique_ptr<std::mutex>> m_contextMutexes;
+    bool m_deferInputRelease = false;
     std::mutex m_inputResourceMutex;
     std::condition_variable m_inputResourceCv;
     std::unordered_set<cudaGraphicsResource_t> m_activeInputResources;
@@ -920,7 +960,8 @@ extern "C" __declspec(dllexport) uint32_t WINAPI MpcvrRifeGetAbiVersion()
 
 extern "C" __declspec(dllexport) int WINAPI MpcvrRifeCreate(const MpcvrRifeCreateParams* params, void** handle)
 {
-    if (!params || !handle || params->size < sizeof(MpcvrRifeCreateParams) || params->abiVersion != MPCVR_RIFE_RUNTIME_ABI) {
+    constexpr size_t kAbi2BaseCreateParamsSize = offsetof(MpcvrRifeCreateParams, flags);
+    if (!params || !handle || params->size < kAbi2BaseCreateParamsSize || params->abiVersion != MPCVR_RIFE_RUNTIME_ABI) {
         return MPCVR_RIFE_INVALID_ARGUMENT;
     }
     *handle = nullptr;
@@ -945,6 +986,13 @@ extern "C" __declspec(dllexport) int WINAPI MpcvrRifeInterpolate(
     std::memcpy(stats, &localStats, copySize);
     stats->size = callerStatsSize;
     return result;
+}
+
+extern "C" __declspec(dllexport) int WINAPI MpcvrRifeDrainContext(
+    void* handle, const uint32_t contextIndex)
+{
+    if (!handle) return MPCVR_RIFE_INVALID_ARGUMENT;
+    return static_cast<RifeRuntime*>(handle)->DrainContext(contextIndex);
 }
 
 extern "C" __declspec(dllexport) void WINAPI MpcvrRifeDestroy(void* handle)
