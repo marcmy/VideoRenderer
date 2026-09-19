@@ -79,7 +79,9 @@ using PFN_cuDevicePrimaryCtxRetain = CUresult (WINAPI*)(CUcontext* context, CUde
 using PFN_cuDevicePrimaryCtxRelease = CUresult (WINAPI*)(CUdevice device);
 using PFN_cuCtxGetCurrent = CUresult (WINAPI*)(CUcontext* context);
 using PFN_cuCtxSetCurrent = CUresult (WINAPI*)(CUcontext context);
+using PFN_cuCtxGetStreamPriorityRange = CUresult (WINAPI*)(int* leastPriority, int* greatestPriority);
 using PFN_cuStreamCreate = CUresult (WINAPI*)(CUstream* stream, unsigned int flags);
+using PFN_cuStreamCreateWithPriority = CUresult (WINAPI*)(CUstream* stream, unsigned int flags, int priority);
 using PFN_cuStreamDestroy = CUresult (WINAPI*)(CUstream stream);
 
 struct NvCVImage {
@@ -256,7 +258,9 @@ struct CNvidiaMaxineVSR::Impl
 	PFN_cuDevicePrimaryCtxRelease CuDevicePrimaryCtxRelease = nullptr;
 	PFN_cuCtxGetCurrent CuCtxGetCurrent = nullptr;
 	PFN_cuCtxSetCurrent CuCtxSetCurrent = nullptr;
+	PFN_cuCtxGetStreamPriorityRange CuCtxGetStreamPriorityRange = nullptr;
 	PFN_cuStreamCreate CuStreamCreate = nullptr;
+	PFN_cuStreamCreateWithPriority CuStreamCreateWithPriority = nullptr;
 	PFN_cuStreamDestroy CuStreamDestroy = nullptr;
 
 	PFN_NvVFX_GetVersion NvVFX_GetVersion = nullptr;
@@ -284,6 +288,8 @@ struct CNvidiaMaxineVSR::Impl
 	CUcontext primaryCudaContext = nullptr;
 	CUdevice primaryCudaDevice = -1;
 	bool streamUsesPrimaryContext = false;
+	bool streamPriorityKnown = false;
+	int streamPriority = 0;
 	NvCVImage d3dInput = {};
 	NvCVImage d3dOutput = {};
 	NvCVImage gpuInput = {};
@@ -342,6 +348,8 @@ struct CNvidiaMaxineVSR::Impl
 			&& LoadCudaProc("cuCtxSetCurrent", CuCtxSetCurrent)
 			&& LoadCudaProc("cuStreamCreate", CuStreamCreate)
 			&& LoadCudaProc("cuStreamDestroy_v2", CuStreamDestroy, "cuStreamDestroy");
+		LoadCudaProc("cuCtxGetStreamPriorityRange", CuCtxGetStreamPriorityRange);
+		LoadCudaProc("cuStreamCreateWithPriority", CuStreamCreateWithPriority);
 		if (!loaded || CuInit(0) != CUDA_SUCCESS) {
 			FreeLibrary(hCudaDriver);
 			hCudaDriver = nullptr;
@@ -351,7 +359,9 @@ struct CNvidiaMaxineVSR::Impl
 			CuDevicePrimaryCtxRelease = nullptr;
 			CuCtxGetCurrent = nullptr;
 			CuCtxSetCurrent = nullptr;
+			CuCtxGetStreamPriorityRange = nullptr;
 			CuStreamCreate = nullptr;
+			CuStreamCreateWithPriority = nullptr;
 			CuStreamDestroy = nullptr;
 			return false;
 		}
@@ -450,9 +460,16 @@ struct CNvidiaMaxineVSR::Impl
 		const std::wstring gpuInfo = selectedGPU >= 0
 			? std::format(L" (GPU {})", selectedGPU)
 			: std::wstring(L" (GPU auto)");
-		const std::wstring streamInfo = stream
-			? (streamUsesPrimaryContext ? L", CUDA primary stream" : L", SDK CUDA stream")
-			: std::wstring();
+		std::wstring streamInfo;
+		if (stream) {
+			if (streamUsesPrimaryContext) {
+				streamInfo = streamPriorityKnown
+					? std::format(L", CUDA primary stream priority {}", streamPriority)
+					: L", CUDA primary stream";
+			} else {
+				streamInfo = L", SDK CUDA stream";
+			}
+		}
 		runtimeInfo = std::format(L"{}.{}.{} from {}{}{}",
 			(sdkVersion >> 24) & 0xff,
 			(sdkVersion >> 16) & 0xff,
@@ -507,9 +524,25 @@ struct CNvidiaMaxineVSR::Impl
 				const bool activated = gotCurrent
 					&& (previousContext == retainedContext || CuCtxSetCurrent(retainedContext) == CUDA_SUCCESS);
 				CUstream primaryStream = nullptr;
-				const bool created = activated
-					&& CuStreamCreate(&primaryStream, CU_STREAM_NON_BLOCKING) == CUDA_SUCCESS
-					&& primaryStream;
+				bool priorityKnown = false;
+				int selectedPriority = 0;
+				bool created = false;
+				if (activated) {
+					int leastPriority = 0;
+					int greatestPriority = 0;
+					if (CuCtxGetStreamPriorityRange && CuStreamCreateWithPriority
+							&& CuCtxGetStreamPriorityRange(&leastPriority, &greatestPriority) == CUDA_SUCCESS) {
+						selectedPriority = greatestPriority;
+						created = CuStreamCreateWithPriority(
+							&primaryStream, CU_STREAM_NON_BLOCKING, selectedPriority) == CUDA_SUCCESS
+							&& primaryStream;
+						priorityKnown = created;
+					}
+					if (!created) {
+						created = CuStreamCreate(&primaryStream, CU_STREAM_NON_BLOCKING) == CUDA_SUCCESS
+							&& primaryStream;
+					}
+				}
 				if (gotCurrent && previousContext != retainedContext) {
 					CuCtxSetCurrent(previousContext);
 				}
@@ -519,8 +552,11 @@ struct CNvidiaMaxineVSR::Impl
 					primaryCudaContext = retainedContext;
 					primaryCudaDevice = cudaDevice;
 					streamUsesPrimaryContext = true;
+					streamPriorityKnown = priorityKnown;
+					streamPriority = selectedPriority;
 					UpdateRuntimeInfo();
-					DLog(L"NVIDIA Maxine VSR: using CUDA primary-context stream on device {}", cudaDevice);
+					DLog(L"NVIDIA Maxine VSR: using CUDA primary-context stream on device {}{}",
+						cudaDevice, priorityKnown ? std::format(L" at priority {}", selectedPriority) : std::wstring());
 					return true;
 				}
 				CuDevicePrimaryCtxRelease(cudaDevice);
@@ -534,6 +570,8 @@ struct CNvidiaMaxineVSR::Impl
 			return false;
 		}
 		streamUsesPrimaryContext = false;
+		streamPriorityKnown = false;
+		streamPriority = 0;
 		primaryCudaContext = nullptr;
 		primaryCudaDevice = -1;
 		UpdateRuntimeInfo();
@@ -558,6 +596,8 @@ struct CNvidiaMaxineVSR::Impl
 			}
 			stream = nullptr;
 			streamUsesPrimaryContext = false;
+			streamPriorityKnown = false;
+			streamPriority = 0;
 			primaryCudaContext = nullptr;
 			if (primaryCudaDevice >= 0 && CuDevicePrimaryCtxRelease) {
 				CuDevicePrimaryCtxRelease(primaryCudaDevice);
@@ -571,6 +611,8 @@ struct CNvidiaMaxineVSR::Impl
 			NvVFX_CudaStreamDestroy(stream);
 		}
 		stream = nullptr;
+		streamPriorityKnown = false;
+		streamPriority = 0;
 		UpdateRuntimeInfo();
 	}
 
@@ -754,7 +796,9 @@ struct CNvidiaMaxineVSR::Impl
 		CuDevicePrimaryCtxRelease = nullptr;
 		CuCtxGetCurrent = nullptr;
 		CuCtxSetCurrent = nullptr;
+		CuCtxGetStreamPriorityRange = nullptr;
 		CuStreamCreate = nullptr;
+		CuStreamCreateWithPriority = nullptr;
 		CuStreamDestroy = nullptr;
 		runtimeDirectory.clear();
 		runtimeInfo.clear();
