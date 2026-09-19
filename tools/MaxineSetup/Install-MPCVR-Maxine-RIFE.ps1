@@ -249,8 +249,8 @@ function Get-RifeRuntimeAssetBaseUrl {
 function Assert-RifeRuntimeDownloadContract {
     param([Parameter(Mandatory = $true)][string[]]$ArchitectureKeys)
 
-    $assetBaseUrl = Get-RifeRuntimeAssetBaseUrl
     $checksums = Read-RifeChecksumList -Path $rifeRuntimeChecksums
+    $needsDownload = $false
     foreach ($archiveName in @('MPCVR-RIFE-Common.zip') + @($ArchitectureKeys | ForEach-Object { "MPCVR-RIFE-$_.zip" })) {
         if (-not $checksums.ContainsKey($archiveName)) {
             throw "RIFE runtime checksum list is missing $archiveName."
@@ -259,9 +259,16 @@ function Assert-RifeRuntimeDownloadContract {
         if ($hash -notmatch '^[0-9a-fA-F]{64}$') {
             throw "RIFE runtime checksum is invalid for $archiveName."
         }
+        if (($archiveName -ne 'MPCVR-RIFE-Common.zip') -and
+                (-not (Test-Path -LiteralPath (Join-Path $payloadRoot $archiveName) -PathType Leaf))) {
+            $needsDownload = $true
+        }
     }
 
-    return $assetBaseUrl
+    if ($needsDownload) {
+        return Get-RifeRuntimeAssetBaseUrl
+    }
+    return $null
 }
 
 function New-RifeRuntimeBundle {
@@ -282,20 +289,27 @@ function New-RifeRuntimeBundle {
     foreach ($architectureKey in $ArchitectureKeys) {
         $archiveName = "MPCVR-RIFE-$architectureKey.zip"
         $archivePath = Join-Path $Destination $archiveName
-        $archiveUrl = "$assetBaseUrl/$archiveName"
-        Write-Host "Downloading RIFE architecture pack $architectureKey..."
-        $request = @{
-            Uri = $archiveUrl
-            OutFile = $archivePath
+        $bundledArchive = Join-Path $payloadRoot $archiveName
+        if (Test-Path -LiteralPath $bundledArchive -PathType Leaf) {
+            Write-Host "Using bundled RIFE architecture pack $architectureKey..."
+            Copy-Item -LiteralPath $bundledArchive -Destination $archivePath
         }
-        if ($PSVersionTable.PSEdition -eq 'Desktop') {
-            $request.UseBasicParsing = $true
-        }
-        try {
-            Invoke-WebRequest @request
-        }
-        catch {
-            throw "Failed to download $archiveName from pinned release ${assetBaseUrl}: $($_.Exception.Message)"
+        else {
+            $archiveUrl = "$assetBaseUrl/$archiveName"
+            Write-Host "Downloading RIFE architecture pack $architectureKey..."
+            $request = @{
+                Uri = $archiveUrl
+                OutFile = $archivePath
+            }
+            if ($PSVersionTable.PSEdition -eq 'Desktop') {
+                $request.UseBasicParsing = $true
+            }
+            try {
+                Invoke-WebRequest @request
+            }
+            catch {
+                throw "Failed to download $archiveName from pinned release ${assetBaseUrl}: $($_.Exception.Message)"
+            }
         }
         [void](Assert-RifeFileHash -Path $archivePath -ExpectedHash ([string]$checksums[$archiveName]) -DisplayName $archiveName)
     }
@@ -367,7 +381,7 @@ try {
     [void](Assert-RifeRuntimeDownloadContract -ArchitectureKeys $architectureKeys)
     $normalizedGpuInventoryJson = $gpuInventory | ConvertTo-Json -Compress
     Write-Host ('Detected NVIDIA GPUs: {0}' -f (($gpuInventory | ForEach-Object { '{0} (CC {1})' -f $_.Name, $_.ComputeCapability }) -join '; '))
-    Write-Host ('RIFE architecture downloads: {0}' -f ($architectureKeys -join ', '))
+    Write-Host ('RIFE architecture packs: {0}' -f ($architectureKeys -join ', '))
 
     if ($ValidateOnly) {
         Invoke-SetupStep -Name 'Validating the Maxine runtime installer...' -ScriptPath $maxineRuntimeInstaller -Parameters @{
