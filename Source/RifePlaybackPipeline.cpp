@@ -338,7 +338,6 @@ struct CRifePlaybackPipeline::Impl
         std::deque<std::shared_ptr<PairJob>> queue;
         std::thread thread;
         bool stop = false;
-        CNvidiaSceneChangeDetector nvofDetector;
         ImageCutDetector imageDetector;
         std::vector<CComPtr<ID3D11Texture2D>> inferenceOutputs;
     };
@@ -423,6 +422,14 @@ struct CRifePlaybackPipeline::Impl
     uint32_t schedulerMaxMultiplierMilli = 0;
     uint32_t schedulerMaxOutputFpsMilli = 0;
 
+    // The NVIDIA Optical Flow engine is a device-wide resource. Running one
+    // D3D11 NVOF session per parallel TensorRT worker can make two workers
+    // execute/read back OFA work concurrently on the same immediate context,
+    // which has caused long driver stalls on the live Turing path. Keep one
+    // detector/session and serialize NVOF itself while leaving TensorRT jobs
+    // free to run in parallel.
+    std::mutex nvofMutex;
+    CNvidiaSceneChangeDetector nvofDetector;
     CRifeSceneBlender sceneBlender;
     CComPtr<ID3D11Texture2D> outputTexture;
     CComPtr<ID3D11Device> outputDevice;
@@ -523,6 +530,10 @@ struct CRifePlaybackPipeline::Impl
     {
         scheduler.Reset();
         schedulerConfigured = false;
+        {
+            std::lock_guard nvofLock(nvofMutex);
+            nvofDetector.Reset();
+        }
         sceneBlender.Reset();
         removeEveryOtherToggle = false;
     }
@@ -1131,11 +1142,21 @@ struct CRifePlaybackPipeline::Impl
             }
 
             bool nvofStarted = false;
+            std::unique_lock<std::mutex> nvofLock;
             if (!sceneDecisionReady) {
-                const bool nvofReady = workerState.nvofDetector.Initialize(device, job.width, job.height);
-                nvofStarted = nvofReady
-                    && workerState.nvofDetector.BeginAnalyze(first.texture, second.texture);
-                if (!nvofStarted) {
+                // Do not block a second TensorRT worker behind OFA before it
+                // has submitted its own inference. The worker that wins the
+                // NVOF lock keeps the original overlap (Begin -> RIFE ->
+                // Finish). A contending worker runs RIFE first, then performs
+                // its serialized scene analysis afterward.
+                nvofLock = std::unique_lock<std::mutex>(nvofMutex, std::try_to_lock);
+                if (nvofLock.owns_lock()) {
+                    const bool nvofReady = nvofDetector.Initialize(device, job.width, job.height);
+                    nvofStarted = nvofReady
+                        && nvofDetector.BeginAnalyze(first.texture, second.texture);
+                }
+                if (nvofLock.owns_lock() && !nvofStarted) {
+                    nvofLock.unlock();
                     sceneCut = DetectImageSceneCut(workerState.imageDetector, first, second);
                     sceneDecisionReady = true;
                     if (sceneCut) {
@@ -1151,11 +1172,31 @@ struct CRifePlaybackPipeline::Impl
 
             if (nvofStarted) {
                 CNvidiaSceneChangeDetector::Metrics metrics;
-                if (workerState.nvofDetector.FinishAnalyze(metrics) && metrics.valid) {
+                if (nvofDetector.FinishAnalyze(metrics) && metrics.valid) {
                     sceneCut = metrics.likelyCut;
                 } else {
                     sceneCut = DetectImageSceneCut(workerState.imageDetector, first, second);
                 }
+                nvofLock.unlock();
+                sceneDecisionReady = true;
+                if (sceneCut) {
+                    job.results.push_back(std::move(result));
+                    continue;
+                }
+            } else if (!sceneDecisionReady) {
+                // Another worker owned NVOF while this inference was running.
+                // Serialize only the OFA analysis now; TensorRT parallelism has
+                // already been preserved for this target.
+                nvofLock = std::unique_lock<std::mutex>(nvofMutex);
+                CNvidiaSceneChangeDetector::Metrics metrics;
+                if (nvofDetector.Initialize(device, job.width, job.height)
+                        && nvofDetector.Analyze(first.texture, second.texture, metrics)
+                        && metrics.valid) {
+                    sceneCut = metrics.likelyCut;
+                } else {
+                    sceneCut = DetectImageSceneCut(workerState.imageDetector, first, second);
+                }
+                nvofLock.unlock();
                 sceneDecisionReady = true;
                 if (sceneCut) {
                     job.results.push_back(std::move(result));

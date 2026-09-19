@@ -23,7 +23,7 @@ def function_body(text: str, marker: str) -> str:
 process_pair = function_body(source, "void ProcessPairJob(")
 
 guard_pos = process_pair.find("hasTimelySyntheticTarget")
-nvof_pos = process_pair.find("workerState.nvofDetector.BeginAnalyze(")
+nvof_pos = process_pair.find("nvofDetector.BeginAnalyze(")
 image_pos = process_pair.find("DetectImageSceneCut(workerState.imageDetector, first, second)")
 late_pos = process_pair.find("IsLate(second, target.presentationTime)")
 

@@ -30,17 +30,31 @@ assert "constexpr UINT kAnalysisStride = 2;" in detector, (
 )
 
 process_pair = function_body(pipeline, "void ProcessPairJob(")
-begin_pos = process_pair.find("workerState.nvofDetector.BeginAnalyze(")
+begin_pos = process_pair.find("nvofDetector.BeginAnalyze(")
 generate_pos = process_pair.find("GenerateRife(")
-finish_pos = process_pair.find("workerState.nvofDetector.FinishAnalyze(")
+finish_pos = process_pair.find("nvofDetector.FinishAnalyze(")
 assert begin_pos != -1 and generate_pos != -1 and finish_pos != -1, (
-    "each parallel pair worker must launch NVOF, run RIFE, then finish the NVOF scene decision"
+    "the uncontended path must launch NVOF, run RIFE, then finish the NVOF scene decision"
 )
 assert begin_pos < generate_pos < finish_pos, (
     "bidirectional NVOF must overlap the first RIFE inference rather than serialize before it"
 )
 assert "DetectImageSceneCut(workerState.imageDetector, first, second)" in process_pair[finish_pos:], (
     "an NVOF completion failure must retain image-comparison fallback"
+)
+assert "std::mutex nvofMutex;" in pipeline and "CNvidiaSceneChangeDetector nvofDetector;" in pipeline, (
+    "parallel TensorRT workers must share one serialized NVOF detector/session"
+)
+assert "std::try_to_lock" in process_pair, (
+    "NVOF contention must not block a parallel worker before it submits TensorRT inference"
+)
+generate_after_begin = process_pair.find("GenerateRife(", begin_pos)
+serialized_analyze = process_pair.find("nvofDetector.Analyze(", generate_after_begin)
+assert serialized_analyze > generate_after_begin, (
+    "a worker that loses the NVOF lock must run RIFE first and serialize scene analysis afterward"
+)
+assert "workerState.nvofDetector" not in pipeline, (
+    "per-worker NVOF sessions reintroduce concurrent OFA/D3D11 driver stalls"
 )
 
 print("RIFE NVOF overlap source-contract test passed")
