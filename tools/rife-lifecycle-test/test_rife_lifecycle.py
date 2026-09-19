@@ -54,11 +54,11 @@ assert "outputTexture" not in generate_rife, (
     "parallel RIFE inference must write into a context-owned texture instead of the shared scene-blend texture"
 )
 submit = function_body(rife_pipeline, "bool Submit(")
-assert "CopyResource(inferenceTexture, texture)" in submit, (
-    "each source frame must stage its CUDA input copy immediately after source preparation"
+assert "CopyResource(inferenceAsFirst, texture)" in submit and "CopyResource(inferenceAsSecond, texture)" in submit, (
+    "parallel source frames must stage role-specific CUDA input copies immediately after source preparation"
 )
-assert "frame.inferenceTexture = inferenceTexture" in submit, (
-    "the early-staged CUDA input must follow the source frame through adjacent pair jobs"
+assert "frame.inferenceAsFirst = inferenceAsFirst" in submit and "frame.inferenceAsSecond = inferenceAsSecond" in submit, (
+    "the role-specific CUDA inputs must follow the source frame through adjacent pair jobs"
 )
 assert "InputResourceClaim inputResourceClaim" in rife_runtime, (
     "the runtime must protect only genuinely shared CUDA graphics resources"
@@ -80,7 +80,10 @@ assert "workerState.inferenceOutputs" in acquire_output and "CreateBgraTexture" 
     "CUDA outputs must come from a stable per-context pool instead of creating a registered texture every frame"
 )
 process_pair = function_body(rife_pipeline, "void ProcessPairJob(")
-assert "first.inferenceTexture" in process_pair and "second.inferenceTexture" in process_pair
+assert "first.inferenceAsFirst" in process_pair and "second.inferenceAsSecond" in process_pair
+assert "second.inferenceAsFirst" in process_pair, (
+    "single-context mode must fall back to the one staged input copy"
+)
 assert "AcquireInferenceOutput" in process_pair and "result.generated" in process_pair, (
     "parallel pair workers must use pre-staged CUDA inputs and retain results until ordered presentation"
 )

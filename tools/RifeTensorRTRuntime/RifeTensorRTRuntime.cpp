@@ -492,11 +492,11 @@ public:
         cudaArray_t firstArray = nullptr;
         cudaArray_t secondArray = nullptr;
         {
-            // MPC-VR normally passes worker-owned input copies, so different
-            // inference contexts can map and pack concurrently. Keep the CUDA
-            // graphics-resource rule intact for any caller that actually reuses
-            // an input texture across concurrent requests by claiming only the
-            // two resources used by this request.
+            // MPC-VR normally passes role-specific staged input copies, so
+            // adjacent A/B and B/C inference contexts can map and pack
+            // concurrently. Keep the CUDA graphics-resource rule intact for any
+            // caller that actually reuses an input texture across concurrent
+            // requests by claiming only the two resources used by this request.
             const auto inputMapStart = Clock::now();
             {
                 D3D11InteropLock interopLock(m_d3dMultithread);

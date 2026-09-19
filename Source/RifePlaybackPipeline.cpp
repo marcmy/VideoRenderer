@@ -283,14 +283,16 @@ struct CRifePlaybackPipeline::Impl
 {
     struct SourceSlot {
         CComPtr<ID3D11Texture2D> texture;
-        CComPtr<ID3D11Texture2D> inferenceTexture;
+        CComPtr<ID3D11Texture2D> inferenceAsFirst;
+        CComPtr<ID3D11Texture2D> inferenceAsSecond;
         bool inUse = false;
     };
 
     struct SourceFrame {
         size_t slot = SIZE_MAX;
         CComPtr<ID3D11Texture2D> texture;
-        CComPtr<ID3D11Texture2D> inferenceTexture;
+        CComPtr<ID3D11Texture2D> inferenceAsFirst;
+        CComPtr<ID3D11Texture2D> inferenceAsSecond;
         CDX11VideoProcessor* processor = nullptr;
         REFERENCE_TIME time = INVALID_TIME;
         REFERENCE_TIME frameDuration = 0;
@@ -525,13 +527,16 @@ struct CRifePlaybackPipeline::Impl
         removeEveryOtherToggle = false;
     }
 
-    bool AcquireSourceSlot(ID3D11Device* device, UINT width, UINT height, size_t& index,
-        ID3D11Texture2D** texture, ID3D11Texture2D** inferenceTexture)
+    bool AcquireSourceSlot(ID3D11Device* device, UINT width, UINT height, bool parallelInputs,
+        size_t& index, ID3D11Texture2D** texture,
+        ID3D11Texture2D** inferenceAsFirst, ID3D11Texture2D** inferenceAsSecond)
     {
         index = SIZE_MAX;
-        if (!device || !width || !height || !texture || !inferenceTexture) {
+        if (!device || !width || !height || !texture || !inferenceAsFirst || !inferenceAsSecond) {
             return false;
         }
+        *inferenceAsFirst = nullptr;
+        *inferenceAsSecond = nullptr;
 
         std::lock_guard lock(mutex);
         for (size_t i = 0; i < sourcePool.size(); ++i) {
@@ -545,18 +550,32 @@ struct CRifePlaybackPipeline::Impl
                     continue;
                 }
             }
-            if (!SameTextureShape(slot.inferenceTexture, device, width, height)) {
-                slot.inferenceTexture.Release();
-                if (FAILED(CreateBgraTexture(device, width, height, &slot.inferenceTexture))) {
+            if (!SameTextureShape(slot.inferenceAsFirst, device, width, height)) {
+                slot.inferenceAsFirst.Release();
+                if (FAILED(CreateBgraTexture(device, width, height, &slot.inferenceAsFirst))) {
                     continue;
                 }
+            }
+            if (parallelInputs) {
+                if (!SameTextureShape(slot.inferenceAsSecond, device, width, height)) {
+                    slot.inferenceAsSecond.Release();
+                    if (FAILED(CreateBgraTexture(device, width, height, &slot.inferenceAsSecond))) {
+                        continue;
+                    }
+                }
+            } else {
+                slot.inferenceAsSecond.Release();
             }
             slot.inUse = true;
             index = i;
             *texture = slot.texture;
             (*texture)->AddRef();
-            *inferenceTexture = slot.inferenceTexture;
-            (*inferenceTexture)->AddRef();
+            *inferenceAsFirst = slot.inferenceAsFirst;
+            (*inferenceAsFirst)->AddRef();
+            if (slot.inferenceAsSecond) {
+                *inferenceAsSecond = slot.inferenceAsSecond;
+                (*inferenceAsSecond)->AddRef();
+            }
             return true;
         }
         return false;
@@ -632,11 +651,14 @@ struct CRifePlaybackPipeline::Impl
             return false;
         }
 
+        const uint32_t inferenceContextCount = static_cast<uint32_t>(std::clamp(
+            settings.iRifeGpuThreads, RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX));
         size_t slot = SIZE_MAX;
         CComPtr<ID3D11Texture2D> texture;
-        CComPtr<ID3D11Texture2D> inferenceTexture;
-        if (!AcquireSourceSlot(device, static_cast<UINT>(size.cx), static_cast<UINT>(size.cy), slot,
-                &texture, &inferenceTexture)) {
+        CComPtr<ID3D11Texture2D> inferenceAsFirst;
+        CComPtr<ID3D11Texture2D> inferenceAsSecond;
+        if (!AcquireSourceSlot(device, static_cast<UINT>(size.cx), static_cast<UINT>(size.cy),
+                inferenceContextCount > 1, slot, &texture, &inferenceAsFirst, &inferenceAsSecond)) {
             return false;
         }
 
@@ -646,10 +668,11 @@ struct CRifePlaybackPipeline::Impl
             return false;
         }
 
-        // Stage one CUDA-only copy immediately after the source image is
-        // produced, while its D3D work is still near the front of the queue.
-        // Adjacent pair jobs may share this texture, but the runtime claims it
-        // only through map/pack/unmap and releases it before TensorRT runs.
+        // Stage CUDA-only copies immediately after the source image is produced,
+        // while its D3D work is still near the front of the queue. With parallel
+        // contexts, keep separate copies for this frame's two possible roles:
+        // second input of A/B and first input of B/C. Adjacent pair jobs therefore
+        // never contend for ownership of the same CUDA graphics resource.
         const auto inputCopyStart = std::chrono::steady_clock::now();
         CComPtr<ID3D11DeviceContext> inputCopyContext;
         device->GetImmediateContext(&inputCopyContext);
@@ -662,14 +685,18 @@ struct CRifePlaybackPipeline::Impl
                 && inputCopyMultithread) {
             inputCopyMultithread->SetMultithreadProtected(TRUE);
         }
-        inputCopyContext->CopyResource(inferenceTexture, texture);
+        inputCopyContext->CopyResource(inferenceAsFirst, texture);
+        if (inferenceAsSecond) {
+            inputCopyContext->CopyResource(inferenceAsSecond, texture);
+        }
         lastInputCopySubmitUs.store(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - inputCopyStart).count()), std::memory_order_relaxed);
 
         SourceFrame frame;
         frame.slot = slot;
         frame.texture = texture;
-        frame.inferenceTexture = inferenceTexture;
+        frame.inferenceAsFirst = inferenceAsFirst;
+        frame.inferenceAsSecond = inferenceAsSecond;
         frame.processor = processor;
         frame.time = sourceTime;
         frame.frameDuration = frameDuration;
@@ -681,9 +708,7 @@ struct CRifePlaybackPipeline::Impl
         frame.displayRate = displayRate;
         frame.maxMultiplierMilli = maxMultiplierMilli;
         frame.maxOutputFpsMilli = maxOutputFpsMilli;
-        configuredInferenceContexts.store(static_cast<uint32_t>(std::clamp(
-            settings.iRifeGpuThreads, RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX)),
-            std::memory_order_relaxed);
+        configuredInferenceContexts.store(inferenceContextCount, std::memory_order_relaxed);
         frame.clock = owner->m_pClock;
         frame.graphStart = static_cast<REFERENCE_TIME>(owner->m_tStart);
 
@@ -1046,7 +1071,10 @@ struct CRifePlaybackPipeline::Impl
         if (!device || !job.width || !job.height) {
             return;
         }
-        if (!first.inferenceTexture || !second.inferenceTexture) {
+        ID3D11Texture2D* firstInference = first.inferenceAsFirst;
+        ID3D11Texture2D* secondInference = second.inferenceAsSecond
+            ? second.inferenceAsSecond.p : second.inferenceAsFirst.p;
+        if (!firstInference || !secondInference) {
             for (const auto& target : job.targets) {
                 TargetResult result;
                 result.target = target;
@@ -1118,7 +1146,7 @@ struct CRifePlaybackPipeline::Impl
             }
 
             const bool generatedOk = GenerateRife(job.runtime, job.contextIndex,
-                first.inferenceTexture, second.inferenceTexture,
+                firstInference, secondInference,
                 static_cast<float>(target.timestep), generated);
 
             if (nvofStarted) {
@@ -1288,7 +1316,7 @@ struct CRifePlaybackPipeline::Impl
             presentationSurfaceWaitMaxUs.load(std::memory_order_relaxed) / 1000.0,
             surfaceWaitCount);
         diagnostics += std::format(
-            L"\nRIFE host    : internal {:.2f} ms, ctx-lock {:.2f}, set-device {:.2f}, register {:.2f}, pack-lock {:.2f}, TRT-submit {:.2f} ({})",
+            L"\nRIFE host    : internal {:.2f} ms, ctx-lock {:.2f}, set-device {:.2f}, register {:.2f}, input-claim {:.2f}, TRT-submit {:.2f} ({})",
             lastRuntimeInternalUs.load(std::memory_order_relaxed) / 1000.0,
             lastContextLockWaitUs.load(std::memory_order_relaxed) / 1000.0,
             lastCudaSetDeviceUs.load(std::memory_order_relaxed) / 1000.0,
