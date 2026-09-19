@@ -451,11 +451,7 @@ public:
             return unmapResult;
         };
 
-        auto finishStream = [&]() -> cudaError_t {
-            const auto syncStart = Clock::now();
-            const cudaError_t syncResult = cudaStreamSynchronize(state.stream);
-            stats.handoffSyncMs = elapsedMs(syncStart, Clock::now());
-
+        auto destroyCudaViews = [&]() -> cudaError_t {
             cudaError_t destroyResult = cudaSuccess;
             if (outputSurface) {
                 const cudaError_t result = cudaDestroySurfaceObject(outputSurface);
@@ -472,6 +468,14 @@ public:
                 if (destroyResult == cudaSuccess && result != cudaSuccess) destroyResult = result;
                 firstTexture = 0;
             }
+            return destroyResult;
+        };
+
+        auto finishStream = [&]() -> cudaError_t {
+            const auto syncStart = Clock::now();
+            const cudaError_t syncResult = cudaStreamSynchronize(state.stream);
+            stats.handoffSyncMs = elapsedMs(syncStart, Clock::now());
+            const cudaError_t destroyResult = destroyCudaViews();
             return syncResult != cudaSuccess ? syncResult : destroyResult;
         };
 
@@ -578,9 +582,26 @@ public:
             finishStream();
             return MPCVR_RIFE_CUDA_FAILURE;
         }
+
+        // We only need to wait until the RIFE kernels have finished using the
+        // texture/surface objects. Do not synchronize the whole stream after
+        // cudaGraphicsUnmapResources(): CUDA graphics interop already guarantees
+        // that work issued before the unmap completes before later D3D11 work
+        // begins. Waiting through the ownership transition here serializes the
+        // inference worker with the graphics queue and defeats parallel contexts.
+        const auto completionStart = Clock::now();
+        const cudaError_t completionResult = cudaEventSynchronize(state.endEvent);
+        stats.handoffSyncMs = elapsedMs(completionStart, Clock::now());
+        if (completionResult != cudaSuccess) {
+            releaseOutput();
+            finishStream();
+            return MPCVR_RIFE_CUDA_FAILURE;
+        }
+        const cudaError_t destroyResult = destroyCudaViews();
         const cudaError_t releaseResult = releaseOutput();
-        const cudaError_t finishResult = finishStream();
-        if (releaseResult != cudaSuccess || finishResult != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
+        if (destroyResult != cudaSuccess || releaseResult != cudaSuccess) {
+            return MPCVR_RIFE_CUDA_FAILURE;
+        }
 
         float elapsed = 0.0f;
         if (cudaEventElapsedTime(&elapsed, state.startEvent, state.endEvent) != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
