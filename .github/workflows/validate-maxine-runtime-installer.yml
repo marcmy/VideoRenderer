@@ -275,7 +275,7 @@ jobs:
               -NoPause 2>&1 | Out-String
             Write-Host $output
             if ($LASTEXITCODE -ne 0) { throw "$hostExe unified setup validation failed with $LASTEXITCODE" }
-            if ($output -notmatch 'RIFE architecture downloads: sm75, sm120') {
+            if ($output -notmatch 'RIFE architecture packs: sm75, sm120') {
               throw "$hostExe unified setup did not select exactly sm75 and sm120 for the test inventory"
             }
           }
