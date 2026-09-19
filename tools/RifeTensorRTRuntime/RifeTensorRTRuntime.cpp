@@ -225,6 +225,7 @@ std::string Sanitize(std::string text)
 struct ContextState {
     TrtPtr<nvinfer1::IExecutionContext> context;
     cudaStream_t stream = nullptr;
+    cudaStream_t inputReleaseStream = nullptr;
     cudaGraph_t tensorRtGraph = nullptr;
     cudaGraphExec_t tensorRtGraphExec = nullptr;
     cudaEvent_t startEvent = nullptr;
@@ -248,6 +249,7 @@ struct ContextState {
         if (inputReleasedEvent) cudaEventDestroy(inputReleasedEvent);
         if (packEndEvent) cudaEventDestroy(packEndEvent);
         if (startEvent) cudaEventDestroy(startEvent);
+        if (inputReleaseStream) cudaStreamDestroy(inputReleaseStream);
         if (stream) cudaStreamDestroy(stream);
     }
 };
@@ -433,14 +435,14 @@ public:
         cudaTextureObject_t secondTexture = 0;
         cudaSurfaceObject_t outputSurface = 0;
 
-        auto releaseInputs = [&]() -> cudaError_t {
+        auto releaseInputs = [&](cudaStream_t stream) -> cudaError_t {
             if (!inputsMapped) return cudaSuccess;
             const auto unmapStart = Clock::now();
             cudaError_t unmapResult;
             {
                 D3D11InteropLock interopLock(m_d3dMultithread);
                 unmapResult = cudaGraphicsUnmapResources(
-                    static_cast<int>(inputResources.size()), inputResources.data(), state.stream);
+                    static_cast<int>(inputResources.size()), inputResources.data(), stream);
             }
             inputsMapped = false;
             stats.inputUnmapMs = elapsedMs(unmapStart, Clock::now());
@@ -484,9 +486,12 @@ public:
         auto finishStream = [&]() -> cudaError_t {
             const auto syncStart = Clock::now();
             const cudaError_t syncResult = cudaStreamSynchronize(state.stream);
+            const cudaError_t inputReleaseSyncResult = cudaStreamSynchronize(state.inputReleaseStream);
             stats.handoffSyncMs = elapsedMs(syncStart, Clock::now());
             const cudaError_t destroyResult = destroyCudaViews();
-            return syncResult != cudaSuccess ? syncResult : destroyResult;
+            if (syncResult != cudaSuccess) return syncResult;
+            if (inputReleaseSyncResult != cudaSuccess) return inputReleaseSyncResult;
+            return destroyResult;
         };
 
         cudaArray_t firstArray = nullptr;
@@ -510,12 +515,12 @@ public:
 
             if (cudaGraphicsSubResourceGetMappedArray(&firstArray, inputResources[0], 0, 0) != cudaSuccess ||
                     cudaGraphicsSubResourceGetMappedArray(&secondArray, inputResources[1], 0, 0) != cudaSuccess) {
-                releaseInputs();
+                releaseInputs(state.stream);
                 finishStream();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
             if (cudaEventRecord(state.startEvent, state.stream) != cudaSuccess) {
-                releaseInputs();
+                releaseInputs(state.stream);
                 finishStream();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
@@ -524,21 +529,30 @@ public:
                     static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
                     static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
                     request.timestep, state.stream, &firstTexture, &secondTexture) != cudaSuccess) {
-                releaseInputs();
+                releaseInputs(state.stream);
                 finishStream();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
             stats.packHostMs = elapsedMs(packHostStart, Clock::now());
             if (cudaEventRecord(state.packEndEvent, state.stream) != cudaSuccess) {
-                releaseInputs();
+                releaseInputs(state.stream);
                 finishStream();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
-            if (releaseInputs() != cudaSuccess) {
+            // The packed TensorRT input buffer no longer depends on the D3D11
+            // input textures after packEndEvent. Retire D3D11/CUDA ownership on
+            // a second stream so the potentially expensive interop transition
+            // can overlap TensorRT and output work on the main inference stream.
+            if (cudaStreamWaitEvent(state.inputReleaseStream, state.packEndEvent, 0) != cudaSuccess) {
+                releaseInputs(state.stream);
                 finishStream();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
-            if (cudaEventRecord(state.inputReleasedEvent, state.stream) != cudaSuccess) {
+            if (releaseInputs(state.inputReleaseStream) != cudaSuccess) {
+                finishStream();
+                return MPCVR_RIFE_CUDA_FAILURE;
+            }
+            if (cudaEventRecord(state.inputReleasedEvent, state.inputReleaseStream) != cudaSuccess) {
                 finishStream();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
@@ -598,10 +612,9 @@ public:
         }
 
         // Adjacent A/B and B/C jobs intentionally share the pre-staged B input.
-        // Release that resource claim as soon as this stream has finished its
-        // input pack/unmap, while TensorRT and output write continue on the same
-        // stream. This preserves interop ownership without serializing the full
-        // inference request across contexts.
+        // Release that resource claim once the independent input-release stream
+        // has completed the D3D11/CUDA ownership transition. TensorRT and output
+        // work are allowed to overlap that transition on the inference stream.
         const auto inputReleaseStart = Clock::now();
         const cudaError_t inputReleaseResult = cudaEventSynchronize(state.inputReleasedEvent);
         stats.inputReleaseSyncMs = elapsedMs(inputReleaseStart, Clock::now());
@@ -783,6 +796,16 @@ private:
             state->context.reset(m_engine->createExecutionContext());
             if (!state->context) return false;
             if (cudaStreamCreateWithFlags(&state->stream, cudaStreamNonBlocking) != cudaSuccess) return false;
+            int leastPriority = 0;
+            int greatestPriority = 0;
+            const cudaError_t priorityRangeResult =
+                cudaDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority);
+            const cudaError_t releaseStreamResult = priorityRangeResult == cudaSuccess
+                ? cudaStreamCreateWithPriority(
+                    &state->inputReleaseStream, cudaStreamNonBlocking, greatestPriority)
+                : cudaStreamCreateWithFlags(
+                    &state->inputReleaseStream, cudaStreamNonBlocking);
+            if (releaseStreamResult != cudaSuccess) return false;
             if (cudaEventCreate(&state->startEvent) != cudaSuccess
                     || cudaEventCreate(&state->packEndEvent) != cudaSuccess
                     || cudaEventCreate(&state->inputReleasedEvent) != cudaSuccess
