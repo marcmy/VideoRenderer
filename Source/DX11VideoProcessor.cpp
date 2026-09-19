@@ -5558,6 +5558,9 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 		}
 		str += std::format(L"\nMaxine pipe  : {} ({:.2f} ms total, VSR {:.2f}, DN {:.2f}, DB {:.2f})",
 			m_strMaxinePipeline, totalMs, vsrMs, denoiseMs, deblurMs);
+		if (ranVSR) {
+			str += std::format(L"\nMaxine GPU   : {}", m_MaxineVSR.GetGpuTimingDiagnostics());
+		}
 		str += std::format(L"\nMaxine config: quality {}, denoise {}, deblur {}, GPU {}",
 			MaxineQualityToString(m_iMaxineQuality), MaxineFilterToString(m_iMaxineDenoise),
 			MaxineFilterToString(m_iMaxineDeblur), gpuLabel);

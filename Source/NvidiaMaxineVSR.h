@@ -32,6 +32,7 @@ public:
 	const std::wstring& GetStatus() const;
 	const std::wstring& GetRuntimeInfo() const;
 	double GetLastProcessTimeMs() const;
+	std::wstring GetGpuTimingDiagnostics() const;
 
 private:
 	struct Impl;

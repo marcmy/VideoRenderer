@@ -65,12 +65,15 @@ constexpr unsigned NVCV_GPU = 1;
 
 struct CUstream_st;
 using CUstream = CUstream_st*;
+struct CUevent_st;
+using CUevent = CUevent_st*;
 struct CUctx_st;
 using CUcontext = CUctx_st*;
 using CUdevice = int;
 using CUresult = int;
 
 constexpr CUresult CUDA_SUCCESS = 0;
+constexpr CUresult CUDA_ERROR_NOT_READY = 600;
 constexpr unsigned CU_STREAM_NON_BLOCKING = 1;
 
 using PFN_cuInit = CUresult (WINAPI*)(unsigned int flags);
@@ -83,6 +86,11 @@ using PFN_cuCtxGetStreamPriorityRange = CUresult (WINAPI*)(int* leastPriority, i
 using PFN_cuStreamCreate = CUresult (WINAPI*)(CUstream* stream, unsigned int flags);
 using PFN_cuStreamCreateWithPriority = CUresult (WINAPI*)(CUstream* stream, unsigned int flags, int priority);
 using PFN_cuStreamDestroy = CUresult (WINAPI*)(CUstream stream);
+using PFN_cuEventCreate = CUresult (WINAPI*)(CUevent* event, unsigned int flags);
+using PFN_cuEventDestroy = CUresult (WINAPI*)(CUevent event);
+using PFN_cuEventRecord = CUresult (WINAPI*)(CUevent event, CUstream stream);
+using PFN_cuEventQuery = CUresult (WINAPI*)(CUevent event);
+using PFN_cuEventElapsedTime = CUresult (WINAPI*)(float* milliseconds, CUevent start, CUevent end);
 
 struct NvCVImage {
 	unsigned int width;
@@ -262,6 +270,11 @@ struct CNvidiaMaxineVSR::Impl
 	PFN_cuStreamCreate CuStreamCreate = nullptr;
 	PFN_cuStreamCreateWithPriority CuStreamCreateWithPriority = nullptr;
 	PFN_cuStreamDestroy CuStreamDestroy = nullptr;
+	PFN_cuEventCreate CuEventCreate = nullptr;
+	PFN_cuEventDestroy CuEventDestroy = nullptr;
+	PFN_cuEventRecord CuEventRecord = nullptr;
+	PFN_cuEventQuery CuEventQuery = nullptr;
+	PFN_cuEventElapsedTime CuEventElapsedTime = nullptr;
 
 	PFN_NvVFX_GetVersion NvVFX_GetVersion = nullptr;
 	PFN_NvVFX_CreateEffect NvVFX_CreateEffect = nullptr;
@@ -290,6 +303,15 @@ struct CNvidiaMaxineVSR::Impl
 	bool streamUsesPrimaryContext = false;
 	bool streamPriorityKnown = false;
 	int streamPriority = 0;
+	CUevent gpuTimingStartEvent = nullptr;
+	CUevent gpuTimingEndEvent = nullptr;
+	bool gpuTimingPending = false;
+	bool gpuTimingSampleValid = false;
+	double lastGpuTimingMs = 0.0;
+	double lastGpuCompletionLagMs = 0.0;
+	unsigned gpuTimingPendingPolls = 0;
+	unsigned lastGpuTimingPendingPolls = 0;
+	std::chrono::steady_clock::time_point gpuTimingSubmittedAt = {};
 	NvCVImage d3dInput = {};
 	NvCVImage d3dOutput = {};
 	NvCVImage gpuInput = {};
@@ -350,6 +372,11 @@ struct CNvidiaMaxineVSR::Impl
 			&& LoadCudaProc("cuStreamDestroy_v2", CuStreamDestroy, "cuStreamDestroy");
 		LoadCudaProc("cuCtxGetStreamPriorityRange", CuCtxGetStreamPriorityRange);
 		LoadCudaProc("cuStreamCreateWithPriority", CuStreamCreateWithPriority);
+		LoadCudaProc("cuEventCreate", CuEventCreate);
+		LoadCudaProc("cuEventDestroy_v2", CuEventDestroy, "cuEventDestroy");
+		LoadCudaProc("cuEventRecord", CuEventRecord);
+		LoadCudaProc("cuEventQuery", CuEventQuery);
+		LoadCudaProc("cuEventElapsedTime", CuEventElapsedTime);
 		if (!loaded || CuInit(0) != CUDA_SUCCESS) {
 			FreeLibrary(hCudaDriver);
 			hCudaDriver = nullptr;
@@ -363,9 +390,106 @@ struct CNvidiaMaxineVSR::Impl
 			CuStreamCreate = nullptr;
 			CuStreamCreateWithPriority = nullptr;
 			CuStreamDestroy = nullptr;
+			CuEventCreate = nullptr;
+			CuEventDestroy = nullptr;
+			CuEventRecord = nullptr;
+			CuEventQuery = nullptr;
+			CuEventElapsedTime = nullptr;
 			return false;
 		}
 		return true;
+	}
+
+	bool EnsureGpuTimingEvents()
+	{
+		if (gpuTimingStartEvent && gpuTimingEndEvent) {
+			return true;
+		}
+		if (!streamUsesPrimaryContext || !CuEventCreate || !CuEventDestroy || !CuEventRecord
+				|| !CuEventQuery || !CuEventElapsedTime) {
+			return false;
+		}
+		if (CuEventCreate(&gpuTimingStartEvent, 0) != CUDA_SUCCESS || !gpuTimingStartEvent) {
+			gpuTimingStartEvent = nullptr;
+			return false;
+		}
+		if (CuEventCreate(&gpuTimingEndEvent, 0) != CUDA_SUCCESS || !gpuTimingEndEvent) {
+			CuEventDestroy(gpuTimingStartEvent);
+			gpuTimingStartEvent = nullptr;
+			gpuTimingEndEvent = nullptr;
+			return false;
+		}
+		return true;
+	}
+
+	void DestroyGpuTimingEvents()
+	{
+		if (CuEventDestroy) {
+			if (gpuTimingEndEvent) {
+				CuEventDestroy(gpuTimingEndEvent);
+			}
+			if (gpuTimingStartEvent) {
+				CuEventDestroy(gpuTimingStartEvent);
+			}
+		}
+		gpuTimingStartEvent = nullptr;
+		gpuTimingEndEvent = nullptr;
+		gpuTimingPending = false;
+		gpuTimingSampleValid = false;
+		lastGpuTimingMs = 0.0;
+		lastGpuCompletionLagMs = 0.0;
+		gpuTimingPendingPolls = 0;
+		lastGpuTimingPendingPolls = 0;
+		gpuTimingSubmittedAt = {};
+	}
+
+	void PollGpuTiming()
+	{
+		if (!gpuTimingPending || !gpuTimingEndEvent || !CuEventQuery || !CuEventElapsedTime) {
+			return;
+		}
+
+		const CUresult queryResult = CuEventQuery(gpuTimingEndEvent);
+		if (queryResult == CUDA_ERROR_NOT_READY) {
+			++gpuTimingPendingPolls;
+			return;
+		}
+		if (queryResult != CUDA_SUCCESS) {
+			gpuTimingPending = false;
+			return;
+		}
+
+		float elapsedMs = 0.0f;
+		if (CuEventElapsedTime(&elapsedMs, gpuTimingStartEvent, gpuTimingEndEvent) == CUDA_SUCCESS) {
+			lastGpuTimingMs = elapsedMs;
+			lastGpuCompletionLagMs = std::chrono::duration<double, std::milli>(
+				std::chrono::steady_clock::now() - gpuTimingSubmittedAt).count();
+			lastGpuTimingPendingPolls = gpuTimingPendingPolls;
+			gpuTimingSampleValid = true;
+		}
+		gpuTimingPending = false;
+		gpuTimingPendingPolls = 0;
+	}
+
+	bool BeginGpuTiming()
+	{
+		PollGpuTiming();
+		if (gpuTimingPending || !EnsureGpuTimingEvents()) {
+			return false;
+		}
+		return CuEventRecord(gpuTimingStartEvent, stream) == CUDA_SUCCESS;
+	}
+
+	void EndGpuTiming(const bool started)
+	{
+		if (!started || !gpuTimingEndEvent || !CuEventRecord) {
+			return;
+		}
+		if (CuEventRecord(gpuTimingEndEvent, stream) == CUDA_SUCCESS) {
+			gpuTimingPending = true;
+			gpuTimingPendingPolls = 0;
+			gpuTimingSubmittedAt = std::chrono::steady_clock::now();
+		}
 	}
 
 	bool GetCudaDeviceForTexture(ID3D11Texture2D* texture, CUdevice& cudaDevice)
@@ -588,6 +712,9 @@ struct CNvidiaMaxineVSR::Impl
 		if (streamUsesPrimaryContext) {
 			CUcontext previousContext = nullptr;
 			const bool activated = ActivatePrimaryCudaContext(previousContext);
+			if (activated) {
+				DestroyGpuTimingEvents();
+			}
 			if (activated && CuStreamDestroy) {
 				CuStreamDestroy(stream);
 			}
@@ -800,6 +927,11 @@ struct CNvidiaMaxineVSR::Impl
 		CuStreamCreate = nullptr;
 		CuStreamCreateWithPriority = nullptr;
 		CuStreamDestroy = nullptr;
+		CuEventCreate = nullptr;
+		CuEventDestroy = nullptr;
+		CuEventRecord = nullptr;
+		CuEventQuery = nullptr;
+		CuEventElapsedTime = nullptr;
 		runtimeDirectory.clear();
 		runtimeInfo.clear();
 	}
@@ -1181,6 +1313,7 @@ bool CNvidiaMaxineVSR::Process(
 		m_impl->failed = true;
 		return Finish(false);
 	}
+	const bool gpuTimingStarted = m_impl->BeginGpuTiming();
 
 	bool inputMapped = false;
 	bool outputMapped = false;
@@ -1235,6 +1368,7 @@ bool CNvidiaMaxineVSR::Process(
 		code = unmapCode;
 		failedOperation = unmapOperation ? unmapOperation : L"NvCVImage_UnmapResource";
 	}
+	m_impl->EndGpuTiming(gpuTimingStarted);
 
 	// Chained effects cannot retain registrations because one pass's output is
 	// the next pass's input. A single effect with stable textures can safely keep
@@ -1306,4 +1440,24 @@ const std::wstring& CNvidiaMaxineVSR::GetRuntimeInfo() const
 double CNvidiaMaxineVSR::GetLastProcessTimeMs() const
 {
 	return m_impl->lastProcessTimeMs;
+}
+
+std::wstring CNvidiaMaxineVSR::GetGpuTimingDiagnostics() const
+{
+#ifdef _WIN64
+	if (!m_impl->streamUsesPrimaryContext || !m_impl->CuEventCreate || !m_impl->CuEventRecord
+			|| !m_impl->CuEventQuery || !m_impl->CuEventElapsedTime) {
+		return L"CUDA events unavailable";
+	}
+	if (!m_impl->gpuTimingSampleValid) {
+		return m_impl->gpuTimingPending ? L"sample pending" : L"sample not ready";
+	}
+	return std::format(L"stream {:.2f} ms, completion {:.2f} ms, pending-polls {}{}",
+		m_impl->lastGpuTimingMs,
+		m_impl->lastGpuCompletionLagMs,
+		m_impl->lastGpuTimingPendingPolls,
+		m_impl->gpuTimingPending ? L", next sample pending" : L"");
+#else
+	return L"unavailable";
+#endif
 }
