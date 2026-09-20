@@ -57,23 +57,6 @@ int main()
 	assert((ResolveMaxineMatchOutputBaseSize(
 		{720, 1280}, {608, 1080}, {}, true) == MaxineSpatialSize{608, 1080}));
 
-	// Disabling video-processor resizing gives the selected shader a modest
-	// final downscale without paying for the regular 1.33x oversampling mode.
-	assert((ResolveMaxineShaderFinishSize(
-		{1280, 720}, {1920, 1080}) == MaxineSpatialSize{2112, 1188}));
-	assert((ResolveMaxineShaderFinishSize(
-		{960, 540}, {1920, 1080}) == MaxineSpatialSize{2112, 1188}));
-	assert((ResolveMaxineShaderFinishSize(
-		{1280, 720}, {1678, 944}) == MaxineSpatialSize{1846, 1038}));
-
-	// A very small enlargement still gets the same bounded finish ratio.
-	assert((ResolveMaxineShaderFinishSize(
-		{1280, 720}, {1282, 722}) == MaxineSpatialSize{1410, 794}));
-
-	// No enlargement means there is no shader-finish target to invent.
-	assert((ResolveMaxineShaderFinishSize(
-		{1920, 1080}, {1280, 720}) == MaxineSpatialSize{1280, 720}));
-
 	std::cout << "All Maxine spatial policy tests passed\n";
 	return 0;
 }

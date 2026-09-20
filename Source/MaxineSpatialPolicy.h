@@ -63,28 +63,3 @@ constexpr MaxineSpatialSize ResolveMaxineMatchOutputBaseSize(
 		ScaleMaxineDimension(source.height, targetShort, sourceShort)
 	};
 }
-
-// Leave a modest final reduction for the selected shader scaler when video-
-// processor resizing is disabled. Rendering Maxine at 1.1x the fitted output
-// recreates the historical Maxine-then-Jinc path without the 1.33x or greater
-// output-oversampling cost exposed by the dedicated Maxine setting.
-constexpr MaxineSpatialSize ResolveMaxineShaderFinishSize(
-		const MaxineSpatialSize source, const MaxineSpatialSize fittedOutput) noexcept
-{
-	if (!source.width || !source.height || !fittedOutput.width || !fittedOutput.height) {
-		return {};
-	}
-
-	auto ResolveDimension = [](const uint32_t sourceValue, const uint32_t outputValue) {
-		if (outputValue <= sourceValue) {
-			return outputValue;
-		}
-
-		return ScaleMaxineDimension(outputValue, 11u, 10u);
-	};
-
-	return {
-		ResolveDimension(source.width, fittedOutput.width),
-		ResolveDimension(source.height, fittedOutput.height)
-	};
-}
