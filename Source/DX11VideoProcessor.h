@@ -17,17 +17,8 @@ public: \
 	bool ReserveRifePresentationSurface(ID3D11Texture2D* source, UINT& sourceSurface); \
 	ID3D11Device* GetRifeDevice() const { return m_pDevice; } \
 	static UINT RifeAlignedDimension(int value) { return value > 0 ? AlignRifeDimension(static_cast<UINT>(value)) : 0u; } \
-	CSize GetRifeContentSize() const { \
-		const auto size = ResolveRifeContentSize(m_srcRectWidth, m_srcRectHeight, \
-			m_srcAnamorphic, m_srcAspectRatioX, m_srcAspectRatioY, m_iRotation); \
-		return CSize(static_cast<int>(size.width), static_cast<int>(size.height)); \
-	} \
-	CSize GetRifeFrameSize() const { \
-		const auto content = ResolveRifeContentSize(m_srcRectWidth, m_srcRectHeight, \
-			m_srcAnamorphic, m_srcAspectRatioX, m_srcAspectRatioY, m_iRotation); \
-		const auto size = AlignRifeSize(content); \
-		return CSize(static_cast<int>(size.width), static_cast<int>(size.height)); \
-	} \
+	CSize GetRifeContentSize(); \
+	CSize GetRifeFrameSize(); \
 private:
 #include "DX11VideoProcessorLegacyBody.h"
 #undef UpdateTexures

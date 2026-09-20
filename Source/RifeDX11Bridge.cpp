@@ -8,6 +8,38 @@
 #include "VideoRenderer.h"
 #include "DX11VideoProcessor.h"
 
+CSize CDX11VideoProcessor::GetRifeContentSize()
+{
+    const auto source = ResolveRifeContentSize(m_srcRectWidth, m_srcRectHeight,
+        m_srcAnamorphic, m_srcAspectRatioX, m_srcAspectRatioY, m_iRotation);
+    CSize content(static_cast<int>(source.width), static_cast<int>(source.height));
+
+#ifdef _WIN64
+    // A/B path: run Maxine once at source cadence, then let RIFE interpolate
+    // the enhanced frames. Keep rotated/anamorphic inputs on the established
+    // post-RIFE ordering until the source-first path is validated there.
+    if (m_pFilter && m_pFilter->m_Sets.iRifeMode != RIFE_MODE_Disabled
+            && !m_srcAnamorphic && m_iRotation == 0) {
+        CSize targetSize;
+        bool upscaleNeeded = false;
+        if (GetMaxineVSRTargetSizeForInput(m_videoRect, content, true,
+                targetSize, upscaleNeeded)) {
+            return targetSize;
+        }
+    }
+#endif
+    return content;
+}
+
+CSize CDX11VideoProcessor::GetRifeFrameSize()
+{
+    const CSize content = GetRifeContentSize();
+    const auto aligned = AlignRifeSize({
+        static_cast<uint32_t>(std::max<LONG>(0, content.cx)),
+        static_cast<uint32_t>(std::max<LONG>(0, content.cy)) });
+    return CSize(static_cast<int>(aligned.width), static_cast<int>(aligned.height));
+}
+
 bool CDX11VideoProcessor::PrepareRifeSource(
     IMediaSample* pSample,
     ID3D11Texture2D* target,
@@ -58,6 +90,7 @@ bool CDX11VideoProcessor::PrepareRifeSource(
     // statistics are drawn later when the prepared texture is presented.
     const CRect contentRect(0, 0, contentSize.cx, contentSize.cy);
     hr = Process(target, m_srcRect, contentRect, false, true);
+    m_bRifePreMaxineActive = SUCCEEDED(hr) && m_bMaxineVSRUsed;
     if (FAILED(hr)) {
         RecordRifeD3DFailure(RIFE_D3D_FAILURE_PREPARE_PROCESS, hr);
         return false;

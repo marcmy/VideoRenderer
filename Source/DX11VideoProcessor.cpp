@@ -809,6 +809,7 @@ void CDX11VideoProcessor::ReleaseVP()
 	m_MaxineDenoise.Reset();
 	m_MaxineDeblur.Reset();
 	m_bMaxineVSRUsed = false;
+	m_bRifePreMaxineActive = false;
 	m_MaxineVSRSize = CSize(0, 0);
 	m_iMaxineResolvedMode = -1;
 	m_strMaxinePipeline.clear();
@@ -4267,14 +4268,23 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 		// enhancement as source frames and Match output uses the real player size.
 		Tex2D_t* pInputTexture = &prepared;
 		CRect inputRect = contentRect;
-		m_bMaxineVSRUsed = false;
-		m_MaxineVSRSize = CSize(0, 0);
-		m_iMaxineResolvedMode = -1;
-		m_strMaxinePipeline.clear();
+		if (m_bRifePreMaxineActive) {
+			// Maxine already ran while preparing the decoded source frame. Preserve
+			// that pass's diagnostics while RIFE presents its enhanced real/synthetic
+			// outputs; no additional Maxine work is submitted here.
+			m_bMaxineVSRUsed = true;
+			m_MaxineVSRSize = contentRect.Size();
+		} else {
+			m_bMaxineVSRUsed = false;
+			m_MaxineVSRSize = CSize(0, 0);
+			m_iMaxineResolvedMode = -1;
+			m_strMaxinePipeline.clear();
+		}
 		CSize maxineTargetSize;
 		bool maxineUpscaleNeeded = false;
-		if (GetMaxineVSRTargetSizeForInput(dstRect, contentRect.Size(), true,
-				maxineTargetSize, maxineUpscaleNeeded)) {
+		if (!m_bRifePreMaxineActive
+				&& GetMaxineVSRTargetSizeForInput(dstRect, contentRect.Size(), true,
+					maxineTargetSize, maxineUpscaleNeeded)) {
 			// RIFE keeps its input/output D3D11 textures CUDA-registered between
 			// inference calls. NvCV cannot register the same resource independently,
 			// so always stage RIFE-owned presentation textures before Maxine interop.
@@ -4294,9 +4304,10 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 	const UINT numSteps = GetPostScaleSteps();
 	CSize maxineTargetSize;
 	bool maxineUpscaleNeeded = false;
-	// RIFE source preparation should remain source-sized. Maxine is applied to
-	// the source and generated RIFE presentation frames after interpolation.
-	const bool canUseMaxineVSR = !rifeSourcePreparation
+	// A/B source-first scheduling for ordinary RIFE playback: Maxine runs once
+	// per decoded source frame, then RIFE interpolates the enhanced image.
+	const bool allowPreRifeMaxine = rifeSourcePreparation && !m_srcAnamorphic && m_iRotation == 0;
+	const bool canUseMaxineVSR = (!rifeSourcePreparation || allowPreRifeMaxine)
 		&& GetMaxineVSRTargetSize(dstRect, maxineTargetSize, maxineUpscaleNeeded);
 	Tex2D_t* pConvertOutput = &m_TexConvertOutput;
 	CTex2DRing* pPostScaleTextures = &m_TexsPostScale;
@@ -5595,6 +5606,8 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 		const auto rifeDiagnostics = m_pFilter->m_RifePipeline->GetDiagnostics();
 		if (!rifeDiagnostics.empty()) {
 			str += std::format(L"\nRIFE pipeline: {}", rifeDiagnostics);
+			str += std::format(L"\nRIFE order   : {}", m_bRifePreMaxineActive
+				? L"Maxine -> RIFE (source cadence)" : L"RIFE -> Maxine (presentation cadence)");
 		}
 		const CSize rifeContentSize = GetRifeContentSize();
 		const CSize rifeFrameSize = GetRifeFrameSize();
