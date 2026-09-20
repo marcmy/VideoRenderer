@@ -3698,6 +3698,8 @@ bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, c
 		activePassCount = 1;
 	}
 	const bool releaseD3DImagesAfterRun = activePassCount > 1;
+	const bool throttleMaxineForRife = m_pFrameInterpolationTexture != nullptr
+		&& m_pFilter->m_Sets.iRifeMode != RIFE_MODE_Disabled;
 
 	auto AppendPassName = [&](const wchar_t* name) {
 		if (!m_strMaxinePipeline.empty()) {
@@ -3756,7 +3758,8 @@ bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, c
 			return false;
 		}
 		if (!pEffect->Process(m_pDeviceContext, pMaxineResult->pTexture,
-				pOutput->pTexture, mode, m_iMaxineGPU, releaseD3DImagesAfterRun)) {
+				pOutput->pTexture, mode, m_iMaxineGPU, releaseD3DImagesAfterRun,
+				throttleMaxineForRife)) {
 			m_strMaxineVSRStatus = std::format(L"{} failed: {}", passName, pEffect->GetStatus());
 			return false;
 		}

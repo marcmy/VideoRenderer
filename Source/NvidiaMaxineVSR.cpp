@@ -86,6 +86,7 @@ using PFN_cuCtxGetStreamPriorityRange = CUresult (WINAPI*)(int* leastPriority, i
 using PFN_cuStreamCreate = CUresult (WINAPI*)(CUstream* stream, unsigned int flags);
 using PFN_cuStreamCreateWithPriority = CUresult (WINAPI*)(CUstream* stream, unsigned int flags, int priority);
 using PFN_cuStreamDestroy = CUresult (WINAPI*)(CUstream stream);
+using PFN_cuStreamSynchronize = CUresult (WINAPI*)(CUstream stream);
 using PFN_cuEventCreate = CUresult (WINAPI*)(CUevent* event, unsigned int flags);
 using PFN_cuEventDestroy = CUresult (WINAPI*)(CUevent event);
 using PFN_cuEventRecord = CUresult (WINAPI*)(CUevent event, CUstream stream);
@@ -270,6 +271,7 @@ struct CNvidiaMaxineVSR::Impl
 	PFN_cuStreamCreate CuStreamCreate = nullptr;
 	PFN_cuStreamCreateWithPriority CuStreamCreateWithPriority = nullptr;
 	PFN_cuStreamDestroy CuStreamDestroy = nullptr;
+	PFN_cuStreamSynchronize CuStreamSynchronize = nullptr;
 	PFN_cuEventCreate CuEventCreate = nullptr;
 	PFN_cuEventDestroy CuEventDestroy = nullptr;
 	PFN_cuEventRecord CuEventRecord = nullptr;
@@ -309,6 +311,7 @@ struct CNvidiaMaxineVSR::Impl
 	bool gpuTimingSampleValid = false;
 	double lastGpuTimingMs = 0.0;
 	double lastGpuCompletionLagMs = 0.0;
+	double lastGpuQueueThrottleWaitMs = 0.0;
 	unsigned gpuTimingPendingPolls = 0;
 	unsigned lastGpuTimingPendingPolls = 0;
 	std::chrono::steady_clock::time_point gpuTimingSubmittedAt = {};
@@ -372,6 +375,7 @@ struct CNvidiaMaxineVSR::Impl
 			&& LoadCudaProc("cuStreamDestroy_v2", CuStreamDestroy, "cuStreamDestroy");
 		LoadCudaProc("cuCtxGetStreamPriorityRange", CuCtxGetStreamPriorityRange);
 		LoadCudaProc("cuStreamCreateWithPriority", CuStreamCreateWithPriority);
+		LoadCudaProc("cuStreamSynchronize", CuStreamSynchronize);
 		LoadCudaProc("cuEventCreate", CuEventCreate);
 		LoadCudaProc("cuEventDestroy_v2", CuEventDestroy, "cuEventDestroy");
 		LoadCudaProc("cuEventRecord", CuEventRecord);
@@ -390,6 +394,7 @@ struct CNvidiaMaxineVSR::Impl
 			CuStreamCreate = nullptr;
 			CuStreamCreateWithPriority = nullptr;
 			CuStreamDestroy = nullptr;
+			CuStreamSynchronize = nullptr;
 			CuEventCreate = nullptr;
 			CuEventDestroy = nullptr;
 			CuEventRecord = nullptr;
@@ -933,6 +938,7 @@ struct CNvidiaMaxineVSR::Impl
 		CuStreamCreate = nullptr;
 		CuStreamCreateWithPriority = nullptr;
 		CuStreamDestroy = nullptr;
+		CuStreamSynchronize = nullptr;
 		CuEventCreate = nullptr;
 		CuEventDestroy = nullptr;
 		CuEventRecord = nullptr;
@@ -1275,7 +1281,8 @@ bool CNvidiaMaxineVSR::Process(
 	ID3D11Texture2D* pOutputTexture,
 	unsigned mode,
 	int gpuIndex,
-	bool releaseD3DImagesAfterRun)
+	bool releaseD3DImagesAfterRun,
+	bool throttleGpuQueue)
 {
 #ifdef _WIN64
 	const auto started = std::chrono::steady_clock::now();
@@ -1318,6 +1325,25 @@ bool CNvidiaMaxineVSR::Process(
 		m_impl->ResetEffect();
 		m_impl->failed = true;
 		return Finish(false);
+	}
+
+	// Maxine runs asynchronously on its own low-priority CUDA stream. During
+	// RIFE presentation, allowing several VSR passes to accumulate on that
+	// stream can still starve RIFE despite RIFE using CUDA's greatest stream
+	// priority: priority affects selection at scheduling boundaries, not
+	// preemption of already-running kernels. Keep at most one Maxine pass in
+	// flight so the next high-priority RIFE launch gets a scheduling boundary
+	// before another VSR pass is submitted.
+	m_impl->lastGpuQueueThrottleWaitMs = 0.0;
+	if (throttleGpuQueue && m_impl->stream && m_impl->CuStreamSynchronize) {
+		const auto throttleStart = std::chrono::steady_clock::now();
+		const CUresult throttleResult = m_impl->CuStreamSynchronize(m_impl->stream);
+		m_impl->lastGpuQueueThrottleWaitMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - throttleStart).count();
+		if (throttleResult != CUDA_SUCCESS) {
+			m_impl->status = L"Could not throttle the Maxine CUDA queue";
+			return Finish(false);
+		}
 	}
 	const bool gpuTimingStarted = m_impl->BeginGpuTiming();
 
@@ -1458,9 +1484,10 @@ std::wstring CNvidiaMaxineVSR::GetGpuTimingDiagnostics() const
 	if (!m_impl->gpuTimingSampleValid) {
 		return m_impl->gpuTimingPending ? L"sample pending" : L"sample not ready";
 	}
-	return std::format(L"stream {:.2f} ms, completion {:.2f} ms, pending-polls {}{}",
+	return std::format(L"stream {:.2f} ms, completion {:.2f} ms, queue-wait {:.2f} ms, pending-polls {}{}",
 		m_impl->lastGpuTimingMs,
 		m_impl->lastGpuCompletionLagMs,
+		m_impl->lastGpuQueueThrottleWaitMs,
 		m_impl->lastGpuTimingPendingPolls,
 		m_impl->gpuTimingPending ? L", next sample pending" : L"");
 #else
