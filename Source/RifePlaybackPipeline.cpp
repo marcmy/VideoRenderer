@@ -287,7 +287,8 @@ struct CRifePlaybackPipeline::Impl
         CComPtr<ID3D11Texture2D> texture;
         CComPtr<ID3D11Texture2D> inferenceAsFirst;
         CComPtr<ID3D11Texture2D> inferenceAsSecond;
-        CComPtr<ID3D11Query> inputCopyReadyQuery;
+        CComPtr<ID3D11Query> inputCopyAsFirstReadyQuery;
+        CComPtr<ID3D11Query> inputCopyAsSecondReadyQuery;
         bool inUse = false;
     };
 
@@ -296,7 +297,8 @@ struct CRifePlaybackPipeline::Impl
         CComPtr<ID3D11Texture2D> texture;
         CComPtr<ID3D11Texture2D> inferenceAsFirst;
         CComPtr<ID3D11Texture2D> inferenceAsSecond;
-        CComPtr<ID3D11Query> inputCopyReadyQuery;
+        CComPtr<ID3D11Query> inputCopyAsFirstReadyQuery;
+        CComPtr<ID3D11Query> inputCopyAsSecondReadyQuery;
         CDX11VideoProcessor* processor = nullptr;
         REFERENCE_TIME time = INVALID_TIME;
         REFERENCE_TIME frameDuration = 0;
@@ -488,6 +490,8 @@ struct CRifePlaybackPipeline::Impl
     CRollingTimingWindow<256> rollingInputCopyReadyWaitTiming;
     std::atomic_uint64_t inputCopyReadyChecks = 0;
     std::atomic_uint64_t inputCopyReadyAtWorkerStart = 0;
+    std::atomic_uint64_t inputCopyFirstReadyAtWorkerStart = 0;
+    std::atomic_uint64_t inputCopySecondReadyAtWorkerStart = 0;
     std::atomic_uint64_t inputCopyReadyTimeouts = 0;
     std::atomic_bool lastInputCopyFirstReady = false;
     std::atomic_bool lastInputCopySecondReady = false;
@@ -519,7 +523,10 @@ struct CRifePlaybackPipeline::Impl
 
     bool WaitForInputCopyQueries(const SourceFrame& first, const SourceFrame& second)
     {
-        if (!first.inputCopyReadyQuery || !second.inputCopyReadyQuery || !second.processor) {
+        ID3D11Query* firstQuery = first.inputCopyAsFirstReadyQuery;
+        ID3D11Query* secondQuery = second.inferenceAsSecond
+            ? second.inputCopyAsSecondReadyQuery.p : second.inputCopyAsFirstReadyQuery.p;
+        if (!firstQuery || !secondQuery || !second.processor) {
             return true;
         }
 
@@ -539,11 +546,17 @@ struct CRifePlaybackPipeline::Impl
             return hr == S_OK && complete ? S_OK : hr == S_OK ? S_FALSE : hr;
         };
 
-        const bool firstReady = queryReady(first.inputCopyReadyQuery, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
-        const bool secondReady = queryReady(second.inputCopyReadyQuery, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+        const bool firstReady = queryReady(firstQuery, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+        const bool secondReady = queryReady(secondQuery, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
         lastInputCopyFirstReady.store(firstReady, std::memory_order_relaxed);
         lastInputCopySecondReady.store(secondReady, std::memory_order_relaxed);
         inputCopyReadyChecks.fetch_add(1, std::memory_order_relaxed);
+        if (firstReady) {
+            inputCopyFirstReadyAtWorkerStart.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (secondReady) {
+            inputCopySecondReadyAtWorkerStart.fetch_add(1, std::memory_order_relaxed);
+        }
         if (firstReady && secondReady) {
             inputCopyReadyAtWorkerStart.fetch_add(1, std::memory_order_relaxed);
             lastInputCopyReadyWaitUs.store(0, std::memory_order_relaxed);
@@ -553,7 +566,7 @@ struct CRifePlaybackPipeline::Impl
 
         const auto waitStart = std::chrono::steady_clock::now();
         bool timedOut = false;
-        for (ID3D11Query* query : { first.inputCopyReadyQuery.p, second.inputCopyReadyQuery.p }) {
+        for (ID3D11Query* query : { firstQuery, secondQuery }) {
             if (!query) continue;
             for (;;) {
                 const HRESULT hr = queryReady(query, 0);
@@ -623,16 +636,17 @@ struct CRifePlaybackPipeline::Impl
     bool AcquireSourceSlot(ID3D11Device* device, UINT width, UINT height, bool parallelInputs,
         size_t& index, ID3D11Texture2D** texture,
         ID3D11Texture2D** inferenceAsFirst, ID3D11Texture2D** inferenceAsSecond,
-        ID3D11Query** inputCopyReadyQuery)
+        ID3D11Query** inputCopyAsFirstReadyQuery, ID3D11Query** inputCopyAsSecondReadyQuery)
     {
         index = SIZE_MAX;
         if (!device || !width || !height || !texture || !inferenceAsFirst || !inferenceAsSecond
-                || !inputCopyReadyQuery) {
+                || !inputCopyAsFirstReadyQuery || !inputCopyAsSecondReadyQuery) {
             return false;
         }
         *inferenceAsFirst = nullptr;
         *inferenceAsSecond = nullptr;
-        *inputCopyReadyQuery = nullptr;
+        *inputCopyAsFirstReadyQuery = nullptr;
+        *inputCopyAsSecondReadyQuery = nullptr;
 
         std::lock_guard lock(mutex);
         for (size_t i = 0; i < sourcePool.size(); ++i) {
@@ -642,7 +656,8 @@ struct CRifePlaybackPipeline::Impl
             }
             if (!SameTextureShape(slot.texture, device, width, height)) {
                 slot.texture.Release();
-                slot.inputCopyReadyQuery.Release();
+                slot.inputCopyAsFirstReadyQuery.Release();
+                slot.inputCopyAsSecondReadyQuery.Release();
                 if (FAILED(CreateBgraTexture(device, width, height, &slot.texture))) {
                     continue;
                 }
@@ -662,12 +677,20 @@ struct CRifePlaybackPipeline::Impl
                 }
             } else {
                 slot.inferenceAsSecond.Release();
+                slot.inputCopyAsSecondReadyQuery.Release();
             }
-            if (!slot.inputCopyReadyQuery) {
+            if (!slot.inputCopyAsFirstReadyQuery) {
                 D3D11_QUERY_DESC queryDesc = {};
                 queryDesc.Query = D3D11_QUERY_EVENT;
-                if (FAILED(device->CreateQuery(&queryDesc, &slot.inputCopyReadyQuery))) {
-                    slot.inputCopyReadyQuery.Release();
+                if (FAILED(device->CreateQuery(&queryDesc, &slot.inputCopyAsFirstReadyQuery))) {
+                    slot.inputCopyAsFirstReadyQuery.Release();
+                }
+            }
+            if (parallelInputs && !slot.inputCopyAsSecondReadyQuery) {
+                D3D11_QUERY_DESC queryDesc = {};
+                queryDesc.Query = D3D11_QUERY_EVENT;
+                if (FAILED(device->CreateQuery(&queryDesc, &slot.inputCopyAsSecondReadyQuery))) {
+                    slot.inputCopyAsSecondReadyQuery.Release();
                 }
             }
             slot.inUse = true;
@@ -680,9 +703,13 @@ struct CRifePlaybackPipeline::Impl
                 *inferenceAsSecond = slot.inferenceAsSecond;
                 (*inferenceAsSecond)->AddRef();
             }
-            if (slot.inputCopyReadyQuery) {
-                *inputCopyReadyQuery = slot.inputCopyReadyQuery;
-                (*inputCopyReadyQuery)->AddRef();
+            if (slot.inputCopyAsFirstReadyQuery) {
+                *inputCopyAsFirstReadyQuery = slot.inputCopyAsFirstReadyQuery;
+                (*inputCopyAsFirstReadyQuery)->AddRef();
+            }
+            if (slot.inputCopyAsSecondReadyQuery) {
+                *inputCopyAsSecondReadyQuery = slot.inputCopyAsSecondReadyQuery;
+                (*inputCopyAsSecondReadyQuery)->AddRef();
             }
             return true;
         }
@@ -765,10 +792,11 @@ struct CRifePlaybackPipeline::Impl
         CComPtr<ID3D11Texture2D> texture;
         CComPtr<ID3D11Texture2D> inferenceAsFirst;
         CComPtr<ID3D11Texture2D> inferenceAsSecond;
-        CComPtr<ID3D11Query> inputCopyReadyQuery;
+        CComPtr<ID3D11Query> inputCopyAsFirstReadyQuery;
+        CComPtr<ID3D11Query> inputCopyAsSecondReadyQuery;
         if (!AcquireSourceSlot(device, static_cast<UINT>(size.cx), static_cast<UINT>(size.cy),
                 inferenceContextCount > 1, slot, &texture, &inferenceAsFirst, &inferenceAsSecond,
-                &inputCopyReadyQuery)) {
+                &inputCopyAsFirstReadyQuery, &inputCopyAsSecondReadyQuery)) {
             return false;
         }
 
@@ -795,12 +823,19 @@ struct CRifePlaybackPipeline::Impl
                 && inputCopyMultithread) {
             inputCopyMultithread->SetMultithreadProtected(TRUE);
         }
-        inputCopyContext->CopyResource(inferenceAsFirst, texture);
+        // With parallel A/B and B/C jobs, the newly submitted frame is needed
+        // immediately as the second input of A/B. Queue that role first. Its
+        // first-input copy is only needed by the future B/C pair one source
+        // interval later, so it can safely trail the latency-critical copy.
         if (inferenceAsSecond) {
             inputCopyContext->CopyResource(inferenceAsSecond, texture);
+            if (inputCopyAsSecondReadyQuery) {
+                inputCopyContext->End(inputCopyAsSecondReadyQuery);
+            }
         }
-        if (inputCopyReadyQuery) {
-            inputCopyContext->End(inputCopyReadyQuery);
+        inputCopyContext->CopyResource(inferenceAsFirst, texture);
+        if (inputCopyAsFirstReadyQuery) {
+            inputCopyContext->End(inputCopyAsFirstReadyQuery);
         }
         lastInputCopySubmitUs.store(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - inputCopyStart).count()), std::memory_order_relaxed);
@@ -810,7 +845,8 @@ struct CRifePlaybackPipeline::Impl
         frame.texture = texture;
         frame.inferenceAsFirst = inferenceAsFirst;
         frame.inferenceAsSecond = inferenceAsSecond;
-        frame.inputCopyReadyQuery = inputCopyReadyQuery;
+        frame.inputCopyAsFirstReadyQuery = inputCopyAsFirstReadyQuery;
+        frame.inputCopyAsSecondReadyQuery = inputCopyAsSecondReadyQuery;
         frame.processor = processor;
         frame.time = sourceTime;
         frame.frameDuration = frameDuration;
@@ -1574,12 +1610,16 @@ struct CRifePlaybackPipeline::Impl
         }
         const auto copyChecks = inputCopyReadyChecks.load(std::memory_order_relaxed);
         const auto copyReady = inputCopyReadyAtWorkerStart.load(std::memory_order_relaxed);
+        const auto firstCopyReady = inputCopyFirstReadyAtWorkerStart.load(std::memory_order_relaxed);
+        const auto secondCopyReady = inputCopySecondReadyAtWorkerStart.load(std::memory_order_relaxed);
         if (copyReadyRoll.count) {
             diagnostics += std::format(
-                L"\nRIFE copyq   : last {:.2f} ms, wait {:.2f} avg/{:.2f} p95 [{:.2f}-{:.2f}], initial {}/{} ({:.1f}%), last first {} second {}, timeout {}",
+                L"\nRIFE copyq   : last {:.2f} ms, wait {:.2f} avg/{:.2f} p95 [{:.2f}-{:.2f}], both {}/{} ({:.1f}%), roles first {:.1f}% second {:.1f}%, last {} / {}, timeout {}",
                 lastInputCopyReadyWaitUs.load(std::memory_order_relaxed) / 1000.0,
                 copyReadyRoll.averageMs, copyReadyRoll.p95Ms, copyReadyRoll.minMs, copyReadyRoll.maxMs,
                 copyReady, copyChecks, copyChecks ? 100.0 * copyReady / copyChecks : 0.0,
+                copyChecks ? 100.0 * firstCopyReady / copyChecks : 0.0,
+                copyChecks ? 100.0 * secondCopyReady / copyChecks : 0.0,
                 lastInputCopyFirstReady.load(std::memory_order_relaxed) ? L"ready" : L"pending",
                 lastInputCopySecondReady.load(std::memory_order_relaxed) ? L"ready" : L"pending",
                 inputCopyReadyTimeouts.load(std::memory_order_relaxed));
