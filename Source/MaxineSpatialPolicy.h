@@ -63,3 +63,31 @@ constexpr MaxineSpatialSize ResolveMaxineMatchOutputBaseSize(
 		ScaleMaxineDimension(source.height, targetShort, sourceShort)
 	};
 }
+
+// Leave a small final enlargement for the selected shader scaler when video-
+// processor resizing is disabled. Rendering Maxine at 90% of the fitted output
+// reduces its pixel workload while giving Jinc/Catmull-Rom a real resampling
+// step. Keep at least half of each requested enlargement in the Maxine pass so
+// very small output changes do not collapse back to the source size.
+constexpr MaxineSpatialSize ResolveMaxineShaderFinishSize(
+		const MaxineSpatialSize source, const MaxineSpatialSize fittedOutput) noexcept
+{
+	if (!source.width || !source.height || !fittedOutput.width || !fittedOutput.height) {
+		return {};
+	}
+
+	auto ResolveDimension = [](const uint32_t sourceValue, const uint32_t outputValue) {
+		if (outputValue <= sourceValue) {
+			return outputValue;
+		}
+
+		const uint32_t ninetyPercent = ScaleMaxineDimension(outputValue, 9u, 10u);
+		const uint32_t halfway = sourceValue + (outputValue - sourceValue + 1u) / 2u;
+		return std::min(outputValue - 1u, std::max(ninetyPercent, halfway));
+	};
+
+	return {
+		ResolveDimension(source.width, fittedOutput.width),
+		ResolveDimension(source.height, fittedOutput.height)
+	};
+}

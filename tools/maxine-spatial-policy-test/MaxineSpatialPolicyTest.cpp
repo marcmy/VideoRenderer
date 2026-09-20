@@ -57,6 +57,24 @@ int main()
 	assert((ResolveMaxineMatchOutputBaseSize(
 		{720, 1280}, {608, 1080}, {}, true) == MaxineSpatialSize{608, 1080}));
 
+	// Disabling video-processor resizing leaves a modest final enlargement for
+	// the selected shader without increasing Maxine's output pixel count.
+	assert((ResolveMaxineShaderFinishSize(
+		{1280, 720}, {1920, 1080}) == MaxineSpatialSize{1728, 972}));
+	assert((ResolveMaxineShaderFinishSize(
+		{960, 540}, {1920, 1080}) == MaxineSpatialSize{1728, 972}));
+	assert((ResolveMaxineShaderFinishSize(
+		{1280, 720}, {1678, 944}) == MaxineSpatialSize{1510, 850}));
+
+	// A very small enlargement still gives Maxine half of the requested change
+	// and leaves at least one pixel for the final shader pass.
+	assert((ResolveMaxineShaderFinishSize(
+		{1280, 720}, {1282, 722}) == MaxineSpatialSize{1281, 721}));
+
+	// No enlargement means there is no shader-finish target to invent.
+	assert((ResolveMaxineShaderFinishSize(
+		{1920, 1080}, {1280, 720}) == MaxineSpatialSize{1280, 720}));
+
 	std::cout << "All Maxine spatial policy tests passed\n";
 	return 0;
 }

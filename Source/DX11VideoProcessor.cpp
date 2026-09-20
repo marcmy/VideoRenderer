@@ -3543,6 +3543,7 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSizeForInput(const CRect& dstRect, c
 	targetSize = CSize(0, 0);
 	upscaleNeeded = false;
 	m_bMaxineOversampleClamped = false;
+	m_bMaxineShaderFinish = false;
 
 #ifdef _WIN64
 	if (m_iMaxineOperation == MAXINE_OPERATION_Disabled) {
@@ -3621,8 +3622,17 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSizeForInput(const CRect& dstRect, c
 		}
 
 		const int oversample = NormalizeMaxineOversample(m_iMaxineOversample);
-		targetWidth = (static_cast<unsigned long long>(baseTarget.width) * oversample + 50ull) / 100ull;
-		targetHeight = (static_cast<unsigned long long>(baseTarget.height) * oversample + 50ull) / 100ull;
+		if (!m_bVPScaling && oversample == MAXINE_OVERSAMPLE_Off) {
+			const MaxineSpatialSize shaderFinishTarget = ResolveMaxineShaderFinishSize(
+				{ sourceWidth, sourceHeight }, baseTarget);
+			targetWidth = shaderFinishTarget.width;
+			targetHeight = shaderFinishTarget.height;
+			m_bMaxineShaderFinish = targetWidth < baseTarget.width || targetHeight < baseTarget.height;
+		}
+		else {
+			targetWidth = (static_cast<unsigned long long>(baseTarget.width) * oversample + 50ull) / 100ull;
+			targetHeight = (static_cast<unsigned long long>(baseTarget.height) * oversample + 50ull) / 100ull;
+		}
 
 		const unsigned long long maxWidth = static_cast<unsigned long long>(sourceWidth) * 4ull;
 		const unsigned long long maxHeight = static_cast<unsigned long long>(sourceHeight) * 4ull;
@@ -5602,6 +5612,10 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 			if (m_bMaxineOversampleClamped) {
 				str.append(L" (clamped to 4x source limit)");
 			}
+		}
+		if (m_bMaxineShaderFinish) {
+			str += std::format(L"\nMaxine finish: {} to player output",
+				s_Upscaling11ResIDs[m_iUpscaling].description);
 		}
 		if (m_dwSourceBitRate) {
 			str += std::format(L", source {:.1f} Mbps", m_dwSourceBitRate / 1000000.0);

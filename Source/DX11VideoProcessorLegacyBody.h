@@ -219,6 +219,7 @@ private:
 	CSize m_MaxineVSRSize;
 	int m_iMaxineResolvedMode = -1;
 	bool m_bMaxineOversampleClamped = false;
+	bool m_bMaxineShaderFinish = false;
 	std::wstring m_strMaxineVSRStatus = L"Disabled";
 	std::wstring m_strMaxinePipeline;
 	std::wstring m_strMaxineRuntimeInfo;
