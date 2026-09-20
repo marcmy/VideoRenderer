@@ -4304,9 +4304,9 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 	const UINT numSteps = GetPostScaleSteps();
 	CSize maxineTargetSize;
 	bool maxineUpscaleNeeded = false;
-	// A/B source-first scheduling for ordinary RIFE playback: Maxine runs once
-	// per decoded source frame, then RIFE interpolates the enhanced image.
-	const bool allowPreRifeMaxine = rifeSourcePreparation && !m_srcAnamorphic && m_iRotation == 0;
+	// High/Ultra Maxine run once at source cadence; Medium/Low stay after RIFE
+	// so TensorRT keeps the cheaper source-sized working resolution.
+	const bool allowPreRifeMaxine = rifeSourcePreparation && ShouldRunMaxineBeforeRife();
 	const bool canUseMaxineVSR = (!rifeSourcePreparation || allowPreRifeMaxine)
 		&& GetMaxineVSRTargetSize(dstRect, maxineTargetSize, maxineUpscaleNeeded);
 	Tex2D_t* pConvertOutput = &m_TexConvertOutput;

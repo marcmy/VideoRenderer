@@ -8,6 +8,24 @@
 #include "VideoRenderer.h"
 #include "DX11VideoProcessor.h"
 
+bool CDX11VideoProcessor::ShouldRunMaxineBeforeRife() const
+{
+#ifdef _WIN64
+    // Empirical scheduling policy: High/Ultra VSR are expensive enough that
+    // running Maxine once at source cadence beats applying it to every RIFE
+    // presentation frame. Medium/Low are cheap enough that keeping RIFE at the
+    // original source resolution wins instead.
+    return m_pFilter
+        && m_pFilter->m_Sets.iRifeMode != RIFE_MODE_Disabled
+        && m_iMaxineOperation == MAXINE_OPERATION_Upscale
+        && m_iMaxineQuality >= MAXINE_QUALITY_High
+        && !m_srcAnamorphic
+        && m_iRotation == 0;
+#else
+    return false;
+#endif
+}
+
 CSize CDX11VideoProcessor::GetRifeContentSize()
 {
     const auto source = ResolveRifeContentSize(m_srcRectWidth, m_srcRectHeight,
@@ -15,11 +33,7 @@ CSize CDX11VideoProcessor::GetRifeContentSize()
     CSize content(static_cast<int>(source.width), static_cast<int>(source.height));
 
 #ifdef _WIN64
-    // A/B path: run Maxine once at source cadence, then let RIFE interpolate
-    // the enhanced frames. Keep rotated/anamorphic inputs on the established
-    // post-RIFE ordering until the source-first path is validated there.
-    if (m_pFilter && m_pFilter->m_Sets.iRifeMode != RIFE_MODE_Disabled
-            && !m_srcAnamorphic && m_iRotation == 0) {
+    if (ShouldRunMaxineBeforeRife()) {
         CSize targetSize;
         bool upscaleNeeded = false;
         if (GetMaxineVSRTargetSizeForInput(m_videoRect, content, true,

@@ -445,6 +445,7 @@ private:
 	bool GetMaxineVSRTargetSize(const CRect& dstRect, CSize& targetSize, bool& upscaleNeeded);
 	bool GetMaxineVSRTargetSizeForInput(const CRect& dstRect, const CSize& sourceSize,
 		bool sourceAlreadyOriented, CSize& targetSize, bool& upscaleNeeded);
+	bool ShouldRunMaxineBeforeRife() const;
 	bool ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, const CSize& sourceSize,
 		const CSize& targetSize, bool upscaleNeeded, bool forceInputStaging);
 	unsigned ResolveMaxineUpscaleMode() const;
