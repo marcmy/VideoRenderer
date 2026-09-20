@@ -75,6 +75,12 @@ output_release = rife_runtime.index("const cudaError_t releaseResult = releaseOu
 assert deferred_release > output_release and "releaseInputs(state.stream)" in rife_runtime[deferred_release:deferred_release + 1400], (
     "renderer deferred input ownership must be queued after output handoff instead of contending with TensorRT/output work"
 )
+assert "cudaEventQuery(state.startEvent)" in rife_runtime and "cudaEventSynchronize(state.startEvent)" in rife_runtime, (
+    "handoff diagnostics must split pre-start queue delay from post-start completion wait"
+)
+assert "stats.handoffStartWaitMs" in rife_runtime and "stats.handoffEndWaitMs" in rife_runtime, (
+    "the runtime must publish the split handoff timing"
+)
 assert "offsetof(MpcvrRifeCreateParams, flags)" in rife_runtime, (
     "ABI-2 runtimes must continue accepting the original create-params size before the optional flags tail"
 )

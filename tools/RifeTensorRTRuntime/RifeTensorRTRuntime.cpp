@@ -661,7 +661,28 @@ public:
         // begins. Waiting through the ownership transition here serializes the
         // inference worker with the graphics queue and defeats parallel contexts.
         const auto completionStart = Clock::now();
+
+        // GPU event durations start when startEvent actually reaches the
+        // device, so split out any host wait for that point. This makes queued
+        // D3D/CUDA ownership or WDDM scheduling delay visible instead of
+        // folding it into one opaque handoff number.
+        const auto startWaitStart = Clock::now();
+        const cudaError_t startQueryResult = cudaEventQuery(state.startEvent);
+        stats.handoffStartReady = startQueryResult == cudaSuccess ? 1u : 0u;
+        cudaError_t startWaitResult = startQueryResult;
+        if (startQueryResult == cudaErrorNotReady) {
+            startWaitResult = cudaEventSynchronize(state.startEvent);
+        }
+        stats.handoffStartWaitMs = elapsedMs(startWaitStart, Clock::now());
+        if (startWaitResult != cudaSuccess) {
+            releaseOutput();
+            finishStream();
+            return MPCVR_RIFE_CUDA_FAILURE;
+        }
+
+        const auto endWaitStart = Clock::now();
         const cudaError_t completionResult = cudaEventSynchronize(state.endEvent);
+        stats.handoffEndWaitMs = elapsedMs(endWaitStart, Clock::now());
         stats.handoffSyncMs = elapsedMs(completionStart, Clock::now());
         if (completionResult != cudaSuccess) {
             releaseOutput();

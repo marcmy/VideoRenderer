@@ -1428,6 +1428,10 @@ struct CRifePlaybackPipeline::Impl
             lastTimingContext, host.packHostMs, host.packSyncMs, host.writeHostMs,
             host.writeSyncMs, host.inputReleaseSyncMs, host.handoffSyncMs,
             std::max(0.0, host.totalRuntimeMs - accountedHostMs));
+        diagnostics += std::format(
+            L"\nRIFE handoff : start-wait {:.2f}, end-wait {:.2f} ms, start-ready {}",
+            host.handoffStartWaitMs, host.handoffEndWaitMs,
+            host.handoffStartReady ? L"yes" : L"no");
         const int ruleIndex = activeRule.load(std::memory_order_relaxed);
         if (ruleIndex >= 0) {
             diagnostics += std::format(L"\nRIFE rule    : #{}", ruleIndex + 1);

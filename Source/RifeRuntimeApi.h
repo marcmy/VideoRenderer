@@ -90,6 +90,13 @@ struct MpcvrRifeStats {
     double writeSyncMs = 0.0;
     double handoffSyncMs = 0.0;
     double inputReleaseSyncMs = 0.0;
+    // Diagnostic split of handoffSyncMs. startWaitMs measures how long the
+    // host waits for the stream's start event (including queued D3D/CUDA
+    // ownership work before RIFE begins). endWaitMs measures the remaining
+    // wait from startEvent completion through endEvent.
+    double handoffStartWaitMs = 0.0;
+    double handoffEndWaitMs = 0.0;
+    uint32_t handoffStartReady = 0;
 };
 
 using MpcvrRifeGetAbiVersionFn = uint32_t(WINAPI*)();
