@@ -656,7 +656,13 @@ struct CNvidiaMaxineVSR::Impl
 					int greatestPriority = 0;
 					if (CuCtxGetStreamPriorityRange && CuStreamCreateWithPriority
 							&& CuCtxGetStreamPriorityRange(&leastPriority, &greatestPriority) == CUDA_SUCCESS) {
-						selectedPriority = greatestPriority;
+						// RIFE inference feeds presentation, so keep Maxine at
+						// the context's normal/least priority while RIFE uses
+						// greatest priority. Otherwise repeated presentation
+						// work can occupy the GPU long enough that a queued RIFE
+						// stream does not reach its start event for multiple
+						// frame intervals.
+						selectedPriority = leastPriority;
 						created = CuStreamCreateWithPriority(
 							&primaryStream, CU_STREAM_NON_BLOCKING, selectedPriority) == CUDA_SUCCESS
 							&& primaryStream;
