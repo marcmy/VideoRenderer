@@ -60,6 +60,14 @@ public:
         return summary;
     }
 
+    void Clear()
+    {
+        std::lock_guard lock(m_mutex);
+        m_samples.fill(0);
+        m_next = 0;
+        m_count = 0;
+    }
+
 private:
     mutable std::mutex m_mutex;
     std::array<uint64_t, Capacity> m_samples = {};

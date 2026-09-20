@@ -21,6 +21,7 @@
 #pragma once
 
 #include <DXGI1_2.h>
+#include <dxgi1_3.h>
 #include <dxva2api.h>
 #include <dxgi1_5.h>
 #include <strmif.h>
@@ -155,6 +156,7 @@ private:
 
 	CComPtr<IDXGIFactory2>   m_pDXGIFactory2;
 	CComPtr<IDXGISwapChain1> m_pDXGISwapChain1;
+	CComPtr<IDXGISwapChainMedia> m_pDXGISwapChainMedia;
 	CComPtr<IDXGISwapChain4> m_pDXGISwapChain4;
 	CComPtr<IDXGIOutput>    m_pDXGIOutput;
 	DXGI_COLOR_SPACE_TYPE m_currentSwapChainColorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
@@ -189,6 +191,11 @@ private:
 	CD3D11Rectangle m_Underlay;
 	CD3D11Lines     m_Lines;
 	CD3D11Polyline  m_SyncLine;
+	CRollingTimingWindow<256> m_DxgiPresentCallTiming;
+	std::atomic_int m_DxgiPresentationMode = -1;
+	std::atomic_long m_DxgiMediaStatsHr = E_PENDING;
+	std::atomic_uint64_t m_DxgiPresentationModeChanges = 0;
+	UINT m_DxgiMediaStatsPollCountdown = 0;
 
 	bool m_bExclusiveScreen = false;
 	bool m_bFullScreen = false;

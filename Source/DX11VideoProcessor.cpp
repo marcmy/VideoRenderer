@@ -932,7 +932,13 @@ void CDX11VideoProcessor::ReleaseSwapChain()
 	}
 	m_pDXGIOutput.Release();
 	m_pDXGISwapChain4.Release();
+	m_pDXGISwapChainMedia.Release();
 	m_pDXGISwapChain1.Release();
+	m_DxgiPresentCallTiming.Clear();
+	m_DxgiPresentationMode.store(-1, std::memory_order_relaxed);
+	m_DxgiMediaStatsHr.store(E_PENDING, std::memory_order_relaxed);
+	m_DxgiPresentationModeChanges.store(0, std::memory_order_relaxed);
+	m_DxgiMediaStatsPollCountdown = 0;
 
 	m_MaxDisplayLuminance = 0;
 }
@@ -1703,6 +1709,8 @@ HRESULT CDX11VideoProcessor::InitSwapChain(bool bWindowChanged)
 
 	if (m_pDXGISwapChain1) {
 		m_UsedSwapEffect = desc1.SwapEffect;
+		const HRESULT mediaHr = m_pDXGISwapChain1->QueryInterface(IID_PPV_ARGS(&m_pDXGISwapChainMedia));
+		m_DxgiMediaStatsHr.store(mediaHr, std::memory_order_relaxed);
 
 		HRESULT hr2 = m_pDXGISwapChain1->GetContainingOutput(&m_pDXGIOutput);
 
@@ -3408,9 +3416,31 @@ HRESULT CDX11VideoProcessor::Render(int field, const REFERENCE_TIME frameStartTi
 		SyncFrameToStreamTime(frameStartTime);
 	}
 
+	const uint64_t presentStart = GetPreciseTick();
 	g_bPresent = true;
 	hr = m_pDXGISwapChain1->Present(1, 0);
 	g_bPresent = false;
+	const uint64_t presentCallTicks = GetPreciseTick() - presentStart;
+	m_DxgiPresentCallTiming.AddMicroseconds(
+		presentCallTicks * 1000000 / GetPreciseTicksPerSecondI());
+	if (SUCCEEDED(hr) && m_pDXGISwapChainMedia) {
+		if (m_DxgiMediaStatsPollCountdown == 0) {
+			DXGI_FRAME_STATISTICS_MEDIA mediaStats = {};
+			const HRESULT mediaHr = m_pDXGISwapChainMedia->GetFrameStatisticsMedia(&mediaStats);
+			m_DxgiMediaStatsHr.store(mediaHr, std::memory_order_relaxed);
+			if (SUCCEEDED(mediaHr)) {
+				const int mode = static_cast<int>(mediaStats.CompositionMode);
+				const int previousMode = m_DxgiPresentationMode.exchange(mode, std::memory_order_relaxed);
+				if (previousMode >= 0 && previousMode != mode) {
+					m_DxgiPresentationModeChanges.fetch_add(1, std::memory_order_relaxed);
+				}
+			}
+			m_DxgiMediaStatsPollCountdown = 29;
+		}
+		else {
+			--m_DxgiMediaStatsPollCountdown;
+		}
+	}
 	if (FAILED(hr) && rifePresentation) {
 		RecordRifeD3DFailure(RIFE_D3D_FAILURE_RENDER_PRESENT, hr);
 	}
@@ -5664,6 +5694,39 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 	}
 	str.append(m_strStatsHDR);
 	str.append(m_strStatsPresent);
+	if (m_pDXGISwapChain1) {
+		DXGI_SWAP_CHAIN_DESC1 swapchainDesc = {};
+		if (SUCCEEDED(m_pDXGISwapChain1->GetDesc1(&swapchainDesc))) {
+			const int presentationMode = m_DxgiPresentationMode.load(std::memory_order_relaxed);
+			const wchar_t* presentationModeName = L"unavailable";
+			switch (presentationMode) {
+			case DXGI_FRAME_PRESENTATION_MODE_COMPOSED:
+				presentationModeName = L"Composed";
+				break;
+			case DXGI_FRAME_PRESENTATION_MODE_OVERLAY:
+				presentationModeName = L"Overlay";
+				break;
+			case DXGI_FRAME_PRESENTATION_MODE_NONE:
+				presentationModeName = L"None";
+				break;
+			case DXGI_FRAME_PRESENTATION_MODE_COMPOSITION_FAILURE:
+				presentationModeName = L"Composition failure";
+				break;
+			}
+
+			const auto presentRoll = m_DxgiPresentCallTiming.GetSummary();
+			str += std::format(
+				L"\nDXGI present  : mode {}, call {:.2f} avg/{:.2f} p95 [{:.2f}-{:.2f}] ms ({}), {}x{}, buffers {}, changes {}",
+				presentationModeName,
+				presentRoll.averageMs, presentRoll.p95Ms, presentRoll.minMs, presentRoll.maxMs, presentRoll.count,
+				swapchainDesc.Width, swapchainDesc.Height, swapchainDesc.BufferCount,
+				m_DxgiPresentationModeChanges.load(std::memory_order_relaxed));
+			if (presentationMode < 0) {
+				str += std::format(L", stats hr 0x{:08X}",
+					static_cast<uint32_t>(m_DxgiMediaStatsHr.load(std::memory_order_relaxed)));
+			}
+		}
+	}
 
 	str += std::format(L"\nFrames        : {:5}, skipped: {}/{}, failed: {}",
 		m_pFilter->m_FrameStats.GetFrames(), m_pFilter->m_DrawStats.m_dropped, m_RenderStats.dropped2, m_RenderStats.failed);
