@@ -3627,7 +3627,6 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSizeForInput(const CRect& dstRect, c
 				{ sourceWidth, sourceHeight }, baseTarget);
 			targetWidth = shaderFinishTarget.width;
 			targetHeight = shaderFinishTarget.height;
-			m_bMaxineShaderFinish = targetWidth < baseTarget.width || targetHeight < baseTarget.height;
 		}
 		else {
 			targetWidth = (static_cast<unsigned long long>(baseTarget.width) * oversample + 50ull) / 100ull;
@@ -3646,6 +3645,8 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSizeForInput(const CRect& dstRect, c
 				static_cast<unsigned long long>(std::llround(targetHeight * scale))));
 			m_bMaxineOversampleClamped = true;
 		}
+		m_bMaxineShaderFinish = !m_bVPScaling && oversample == MAXINE_OVERSAMPLE_Off
+			&& (targetWidth > baseTarget.width || targetHeight > baseTarget.height);
 	}
 	else {
 		const int scale = m_iMaxineScale;
@@ -5614,7 +5615,7 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 			}
 		}
 		if (m_bMaxineShaderFinish) {
-			str += std::format(L"\nMaxine finish: {} to player output",
+			str += std::format(L"\nMaxine finish: {} downscale to player output",
 				s_Upscaling11ResIDs[m_iUpscaling].description);
 		}
 		if (m_dwSourceBitRate) {

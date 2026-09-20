@@ -57,19 +57,18 @@ int main()
 	assert((ResolveMaxineMatchOutputBaseSize(
 		{720, 1280}, {608, 1080}, {}, true) == MaxineSpatialSize{608, 1080}));
 
-	// Disabling video-processor resizing leaves a modest final enlargement for
-	// the selected shader without increasing Maxine's output pixel count.
+	// Disabling video-processor resizing gives the selected shader a modest
+	// final downscale without paying for the regular 1.33x oversampling mode.
 	assert((ResolveMaxineShaderFinishSize(
-		{1280, 720}, {1920, 1080}) == MaxineSpatialSize{1728, 972}));
+		{1280, 720}, {1920, 1080}) == MaxineSpatialSize{2112, 1188}));
 	assert((ResolveMaxineShaderFinishSize(
-		{960, 540}, {1920, 1080}) == MaxineSpatialSize{1728, 972}));
+		{960, 540}, {1920, 1080}) == MaxineSpatialSize{2112, 1188}));
 	assert((ResolveMaxineShaderFinishSize(
-		{1280, 720}, {1678, 944}) == MaxineSpatialSize{1510, 850}));
+		{1280, 720}, {1678, 944}) == MaxineSpatialSize{1846, 1038}));
 
-	// A very small enlargement still gives Maxine half of the requested change
-	// and leaves at least one pixel for the final shader pass.
+	// A very small enlargement still gets the same bounded finish ratio.
 	assert((ResolveMaxineShaderFinishSize(
-		{1280, 720}, {1282, 722}) == MaxineSpatialSize{1281, 721}));
+		{1280, 720}, {1282, 722}) == MaxineSpatialSize{1410, 794}));
 
 	// No enlargement means there is no shader-finish target to invent.
 	assert((ResolveMaxineShaderFinishSize(
