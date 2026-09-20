@@ -5623,9 +5623,10 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 				RifeD3DFailureStageName(failureStage), HR2Str(failureHr), HR2Str(removedReason));
 		}
 		str += std::format(
-			L"\nRIFE present : queue {}/peak {}, late {:.2f}/peak {:.2f} ms, render {:.2f}/peak {:.2f} ms, retire {:.2f}/peak {:.2f} ms ({}, busy {})",
+			L"\nRIFE present : queue {}/peak {}, stale-drop {}, late {:.2f}/peak {:.2f} ms, render {:.2f}/peak {:.2f} ms, retire {:.2f}/peak {:.2f} ms ({}, busy {})",
 			m_pFilter->m_FrameInterpolationPresenterDepth.load(std::memory_order_relaxed),
 			m_pFilter->m_FrameInterpolationPresenterMaxDepth.load(std::memory_order_relaxed),
+			m_pFilter->m_FrameInterpolationPresenterStaleDrops.load(std::memory_order_relaxed),
 			m_pFilter->m_FrameInterpolationPresenterLastLateUs.load(std::memory_order_relaxed) / 1000.0,
 			m_pFilter->m_FrameInterpolationPresenterMaxLateUs.load(std::memory_order_relaxed) / 1000.0,
 			m_pFilter->m_FrameInterpolationPresenterLastRenderUs.load(std::memory_order_relaxed) / 1000.0,

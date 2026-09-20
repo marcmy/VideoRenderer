@@ -908,6 +908,7 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 			}
 		}
 		bool rendered = false;
+		bool staleSynthetic = false;
 		const auto renderStart = GetPreciseTick();
 		{
 			// Only serialize with D3D11 work. Never acquire m_InterfaceLock on
@@ -917,16 +918,38 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 					&& !m_bStopFrameInterpolationPresenter.load()
 					&& frame.generation == m_FrameInterpolationPresenterGeneration.load()
 					&& m_VideoProcessor) {
-				const HRESULT hr = m_VideoProcessor->RenderFrameInterpolationSource(
-					frame.sourceSurface, frame.streamTime);
-				rendered = hr == S_OK;
-				if (rendered) {
-					m_bValidBuffer = true;
+				// The renderer lock can be held long enough for more presentation
+				// frames to become due. Replaying an old synthetic frame after that
+				// stall causes a visible catch-up burst (and short-term FPS above the
+				// target). If a newer queued frame is already due, discard only the
+				// obsolete synthetic frame and let the presenter catch up immediately.
+				if (frame.synthetic && frame.clock) {
+					REFERENCE_TIME currentTime = 0;
+					if (SUCCEEDED(frame.clock->GetTime(&currentTime))) {
+						std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
+						if (!m_FrameInterpolationPresenterQueue.empty()) {
+							const auto& next = m_FrameInterpolationPresenterQueue.front();
+							staleSynthetic = next.generation == frame.generation
+								&& next.graphStart + next.streamTime <= currentTime;
+						}
+					}
+				}
+
+				if (!staleSynthetic) {
+					const HRESULT hr = m_VideoProcessor->RenderFrameInterpolationSource(
+						frame.sourceSurface, frame.streamTime);
+					rendered = hr == S_OK;
+					if (rendered) {
+						m_bValidBuffer = true;
+					}
 				}
 			}
 			if (m_VideoProcessor) {
 				m_VideoProcessor->ReleaseFrameInterpolationSource(frame.sourceSurface);
 			}
+		}
+		if (staleSynthetic) {
+			m_FrameInterpolationPresenterStaleDrops.fetch_add(1, std::memory_order_relaxed);
 		}
 		const auto renderTicks = GetPreciseTick() - renderStart;
 		const uint64_t renderUs = static_cast<uint64_t>(renderTicks * 1000000 / GetPreciseTicksPerSecondI());
@@ -938,7 +961,7 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 					observedRenderMax, renderUs, std::memory_order_relaxed)) {
 		}
 
-		if (!rendered && due && !m_bStopFrameInterpolationPresenter.load()) {
+		if (!rendered && !staleSynthetic && due && !m_bStopFrameInterpolationPresenter.load()) {
 			DLog(L"Frame-interpolation source presentation was skipped");
 		}
 	}
