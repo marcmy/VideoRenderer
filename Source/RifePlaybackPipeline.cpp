@@ -704,6 +704,13 @@ struct CRifePlaybackPipeline::Impl
         if (inferenceAsSecond) {
             inputCopyContext->CopyResource(inferenceAsSecond, texture);
         }
+        // CUDA maps the role-specific copies from worker threads shortly after
+        // submission.  The immediate context may otherwise batch these copies
+        // behind later presentation/Maxine work, leaving the CUDA stream idle
+        // for one or more frame intervals before its start event can execute.
+        // Flush only after both private copies are queued so source conversion
+        // and staging are submitted together without adding a blocking wait.
+        inputCopyContext->Flush();
         lastInputCopySubmitUs.store(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - inputCopyStart).count()), std::memory_order_relaxed);
 

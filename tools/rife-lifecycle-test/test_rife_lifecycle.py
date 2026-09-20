@@ -58,6 +58,9 @@ submit = function_body(rife_pipeline, "bool Submit(")
 assert "CopyResource(inferenceAsFirst, texture)" in submit and "CopyResource(inferenceAsSecond, texture)" in submit, (
     "parallel source frames must stage role-specific CUDA input copies immediately after source preparation"
 )
+assert submit.index("inputCopyContext->Flush()") > submit.index("CopyResource(inferenceAsSecond, texture)"), (
+    "role-specific CUDA input copies must be submitted before workers map them for inference"
+)
 assert "frame.inferenceAsFirst = inferenceAsFirst" in submit and "frame.inferenceAsSecond = inferenceAsSecond" in submit, (
     "the role-specific CUDA inputs must follow the source frame through adjacent pair jobs"
 )
