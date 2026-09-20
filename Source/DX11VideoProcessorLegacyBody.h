@@ -33,6 +33,7 @@
 #include "D3DUtil/D3D11Font.h"
 #include "D3DUtil/D3D11Geometry.h"
 #include "VideoProcessor.h"
+#include "RollingTimingWindow.h"
 #include "SubPic/DX11SubPic.h"
 
 #include <array>
@@ -258,6 +259,7 @@ private:
 	std::atomic_uint64_t m_RifePresentationRetireMaxUs = 0;
 	std::atomic_uint64_t m_RifePresentationRetireCount = 0;
 	std::atomic_uint64_t m_RifePresentationRetireBusyChecks = 0;
+	CRollingTimingWindow<256> m_RifePresentationRetireTiming;
 	std::atomic_uint m_RifeD3DFailureStage = RIFE_D3D_FAILURE_NONE;
 	std::atomic_long m_RifeD3DFailureHr = S_OK;
 	std::atomic_long m_RifeDeviceRemovedReason = S_OK;

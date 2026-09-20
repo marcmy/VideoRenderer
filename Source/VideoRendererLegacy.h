@@ -30,6 +30,7 @@
 #include "IVideoRenderer.h"
 #include "DX9VideoProcessor.h"
 #include "DX11VideoProcessor.h"
+#include "RollingTimingWindow.h"
 #include "../Include/ISubRender.h"
 #include "../Include/ISubRender11.h"
 #include "../Include/ID3DFullscreenControl.h"
@@ -156,6 +157,8 @@ private:
 	std::atomic_uint64_t m_FrameInterpolationPresenterMaxLateUs = 0;
 	std::atomic_uint64_t m_FrameInterpolationPresenterLastRenderUs = 0;
 	std::atomic_uint64_t m_FrameInterpolationPresenterMaxRenderUs = 0;
+	CRollingTimingWindow<256> m_FrameInterpolationPresenterLateTiming;
+	CRollingTimingWindow<256> m_FrameInterpolationPresenterRenderTiming;
 
 	void FrameInterpolationPresenter();
 	bool WaitForFrameInterpolationTime(const FrameInterpolationPresentation& frame);

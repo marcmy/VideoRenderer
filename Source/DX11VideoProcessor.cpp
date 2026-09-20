@@ -5607,7 +5607,7 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 				RifeD3DFailureStageName(failureStage), HR2Str(failureHr), HR2Str(removedReason));
 		}
 		str += std::format(
-			L"\nRIFE present : queue {}/max {}, late {:.2f}/max {:.2f} ms, render {:.2f}/max {:.2f} ms, retire {:.2f}/max {:.2f} ms ({}, busy {})",
+			L"\nRIFE present : queue {}/peak {}, late {:.2f}/peak {:.2f} ms, render {:.2f}/peak {:.2f} ms, retire {:.2f}/peak {:.2f} ms ({}, busy {})",
 			m_pFilter->m_FrameInterpolationPresenterDepth.load(std::memory_order_relaxed),
 			m_pFilter->m_FrameInterpolationPresenterMaxDepth.load(std::memory_order_relaxed),
 			m_pFilter->m_FrameInterpolationPresenterLastLateUs.load(std::memory_order_relaxed) / 1000.0,
@@ -5618,6 +5618,18 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 			m_RifePresentationRetireMaxUs.load(std::memory_order_relaxed) / 1000.0,
 			m_RifePresentationRetireCount.load(std::memory_order_relaxed),
 			m_RifePresentationRetireBusyChecks.load(std::memory_order_relaxed));
+		const auto lateRoll = m_pFilter->m_FrameInterpolationPresenterLateTiming.GetSummary();
+		const auto renderRoll = m_pFilter->m_FrameInterpolationPresenterRenderTiming.GetSummary();
+		const auto retireRoll = m_RifePresentationRetireTiming.GetSummary();
+		if (lateRoll.count || renderRoll.count || retireRoll.count) {
+			str += std::format(
+				L"\nRIFE pres roll: late {:.2f} avg/{:.2f} p95 [{:.2f}-{:.2f}] ({}), render {:.2f}/{:.2f} [{:.2f}-{:.2f}] ({})",
+				lateRoll.averageMs, lateRoll.p95Ms, lateRoll.minMs, lateRoll.maxMs, lateRoll.count,
+				renderRoll.averageMs, renderRoll.p95Ms, renderRoll.minMs, renderRoll.maxMs, renderRoll.count);
+			str += std::format(
+				L"\nRIFE retire roll: {:.2f} avg/{:.2f} p95 [{:.2f}-{:.2f}] ms ({})",
+				retireRoll.averageMs, retireRoll.p95Ms, retireRoll.minMs, retireRoll.maxMs, retireRoll.count);
+		}
 	}
 
 	if (m_strCorrection || m_pPostScaleShaders.size() || m_bDitherUsed) {

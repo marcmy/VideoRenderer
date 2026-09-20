@@ -6,6 +6,7 @@
 #include "NvidiaSceneChangeDetector.h"
 #include "RifeFrameInterpolation.h"
 #include "RifeSceneBlender.h"
+#include "RollingTimingWindow.h"
 #include "VideoRenderer.h"
 
 #include <algorithm>
@@ -475,6 +476,12 @@ struct CRifePlaybackPipeline::Impl
     std::atomic_uint64_t lastRuntimeInternalUs = 0;
     std::atomic_uint64_t lastTensorRtSubmitUs = 0;
     std::atomic_bool tensorRtGraphUsed = false;
+    CRollingTimingWindow<256> rollingWallTiming;
+    CRollingTimingWindow<256> rollingInternalTiming;
+    CRollingTimingWindow<256> rollingGpuTiming;
+    CRollingTimingWindow<256> rollingTensorRtTiming;
+    CRollingTimingWindow<256> rollingHandoffStartWaitTiming;
+    CRollingTimingWindow<256> rollingHandoffEndWaitTiming;
     std::atomic_uint64_t presentationSurfaceWaitUs = 0;
     std::atomic_uint64_t presentationSurfaceWaitCount = 0;
     std::atomic_uint64_t presentationSurfaceWaitMaxUs = 0;
@@ -1072,6 +1079,12 @@ struct CRifePlaybackPipeline::Impl
         lastTensorRtSubmitUs.store(MsToUs(stats.tensorRtSubmitMs), std::memory_order_relaxed);
         tensorRtGraphUsed.store(stats.tensorRtGraphUsed != 0, std::memory_order_relaxed);
         lastInferenceUs.store(MsToUs(stats.inferenceMs), std::memory_order_relaxed);
+        rollingWallTiming.AddMicroseconds(runtimeUs);
+        rollingInternalTiming.AddMicroseconds(MsToUs(stats.totalRuntimeMs));
+        rollingGpuTiming.AddMicroseconds(MsToUs(stats.inferenceMs));
+        rollingTensorRtTiming.AddMicroseconds(MsToUs(stats.tensorRtMs));
+        rollingHandoffStartWaitTiming.AddMicroseconds(MsToUs(stats.handoffStartWaitMs));
+        rollingHandoffEndWaitTiming.AddMicroseconds(MsToUs(stats.handoffEndWaitMs));
         return true;
     }
 
@@ -1432,6 +1445,27 @@ struct CRifePlaybackPipeline::Impl
             L"\nRIFE handoff : start-wait {:.2f}, end-wait {:.2f} ms, start-ready {}",
             host.handoffStartWaitMs, host.handoffEndWaitMs,
             host.handoffStartReady ? L"yes" : L"no");
+        const auto wallRoll = rollingWallTiming.GetSummary();
+        const auto internalRoll = rollingInternalTiming.GetSummary();
+        const auto gpuRoll = rollingGpuTiming.GetSummary();
+        const auto trtRoll = rollingTensorRtTiming.GetSummary();
+        const auto startWaitRoll = rollingHandoffStartWaitTiming.GetSummary();
+        const auto endWaitRoll = rollingHandoffEndWaitTiming.GetSummary();
+        if (wallRoll.count) {
+            diagnostics += std::format(
+                L"\nRIFE roll[{}] : wall {:.2f} avg/{:.2f} p95 [{:.2f}-{:.2f}], internal {:.2f}/{:.2f} [{:.2f}-{:.2f}] ms",
+                wallRoll.count,
+                wallRoll.averageMs, wallRoll.p95Ms, wallRoll.minMs, wallRoll.maxMs,
+                internalRoll.averageMs, internalRoll.p95Ms, internalRoll.minMs, internalRoll.maxMs);
+            diagnostics += std::format(
+                L"\nRIFE GPU roll : GPU {:.2f} avg/{:.2f} p95 [{:.2f}-{:.2f}], TRT {:.2f}/{:.2f} [{:.2f}-{:.2f}] ms",
+                gpuRoll.averageMs, gpuRoll.p95Ms, gpuRoll.minMs, gpuRoll.maxMs,
+                trtRoll.averageMs, trtRoll.p95Ms, trtRoll.minMs, trtRoll.maxMs);
+            diagnostics += std::format(
+                L"\nRIFE wait roll: start {:.2f} avg/{:.2f} p95 [{:.2f}-{:.2f}], end {:.2f}/{:.2f} [{:.2f}-{:.2f}] ms",
+                startWaitRoll.averageMs, startWaitRoll.p95Ms, startWaitRoll.minMs, startWaitRoll.maxMs,
+                endWaitRoll.averageMs, endWaitRoll.p95Ms, endWaitRoll.minMs, endWaitRoll.maxMs);
+        }
         const int ruleIndex = activeRule.load(std::memory_order_relaxed);
         if (ruleIndex >= 0) {
             diagnostics += std::format(L"\nRIFE rule    : #{}", ruleIndex + 1);

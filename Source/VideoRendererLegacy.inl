@@ -899,6 +899,7 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 				const uint64_t lateUs = currentTime > targetTime
 					? static_cast<uint64_t>((currentTime - targetTime) / 10) : 0;
 				m_FrameInterpolationPresenterLastLateUs.store(lateUs, std::memory_order_relaxed);
+				m_FrameInterpolationPresenterLateTiming.AddMicroseconds(lateUs);
 				uint64_t observedMax = m_FrameInterpolationPresenterMaxLateUs.load(std::memory_order_relaxed);
 				while (observedMax < lateUs
 						&& !m_FrameInterpolationPresenterMaxLateUs.compare_exchange_weak(
@@ -930,6 +931,7 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 		const auto renderTicks = GetPreciseTick() - renderStart;
 		const uint64_t renderUs = static_cast<uint64_t>(renderTicks * 1000000 / GetPreciseTicksPerSecondI());
 		m_FrameInterpolationPresenterLastRenderUs.store(renderUs, std::memory_order_relaxed);
+		m_FrameInterpolationPresenterRenderTiming.AddMicroseconds(renderUs);
 		uint64_t observedRenderMax = m_FrameInterpolationPresenterMaxRenderUs.load(std::memory_order_relaxed);
 		while (observedRenderMax < renderUs
 				&& !m_FrameInterpolationPresenterMaxRenderUs.compare_exchange_weak(

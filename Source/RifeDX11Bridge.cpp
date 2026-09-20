@@ -116,6 +116,7 @@ bool CDX11VideoProcessor::ReserveRifePresentationSurface(
                     candidate.retireStartTick = 0;
                     m_RifePresentationRetireLastUs.store(elapsedUs, std::memory_order_relaxed);
                     m_RifePresentationRetireCount.fetch_add(1, std::memory_order_relaxed);
+                    m_RifePresentationRetireTiming.AddMicroseconds(elapsedUs);
                     uint64_t observedMax = m_RifePresentationRetireMaxUs.load(std::memory_order_relaxed);
                     while (observedMax < elapsedUs
                             && !m_RifePresentationRetireMaxUs.compare_exchange_weak(
@@ -216,6 +217,7 @@ bool CDX11VideoProcessor::AcquireRifePresentationSurface(
                     candidate.retireStartTick = 0;
                     m_RifePresentationRetireLastUs.store(elapsedUs, std::memory_order_relaxed);
                     m_RifePresentationRetireCount.fetch_add(1, std::memory_order_relaxed);
+                    m_RifePresentationRetireTiming.AddMicroseconds(elapsedUs);
                     uint64_t observedMax = m_RifePresentationRetireMaxUs.load(std::memory_order_relaxed);
                     while (observedMax < elapsedUs
                             && !m_RifePresentationRetireMaxUs.compare_exchange_weak(
