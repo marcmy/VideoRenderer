@@ -486,6 +486,8 @@ struct CRifePlaybackPipeline::Impl
     CRollingTimingWindow<256> rollingTensorRtTiming;
     CRollingTimingWindow<256> rollingHandoffStartWaitTiming;
     CRollingTimingWindow<256> rollingHandoffEndWaitTiming;
+    CRollingTimingWindow<256> rollingHandoffPreMapWaitTiming;
+    CRollingTimingWindow<256> rollingHandoffMapWaitTiming;
     CRollingTimingWindow<256> rollingHandoffStartWaitCopiesReadyTiming;
     CRollingTimingWindow<256> rollingHandoffStartWaitCopiesPendingTiming;
     std::atomic_uint64_t inputCopyReadyChecks = 0;
@@ -1184,6 +1186,8 @@ struct CRifePlaybackPipeline::Impl
         rollingTensorRtTiming.AddMicroseconds(MsToUs(stats.tensorRtMs));
         rollingHandoffStartWaitTiming.AddMicroseconds(MsToUs(stats.handoffStartWaitMs));
         rollingHandoffEndWaitTiming.AddMicroseconds(MsToUs(stats.handoffEndWaitMs));
+        rollingHandoffPreMapWaitTiming.AddMicroseconds(MsToUs(stats.handoffPreMapWaitMs));
+        rollingHandoffMapWaitTiming.AddMicroseconds(MsToUs(stats.handoffMapWaitMs));
         if (copiesReadyAtWorkerStart.has_value()) {
             auto& correlatedTiming = *copiesReadyAtWorkerStart
                 ? rollingHandoffStartWaitCopiesReadyTiming
@@ -1554,8 +1558,10 @@ struct CRifePlaybackPipeline::Impl
             host.writeSyncMs, host.inputReleaseSyncMs, host.handoffSyncMs,
             std::max(0.0, host.totalRuntimeMs - accountedHostMs));
         diagnostics += std::format(
-            L"\nRIFE handoff : start-wait {:.2f}, end-wait {:.2f} ms, start-ready {}",
-            host.handoffStartWaitMs, host.handoffEndWaitMs,
+            L"\nRIFE handoff : start-wait {:.2f} [pre-map {:.2f}, map {:.2f}], end-wait {:.2f} ms, ready pre/start {} / {}",
+            host.handoffStartWaitMs, host.handoffPreMapWaitMs, host.handoffMapWaitMs,
+            host.handoffEndWaitMs,
+            host.handoffPreMapReady ? L"yes" : L"no",
             host.handoffStartReady ? L"yes" : L"no");
         const auto wallRoll = rollingWallTiming.GetSummary();
         const auto internalRoll = rollingInternalTiming.GetSummary();
@@ -1563,6 +1569,8 @@ struct CRifePlaybackPipeline::Impl
         const auto trtRoll = rollingTensorRtTiming.GetSummary();
         const auto startWaitRoll = rollingHandoffStartWaitTiming.GetSummary();
         const auto endWaitRoll = rollingHandoffEndWaitTiming.GetSummary();
+        const auto preMapWaitRoll = rollingHandoffPreMapWaitTiming.GetSummary();
+        const auto mapWaitRoll = rollingHandoffMapWaitTiming.GetSummary();
         const auto readyStartWaitRoll = rollingHandoffStartWaitCopiesReadyTiming.GetSummary();
         const auto pendingStartWaitRoll = rollingHandoffStartWaitCopiesPendingTiming.GetSummary();
         if (wallRoll.count) {
@@ -1579,6 +1587,10 @@ struct CRifePlaybackPipeline::Impl
                 L"\nRIFE wait roll: start {:.2f} avg/{:.2f} p95 [{:.2f}-{:.2f}], end {:.2f}/{:.2f} [{:.2f}-{:.2f}] ms",
                 startWaitRoll.averageMs, startWaitRoll.p95Ms, startWaitRoll.minMs, startWaitRoll.maxMs,
                 endWaitRoll.averageMs, endWaitRoll.p95Ms, endWaitRoll.minMs, endWaitRoll.maxMs);
+            diagnostics += std::format(
+                L"\nRIFE mapsplit : pre-map {:.2f} avg/{:.2f} p95 [{:.2f}-{:.2f}], map {:.2f}/{:.2f} [{:.2f}-{:.2f}] ms",
+                preMapWaitRoll.averageMs, preMapWaitRoll.p95Ms, preMapWaitRoll.minMs, preMapWaitRoll.maxMs,
+                mapWaitRoll.averageMs, mapWaitRoll.p95Ms, mapWaitRoll.minMs, mapWaitRoll.maxMs);
         }
         const auto copyChecks = inputCopyReadyChecks.load(std::memory_order_relaxed);
         const auto copyReady = inputCopyReadyAtWorkerStart.load(std::memory_order_relaxed);

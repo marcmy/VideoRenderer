@@ -228,6 +228,7 @@ struct ContextState {
     cudaStream_t inputReleaseStream = nullptr;
     cudaGraph_t tensorRtGraph = nullptr;
     cudaGraphExec_t tensorRtGraphExec = nullptr;
+    cudaEvent_t preMapEvent = nullptr;
     cudaEvent_t startEvent = nullptr;
     cudaEvent_t packEndEvent = nullptr;
     cudaEvent_t inputReleasedEvent = nullptr;
@@ -250,6 +251,7 @@ struct ContextState {
         if (inputReleasedEvent) cudaEventDestroy(inputReleasedEvent);
         if (packEndEvent) cudaEventDestroy(packEndEvent);
         if (startEvent) cudaEventDestroy(startEvent);
+        if (preMapEvent) cudaEventDestroy(preMapEvent);
         if (inputReleaseStream) cudaStreamDestroy(inputReleaseStream);
         if (stream) cudaStreamDestroy(stream);
     }
@@ -521,6 +523,9 @@ public:
             // concurrently. Keep the CUDA graphics-resource rule intact for any
             // caller that actually reuses an input texture across concurrent
             // requests by claiming only the two resources used by this request.
+            if (cudaEventRecord(state.preMapEvent, state.stream) != cudaSuccess) {
+                return MPCVR_RIFE_CUDA_FAILURE;
+            }
             const auto inputMapStart = Clock::now();
             {
                 D3D11InteropLock interopLock(m_d3dMultithread);
@@ -662,17 +667,34 @@ public:
         // inference worker with the graphics queue and defeats parallel contexts.
         const auto completionStart = Clock::now();
 
-        // GPU event durations start when startEvent actually reaches the
-        // device, so split out any host wait for that point. This makes queued
-        // D3D/CUDA ownership or WDDM scheduling delay visible instead of
-        // folding it into one opaque handoff number.
+        // Split the wait before RIFE begins into two device-visible points:
+        // preMapEvent is queued before cudaGraphicsMapResources(), while
+        // startEvent is queued after the input resources have been mapped.
+        // This distinguishes general CUDA/WDDM stream scheduling delay from
+        // D3D11 -> CUDA ownership acquisition delay.
         const auto startWaitStart = Clock::now();
-        const cudaError_t startQueryResult = cudaEventQuery(state.startEvent);
-        stats.handoffStartReady = startQueryResult == cudaSuccess ? 1u : 0u;
-        cudaError_t startWaitResult = startQueryResult;
-        if (startQueryResult == cudaErrorNotReady) {
+        const cudaError_t initialStartQueryResult = cudaEventQuery(state.startEvent);
+        const cudaError_t preMapQueryResult = cudaEventQuery(state.preMapEvent);
+        stats.handoffStartReady = initialStartQueryResult == cudaSuccess ? 1u : 0u;
+        stats.handoffPreMapReady = preMapQueryResult == cudaSuccess ? 1u : 0u;
+        cudaError_t preMapWaitResult = preMapQueryResult;
+        const auto preMapWaitStart = Clock::now();
+        if (preMapQueryResult == cudaErrorNotReady) {
+            preMapWaitResult = cudaEventSynchronize(state.preMapEvent);
+        }
+        stats.handoffPreMapWaitMs = elapsedMs(preMapWaitStart, Clock::now());
+        if (preMapWaitResult != cudaSuccess) {
+            releaseOutput();
+            finishStream();
+            return MPCVR_RIFE_CUDA_FAILURE;
+        }
+
+        cudaError_t startWaitResult = initialStartQueryResult;
+        const auto mapWaitStart = Clock::now();
+        if (initialStartQueryResult == cudaErrorNotReady) {
             startWaitResult = cudaEventSynchronize(state.startEvent);
         }
+        stats.handoffMapWaitMs = elapsedMs(mapWaitStart, Clock::now());
         stats.handoffStartWaitMs = elapsedMs(startWaitStart, Clock::now());
         if (startWaitResult != cudaSuccess) {
             releaseOutput();
@@ -893,7 +915,8 @@ private:
                 : cudaStreamCreateWithFlags(
                     &state->inputReleaseStream, cudaStreamNonBlocking);
             if (releaseStreamResult != cudaSuccess) return false;
-            if (cudaEventCreate(&state->startEvent) != cudaSuccess
+            if (cudaEventCreate(&state->preMapEvent) != cudaSuccess
+                    || cudaEventCreate(&state->startEvent) != cudaSuccess
                     || cudaEventCreate(&state->packEndEvent) != cudaSuccess
                     || cudaEventCreate(&state->inputReleasedEvent) != cudaSuccess
                     || cudaEventCreate(&state->trtStartEvent) != cudaSuccess

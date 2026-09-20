@@ -97,6 +97,14 @@ struct MpcvrRifeStats {
     double handoffStartWaitMs = 0.0;
     double handoffEndWaitMs = 0.0;
     uint32_t handoffStartReady = 0;
+    // Further diagnostic split of handoffStartWaitMs. preMapWaitMs is the
+    // host wait for an event queued immediately before cudaGraphicsMapResources;
+    // mapWaitMs is the remaining wait until an event queued immediately after
+    // the input resources have been mapped. This distinguishes CUDA/WDDM stream
+    // scheduling delay from D3D11 -> CUDA resource-ownership delay.
+    double handoffPreMapWaitMs = 0.0;
+    double handoffMapWaitMs = 0.0;
+    uint32_t handoffPreMapReady = 0;
 };
 
 using MpcvrRifeGetAbiVersionFn = uint32_t(WINAPI*)();
