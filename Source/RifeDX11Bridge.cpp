@@ -8,52 +8,6 @@
 #include "VideoRenderer.h"
 #include "DX11VideoProcessor.h"
 
-bool CDX11VideoProcessor::ShouldRunMaxineBeforeRife() const
-{
-#ifdef _WIN64
-    // Empirical scheduling policy: High/Ultra VSR are expensive enough that
-    // running Maxine once at source cadence beats applying it to every RIFE
-    // presentation frame. Medium/Low are cheap enough that keeping RIFE at the
-    // original source resolution wins instead.
-    return m_pFilter
-        && m_pFilter->m_Sets.iRifeMode != RIFE_MODE_Disabled
-        && m_iMaxineOperation == MAXINE_OPERATION_Upscale
-        && m_iMaxineQuality >= MAXINE_QUALITY_High
-        && !m_srcAnamorphic
-        && m_iRotation == 0;
-#else
-    return false;
-#endif
-}
-
-CSize CDX11VideoProcessor::GetRifeContentSize()
-{
-    const auto source = ResolveRifeContentSize(m_srcRectWidth, m_srcRectHeight,
-        m_srcAnamorphic, m_srcAspectRatioX, m_srcAspectRatioY, m_iRotation);
-    CSize content(static_cast<int>(source.width), static_cast<int>(source.height));
-
-#ifdef _WIN64
-    if (ShouldRunMaxineBeforeRife()) {
-        CSize targetSize;
-        bool upscaleNeeded = false;
-        if (GetMaxineVSRTargetSizeForInput(m_videoRect, content, true,
-                targetSize, upscaleNeeded)) {
-            return targetSize;
-        }
-    }
-#endif
-    return content;
-}
-
-CSize CDX11VideoProcessor::GetRifeFrameSize()
-{
-    const CSize content = GetRifeContentSize();
-    const auto aligned = AlignRifeSize({
-        static_cast<uint32_t>(std::max<LONG>(0, content.cx)),
-        static_cast<uint32_t>(std::max<LONG>(0, content.cy)) });
-    return CSize(static_cast<int>(aligned.width), static_cast<int>(aligned.height));
-}
-
 bool CDX11VideoProcessor::PrepareRifeSource(
     IMediaSample* pSample,
     ID3D11Texture2D* target,
@@ -104,7 +58,6 @@ bool CDX11VideoProcessor::PrepareRifeSource(
     // statistics are drawn later when the prepared texture is presented.
     const CRect contentRect(0, 0, contentSize.cx, contentSize.cy);
     hr = Process(target, m_srcRect, contentRect, false, true);
-    m_bRifePreMaxineActive = SUCCEEDED(hr) && m_bMaxineVSRUsed;
     if (FAILED(hr)) {
         RecordRifeD3DFailure(RIFE_D3D_FAILURE_PREPARE_PROCESS, hr);
         return false;

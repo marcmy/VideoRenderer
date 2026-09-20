@@ -216,7 +216,6 @@ private:
 	int m_iMaxineAutoBitrate = MAXINE_AUTO_BITRATE_DEF;
 	DWORD m_dwSourceBitRate = 0;
 	bool m_bMaxineVSRUsed = false;
-	bool m_bRifePreMaxineActive = false;
 	CSize m_MaxineVSRSize;
 	int m_iMaxineResolvedMode = -1;
 	bool m_bMaxineOversampleClamped = false;
@@ -452,7 +451,6 @@ private:
 	bool GetMaxineVSRTargetSize(const CRect& dstRect, CSize& targetSize, bool& upscaleNeeded);
 	bool GetMaxineVSRTargetSizeForInput(const CRect& dstRect, const CSize& sourceSize,
 		bool sourceAlreadyOriented, CSize& targetSize, bool& upscaleNeeded);
-	bool ShouldRunMaxineBeforeRife() const;
 	bool ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, const CSize& sourceSize,
 		const CSize& targetSize, bool upscaleNeeded, bool forceInputStaging);
 	unsigned ResolveMaxineUpscaleMode() const;

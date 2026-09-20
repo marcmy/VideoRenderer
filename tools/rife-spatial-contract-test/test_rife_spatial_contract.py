@@ -19,15 +19,15 @@ assert "GetRifeContentSize()" in dx11_header, (
     "RIFE needs a stable source-derived content size separate from the window size"
 )
 
-frame_size_start = rife_bridge.find("CSize CDX11VideoProcessor::GetRifeFrameSize()")
-assert frame_size_start != -1, "GetRifeFrameSize() implementation was not found"
-frame_size_end = rife_bridge.find("\nbool CDX11VideoProcessor::PrepareRifeSource(", frame_size_start)
-assert frame_size_end != -1, "GetRifeFrameSize() implementation end was not found"
-frame_size_block = rife_bridge[frame_size_start:frame_size_end]
+frame_size_start = dx11_header.find("CSize GetRifeFrameSize() const")
+assert frame_size_start != -1, "GetRifeFrameSize() was not found"
+frame_size_end = dx11_header.find("\\\nprivate:", frame_size_start)
+assert frame_size_end != -1, "GetRifeFrameSize() declaration block end was not found"
+frame_size_block = dx11_header[frame_size_start:frame_size_end]
 assert "m_windowRect" not in frame_size_block, (
     "RIFE working dimensions must not change when only the player window changes"
 )
-assert "GetRifeContentSize()" in frame_size_block and "AlignRifeSize" in frame_size_block, (
+assert "ResolveRifeContentSize" in frame_size_block and "AlignRifeSize" in frame_size_block, (
     "RIFE aligned working dimensions must use the tested source-derived spatial policy"
 )
 
@@ -44,13 +44,6 @@ assert "m_videoRect" not in prepare_body, (
 )
 assert "Process(target, m_srcRect, contentRect, false, true)" in prepare_body, (
     "RIFE source preparation must explicitly select the source-sized processing path"
-)
-
-assert "ShouldRunMaxineBeforeRife()" in rife_bridge, (
-    "RIFE/Maxine ordering must use one shared policy for sizing and processing"
-)
-assert "m_iMaxineQuality >= MAXINE_QUALITY_High" in rife_bridge, (
-    "High/Ultra Maxine should run at source cadence while Medium/Low keep source-sized RIFE"
 )
 
 assert "m_TexRifeConvertOutput" in dx11_legacy_header, (
