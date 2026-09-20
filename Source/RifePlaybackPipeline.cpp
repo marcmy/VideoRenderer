@@ -486,6 +486,8 @@ struct CRifePlaybackPipeline::Impl
     CRollingTimingWindow<256> rollingTensorRtTiming;
     CRollingTimingWindow<256> rollingHandoffStartWaitTiming;
     CRollingTimingWindow<256> rollingHandoffEndWaitTiming;
+    CRollingTimingWindow<256> rollingHandoffStartWaitCopiesReadyTiming;
+    CRollingTimingWindow<256> rollingHandoffStartWaitCopiesPendingTiming;
     std::atomic_uint64_t inputCopyReadyChecks = 0;
     std::atomic_uint64_t inputCopyReadyAtWorkerStart = 0;
     std::atomic_uint64_t inputCopyFirstReadyAtWorkerStart = 0;
@@ -517,23 +519,23 @@ struct CRifePlaybackPipeline::Impl
         }
     }
 
-    void ProbeInputCopyQueries(const SourceFrame& first, const SourceFrame& second)
+    std::optional<bool> ProbeInputCopyQueries(const SourceFrame& first, const SourceFrame& second)
     {
         ID3D11Query* firstQuery = first.inputCopyAsFirstReadyQuery;
         ID3D11Query* secondQuery = second.inferenceAsSecond
             ? second.inputCopyAsSecondReadyQuery.p : second.inputCopyAsFirstReadyQuery.p;
         if (!firstQuery || !secondQuery || !second.processor) {
-            return;
+            return std::nullopt;
         }
 
         ID3D11Device* device = second.processor->GetRifeDevice();
         if (!device) {
-            return;
+            return std::nullopt;
         }
         CComPtr<ID3D11DeviceContext> context;
         device->GetImmediateContext(&context);
         if (!context) {
-            return;
+            return std::nullopt;
         }
 
         const auto queryReady = [&](ID3D11Query* query, const UINT flags) -> HRESULT {
@@ -556,6 +558,7 @@ struct CRifePlaybackPipeline::Impl
         if (firstReady && secondReady) {
             inputCopyReadyAtWorkerStart.fetch_add(1, std::memory_order_relaxed);
         }
+        return firstReady && secondReady;
     }
 
     void RecordPresentationSurfaceWait(const std::chrono::steady_clock::time_point start)
@@ -1123,7 +1126,8 @@ struct CRifePlaybackPipeline::Impl
         ID3D11Texture2D* first,
         ID3D11Texture2D* second,
         float timestep,
-        ID3D11Texture2D* output)
+        ID3D11Texture2D* output,
+        const std::optional<bool> copiesReadyAtWorkerStart)
     {
         if (!runtime || !first || !second || !output) {
             return false;
@@ -1180,6 +1184,12 @@ struct CRifePlaybackPipeline::Impl
         rollingTensorRtTiming.AddMicroseconds(MsToUs(stats.tensorRtMs));
         rollingHandoffStartWaitTiming.AddMicroseconds(MsToUs(stats.handoffStartWaitMs));
         rollingHandoffEndWaitTiming.AddMicroseconds(MsToUs(stats.handoffEndWaitMs));
+        if (copiesReadyAtWorkerStart.has_value()) {
+            auto& correlatedTiming = *copiesReadyAtWorkerStart
+                ? rollingHandoffStartWaitCopiesReadyTiming
+                : rollingHandoffStartWaitCopiesPendingTiming;
+            correlatedTiming.AddMicroseconds(MsToUs(stats.handoffStartWaitMs));
+        }
         return true;
     }
 
@@ -1249,7 +1259,7 @@ struct CRifePlaybackPipeline::Impl
         // runtime maps these staged inputs. Keep the D3D11 event queries as a
         // readiness probe only; blocking here serializes the CPU before CUDA
         // work has even been queued and duplicates part of the interop wait.
-        ProbeInputCopyQueries(first, second);
+        const auto copiesReadyAtWorkerStart = ProbeInputCopyQueries(first, second);
 
         bool hasTimelySyntheticTarget = false;
         for (const auto& target : job.targets) {
@@ -1329,7 +1339,8 @@ struct CRifePlaybackPipeline::Impl
 
             const bool generatedOk = GenerateRife(job.runtime, job.contextIndex,
                 firstInference, secondInference,
-                static_cast<float>(target.timestep), generated);
+                static_cast<float>(target.timestep), generated,
+                copiesReadyAtWorkerStart);
             // GenerateRife() first retires any deferred input release left by
             // the previous request on this same context. Only now is it safe to
             // let those old source-pool slots go; retain this pair until the
@@ -1552,6 +1563,8 @@ struct CRifePlaybackPipeline::Impl
         const auto trtRoll = rollingTensorRtTiming.GetSummary();
         const auto startWaitRoll = rollingHandoffStartWaitTiming.GetSummary();
         const auto endWaitRoll = rollingHandoffEndWaitTiming.GetSummary();
+        const auto readyStartWaitRoll = rollingHandoffStartWaitCopiesReadyTiming.GetSummary();
+        const auto pendingStartWaitRoll = rollingHandoffStartWaitCopiesPendingTiming.GetSummary();
         if (wallRoll.count) {
             diagnostics += std::format(
                 L"\nRIFE roll[{}] : wall {:.2f} avg/{:.2f} p95 [{:.2f}-{:.2f}], internal {:.2f}/{:.2f} [{:.2f}-{:.2f}] ms",
@@ -1579,6 +1592,12 @@ struct CRifePlaybackPipeline::Impl
                 copyChecks ? 100.0 * secondCopyReady / copyChecks : 0.0,
                 lastInputCopyFirstReady.load(std::memory_order_relaxed) ? L"ready" : L"pending",
                 lastInputCopySecondReady.load(std::memory_order_relaxed) ? L"ready" : L"pending");
+        }
+        if (readyStartWaitRoll.count || pendingStartWaitRoll.count) {
+            diagnostics += std::format(
+                L"\nRIFE copycorr: start wait when copies ready {:.2f} avg/{:.2f} p95 ({}), pending {:.2f}/{:.2f} ({}) ms",
+                readyStartWaitRoll.averageMs, readyStartWaitRoll.p95Ms, readyStartWaitRoll.count,
+                pendingStartWaitRoll.averageMs, pendingStartWaitRoll.p95Ms, pendingStartWaitRoll.count);
         }
         const int ruleIndex = activeRule.load(std::memory_order_relaxed);
         if (ruleIndex >= 0) {
