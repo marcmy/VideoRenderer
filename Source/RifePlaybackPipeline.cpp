@@ -33,6 +33,7 @@ constexpr REFERENCE_TIME kLateTolerance = 10'000; // 1 ms in DirectShow ticks.
 constexpr ULONGLONG kPresentationCapacityWaitMs = 100;
 constexpr size_t kRuntimeCacheSize = 4;
 constexpr ULONGLONG kRuntimeRetryDelayMs = 2'000;
+constexpr auto kInputCopyQueryTimeout = std::chrono::milliseconds(250);
 
 FrameInterpolationRateMode ToSchedulerMode(const int mode)
 {
@@ -286,6 +287,7 @@ struct CRifePlaybackPipeline::Impl
         CComPtr<ID3D11Texture2D> texture;
         CComPtr<ID3D11Texture2D> inferenceAsFirst;
         CComPtr<ID3D11Texture2D> inferenceAsSecond;
+        CComPtr<ID3D11Query> inputCopyReadyQuery;
         bool inUse = false;
     };
 
@@ -294,6 +296,7 @@ struct CRifePlaybackPipeline::Impl
         CComPtr<ID3D11Texture2D> texture;
         CComPtr<ID3D11Texture2D> inferenceAsFirst;
         CComPtr<ID3D11Texture2D> inferenceAsSecond;
+        CComPtr<ID3D11Query> inputCopyReadyQuery;
         CDX11VideoProcessor* processor = nullptr;
         REFERENCE_TIME time = INVALID_TIME;
         REFERENCE_TIME frameDuration = 0;
@@ -482,6 +485,13 @@ struct CRifePlaybackPipeline::Impl
     CRollingTimingWindow<256> rollingTensorRtTiming;
     CRollingTimingWindow<256> rollingHandoffStartWaitTiming;
     CRollingTimingWindow<256> rollingHandoffEndWaitTiming;
+    CRollingTimingWindow<256> rollingInputCopyReadyWaitTiming;
+    std::atomic_uint64_t inputCopyReadyChecks = 0;
+    std::atomic_uint64_t inputCopyReadyAtWorkerStart = 0;
+    std::atomic_uint64_t inputCopyReadyTimeouts = 0;
+    std::atomic_bool lastInputCopyFirstReady = false;
+    std::atomic_bool lastInputCopySecondReady = false;
+    std::atomic_uint64_t lastInputCopyReadyWaitUs = 0;
     std::atomic_uint64_t presentationSurfaceWaitUs = 0;
     std::atomic_uint64_t presentationSurfaceWaitCount = 0;
     std::atomic_uint64_t presentationSurfaceWaitMaxUs = 0;
@@ -505,6 +515,67 @@ struct CRifePlaybackPipeline::Impl
         while (observed < value
                 && !target.compare_exchange_weak(observed, value, std::memory_order_relaxed)) {
         }
+    }
+
+    bool WaitForInputCopyQueries(const SourceFrame& first, const SourceFrame& second)
+    {
+        if (!first.inputCopyReadyQuery || !second.inputCopyReadyQuery || !second.processor) {
+            return true;
+        }
+
+        ID3D11Device* device = second.processor->GetRifeDevice();
+        if (!device) {
+            return true;
+        }
+        CComPtr<ID3D11DeviceContext> context;
+        device->GetImmediateContext(&context);
+        if (!context) {
+            return true;
+        }
+
+        const auto queryReady = [&](ID3D11Query* query, const UINT flags) -> HRESULT {
+            BOOL complete = FALSE;
+            const HRESULT hr = context->GetData(query, &complete, sizeof(complete), flags);
+            return hr == S_OK && complete ? S_OK : hr == S_OK ? S_FALSE : hr;
+        };
+
+        const bool firstReady = queryReady(first.inputCopyReadyQuery, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+        const bool secondReady = queryReady(second.inputCopyReadyQuery, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+        lastInputCopyFirstReady.store(firstReady, std::memory_order_relaxed);
+        lastInputCopySecondReady.store(secondReady, std::memory_order_relaxed);
+        inputCopyReadyChecks.fetch_add(1, std::memory_order_relaxed);
+        if (firstReady && secondReady) {
+            inputCopyReadyAtWorkerStart.fetch_add(1, std::memory_order_relaxed);
+            lastInputCopyReadyWaitUs.store(0, std::memory_order_relaxed);
+            rollingInputCopyReadyWaitTiming.AddMicroseconds(0);
+            return true;
+        }
+
+        const auto waitStart = std::chrono::steady_clock::now();
+        bool timedOut = false;
+        for (ID3D11Query* query : { first.inputCopyReadyQuery.p, second.inputCopyReadyQuery.p }) {
+            if (!query) continue;
+            for (;;) {
+                const HRESULT hr = queryReady(query, 0);
+                if (hr == S_OK) break;
+                if (FAILED(hr)) return false;
+                if (std::chrono::steady_clock::now() - waitStart >= kInputCopyQueryTimeout) {
+                    timedOut = true;
+                    break;
+                }
+                Sleep(0);
+            }
+            if (timedOut) break;
+        }
+
+        const auto waitUs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - waitStart).count());
+        lastInputCopyReadyWaitUs.store(waitUs, std::memory_order_relaxed);
+        rollingInputCopyReadyWaitTiming.AddMicroseconds(waitUs);
+        if (timedOut) {
+            inputCopyReadyTimeouts.fetch_add(1, std::memory_order_relaxed);
+        }
+        return true;
     }
 
     void RecordPresentationSurfaceWait(const std::chrono::steady_clock::time_point start)
@@ -551,14 +622,17 @@ struct CRifePlaybackPipeline::Impl
 
     bool AcquireSourceSlot(ID3D11Device* device, UINT width, UINT height, bool parallelInputs,
         size_t& index, ID3D11Texture2D** texture,
-        ID3D11Texture2D** inferenceAsFirst, ID3D11Texture2D** inferenceAsSecond)
+        ID3D11Texture2D** inferenceAsFirst, ID3D11Texture2D** inferenceAsSecond,
+        ID3D11Query** inputCopyReadyQuery)
     {
         index = SIZE_MAX;
-        if (!device || !width || !height || !texture || !inferenceAsFirst || !inferenceAsSecond) {
+        if (!device || !width || !height || !texture || !inferenceAsFirst || !inferenceAsSecond
+                || !inputCopyReadyQuery) {
             return false;
         }
         *inferenceAsFirst = nullptr;
         *inferenceAsSecond = nullptr;
+        *inputCopyReadyQuery = nullptr;
 
         std::lock_guard lock(mutex);
         for (size_t i = 0; i < sourcePool.size(); ++i) {
@@ -568,6 +642,7 @@ struct CRifePlaybackPipeline::Impl
             }
             if (!SameTextureShape(slot.texture, device, width, height)) {
                 slot.texture.Release();
+                slot.inputCopyReadyQuery.Release();
                 if (FAILED(CreateBgraTexture(device, width, height, &slot.texture))) {
                     continue;
                 }
@@ -588,6 +663,13 @@ struct CRifePlaybackPipeline::Impl
             } else {
                 slot.inferenceAsSecond.Release();
             }
+            if (!slot.inputCopyReadyQuery) {
+                D3D11_QUERY_DESC queryDesc = {};
+                queryDesc.Query = D3D11_QUERY_EVENT;
+                if (FAILED(device->CreateQuery(&queryDesc, &slot.inputCopyReadyQuery))) {
+                    slot.inputCopyReadyQuery.Release();
+                }
+            }
             slot.inUse = true;
             index = i;
             *texture = slot.texture;
@@ -597,6 +679,10 @@ struct CRifePlaybackPipeline::Impl
             if (slot.inferenceAsSecond) {
                 *inferenceAsSecond = slot.inferenceAsSecond;
                 (*inferenceAsSecond)->AddRef();
+            }
+            if (slot.inputCopyReadyQuery) {
+                *inputCopyReadyQuery = slot.inputCopyReadyQuery;
+                (*inputCopyReadyQuery)->AddRef();
             }
             return true;
         }
@@ -679,8 +765,10 @@ struct CRifePlaybackPipeline::Impl
         CComPtr<ID3D11Texture2D> texture;
         CComPtr<ID3D11Texture2D> inferenceAsFirst;
         CComPtr<ID3D11Texture2D> inferenceAsSecond;
+        CComPtr<ID3D11Query> inputCopyReadyQuery;
         if (!AcquireSourceSlot(device, static_cast<UINT>(size.cx), static_cast<UINT>(size.cy),
-                inferenceContextCount > 1, slot, &texture, &inferenceAsFirst, &inferenceAsSecond)) {
+                inferenceContextCount > 1, slot, &texture, &inferenceAsFirst, &inferenceAsSecond,
+                &inputCopyReadyQuery)) {
             return false;
         }
 
@@ -711,6 +799,9 @@ struct CRifePlaybackPipeline::Impl
         if (inferenceAsSecond) {
             inputCopyContext->CopyResource(inferenceAsSecond, texture);
         }
+        if (inputCopyReadyQuery) {
+            inputCopyContext->End(inputCopyReadyQuery);
+        }
         lastInputCopySubmitUs.store(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - inputCopyStart).count()), std::memory_order_relaxed);
 
@@ -719,6 +810,7 @@ struct CRifePlaybackPipeline::Impl
         frame.texture = texture;
         frame.inferenceAsFirst = inferenceAsFirst;
         frame.inferenceAsSecond = inferenceAsSecond;
+        frame.inputCopyReadyQuery = inputCopyReadyQuery;
         frame.processor = processor;
         frame.time = sourceTime;
         frame.frameDuration = frameDuration;
@@ -1150,6 +1242,19 @@ struct CRifePlaybackPipeline::Impl
             return;
         }
 
+        if (!WaitForInputCopyQueries(first, second)) {
+            for (const auto& target : job.targets) {
+                TargetResult result;
+                result.target = target;
+                result.inferenceFailed = !target.exactSource;
+                if (result.inferenceFailed) {
+                    inferenceFallbackFrames.fetch_add(1, std::memory_order_relaxed);
+                }
+                job.results.push_back(std::move(result));
+            }
+            return;
+        }
+
         bool hasTimelySyntheticTarget = false;
         for (const auto& target : job.targets) {
             if (!target.exactSource && !IsLate(second, target.presentationTime)) {
@@ -1451,6 +1556,7 @@ struct CRifePlaybackPipeline::Impl
         const auto trtRoll = rollingTensorRtTiming.GetSummary();
         const auto startWaitRoll = rollingHandoffStartWaitTiming.GetSummary();
         const auto endWaitRoll = rollingHandoffEndWaitTiming.GetSummary();
+        const auto copyReadyRoll = rollingInputCopyReadyWaitTiming.GetSummary();
         if (wallRoll.count) {
             diagnostics += std::format(
                 L"\nRIFE roll[{}] : wall {:.2f} avg/{:.2f} p95 [{:.2f}-{:.2f}], internal {:.2f}/{:.2f} [{:.2f}-{:.2f}] ms",
@@ -1465,6 +1571,18 @@ struct CRifePlaybackPipeline::Impl
                 L"\nRIFE wait roll: start {:.2f} avg/{:.2f} p95 [{:.2f}-{:.2f}], end {:.2f}/{:.2f} [{:.2f}-{:.2f}] ms",
                 startWaitRoll.averageMs, startWaitRoll.p95Ms, startWaitRoll.minMs, startWaitRoll.maxMs,
                 endWaitRoll.averageMs, endWaitRoll.p95Ms, endWaitRoll.minMs, endWaitRoll.maxMs);
+        }
+        const auto copyChecks = inputCopyReadyChecks.load(std::memory_order_relaxed);
+        const auto copyReady = inputCopyReadyAtWorkerStart.load(std::memory_order_relaxed);
+        if (copyReadyRoll.count) {
+            diagnostics += std::format(
+                L"\nRIFE copyq   : last {:.2f} ms, wait {:.2f} avg/{:.2f} p95 [{:.2f}-{:.2f}], initial {}/{} ({:.1f}%), last first {} second {}, timeout {}",
+                lastInputCopyReadyWaitUs.load(std::memory_order_relaxed) / 1000.0,
+                copyReadyRoll.averageMs, copyReadyRoll.p95Ms, copyReadyRoll.minMs, copyReadyRoll.maxMs,
+                copyReady, copyChecks, copyChecks ? 100.0 * copyReady / copyChecks : 0.0,
+                lastInputCopyFirstReady.load(std::memory_order_relaxed) ? L"ready" : L"pending",
+                lastInputCopySecondReady.load(std::memory_order_relaxed) ? L"ready" : L"pending",
+                inputCopyReadyTimeouts.load(std::memory_order_relaxed));
         }
         const int ruleIndex = activeRule.load(std::memory_order_relaxed);
         if (ruleIndex >= 0) {
