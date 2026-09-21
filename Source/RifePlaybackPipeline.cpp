@@ -320,6 +320,7 @@ struct CRifePlaybackPipeline::Impl
         CComPtr<ID3D11Texture2D> generated;
         bool inferenceFailed = false;
         bool skippedLate = false;
+        bool sceneCut = false;
     };
 
     struct PairJob {
@@ -330,9 +331,12 @@ struct CRifePlaybackPipeline::Impl
         std::shared_ptr<CRifeFrameInterpolation> runtime;
         std::vector<FrameInterpolationTarget> targets;
         std::vector<TargetResult> results;
+        std::atomic_size_t readyResults = 0;
+        size_t presentedResults = 0;
+        bool queuedOutput = false;
+        bool presentationFinalized = false;
         UINT width = 0;
         UINT height = 0;
-        bool sceneCut = false;
         std::atomic_bool done = false;
     };
 
@@ -1264,6 +1268,16 @@ struct CRifePlaybackPipeline::Impl
         }
     }
 
+    void PublishTargetResult(PairJob& job, const size_t index, TargetResult&& result)
+    {
+        if (index >= job.results.size()) {
+            return;
+        }
+        job.results[index] = std::move(result);
+        job.readyResults.store(index + 1, std::memory_order_release);
+        cv.notify_all();
+    }
+
     void ProcessPairJob(InferenceWorkerState& workerState, PairJob& job)
     {
         if (!job.first || !job.second || !job.runtime || !IsCurrent(*job.second)) {
@@ -1278,14 +1292,15 @@ struct CRifePlaybackPipeline::Impl
         if (workerState.retainedInputRuntime
                 && workerState.retainedInputRuntime != job.runtime
                 && !DrainRetainedInputs(workerState)) {
-            for (const auto& target : job.targets) {
+            for (size_t i = 0; i < job.targets.size(); ++i) {
+                const auto& target = job.targets[i];
                 TargetResult result;
                 result.target = target;
                 result.inferenceFailed = !target.exactSource;
                 if (result.inferenceFailed) {
                     inferenceFallbackFrames.fetch_add(1, std::memory_order_relaxed);
                 }
-                job.results.push_back(std::move(result));
+                PublishTargetResult(job, i, std::move(result));
             }
             return;
         }
@@ -1293,14 +1308,15 @@ struct CRifePlaybackPipeline::Impl
         ID3D11Texture2D* secondInference = second.inferenceAsSecond
             ? second.inferenceAsSecond.p : second.inferenceAsFirst.p;
         if (!firstInference || !secondInference) {
-            for (const auto& target : job.targets) {
+            for (size_t i = 0; i < job.targets.size(); ++i) {
+                const auto& target = job.targets[i];
                 TargetResult result;
                 result.target = target;
                 result.inferenceFailed = !target.exactSource;
                 if (result.inferenceFailed) {
                     inferenceFallbackFrames.fetch_add(1, std::memory_order_relaxed);
                 }
-                job.results.push_back(std::move(result));
+                PublishTargetResult(job, i, std::move(result));
             }
             return;
         }
@@ -1337,24 +1353,25 @@ struct CRifePlaybackPipeline::Impl
             advancedDeferredInputs = true;
         };
 
-        job.results.reserve(job.targets.size());
         size_t outputIndex = 0;
-        for (const auto& target : job.targets) {
+        for (size_t targetIndex = 0; targetIndex < job.targets.size(); ++targetIndex) {
+            const auto& target = job.targets[targetIndex];
             TargetResult result;
             result.target = target;
+            result.sceneCut = sceneCut;
 
             if (target.exactSource) {
-                job.results.push_back(std::move(result));
+                PublishTargetResult(job, targetIndex, std::move(result));
                 continue;
             }
             if (!IsCurrent(second) || IsLate(second, target.presentationTime)) {
                 result.skippedLate = true;
                 lateSyntheticDrops.fetch_add(1, std::memory_order_relaxed);
-                job.results.push_back(std::move(result));
+                PublishTargetResult(job, targetIndex, std::move(result));
                 continue;
             }
             if (sceneDecisionReady && sceneCut) {
-                job.results.push_back(std::move(result));
+                PublishTargetResult(job, targetIndex, std::move(result));
                 continue;
             }
 
@@ -1363,7 +1380,7 @@ struct CRifePlaybackPipeline::Impl
             if (!generated) {
                 result.inferenceFailed = true;
                 inferenceFallbackFrames.fetch_add(1, std::memory_order_relaxed);
-                job.results.push_back(std::move(result));
+                PublishTargetResult(job, targetIndex, std::move(result));
                 continue;
             }
 
@@ -1399,7 +1416,8 @@ struct CRifePlaybackPipeline::Impl
                     sceneCut = DetectImageSceneCut(workerState.imageDetector, first, second, true);
                     sceneDecisionReady = true;
                     if (sceneCut) {
-                        job.results.push_back(std::move(result));
+                        result.sceneCut = true;
+                        PublishTargetResult(job, targetIndex, std::move(result));
                         continue;
                     }
                 }
@@ -1435,7 +1453,8 @@ struct CRifePlaybackPipeline::Impl
                 nvofLock.unlock();
                 sceneDecisionReady = true;
                 if (sceneCut) {
-                    job.results.push_back(std::move(result));
+                    result.sceneCut = true;
+                    PublishTargetResult(job, targetIndex, std::move(result));
                     continue;
                 }
             } else if (!sceneDecisionReady) {
@@ -1474,7 +1493,8 @@ struct CRifePlaybackPipeline::Impl
                 nvofLock.unlock();
                 sceneDecisionReady = true;
                 if (sceneCut) {
-                    job.results.push_back(std::move(result));
+                    result.sceneCut = true;
+                    PublishTargetResult(job, targetIndex, std::move(result));
                     continue;
                 }
             }
@@ -1485,9 +1505,8 @@ struct CRifePlaybackPipeline::Impl
                 result.inferenceFailed = true;
                 inferenceFallbackFrames.fetch_add(1, std::memory_order_relaxed);
             }
-            job.results.push_back(std::move(result));
+            PublishTargetResult(job, targetIndex, std::move(result));
         }
-        job.sceneCut = sceneCut;
     }
 
     void InferenceWorkerMain(InferenceWorkerState* state)
@@ -1507,6 +1526,17 @@ struct CRifePlaybackPipeline::Impl
             }
             if (job) {
                 ProcessPairJob(*state, *job);
+                const size_t published = std::min(
+                    job->readyResults.load(std::memory_order_acquire), job->results.size());
+                for (size_t i = published; i < job->results.size(); ++i) {
+                    TargetResult result;
+                    result.target = job->targets[i];
+                    result.inferenceFailed = !result.target.exactSource;
+                    if (result.inferenceFailed && job->second && IsCurrent(*job->second)) {
+                        inferenceFallbackFrames.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    PublishTargetResult(*job, i, std::move(result));
+                }
                 job->done.store(true, std::memory_order_release);
                 cv.notify_all();
             }
@@ -1536,7 +1566,7 @@ struct CRifePlaybackPipeline::Impl
         auto& first = *job.first;
         auto& second = *job.second;
         ID3D11Device* device = second.processor ? second.processor->GetRifeDevice() : nullptr;
-        bool queuedOutput = false;
+        bool progressed = false;
 
         const auto queueSceneCutTarget = [&](const FrameInterpolationTarget& target) {
             if (second.settings.iRifeSceneProcessing == RIFE_SCENE_PROCESS_Blend
@@ -1555,38 +1585,50 @@ struct CRifePlaybackPipeline::Impl
             return QueueTexture(second, repeated, target.presentationTime, true);
         };
 
-        for (auto& result : job.results) {
+        const size_t readyResults = std::min(
+            job.readyResults.load(std::memory_order_acquire), job.results.size());
+        while (job.presentedResults < readyResults) {
+            auto& result = job.results[job.presentedResults++];
+            progressed = true;
             const auto& target = result.target;
             if (!IsCurrent(second)) {
-                return queuedOutput;
+                return progressed;
             }
             if (target.exactSource) {
-                queuedOutput |= QueueTexture(second, second.texture, target.presentationTime, false);
+                job.queuedOutput |= QueueTexture(second, second.texture, target.presentationTime, false);
                 continue;
             }
             if (result.skippedLate) {
                 continue;
             }
-            if (job.sceneCut) {
-                queuedOutput |= queueSceneCutTarget(target);
+            if (result.sceneCut) {
+                job.queuedOutput |= queueSceneCutTarget(target);
                 continue;
             }
             if (result.generated) {
                 generatedFrames.fetch_add(1, std::memory_order_relaxed);
-                queuedOutput |= QueueTexture(
+                job.queuedOutput |= QueueTexture(
                     second, result.generated, target.presentationTime, true, false);
             } else {
                 ID3D11Texture2D* fallback = target.timestep < 0.5
                     ? first.texture.p : second.texture.p;
-                queuedOutput |= QueueTexture(second, fallback, target.presentationTime, true);
+                job.queuedOutput |= QueueTexture(second, fallback, target.presentationTime, true);
             }
         }
-        if (!job.targets.empty() && !queuedOutput && IsCurrent(second)) {
+
+        if (job.done.load(std::memory_order_acquire)
+                && job.presentedResults >= job.results.size()
+                && !job.presentationFinalized) {
+            job.presentationFinalized = true;
+            progressed = true;
+        }
+        if (job.presentationFinalized && !job.targets.empty() && !job.queuedOutput && IsCurrent(second)) {
             if (QueueTexture(second, second.texture, second.time, false)) {
                 sourceContinuityFrames.fetch_add(1, std::memory_order_relaxed);
+                job.queuedOutput = true;
             }
         }
-        return queuedOutput;
+        return progressed;
     }
 
     std::wstring Diagnostics() const
@@ -1777,33 +1819,46 @@ struct CRifePlaybackPipeline::Impl
         uint64_t nextSequence = 1;
         uint32_t nextWorker = 0;
 
-        const auto presentCompletedFront = [&]() -> bool {
-            if (pendingPairs.empty()
-                    || !pendingPairs.front()->done.load(std::memory_order_acquire)) {
+        const auto presentReadyFront = [&]() -> bool {
+            if (pendingPairs.empty()) {
                 return false;
             }
-            auto job = std::move(pendingPairs.front());
-            pendingPairs.pop_front();
+            auto job = pendingPairs.front();
+            const size_t presentedBefore = job ? job->presentedResults : 0;
             if (!stop.load(std::memory_order_acquire) && job && job->second && IsCurrent(*job->second)) {
                 PresentPairJob(*job);
+            } else if (job) {
+                job->presentedResults = job->done.load(std::memory_order_acquire)
+                    ? job->results.size()
+                    : std::min(job->readyResults.load(std::memory_order_acquire), job->results.size());
             }
-            return true;
+            const bool complete = job && job->done.load(std::memory_order_acquire)
+                && job->presentedResults >= job->results.size();
+            if (complete) {
+                pendingPairs.pop_front();
+            }
+            return complete || (job && job->presentedResults != presentedBefore);
         };
 
         const auto waitForFront = [&](const bool present) {
             if (pendingPairs.empty()) return;
             auto job = pendingPairs.front();
-            {
+            while (!job->done.load(std::memory_order_acquire)) {
+                if (present && !stop.load(std::memory_order_acquire)
+                        && job->second && IsCurrent(*job->second)) {
+                    PresentPairJob(*job);
+                }
                 std::unique_lock lock(mutex);
                 cv.wait(lock, [&] {
-                    return job->done.load(std::memory_order_acquire);
+                    return job->done.load(std::memory_order_acquire)
+                        || job->readyResults.load(std::memory_order_acquire) > job->presentedResults;
                 });
             }
-            pendingPairs.pop_front();
             if (present && !stop.load(std::memory_order_acquire)
                     && job->second && IsCurrent(*job->second)) {
                 PresentPairJob(*job);
             }
+            pendingPairs.pop_front();
         };
 
         const auto drainPending = [&](const bool present) {
@@ -1813,7 +1868,7 @@ struct CRifePlaybackPipeline::Impl
         };
 
         while (!stop.load(std::memory_order_acquire)) {
-            while (presentCompletedFront()) {
+            while (presentReadyFront()) {
             }
 
             const uint64_t currentSerial = resetSerial.load(std::memory_order_acquire);
@@ -1840,7 +1895,9 @@ struct CRifePlaybackPipeline::Impl
                     return stop.load(std::memory_order_acquire)
                         || resetSerial.load(std::memory_order_acquire) != activeSerial
                         || (!pendingPairs.empty()
-                            && pendingPairs.front()->done.load(std::memory_order_acquire))
+                            && (pendingPairs.front()->done.load(std::memory_order_acquire)
+                                || pendingPairs.front()->readyResults.load(std::memory_order_acquire)
+                                    > pendingPairs.front()->presentedResults))
                         || (canConsumeSource && !queue.empty());
                 });
                 if (stop.load(std::memory_order_acquire)) {
@@ -1848,7 +1905,9 @@ struct CRifePlaybackPipeline::Impl
                 }
                 if (resetSerial.load(std::memory_order_acquire) != activeSerial
                         || (!pendingPairs.empty()
-                            && pendingPairs.front()->done.load(std::memory_order_acquire))) {
+                            && (pendingPairs.front()->done.load(std::memory_order_acquire)
+                                || pendingPairs.front()->readyResults.load(std::memory_order_acquire)
+                                    > pendingPairs.front()->presentedResults))) {
                     continue;
                 }
                 if (canConsumeSource && !queue.empty()) {
@@ -1952,6 +2011,7 @@ struct CRifePlaybackPipeline::Impl
             job->second = currentFrame;
             job->runtime = std::move(runtime);
             job->targets = targets;
+            job->results.resize(targets.size());
             job->width = desc.Width;
             job->height = desc.Height;
             pendingPairs.push_back(job);

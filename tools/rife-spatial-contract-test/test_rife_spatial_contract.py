@@ -155,6 +155,21 @@ assert "frame.presenterGeneration" in queue_texture_body and "QueueFrameInterpol
     "RIFE worker must carry its original presenter generation through final queue insertion"
 )
 
+process_pair_start = rife_pipeline.find("void ProcessPairJob(")
+assert process_pair_start != -1, "RIFE ProcessPairJob() was not found"
+process_pair_end = rife_pipeline.find("\n    void InferenceWorkerMain", process_pair_start)
+assert process_pair_end != -1, "RIFE ProcessPairJob() end was not found"
+process_pair_body = rife_pipeline[process_pair_start:process_pair_end]
+assert "PublishTargetResult" in process_pair_body and "job.results.push_back" not in process_pair_body, (
+    "RIFE targets must be published as each inference finishes instead of batching a whole source pair"
+)
+worker_main_start = rife_pipeline.find("void WorkerMain()")
+assert worker_main_start != -1, "RIFE WorkerMain() was not found"
+worker_main_body = rife_pipeline[worker_main_start:]
+assert "presentReadyFront" in worker_main_body and "readyResults.load" in worker_main_body, (
+    "RIFE presentation must consume completed targets incrementally while preserving pair order"
+)
+
 queue_source_start = renderer_legacy.find("bool CMpcVideoRenderer::QueueFrameInterpolationSource(")
 assert queue_source_start != -1, "QueueFrameInterpolationSource() was not found"
 queue_source_end = renderer_legacy.find("\nbool CMpcVideoRenderer::ReclaimFrameInterpolationPresentationSource", queue_source_start)
