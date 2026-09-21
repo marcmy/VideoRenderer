@@ -3289,10 +3289,10 @@ HRESULT CDX11VideoProcessor::Render(int field, const REFERENCE_TIME frameStartTi
 							m_lastHdr10.hdr10.MaxMasteringLuminance = m_DoviMaxMasteringLuminance ? m_DoviMaxMasteringLuminance : 1000; // 1000 nits
 							m_lastHdr10.hdr10.MinMasteringLuminance = m_DoviMinMasteringLuminance ? m_DoviMinMasteringLuminance : 50;   // 0.005 nits
 							if (m_DoviMaxContentLightLevel) {
-								m_hdr10.hdr10.MaxContentLightLevel = m_DoviMaxContentLightLevel;
+								m_lastHdr10.hdr10.MaxContentLightLevel = m_DoviMaxContentLightLevel;
 							}
 							if (m_DoviMaxFrameAverageLightLevel) {
-								m_hdr10.hdr10.MaxFrameAverageLightLevel = m_DoviMaxFrameAverageLightLevel;
+								m_lastHdr10.hdr10.MaxFrameAverageLightLevel = m_DoviMaxFrameAverageLightLevel;
 							}
 
 							if (m_bHdrPassthrough) {
