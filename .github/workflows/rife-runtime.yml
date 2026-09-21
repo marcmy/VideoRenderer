@@ -40,7 +40,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Cache pinned NVIDIA SDK archives
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}\_rife-download-cache
           key: rife-nvidia-sdk-windows-cuda-12.9.1-tensorrt-11.2.1.2-v1
