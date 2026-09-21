@@ -173,7 +173,7 @@ BEGIN
     LTEXT           "GPU device:",IDC_STATIC,16,119,76,8
     COMBOBOX        IDC_RIFE_GPU,101,116,110,80,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     CONTROL         "Performance boost",IDC_RIFE_PERFORMANCE_BOOST,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,16,139,82,10
-    LTEXT           "Build and cache an exact-resolution TensorRT engine for a small speed/VRAM improvement.",IDC_STATIC,105,137,206,22,SS_LEFT
+    LTEXT           "Build one reusable dynamic TensorRT engine with maximum builder optimization.",IDC_STATIC,105,137,206,22,SS_LEFT
 
     GROUPBOX        "Miscellaneous options",IDC_STATIC,7,174,314,73
     LTEXT           "Scene change detection:",IDC_STATIC,16,189,87,8

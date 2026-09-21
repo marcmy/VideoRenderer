@@ -124,6 +124,12 @@ assert runtime.count(
 assert '"_abi" << MPCVR_RIFE_RUNTIME_ABI' in runtime, (
     "TensorRT engine cache keys must be isolated by the renderer/runtime ABI"
 )
+assert '"_dynamic_boost_max"' in runtime and '<< m_paddedWidth << \'x\' << m_paddedHeight << "_static"' not in runtime, (
+    "Performance Boost must reuse one dynamic engine cache instead of building a fixed plan per resolution"
+)
+assert "config->setBuilderOptimizationLevel(5)" in runtime, (
+    "Performance Boost must retain distinct TensorRT builder optimization after becoming resolution-dynamic"
+)
 assert "BuildLegacyCacheKey" not in runtime, (
     "ABI2 must not migrate pre-ABI TensorRT plans built under the old tensor-layout contract"
 )

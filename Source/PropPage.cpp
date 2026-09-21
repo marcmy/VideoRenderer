@@ -709,7 +709,10 @@ INT_PTR CVRMainPPage::OnReceiveMessage(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 			}
 
 			if (nID == IDC_BUTTON1) {
-				m_SetsPP.SetDefault();
+				// This button belongs to the main property page. Maxine and RIFE
+				// have dedicated settings dialogs with their own Defaults buttons,
+				// so do not silently reset those hidden configurations here.
+				m_SetsPP.SetMainPageDefault();
 				SetControls();
 				EnableControls();
 				SetDirty();

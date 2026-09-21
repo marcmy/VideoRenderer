@@ -503,6 +503,27 @@ struct CRifePlaybackPipeline::Impl
     std::atomic_uint32_t maxConcurrentInferences = 0;
     std::atomic_uint32_t configuredInferenceContexts = RIFE_GPU_THREADS_DEF;
     std::atomic_bool tensorIoLinearValidated = false;
+    enum SceneDiagnosticMode : int {
+        SceneDiagDisabled = 0,
+        SceneDiagImage,
+        SceneDiagNvofOverlap,
+        SceneDiagNvofSerialized,
+        SceneDiagImageFallback,
+    };
+    std::atomic_int lastSceneDiagnosticMode = SceneDiagDisabled;
+    std::atomic_uint64_t nvofSuccessfulAnalyses = 0;
+    std::atomic_uint64_t nvofInitFailures = 0;
+    std::atomic_uint64_t nvofBeginFailures = 0;
+    std::atomic_uint64_t nvofFinishFailures = 0;
+    std::atomic_uint64_t nvofInvalidMetrics = 0;
+    std::atomic_uint64_t nvofMutexContentions = 0;
+    std::atomic_uint64_t nvofCallUs = 0;
+    std::atomic_uint64_t nvofCallCount = 0;
+    std::atomic_uint64_t nvofMutexWaitUs = 0;
+    std::atomic_uint64_t nvofMutexWaitCount = 0;
+    std::atomic_uint64_t imageSceneAnalyses = 0;
+    std::atomic_uint64_t imageSceneFallbacks = 0;
+    std::atomic_uint64_t imageSceneUs = 0;
     std::atomic_int activeRule = -1;
     std::atomic_bool ruleBypass = false;
     std::atomic_uint32_t ruleMaxMultiplierMilli = 0;
@@ -1088,15 +1109,40 @@ struct CRifePlaybackPipeline::Impl
         }).detach();
     }
 
-    bool DetectImageSceneCut(ImageCutDetector& detector, const SourceFrame& first, const SourceFrame& second)
+    static uint64_t ElapsedMicroseconds(const std::chrono::steady_clock::time_point start)
     {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - start).count());
+    }
+
+    void RecordNvofCall(const std::chrono::steady_clock::time_point start)
+    {
+        nvofCallUs.fetch_add(ElapsedMicroseconds(start), std::memory_order_relaxed);
+        nvofCallCount.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    bool DetectImageSceneCut(ImageCutDetector& detector, const SourceFrame& first, const SourceFrame& second,
+        const bool fallback = false)
+    {
+        if (fallback) {
+            imageSceneFallbacks.fetch_add(1, std::memory_order_relaxed);
+            lastSceneDiagnosticMode.store(SceneDiagImageFallback, std::memory_order_relaxed);
+        } else {
+            lastSceneDiagnosticMode.store(SceneDiagImage, std::memory_order_relaxed);
+        }
+        const auto start = std::chrono::steady_clock::now();
         ID3D11Device* device = second.processor ? second.processor->GetRifeDevice() : nullptr;
         if (!device) {
+            imageSceneUs.fetch_add(ElapsedMicroseconds(start), std::memory_order_relaxed);
+            imageSceneAnalyses.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
 
         bool cut = false;
-        return detector.Analyze(device, first.texture, second.texture, cut) && cut;
+        const bool analyzed = detector.Analyze(device, first.texture, second.texture, cut);
+        imageSceneUs.fetch_add(ElapsedMicroseconds(start), std::memory_order_relaxed);
+        imageSceneAnalyses.fetch_add(1, std::memory_order_relaxed);
+        return analyzed && cut;
     }
 
     ID3D11Texture2D* AcquireInferenceOutput(
@@ -1273,6 +1319,11 @@ struct CRifePlaybackPipeline::Impl
             }
         }
 
+        if (second.settings.iRifeSceneDetection == RIFE_SCENE_Disabled) {
+            lastSceneDiagnosticMode.store(SceneDiagDisabled, std::memory_order_relaxed);
+        } else if (second.settings.iRifeSceneDetection == RIFE_SCENE_Image) {
+            lastSceneDiagnosticMode.store(SceneDiagImage, std::memory_order_relaxed);
+        }
         bool sceneDecisionReady = second.settings.iRifeSceneDetection != RIFE_SCENE_NVOF;
         bool sceneCut = hasTimelySyntheticTarget
             && second.settings.iRifeSceneDetection == RIFE_SCENE_Image
@@ -1326,13 +1377,26 @@ struct CRifePlaybackPipeline::Impl
                 // its serialized scene analysis afterward.
                 nvofLock = std::unique_lock<std::mutex>(nvofMutex, std::try_to_lock);
                 if (nvofLock.owns_lock()) {
+                    const auto nvofStart = std::chrono::steady_clock::now();
                     const bool nvofReady = nvofDetector.Initialize(device, job.width, job.height);
-                    nvofStarted = nvofReady
-                        && nvofDetector.BeginAnalyze(first.texture, second.texture);
+                    if (!nvofReady) {
+                        nvofInitFailures.fetch_add(1, std::memory_order_relaxed);
+                    } else {
+                        nvofStarted = nvofDetector.BeginAnalyze(first.texture, second.texture);
+                        if (!nvofStarted) {
+                            nvofBeginFailures.fetch_add(1, std::memory_order_relaxed);
+                        }
+                    }
+                    RecordNvofCall(nvofStart);
+                    if (nvofStarted) {
+                        lastSceneDiagnosticMode.store(SceneDiagNvofOverlap, std::memory_order_relaxed);
+                    }
+                } else {
+                    nvofMutexContentions.fetch_add(1, std::memory_order_relaxed);
                 }
                 if (nvofLock.owns_lock() && !nvofStarted) {
                     nvofLock.unlock();
-                    sceneCut = DetectImageSceneCut(workerState.imageDetector, first, second);
+                    sceneCut = DetectImageSceneCut(workerState.imageDetector, first, second, true);
                     sceneDecisionReady = true;
                     if (sceneCut) {
                         job.results.push_back(std::move(result));
@@ -1353,10 +1417,20 @@ struct CRifePlaybackPipeline::Impl
 
             if (nvofStarted) {
                 CNvidiaSceneChangeDetector::Metrics metrics;
-                if (nvofDetector.FinishAnalyze(metrics) && metrics.valid) {
+                const auto nvofStart = std::chrono::steady_clock::now();
+                const bool finished = nvofDetector.FinishAnalyze(metrics);
+                RecordNvofCall(nvofStart);
+                if (finished && metrics.valid) {
+                    nvofSuccessfulAnalyses.fetch_add(1, std::memory_order_relaxed);
+                    lastSceneDiagnosticMode.store(SceneDiagNvofOverlap, std::memory_order_relaxed);
                     sceneCut = metrics.likelyCut;
                 } else {
-                    sceneCut = DetectImageSceneCut(workerState.imageDetector, first, second);
+                    if (!finished) {
+                        nvofFinishFailures.fetch_add(1, std::memory_order_relaxed);
+                    } else {
+                        nvofInvalidMetrics.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    sceneCut = DetectImageSceneCut(workerState.imageDetector, first, second, true);
                 }
                 nvofLock.unlock();
                 sceneDecisionReady = true;
@@ -1368,14 +1442,34 @@ struct CRifePlaybackPipeline::Impl
                 // Another worker owned NVOF while this inference was running.
                 // Serialize only the OFA analysis now; TensorRT parallelism has
                 // already been preserved for this target.
+                const auto nvofMutexWaitStart = std::chrono::steady_clock::now();
                 nvofLock = std::unique_lock<std::mutex>(nvofMutex);
+                nvofMutexWaitUs.fetch_add(ElapsedMicroseconds(nvofMutexWaitStart), std::memory_order_relaxed);
+                nvofMutexWaitCount.fetch_add(1, std::memory_order_relaxed);
                 CNvidiaSceneChangeDetector::Metrics metrics;
-                if (nvofDetector.Initialize(device, job.width, job.height)
-                        && nvofDetector.Analyze(first.texture, second.texture, metrics)
-                        && metrics.valid) {
+                const auto nvofStart = std::chrono::steady_clock::now();
+                const bool nvofReady = nvofDetector.Initialize(device, job.width, job.height);
+                if (!nvofReady) {
+                    nvofInitFailures.fetch_add(1, std::memory_order_relaxed);
+                }
+                const bool began = nvofReady
+                    && nvofDetector.BeginAnalyze(first.texture, second.texture);
+                if (nvofReady && !began) {
+                    nvofBeginFailures.fetch_add(1, std::memory_order_relaxed);
+                }
+                const bool finished = began && nvofDetector.FinishAnalyze(metrics);
+                if (began && !finished) {
+                    nvofFinishFailures.fetch_add(1, std::memory_order_relaxed);
+                } else if (finished && !metrics.valid) {
+                    nvofInvalidMetrics.fetch_add(1, std::memory_order_relaxed);
+                }
+                RecordNvofCall(nvofStart);
+                if (finished && metrics.valid) {
+                    nvofSuccessfulAnalyses.fetch_add(1, std::memory_order_relaxed);
+                    lastSceneDiagnosticMode.store(SceneDiagNvofSerialized, std::memory_order_relaxed);
                     sceneCut = metrics.likelyCut;
                 } else {
-                    sceneCut = DetectImageSceneCut(workerState.imageDetector, first, second);
+                    sceneCut = DetectImageSceneCut(workerState.imageDetector, first, second, true);
                 }
                 nvofLock.unlock();
                 sceneDecisionReady = true;
@@ -1611,6 +1705,36 @@ struct CRifePlaybackPipeline::Impl
                 readyStartWaitRoll.averageMs, readyStartWaitRoll.p95Ms, readyStartWaitRoll.count,
                 pendingStartWaitRoll.averageMs, pendingStartWaitRoll.p95Ms, pendingStartWaitRoll.count);
         }
+        const auto sceneModeValue = lastSceneDiagnosticMode.load(std::memory_order_relaxed);
+        const wchar_t* sceneMode = L"disabled";
+        switch (sceneModeValue) {
+        case SceneDiagImage: sceneMode = L"image"; break;
+        case SceneDiagNvofOverlap: sceneMode = L"NVOF-overlap"; break;
+        case SceneDiagNvofSerialized: sceneMode = L"NVOF-serialized"; break;
+        case SceneDiagImageFallback: sceneMode = L"image-fallback"; break;
+        default: break;
+        }
+        const auto nvofCalls = nvofCallCount.load(std::memory_order_relaxed);
+        const auto nvofUs = nvofCallUs.load(std::memory_order_relaxed);
+        const auto nvofWaits = nvofMutexWaitCount.load(std::memory_order_relaxed);
+        const auto nvofWaitUs = nvofMutexWaitUs.load(std::memory_order_relaxed);
+        const auto imageAnalyses = imageSceneAnalyses.load(std::memory_order_relaxed);
+        const auto imageUs = imageSceneUs.load(std::memory_order_relaxed);
+        diagnostics += std::format(
+            L"\nRIFE scene   : last {}, NVOF ok {}, init/begin/finish/invalid {}/{}/{}/{}, contend {}, image-fallback {}",
+            sceneMode,
+            nvofSuccessfulAnalyses.load(std::memory_order_relaxed),
+            nvofInitFailures.load(std::memory_order_relaxed),
+            nvofBeginFailures.load(std::memory_order_relaxed),
+            nvofFinishFailures.load(std::memory_order_relaxed),
+            nvofInvalidMetrics.load(std::memory_order_relaxed),
+            nvofMutexContentions.load(std::memory_order_relaxed),
+            imageSceneFallbacks.load(std::memory_order_relaxed));
+        diagnostics += std::format(
+            L"\nRIFE sc time : NVOF {:.2f} avg ({} calls), mutex-wait {:.2f} avg ({}), image {:.2f} avg ({}) ms",
+            nvofCalls ? (nvofUs / static_cast<double>(nvofCalls)) / 1000.0 : 0.0, nvofCalls,
+            nvofWaits ? (nvofWaitUs / static_cast<double>(nvofWaits)) / 1000.0 : 0.0, nvofWaits,
+            imageAnalyses ? (imageUs / static_cast<double>(imageAnalyses)) / 1000.0 : 0.0, imageAnalyses);
         const int ruleIndex = activeRule.load(std::memory_order_relaxed);
         if (ruleIndex >= 0) {
             diagnostics += std::format(L"\nRIFE rule    : #{}", ruleIndex + 1);

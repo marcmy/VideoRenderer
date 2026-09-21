@@ -66,10 +66,10 @@ Serialized TensorRT engines are stored below the cache directory supplied by MPC
 - RIFE model SHA-256
 - TensorRT major/minor version
 - GPU compute capability and device name
-- padded source dimensions
-- dynamic vs. Performance Boost/static shape mode
+- dynamic profile range
+- normal vs. Performance Boost builder mode
 
-Performance Boost builds a fixed H/W optimization profile. Normal mode builds a dynamic profile with the current size as the optimization point and a range up to at least padded 4K dimensions.
+Both modes build a dynamic profile covering source sizes up to at least padded 4K dimensions. Normal mode uses the current size as the optimization point. Performance Boost uses a deterministic padded-1080p optimization point and TensorRT's highest builder optimization level, so one Boost engine can be reused across resolutions instead of compiling one fixed-shape plan per video size.
 
 Deleting the cache is safe; the runtime rebuilds the engine from ONNX.
 

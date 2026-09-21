@@ -303,7 +303,7 @@ struct Settings_t {
 		SetDefault();
 	}
 
-	void SetDefault() {
+	void SetMainPageDefault() {
 		if (IsWindows8OrGreater()) {
 			bUseD3D11                   = true;
 		} else {
@@ -348,6 +348,11 @@ struct Settings_t {
 		bConvertToSdr                   = true;
 		iHdrOsdBrightness               = 0;
 		iSDRDisplayNits                 = SDR_NITS_DEF;
+	}
+
+	void SetDefault() {
+		SetMainPageDefault();
+
 		iMaxineOperation                = MAXINE_OPERATION_Disabled;
 		iMaxineSourceMode               = MAXINE_SOURCE_Auto;
 		iMaxineQuality                  = MAXINE_QUALITY_High;
