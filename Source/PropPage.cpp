@@ -572,7 +572,7 @@ HRESULT CVRMainPPage::OnActivate()
 		L"Opens the dedicated NVIDIA Maxine settings window.\n"
 		L"Maxine is available in the 64-bit Direct3D 11 renderer.");
 	AddHint(IDC_BUTTON_FRAMEINTERPOLATION,
-		L"Configures RIFE 4.6 frame interpolation through the optional NVIDIA TensorRT runtime.\n"
+		L"Configures RIFE frame interpolation through the optional NVIDIA TensorRT runtime.\n"
 		L"The normal renderer remains available when the RIFE runtime is not installed.");
 	AddHint(IDC_CHECK19,
 		L"Available for Direct3D 11.\n"

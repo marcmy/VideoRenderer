@@ -61,8 +61,12 @@ function Test-ModelPackage {
 
     $checksumPath = Join-Path $Root 'SHA256SUMS.txt'
     $manifestPath = Join-Path $Root 'model-manifest.json'
-    $modelPath = Join-Path $Root 'rife_v4.6.onnx'
-    foreach ($required in @($checksumPath, $manifestPath, $modelPath)) {
+    $expectedModels = @(
+        [pscustomobject]@{ Model = 'RIFE 4.4'; File = 'rife_v4.4.onnx' },
+        [pscustomobject]@{ Model = 'RIFE 4.6'; File = 'rife_v4.6.onnx' },
+        [pscustomobject]@{ Model = 'RIFE 4.15 Lite'; File = 'rife_v4.15_lite.onnx' }
+    )
+    foreach ($required in @($checksumPath, $manifestPath) + @($expectedModels | ForEach-Object { Join-Path $Root $_.File })) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
             throw "RIFE model package is missing required file: $required"
         }
@@ -74,62 +78,54 @@ function Test-ModelPackage {
         [void](Assert-RifeFileHash -Path $packageFile -ExpectedHash ([string]$checksums[$name]) -DisplayName $name)
     }
 
-    if (-not $checksums.ContainsKey('rife_v4.6.onnx')) {
-        throw 'RIFE model SHA256SUMS.txt does not contain rife_v4.6.onnx.'
-    }
     if (-not $checksums.ContainsKey('model-manifest.json')) {
         throw 'RIFE model SHA256SUMS.txt does not contain model-manifest.json.'
     }
 
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-    if ([int](Get-RequiredProperty $manifest 'schemaVersion' 'model-manifest.json') -ne 1) {
-        throw 'RIFE model manifest schemaVersion must be 1.'
+    if ([int](Get-RequiredProperty $manifest 'schemaVersion' 'model-manifest.json') -ne 2) {
+        throw 'RIFE model manifest schemaVersion must be 2.'
     }
-    if ([string](Get-RequiredProperty $manifest 'model' 'model-manifest.json') -ne 'RIFE 4.6') {
-        throw 'RIFE model manifest model must be RIFE 4.6.'
+    $manifestModels = @(Get-RequiredProperty $manifest 'models' 'model-manifest.json')
+    if ($manifestModels.Count -ne $expectedModels.Count) {
+        throw "RIFE model manifest must contain exactly $($expectedModels.Count) models."
     }
-    if ([string](Get-RequiredProperty $manifest 'file' 'model-manifest.json') -ne 'rife_v4.6.onnx') {
-        throw 'RIFE model manifest file must be rife_v4.6.onnx.'
-    }
-    if ([string](Get-RequiredProperty $manifest 'precision' 'model-manifest.json') -ne 'mixed-fp16-fp32') {
-        throw 'RIFE model manifest precision must be mixed-fp16-fp32.'
-    }
-    $sourceArchiveSha256 = [string](Get-RequiredProperty $manifest 'sourceArchiveSha256' 'model-manifest.json')
-    if ($sourceArchiveSha256 -notmatch '^[0-9a-f]{64}$') {
-        throw 'RIFE model manifest sourceArchiveSha256 is invalid.'
+
+    $validatedModels = @()
+    foreach ($expected in $expectedModels) {
+        $matches = @($manifestModels | Where-Object {
+            [string]$_.model -eq $expected.Model -and [string]$_.file -eq $expected.File
+        })
+        if ($matches.Count -ne 1) {
+            throw "RIFE model manifest must declare $($expected.Model) as $($expected.File) exactly once."
+        }
+        $entry = $matches[0]
+        if ([string](Get-RequiredProperty $entry 'precision' "$($expected.Model) manifest entry") -ne 'mixed-fp16-fp32') {
+            throw "$($expected.Model) manifest precision must be mixed-fp16-fp32."
+        }
+        $sourceArchiveSha256 = [string](Get-RequiredProperty $entry 'sourceArchiveSha256' "$($expected.Model) manifest entry")
+        if ($sourceArchiveSha256 -notmatch '^[0-9a-f]{64}$') {
+            throw "$($expected.Model) manifest sourceArchiveSha256 is invalid."
+        }
+        if ((ConvertTo-Json @(Get-RequiredProperty $entry 'input' "$($expected.Model) manifest entry") -Compress) -ne '[1,11,"H","W"]') {
+            throw "$($expected.Model) manifest input contract must be [1,11,H,W]."
+        }
+        if ((ConvertTo-Json @(Get-RequiredProperty $entry 'output' "$($expected.Model) manifest entry") -Compress) -ne '[1,3,"H","W"]') {
+            throw "$($expected.Model) manifest output contract must be [1,3,H,W]."
+        }
+        if (-not $checksums.ContainsKey($expected.File)) {
+            throw "RIFE model SHA256SUMS.txt does not contain $($expected.File)."
+        }
+        $validatedModels += [pscustomobject]@{
+            Manifest = $entry
+            Path = (Join-Path $Root $expected.File)
+            Sha256 = [string]$checksums[$expected.File]
+        }
     }
 
     [pscustomobject]@{
         Manifest = $manifest
-        ModelPath = $modelPath
-        ModelSha256 = [string]$checksums['rife_v4.6.onnx']
-    }
-}
-
-function Test-CacheCompatibility {
-    param(
-        [Parameter(Mandatory = $true)]$NewManifest,
-        [Parameter(Mandatory = $true)][string]$ExistingManifestPath
-    )
-
-    if (-not (Test-Path -LiteralPath $ExistingManifestPath -PathType Leaf)) {
-        return $false
-    }
-
-    try {
-        $old = Get-Content -LiteralPath $ExistingManifestPath -Raw | ConvertFrom-Json
-        $oldModel = [string](Get-RequiredProperty $old 'modelSha256' 'installed manifest')
-        $oldTensorRt = [string](Get-RequiredProperty $old 'tensorRtVersion' 'installed manifest')
-        $oldAbi = [int](Get-RequiredProperty $old 'runtimeAbi' 'installed manifest')
-        return (
-            $oldModel -eq [string]$NewManifest.modelSha256 -and
-            (Get-RifeTensorRtMajorMinor -Version $oldTensorRt) -eq [string]$NewManifest.tensorRtMajorMinor -and
-            $oldAbi -eq [int]$NewManifest.runtimeAbi
-        )
-    }
-    catch {
-        Write-Warning "Existing RIFE cache will not be reused because its installed manifest is incompatible: $($_.Exception.Message)"
-        return $false
+        Models = $validatedModels
     }
 }
 
@@ -259,12 +255,25 @@ try {
         }
     }
 
-    $stagedModel = Join-Path $stagedModels 'rife_v4.6.onnx'
-    Copy-Item -LiteralPath $modelPackage.ModelPath -Destination $stagedModel -Force
-    [void](Assert-RifeFileHash -Path $stagedModel -ExpectedHash $modelPackage.ModelSha256 -DisplayName 'models/rife_v4.6.onnx')
+    $installedModels = @()
+    foreach ($modelEntry in @($modelPackage.Models)) {
+        $fileName = [string]$modelEntry.Manifest.file
+        $stagedModel = Join-Path $stagedModels $fileName
+        Copy-Item -LiteralPath $modelEntry.Path -Destination $stagedModel -Force
+        [void](Assert-RifeFileHash -Path $stagedModel -ExpectedHash $modelEntry.Sha256 -DisplayName "models/$fileName")
+        $installedModels += [pscustomobject][ordered]@{
+            model = [string]$modelEntry.Manifest.model
+            modelFile = "models/$fileName"
+            modelSha256 = [string]$modelEntry.Sha256
+            sourceRelease = [string](Get-RequiredProperty $modelEntry.Manifest 'sourceRelease' "$($modelEntry.Manifest.model) manifest entry")
+            sourceArchive = [string](Get-RequiredProperty $modelEntry.Manifest 'sourceArchive' "$($modelEntry.Manifest.model) manifest entry")
+            sourceArchiveSha256 = [string](Get-RequiredProperty $modelEntry.Manifest 'sourceArchiveSha256' "$($modelEntry.Manifest.model) manifest entry")
+            sourceModel = [string](Get-RequiredProperty $modelEntry.Manifest 'sourceModel' "$($modelEntry.Manifest.model) manifest entry")
+        }
+    }
 
     $installedManifest = [pscustomobject][ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         runtimeAbi = [int]$runtimeManifest.runtimeAbi
         tensorRtVersion = $tensorRtVersion
         tensorRtMajorMinor = $tensorRtMajorMinor
@@ -272,23 +281,16 @@ try {
         cudaRuntimeVersion = [string](Get-RequiredProperty $runtimeManifest 'cudaRuntimeVersion' 'runtime-manifest.json')
         commonRuntimeArchiveSha256 = $commonHash
         architectures = $architectureInfo
-        model = [string]$modelPackage.Manifest.model
-        modelFile = 'models/rife_v4.6.onnx'
-        modelSha256 = $modelPackage.ModelSha256
-        sourceRelease = [string](Get-RequiredProperty $modelPackage.Manifest 'sourceRelease' 'model-manifest.json')
-        sourceArchiveSha256 = [string]$modelPackage.Manifest.sourceArchiveSha256
+        models = $installedModels
     }
     $stagedManifestPath = Join-Path $stagingRoot 'installed-manifest.json'
     $installedManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $stagedManifestPath -Encoding UTF8
 
-    $existingManifestPath = Join-Path $InstallRoot 'installed-manifest.json'
-    if (Test-CacheCompatibility -NewManifest $installedManifest -ExistingManifestPath $existingManifestPath) {
-        $existingCache = Join-Path $InstallRoot 'cache'
-        if (Test-Path -LiteralPath $existingCache -PathType Container) {
-            Get-ChildItem -LiteralPath $existingCache -Filter '*.plan' -File -ErrorAction SilentlyContinue |
-                Copy-Item -Destination $stagedCache -Force
-            Write-Host 'Preserved compatible TensorRT engine cache.'
-        }
+    $existingCache = Join-Path $InstallRoot 'cache'
+    if (Test-Path -LiteralPath $existingCache -PathType Container) {
+        Get-ChildItem -LiteralPath $existingCache -Filter '*.plan' -File -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $stagedCache -Force
+        Write-Host 'Preserved previous TensorRT engine plans for rollback. A different TensorRT major/minor version must build its own version-keyed plans.'
     }
 
     if (Test-Path -LiteralPath $backupRoot) {
@@ -305,7 +307,7 @@ try {
     if ($TestInjectInvalidInstalledModelHash) {
         $testManifestPath = Join-Path $InstallRoot 'installed-manifest.json'
         $testManifest = Get-Content -LiteralPath $testManifestPath -Raw | ConvertFrom-Json
-        $testManifest.modelSha256 = ('0' * 64)
+        $testManifest.models[0].modelSha256 = ('0' * 64)
         $testManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $testManifestPath -Encoding UTF8
     }
 

@@ -9,13 +9,13 @@ After extracting the ZIP, close MPC-HC and run:
 The one-click setup uses built-in Windows PowerShell 5.1 and performs four steps:
 
 1. Installs the verified five-DLL NVIDIA Maxine VideoSuperRes runtime under `%LOCALAPPDATA%\MPCVR Maxine Runtime\nvvfx\libs` and sets the current user's `NV_VIDEO_EFFECTS_PATH`.
-2. Detects the installed NVIDIA GPU compute capability, downloads only the matching RIFE TensorRT architecture pack from the exact immutable GitHub release, verifies it, and transactionally installs the RIFE 4.6 runtime/model under `%LOCALAPPDATA%\MPCVideoRenderer\RIFE`.
+2. Detects the installed NVIDIA GPU compute capability, downloads only the matching RIFE TensorRT architecture pack from the exact immutable GitHub release, verifies it, and transactionally installs the RIFE runtime plus selectable 4.4, 4.6, and 4.15 Lite models under `%LOCALAPPDATA%\MPCVideoRenderer\RIFE`.
 3. Installs the `Restore MPC-VR Maxine + RIFE` desktop shortcut for use after future K-Lite updates.
 4. Requests administrator permission and transactionally installs the custom 32-bit and 64-bit MPC Video Renderer files into K-Lite.
 
 Every declared file in `payload\PAYLOAD-SHA256SUMS.txt` is verified before any installer is allowed to change the system. Setup then runs the RIFE preflight, verifies the five Maxine runtime DLLs, and checks the user `NV_VIDEO_EFFECTS_PATH` value before reporting success.
 
-On first playback, TensorRT may build a GPU-specific engine under `%LOCALAPPDATA%\MPCVideoRenderer\RIFE\cache`. Press `Ctrl+J` in MPC-HC to confirm the loaded Maxine runtime, `RIFE runtime: ready`, and `RIFE model: 4.6`.
+On first playback with each model/builder mode, TensorRT may build a GPU-specific engine under `%LOCALAPPDATA%\MPCVideoRenderer\RIFE\cache`. Press `Ctrl+J` in MPC-HC to confirm the loaded Maxine runtime, `RIFE runtime: ready`, and the selected RIFE model.
 
 The TensorRT runtime supports NVIDIA Turing (compute capability 7.5), Ampere (8.6), Ada (8.9), and Blackwell (12.0). Architecture packs are no longer embedded in the setup ZIP. The installer detects all NVIDIA adapters and downloads only the union of packs required by the machine, so installation requires Internet access for the architecture-specific fetch.
 

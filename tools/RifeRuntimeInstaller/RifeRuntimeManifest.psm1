@@ -61,7 +61,6 @@ function Get-RifeExpectedArchitectures {
 function Get-RifeCommonRuntimeFileNames {
     @(
         'MPCVRRifeRuntime64.dll',
-        'cudart64_12.dll',
         'nvinfer_11.dll',
         'nvonnxparser_11.dll',
         'nvinfer_builder_resource_ptx_11.dll',

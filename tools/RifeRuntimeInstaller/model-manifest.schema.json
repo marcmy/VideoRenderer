@@ -4,57 +4,76 @@
   "title": "MPC-VR RIFE release model manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "schemaVersion",
-    "model",
-    "file",
-    "sourceRelease",
-    "sourceArchiveSha256",
-    "input",
-    "output",
-    "precision"
-  ],
+  "required": ["schemaVersion", "models"],
   "properties": {
-    "schemaVersion": {
-      "const": 1
-    },
+    "schemaVersion": { "const": 2 },
+    "models": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        {
+          "allOf": [
+            { "$ref": "#/$defs/model" },
+            { "properties": {
+              "model": { "const": "RIFE 4.4" },
+              "file": { "const": "rife_v4.4.onnx" },
+              "sourceRelease": { "const": "model-20220923" },
+              "sourceModel": { "const": "rife/rife_v4.4.onnx" }
+            }}
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/model" },
+            { "properties": {
+              "model": { "const": "RIFE 4.6" },
+              "file": { "const": "rife_v4.6.onnx" },
+              "sourceRelease": { "const": "model-20220923" },
+              "sourceModel": { "const": "rife/rife_v4.6.onnx" }
+            }}
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/model" },
+            { "properties": {
+              "model": { "const": "RIFE 4.15 Lite" },
+              "file": { "const": "rife_v4.15_lite.onnx" },
+              "sourceRelease": { "const": "external-models" },
+              "sourceModel": { "const": "rife/rife_v4.15_lite.onnx" }
+            }}
+          ]
+        }
+      ]
+    }
+  },
+  "$defs": {
     "model": {
-      "const": "RIFE 4.6"
-    },
-    "file": {
-      "const": "rife_v4.6.onnx"
-    },
-    "sourceRelease": {
-      "const": "model-20220923"
-    },
-    "sourceArchiveSha256": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
-    },
-    "input": {
-      "type": "array",
-      "prefixItems": [
-        { "const": 1 },
-        { "const": 11 },
-        { "const": "H" },
-        { "const": "W" }
-      ],
-      "minItems": 4,
-      "maxItems": 4
-    },
-    "output": {
-      "type": "array",
-      "prefixItems": [
-        { "const": 1 },
-        { "const": 3 },
-        { "const": "H" },
-        { "const": "W" }
-      ],
-      "minItems": 4,
-      "maxItems": 4
-    },
-    "precision": {
-      "const": "mixed-fp16-fp32"
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "file", "sourceRelease", "sourceArchive", "sourceArchiveSha256", "sourceModel", "input", "output", "precision"],
+      "properties": {
+        "model": { "type": "string" },
+        "file": { "type": "string" },
+        "sourceRelease": { "type": "string" },
+        "sourceArchive": { "type": "string", "minLength": 1 },
+        "sourceArchiveSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "sourceModel": { "type": "string", "minLength": 1 },
+        "input": {
+          "type": "array",
+          "prefixItems": [{ "const": 1 }, { "const": 11 }, { "const": "H" }, { "const": "W" }],
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "output": {
+          "type": "array",
+          "prefixItems": [{ "const": 1 }, { "const": 3 }, { "const": "H" }, { "const": "W" }],
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "precision": { "const": "mixed-fp16-fp32" }
+      }
     }
   }
 }

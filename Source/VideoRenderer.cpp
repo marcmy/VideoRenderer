@@ -84,7 +84,16 @@ void LoadRifeSettings(Settings_t& settings)
 			? static_cast<int>(dw) : RIFE_GPU_THREADS_DEF;
 	}
 	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeModel, dw)) {
-		settings.iRifeModel = dw == RIFE_MODEL_46 ? RIFE_MODEL_46 : RIFE_MODEL_46;
+		switch (dw) {
+		case RIFE_MODEL_44:
+		case RIFE_MODEL_46:
+		case RIFE_MODEL_415_LITE:
+			settings.iRifeModel = static_cast<int>(dw);
+			break;
+		default:
+			settings.iRifeModel = RIFE_MODEL_46;
+			break;
+		}
 	}
 	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeGPU, dw)) {
 		if (dw == MAXDWORD) {

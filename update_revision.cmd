@@ -23,10 +23,14 @@ IF %ERRORLEVEL% NEQ 0 (
 ECHO LOCAL >> revision.h
 )
 
+IF DEFINED MPCVR_TEST_REVISION (
+ECHO #define REV_NUM %MPCVR_TEST_REVISION% >> revision.h
+) ELSE (
 <nul set /p strTemp=#define REV_NUM >> revision.h
 %gitexe% rev-list --count HEAD >> revision.h
 IF %ERRORLEVEL% NEQ 0 (
 ECHO 0 >> revision.h
+)
 )
 
 :END

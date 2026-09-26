@@ -9,7 +9,7 @@ Requires an NVIDIA CUDA-capable GPU, a CUDA 12 runtime DLL, Visual Studio C++
 tools, and the Windows D3D11 debug layer. Run `build-test.cmd`, then:
 
 ```powershell
-.\RifeInteropConcurrencyTest.exe 'C:\path\to\cudart64_12.dll'
+.\RifeInteropConcurrencyTest.exe 'C:\path\to\cudart64_13.dll'
 ```
 
 The guarded test runs for 15 seconds and returns failure on a CUDA error, D3D11

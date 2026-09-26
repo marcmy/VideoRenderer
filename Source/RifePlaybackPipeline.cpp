@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -75,6 +76,26 @@ std::filesystem::path LocalAppDataRoot()
     return std::filesystem::path(value) / L"MPCVideoRenderer" / L"RIFE";
 }
 
+const wchar_t* RifeModelFileName(const int model) noexcept
+{
+    switch (model) {
+    case RIFE_MODEL_44:       return L"rife_v4.4.onnx";
+    case RIFE_MODEL_415_LITE: return L"rife_v4.15_lite.onnx";
+    case RIFE_MODEL_46:
+    default:                  return L"rife_v4.6.onnx";
+    }
+}
+
+const wchar_t* RifeModelDisplayName(const int model) noexcept
+{
+    switch (model) {
+    case RIFE_MODEL_44:       return L"4.4";
+    case RIFE_MODEL_415_LITE: return L"4.15 Lite";
+    case RIFE_MODEL_46:
+    default:                  return L"4.6";
+    }
+}
+
 bool SameTextureShape(ID3D11Texture2D* texture, ID3D11Device* device, UINT width, UINT height)
 {
     if (!texture || !device) {
@@ -126,13 +147,14 @@ struct RuntimeKey {
     UINT contentHeight = 0;
     int gpu = RIFE_GPU_Auto;
     int contexts = RIFE_GPU_THREADS_DEF;
+    int model = RIFE_MODEL_46;
     bool performanceBoost = false;
 
     bool operator==(const RuntimeKey& other) const noexcept
     {
         return device == other.device && width == other.width && height == other.height
             && contentWidth == other.contentWidth && contentHeight == other.contentHeight
-            && gpu == other.gpu && contexts == other.contexts
+            && gpu == other.gpu && contexts == other.contexts && model == other.model
             && performanceBoost == other.performanceBoost;
     }
 };
@@ -424,6 +446,7 @@ struct CRifePlaybackPipeline::Impl
     std::array<std::unique_ptr<InferenceWorkerState>, RIFE_GPU_THREADS_MAX> inferenceWorkers;
     std::atomic_bool stop = false;
     std::atomic_uint64_t resetSerial = 1;
+    std::atomic_bool preserveAdaptiveForResume = false;
     uint64_t lastSubmittedGeneration = UINT64_MAX;
 
     CFrameInterpolationScheduler scheduler;
@@ -434,6 +457,32 @@ struct CRifePlaybackPipeline::Impl
     uint64_t schedulerSerial = 0;
     uint32_t schedulerMaxMultiplierMilli = 0;
     uint32_t schedulerMaxOutputFpsMilli = 0;
+    bool schedulerPerformanceBoost = false;
+    CRollingTimingWindow<16> adaptiveWallTiming;
+    CFrameInterpolationPressureController adaptivePressureController;
+    uint32_t adaptiveAppliedCapFpsMilli = 0;
+    bool adaptiveResumePending = false;
+    std::atomic_uint32_t adaptiveRequestedOutputFpsMilli = 0;
+    std::atomic_uint32_t adaptiveSyntheticCapacityFpsMilli = 0;
+    std::atomic_uint32_t adaptiveOutputCapFpsMilli = 0;
+    std::atomic_uint32_t adaptiveLoadSamples = 0;
+    std::atomic_uint32_t adaptiveHeadroomPermille = 970;
+    std::atomic_bool adaptivePressureDetected = false;
+    std::atomic_uint32_t adaptivePressurePhase =
+        static_cast<uint32_t>(FrameInterpolationPressurePhase::Open);
+    std::atomic_uint32_t adaptivePressureGoodFpsMilli = 0;
+    std::atomic_uint32_t adaptivePressureBadFpsMilli = 0;
+    std::atomic_uint32_t adaptivePressureBackoffFpsMilli = 0;
+    std::atomic_uint32_t adaptiveMeasuredOutputFpsMilli = 0;
+    std::atomic_bool adaptiveMeasuredOutputReady = false;
+    std::atomic_bool adaptiveMeasuredOutputHealthy = false;
+    std::atomic_uint32_t adaptivePressureObservedReasons = RIFE_PRESSURE_NONE;
+    std::atomic_uint32_t adaptivePressureConfirmedReasons = RIFE_PRESSURE_NONE;
+    std::atomic_uint32_t adaptiveLastPressureCapFpsMilli = 0;
+    std::atomic_uint32_t adaptiveLastPressureReasons = RIFE_PRESSURE_NONE;
+    std::atomic_uint32_t adaptiveSourceQueueDepth = 0;
+    std::atomic_uint32_t adaptivePendingPairDepth = 0;
+    std::atomic_uint64_t sourcePoolMisses = 0;
 
     // The NVIDIA Optical Flow engine is a device-wide resource. Running one
     // D3D11 NVOF session per parallel TensorRT worker can make two workers
@@ -611,17 +660,49 @@ struct CRifePlaybackPipeline::Impl
         }
     }
 
-    void ResetNonBlocking()
+    void ResetNonBlocking(const bool preserveAdaptive = false)
     {
+        preserveAdaptiveForResume.store(preserveAdaptive, std::memory_order_release);
         resetSerial.fetch_add(1, std::memory_order_acq_rel);
         ClearQueuedFrames();
         cv.notify_all();
     }
 
-    void ResetSequenceState()
+    void ResetAdaptiveLoadState()
+    {
+        adaptiveWallTiming.Clear();
+        adaptivePressureController.Reset();
+        adaptiveAppliedCapFpsMilli = 0;
+        adaptiveRequestedOutputFpsMilli.store(0, std::memory_order_relaxed);
+        adaptiveSyntheticCapacityFpsMilli.store(0, std::memory_order_relaxed);
+        adaptiveOutputCapFpsMilli.store(0, std::memory_order_relaxed);
+        adaptiveLoadSamples.store(0, std::memory_order_relaxed);
+        adaptivePressureDetected.store(false, std::memory_order_relaxed);
+        adaptivePressurePhase.store(
+            static_cast<uint32_t>(FrameInterpolationPressurePhase::Open), std::memory_order_relaxed);
+        adaptivePressureGoodFpsMilli.store(0, std::memory_order_relaxed);
+        adaptivePressureBadFpsMilli.store(0, std::memory_order_relaxed);
+        adaptivePressureBackoffFpsMilli.store(0, std::memory_order_relaxed);
+        adaptiveMeasuredOutputFpsMilli.store(0, std::memory_order_relaxed);
+        adaptiveMeasuredOutputReady.store(false, std::memory_order_relaxed);
+        adaptiveMeasuredOutputHealthy.store(false, std::memory_order_relaxed);
+        adaptivePressureObservedReasons.store(RIFE_PRESSURE_NONE, std::memory_order_relaxed);
+        adaptivePressureConfirmedReasons.store(RIFE_PRESSURE_NONE, std::memory_order_relaxed);
+        adaptiveLastPressureCapFpsMilli.store(0, std::memory_order_relaxed);
+        adaptiveLastPressureReasons.store(RIFE_PRESSURE_NONE, std::memory_order_relaxed);
+        adaptiveSourceQueueDepth.store(0, std::memory_order_relaxed);
+        adaptivePendingPairDepth.store(0, std::memory_order_relaxed);
+        scheduler.SetRuntimeOutputFpsCap(0);
+    }
+
+    void ResetSequenceState(const bool preserveAdaptive = false)
     {
         scheduler.Reset();
         schedulerConfigured = false;
+        adaptiveResumePending = preserveAdaptive;
+        if (!preserveAdaptive) {
+            ResetAdaptiveLoadState();
+        }
         {
             std::lock_guard nvofLock(nvofMutex);
             nvofDetector.Reset();
@@ -774,7 +855,7 @@ struct CRifePlaybackPipeline::Impl
 
         if (lastSubmittedGeneration != presenterGeneration) {
             lastSubmittedGeneration = presenterGeneration;
-            ResetNonBlocking();
+            ResetNonBlocking(preserveAdaptiveForResume.load(std::memory_order_acquire));
         }
 
         ID3D11Device* device = processor->GetRifeDevice();
@@ -794,6 +875,7 @@ struct CRifePlaybackPipeline::Impl
         if (!AcquireSourceSlot(device, static_cast<UINT>(size.cx), static_cast<UINT>(size.cy),
                 inferenceContextCount > 1, slot, &texture, &inferenceAsFirst, &inferenceAsSecond,
                 &inputCopyAsFirstReadyQuery, &inputCopyAsSecondReadyQuery)) {
+            sourcePoolMisses.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
 
@@ -948,14 +1030,16 @@ struct CRifePlaybackPipeline::Impl
 
     void ConfigureScheduler(const SourceFrame& frame)
     {
+        const bool sameRateConfiguration = schedulerMode == frame.settings.iRifeMode
+            && schedulerCustomFps == frame.settings.iRifeCustomFps
+            && schedulerMaxMultiplierMilli == frame.maxMultiplierMilli
+            && schedulerMaxOutputFpsMilli == frame.maxOutputFpsMilli
+            && schedulerPerformanceBoost == frame.settings.bRifePerformanceBoost
+            && schedulerDisplayRate.numerator == frame.displayRate.numerator
+            && schedulerDisplayRate.denominator == frame.displayRate.denominator;
         const bool changed = !schedulerConfigured
             || schedulerSerial != frame.resetSerial
-            || schedulerMode != frame.settings.iRifeMode
-            || schedulerCustomFps != frame.settings.iRifeCustomFps
-            || schedulerMaxMultiplierMilli != frame.maxMultiplierMilli
-            || schedulerMaxOutputFpsMilli != frame.maxOutputFpsMilli
-            || schedulerDisplayRate.numerator != frame.displayRate.numerator
-            || schedulerDisplayRate.denominator != frame.displayRate.denominator;
+            || !sameRateConfiguration;
         if (!changed) {
             return;
         }
@@ -964,6 +1048,7 @@ struct CRifePlaybackPipeline::Impl
         schedulerCustomFps = frame.settings.iRifeCustomFps;
         schedulerMaxMultiplierMilli = frame.maxMultiplierMilli;
         schedulerMaxOutputFpsMilli = frame.maxOutputFpsMilli;
+        schedulerPerformanceBoost = frame.settings.bRifePerformanceBoost;
         schedulerDisplayRate = frame.displayRate;
         schedulerSerial = frame.resetSerial;
         scheduler.Configure(
@@ -971,7 +1056,95 @@ struct CRifePlaybackPipeline::Impl
             {static_cast<uint32_t>(std::clamp(frame.settings.iRifeCustomFps,
                 RIFE_CUSTOM_FPS_MIN, RIFE_CUSTOM_FPS_MAX)), 1},
             frame.displayRate, frame.maxMultiplierMilli, frame.maxOutputFpsMilli);
+        if (adaptiveResumePending && sameRateConfiguration) {
+            adaptivePressureController.Resume(GetTickCount64());
+            scheduler.SetRuntimeOutputFpsCap(adaptiveAppliedCapFpsMilli);
+        } else {
+            ResetAdaptiveLoadState();
+        }
+        adaptiveResumePending = false;
+        preserveAdaptiveForResume.store(false, std::memory_order_release);
         schedulerConfigured = true;
+    }
+
+    void UpdateAdaptiveLoadLimit(const SourceFrame& frame, const FrameRate sourceRate,
+        const size_t pendingPairDepth)
+    {
+        const FrameRate requestedRate = scheduler.ResolveConfiguredTargetRate(sourceRate);
+        const auto timing = adaptiveWallTiming.GetSummary();
+        const uint32_t samples = static_cast<uint32_t>(timing.count);
+        const uint64_t averageWallUs = static_cast<uint64_t>(std::llround(timing.averageMs * 1000.0));
+        const uint32_t contexts = static_cast<uint32_t>(std::clamp(
+            frame.settings.iRifeGpuThreads, RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX));
+
+        // Keep inference capacity as telemetry. The live limiter is driven by
+        // end-to-end congestion, because Maxine/presentation work can saturate
+        // the shared GPU pipeline even when RIFE's own timing still looks safe.
+        const uint32_t headroom = frame.settings.bRifePerformanceBoost ? 990u : 970u;
+        const auto estimate = EstimateFrameInterpolationLoad(
+            sourceRate, requestedRate, contexts, averageWallUs, samples, headroom);
+        adaptiveRequestedOutputFpsMilli.store(estimate.requestedOutputFpsMilli, std::memory_order_relaxed);
+        adaptiveSyntheticCapacityFpsMilli.store(
+            estimate.sustainableSyntheticFpsMilli, std::memory_order_relaxed);
+        adaptiveLoadSamples.store(samples, std::memory_order_relaxed);
+        adaptiveHeadroomPermille.store(headroom, std::memory_order_relaxed);
+
+        uint32_t sourceQueueDepth = 0;
+        {
+            std::lock_guard lock(mutex);
+            sourceQueueDepth = static_cast<uint32_t>(std::min<size_t>(
+                queue.size(), std::numeric_limits<uint32_t>::max()));
+        }
+        const FrameInterpolationPressureSnapshot pressureSnapshot = {
+            sourcePoolMisses.load(std::memory_order_relaxed),
+            lateSyntheticDrops.load(std::memory_order_relaxed),
+            presentationDrops.load(std::memory_order_relaxed),
+            presentationReclaims.load(std::memory_order_relaxed),
+            presentationSurfaceWaitUs.load(std::memory_order_relaxed),
+            presentationSurfaceWaitCount.load(std::memory_order_relaxed),
+            sourceQueueDepth,
+            static_cast<uint32_t>(std::min<size_t>(
+                pendingPairDepth, std::numeric_limits<uint32_t>::max())),
+            contexts,
+            owner->m_FrameInterpolationPresenterStaleDrops.load(std::memory_order_relaxed),
+            true,
+            owner->m_FrameInterpolationPresenterRenderedFrames.load(std::memory_order_relaxed),
+        };
+        const uint32_t capBeforePressureUpdate = adaptiveAppliedCapFpsMilli
+            ? adaptiveAppliedCapFpsMilli : estimate.requestedOutputFpsMilli;
+        const auto pressureDecision = adaptivePressureController.Update(
+            estimate.requestedOutputFpsMilli, sourceRate, GetTickCount64(), pressureSnapshot);
+        adaptiveAppliedCapFpsMilli = pressureDecision.outputCapFpsMilli;
+        adaptivePressureDetected.store(pressureDecision.pressureDetected, std::memory_order_relaxed);
+        adaptivePressurePhase.store(
+            static_cast<uint32_t>(pressureDecision.phase), std::memory_order_relaxed);
+        adaptivePressureGoodFpsMilli.store(
+            pressureDecision.lastKnownGoodFpsMilli, std::memory_order_relaxed);
+        adaptivePressureBadFpsMilli.store(
+            pressureDecision.lastKnownBadFpsMilli, std::memory_order_relaxed);
+        adaptivePressureBackoffFpsMilli.store(
+            pressureDecision.backoffStepFpsMilli, std::memory_order_relaxed);
+        adaptiveMeasuredOutputFpsMilli.store(
+            pressureDecision.measuredOutputFpsMilli, std::memory_order_relaxed);
+        adaptiveMeasuredOutputReady.store(
+            pressureDecision.measuredOutputReady, std::memory_order_relaxed);
+        adaptiveMeasuredOutputHealthy.store(
+            pressureDecision.measuredOutputHealthy, std::memory_order_relaxed);
+        adaptivePressureObservedReasons.store(
+            pressureDecision.observedPressureReasons, std::memory_order_relaxed);
+        adaptivePressureConfirmedReasons.store(
+            pressureDecision.confirmedPressureReasons, std::memory_order_relaxed);
+        if (pressureDecision.pressureDetected) {
+            adaptiveLastPressureCapFpsMilli.store(
+                capBeforePressureUpdate, std::memory_order_relaxed);
+            adaptiveLastPressureReasons.store(
+                pressureDecision.confirmedPressureReasons, std::memory_order_relaxed);
+        }
+        adaptiveSourceQueueDepth.store(sourceQueueDepth, std::memory_order_relaxed);
+        adaptivePendingPairDepth.store(
+            pressureSnapshot.pendingPairDepth, std::memory_order_relaxed);
+        scheduler.SetRuntimeOutputFpsCap(adaptiveAppliedCapFpsMilli);
+        adaptiveOutputCapFpsMilli.store(adaptiveAppliedCapFpsMilli, std::memory_order_relaxed);
     }
 
     bool EnsureOutputTexture(ID3D11Device* device, UINT width, UINT height)
@@ -1008,6 +1181,7 @@ struct CRifePlaybackPipeline::Impl
         key.contentHeight = frame.contentHeight;
         key.gpu = frame.settings.iRifeGPU;
         key.contexts = std::clamp(frame.settings.iRifeGpuThreads, RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX);
+        key.model = frame.settings.iRifeModel;
         key.performanceBoost = frame.settings.bRifePerformanceBoost;
 
         const bool sameLiveGeometry = runtimeKey
@@ -1076,10 +1250,10 @@ struct CRifePlaybackPipeline::Impl
         runtimeCache.emplace_back(key, state);
 
         const auto root = LocalAppDataRoot();
-        const auto model = root / L"models" / L"rife_v4.6.onnx";
+        const auto model = root / L"models" / RifeModelFileName(key.model);
         const auto cache = root / L"cache";
         if (root.empty() || !std::filesystem::exists(model)) {
-            state->status = L"RIFE 4.6 model is not installed";
+            state->status = std::format(L"RIFE {} model is not installed", RifeModelDisplayName(key.model));
             state->retryAfterTick.store(GetTickCount64() + kRuntimeRetryDelayMs,
                 std::memory_order_release);
             state->done.store(true, std::memory_order_release);
@@ -1211,6 +1385,7 @@ struct CRifePlaybackPipeline::Impl
         if (!ok) {
             return false;
         }
+        adaptiveWallTiming.AddMicroseconds(runtimeUs);
         std::lock_guard timingLock(timingMutex);
         lastHostStats = stats;
         lastTimingContext = contextIndex;
@@ -1364,7 +1539,11 @@ struct CRifePlaybackPipeline::Impl
                 PublishTargetResult(job, targetIndex, std::move(result));
                 continue;
             }
-            if (!IsCurrent(second) || IsLate(second, target.presentationTime)) {
+            if (!IsCurrent(second)) {
+                PublishTargetResult(job, targetIndex, std::move(result));
+                continue;
+            }
+            if (IsLate(second, target.presentationTime)) {
                 result.skippedLate = true;
                 lateSyntheticDrops.fetch_add(1, std::memory_order_relaxed);
                 PublishTargetResult(job, targetIndex, std::move(result));
@@ -1651,6 +1830,83 @@ struct CRifePlaybackPipeline::Impl
             maxConcurrentInferences.load(std::memory_order_relaxed),
             configuredInferenceContexts.load(std::memory_order_relaxed),
             tensorIoLinearValidated.load(std::memory_order_relaxed) ? L"LINEAR" : L"pending");
+        diagnostics += std::format(L"\nRIFE model   : {}", runtimeKey
+            ? RifeModelDisplayName(runtimeKey->model) : L"pending");
+        const auto requestedFpsMilli = adaptiveRequestedOutputFpsMilli.load(std::memory_order_relaxed);
+        const auto syntheticCapacityMilli = adaptiveSyntheticCapacityFpsMilli.load(std::memory_order_relaxed);
+        const auto adaptiveCapMilli = adaptiveOutputCapFpsMilli.load(std::memory_order_relaxed);
+        const std::wstring adaptiveCapText = adaptiveCapMilli
+            ? std::format(L"{:.3f} fps", adaptiveCapMilli / 1000.0) : L"none";
+        const auto pressurePhase = static_cast<FrameInterpolationPressurePhase>(
+            adaptivePressurePhase.load(std::memory_order_relaxed));
+        const wchar_t* pressurePhaseText = L"open";
+        switch (pressurePhase) {
+        case FrameInterpolationPressurePhase::Settling: pressurePhaseText = L"settling"; break;
+        case FrameInterpolationPressurePhase::Stable:   pressurePhaseText = L"stable"; break;
+        case FrameInterpolationPressurePhase::Probe:    pressurePhaseText = L"probe"; break;
+        default: break;
+        }
+        const auto pressureGoodMilli = adaptivePressureGoodFpsMilli.load(std::memory_order_relaxed);
+        const auto pressureBadMilli = adaptivePressureBadFpsMilli.load(std::memory_order_relaxed);
+        const auto pressureBackoffMilli = adaptivePressureBackoffFpsMilli.load(std::memory_order_relaxed);
+        const auto formatPressureReasons = [](const uint32_t reasons) {
+            std::wstring text;
+            const auto append = [&](const wchar_t* reason) {
+                if (!text.empty()) {
+                    text += L"+";
+                }
+                text += reason;
+            };
+            if (reasons & RIFE_PRESSURE_SOURCE_POOL_MISS) append(L"pool");
+            if (reasons & RIFE_PRESSURE_LATE_SYNTHETIC_DROP) append(L"late");
+            if (reasons & RIFE_PRESSURE_PRESENTATION_DROP) append(L"present-drop");
+            if (reasons & RIFE_PRESSURE_PRESENTATION_RECLAIM) append(L"reclaim");
+            if (reasons & RIFE_PRESSURE_BACKLOG) append(L"backlog");
+            if (reasons & RIFE_PRESSURE_PRESENTATION_SURFACE_WAIT) append(L"surface-wait");
+            if (reasons & RIFE_PRESSURE_PRESENTER_STALE_DROP) append(L"stale-drop");
+            if (reasons & RIFE_PRESSURE_DELIVERY_SHORTFALL) append(L"output-shortfall");
+            return text.empty() ? std::wstring(L"none") : text;
+        };
+        const auto observedPressureText = formatPressureReasons(
+            adaptivePressureObservedReasons.load(std::memory_order_relaxed));
+        const auto confirmedPressureText = formatPressureReasons(
+            adaptivePressureConfirmedReasons.load(std::memory_order_relaxed));
+        const auto lastPressureCapMilli = adaptiveLastPressureCapFpsMilli.load(
+            std::memory_order_relaxed);
+        const auto lastPressureReasons = formatPressureReasons(
+            adaptiveLastPressureReasons.load(std::memory_order_relaxed));
+        const std::wstring lastPressureText = lastPressureCapMilli
+            ? std::format(L"{:.3f} fps ({})", lastPressureCapMilli / 1000.0, lastPressureReasons)
+            : L"none";
+        diagnostics += std::format(
+            L"\nRIFE load    : request {:.3f}, synth-cap {:.3f}, cap {}, pressure {} ({}), headroom {:.1f}%, samples {}, queue {}, pairs {}, pool-miss {}",
+            requestedFpsMilli / 1000.0,
+            syntheticCapacityMilli / 1000.0,
+            adaptiveCapText,
+            adaptivePressureDetected.load(std::memory_order_relaxed) ? L"yes" : L"no",
+            pressurePhaseText,
+            adaptiveHeadroomPermille.load(std::memory_order_relaxed) / 10.0,
+            adaptiveLoadSamples.load(std::memory_order_relaxed),
+            adaptiveSourceQueueDepth.load(std::memory_order_relaxed),
+            adaptivePendingPairDepth.load(std::memory_order_relaxed),
+            sourcePoolMisses.load(std::memory_order_relaxed));
+        diagnostics += std::format(
+            L"\nRIFE pressure: observed {}, confirmed {}, last-trip {}, good {:.3f}, bad {:.3f}, step {:.3f}",
+            observedPressureText,
+            confirmedPressureText,
+            lastPressureText,
+            pressureGoodMilli / 1000.0,
+            pressureBadMilli / 1000.0,
+            pressureBackoffMilli / 1000.0);
+        const bool deliveryReady = adaptiveMeasuredOutputReady.load(std::memory_order_relaxed);
+        diagnostics += std::format(L"\nRIFE delivery: {}, target {:.3f} fps, {}",
+            deliveryReady
+                ? std::format(L"{:.3f} fps", adaptiveMeasuredOutputFpsMilli.load(std::memory_order_relaxed) / 1000.0)
+                : std::wstring(L"sampling"),
+            (adaptiveCapMilli ? adaptiveCapMilli : requestedFpsMilli) / 1000.0,
+            deliveryReady
+                ? (adaptiveMeasuredOutputHealthy.load(std::memory_order_relaxed) ? L"verified" : L"shortfall")
+                : L"waiting for window");
         const auto gpuUs = lastInferenceUs.load(std::memory_order_relaxed);
         const auto packUs = lastInputPackUs.load(std::memory_order_relaxed);
         const auto trtUs = lastTensorRtUs.load(std::memory_order_relaxed);
@@ -1878,7 +2134,7 @@ struct CRifePlaybackPipeline::Impl
                 previous.reset();
                 activeSerial = currentSerial;
                 nextWorker = 0;
-                ResetSequenceState();
+                ResetSequenceState(preserveAdaptiveForResume.load(std::memory_order_acquire));
                 continue;
             }
 
@@ -1956,6 +2212,7 @@ struct CRifePlaybackPipeline::Impl
             const FrameRate sourceRate = SourceRateFromDuration(
                 currentFrame->frameDuration > 0
                     ? currentFrame->frameDuration : currentFrame->time - previous->time);
+            UpdateAdaptiveLoadLimit(*currentFrame, sourceRate, pendingPairs.size());
             const auto targets = scheduler.Schedule(previous->time, currentFrame->time, sourceRate);
 
             ID3D11Device* device = currentFrame->processor
@@ -1979,6 +2236,7 @@ struct CRifePlaybackPipeline::Impl
                     || runtimeKey->contentHeight != currentFrame->contentHeight
                     || runtimeKey->gpu != currentFrame->settings.iRifeGPU
                     || runtimeKey->contexts != contextCount
+                    || runtimeKey->model != currentFrame->settings.iRifeModel
                     || runtimeKey->performanceBoost != currentFrame->settings.bRifePerformanceBoost);
             if (runtimeSettingsChanged) {
                 // Retire all work using the previous runtime before switching a
@@ -1987,6 +2245,7 @@ struct CRifePlaybackPipeline::Impl
                 drainPending(true);
                 DrainAllRetainedInputs();
                 nextWorker = 0;
+                ResetAdaptiveLoadState();
             }
 
             EnsureRuntimeBuild(*currentFrame, device, desc.Width, desc.Height);
@@ -2047,6 +2306,13 @@ void CRifePlaybackPipeline::Reset() noexcept
 {
     if (m_impl) {
         m_impl->ResetNonBlocking();
+    }
+}
+
+void CRifePlaybackPipeline::Suspend() noexcept
+{
+    if (m_impl) {
+        m_impl->ResetNonBlocking(true);
     }
 }
 

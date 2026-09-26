@@ -10,18 +10,18 @@ Source: https://developer.nvidia.com/maxine
 License source: https://developer.nvidia.com/downloads/maxine-sdk-license
 Bundled notice: Maxine-SDK-License.pdf
 
-NVIDIA CUDA Toolkit 12.9.1 / CUDA Runtime 12.9.79
+NVIDIA CUDA Toolkit 13.4.1 / CUDA Runtime 13.4.49
 Source: https://developer.download.nvidia.com/compute/cuda/redist/
 License source: https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/LICENSE.txt
 Bundled notice: CUDA-LICENSE.txt
 
-NVIDIA TensorRT 11.2.1.2 for CUDA 12.9
+NVIDIA TensorRT 11.3.0.99 for CUDA 13.4
 Source: https://developer.nvidia.com/tensorrt
 License source: https://docs.nvidia.com/deeplearning/tensorrt/latest/reference/sla.html
 Bundled notice: TensorRT-SLA.html
 
-RIFE 4.6 model
-Model source release: https://github.com/AmusementClub/vs-mlrt/releases/tag/model-20220923
+RIFE 4.4, 4.6, and 4.15 Lite models
+Model source releases: https://github.com/AmusementClub/vs-mlrt/releases/tag/model-20220923 and https://github.com/AmusementClub/vs-mlrt/releases/tag/external-models
 Model license source commit: https://github.com/hzwer/Practical-RIFE/tree/bbfd2ea90910789a860ea3e2b32a240cd577b75e
 Bundled notice: LICENSES/RIFE-model-license.txt
 

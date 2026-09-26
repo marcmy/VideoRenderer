@@ -41,6 +41,10 @@ public:
     // GPU work is invalidated by generation checks and discarded on completion.
     void Reset() noexcept;
 
+    // Pause invalidates in-flight work but keeps the learned throughput cap
+    // for the same clip when playback resumes.
+    void Suspend() noexcept;
+
     // Lightweight live diagnostics for Ctrl+J. Counters are intentionally
     // cumulative so a user can see which fallback path is actually active.
     [[nodiscard]] std::wstring GetDiagnostics() const;

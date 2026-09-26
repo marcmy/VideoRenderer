@@ -94,7 +94,6 @@ jobs:
 
           New-MockArchive 'MPCVR-RIFE-Common.zip' @(
             'MPCVRRifeRuntime64.dll',
-            'cudart64_12.dll',
             'nvinfer_11.dll',
             'nvonnxparser_11.dll',
             'nvinfer_builder_resource_ptx_11.dll',
@@ -106,9 +105,9 @@ jobs:
 
           [pscustomobject]@{
             schemaVersion = 1
-            cudaVersion = '12.9.1'
-            cudaRuntimeVersion = '12.9.79'
-            tensorRtVersion = '11.2.1.2'
+            cudaVersion = '13.4.1'
+            cudaRuntimeVersion = '13.4.49'
+            tensorRtVersion = '11.3.0.99'
             runtimeAbi = 2
             architectures = @(
               [pscustomobject]@{ computeCapability = '7.5'; key = 'sm75'; builderResource = 'nvinfer_builder_resource_sm75_11.dll' },
@@ -211,7 +210,7 @@ jobs:
           Copy-Item `
             -LiteralPath 'tools/rife-runtime-abi-test/good-runtime/MPCVRRifeRuntime64.dll' `
             -Destination (Join-Path $common 'MPCVRRifeRuntime64.dll')
-          foreach ($file in @('cudart64_12.dll', 'nvinfer_11.dll', 'nvonnxparser_11.dll', 'nvinfer_builder_resource_ptx_11.dll')) {
+          foreach ($file in @('nvinfer_11.dll', 'nvonnxparser_11.dll', 'nvinfer_builder_resource_ptx_11.dll')) {
             Set-Content -LiteralPath (Join-Path $common $file) -Value "mock $file" -Encoding ASCII
           }
           Set-Content -LiteralPath (Join-Path $common 'BUILD-INFO.txt') -Value 'mock runtime build' -Encoding ASCII
@@ -231,9 +230,9 @@ jobs:
 
           [pscustomobject]@{
             schemaVersion = 1
-            cudaVersion = '12.9.1'
-            cudaRuntimeVersion = '12.9.79'
-            tensorRtVersion = '11.2.1.2'
+            cudaVersion = '13.4.1'
+            cudaRuntimeVersion = '13.4.49'
+            tensorRtVersion = '11.3.0.99'
             runtimeAbi = 2
             architectures = @(
               [pscustomobject]@{ computeCapability = '7.5'; key = 'sm75'; builderResource = 'nvinfer_builder_resource_sm75_11.dll' },
@@ -257,23 +256,53 @@ jobs:
             }
           ) | Set-Content -LiteralPath (Join-Path $bundle 'SHA256SUMS.txt') -Encoding ASCII
 
-          Set-Content -LiteralPath (Join-Path $model 'rife_v4.6.onnx') -Value 'mock model' -Encoding ASCII
+          Set-Content -LiteralPath (Join-Path $model 'rife_v4.4.onnx') -Value 'mock RIFE 4.4 model' -Encoding ASCII
+          Set-Content -LiteralPath (Join-Path $model 'rife_v4.6.onnx') -Value 'mock RIFE 4.6 model' -Encoding ASCII
+          Set-Content -LiteralPath (Join-Path $model 'rife_v4.15_lite.onnx') -Value 'mock RIFE 4.15 Lite model' -Encoding ASCII
           New-Item -ItemType Directory -Path (Join-Path $model 'LICENSES') -Force | Out-Null
           Set-Content -LiteralPath (Join-Path $model 'SOURCE.txt') -Value 'mock provenance' -Encoding ASCII
           Set-Content -LiteralPath (Join-Path $model 'LICENSES\RIFE-model-license.txt') -Value 'mock license' -Encoding ASCII
           [pscustomobject]@{
-            schemaVersion = 1
-            model = 'RIFE 4.6'
-            file = 'rife_v4.6.onnx'
-            sourceRelease = 'model-20220923'
-            sourceArchiveSha256 = ('a' * 64)
-            input = @(1, 11, 'H', 'W')
-            output = @(1, 3, 'H', 'W')
-            precision = 'mixed-fp16-fp32'
-          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $model 'model-manifest.json') -Encoding UTF8
+            schemaVersion = 2
+            models = @(
+              [pscustomobject]@{
+                model = 'RIFE 4.4'
+                file = 'rife_v4.4.onnx'
+                sourceRelease = 'model-20220923'
+                sourceArchive = 'rife_v8.7z'
+                sourceArchiveSha256 = ('a' * 64)
+                sourceModel = 'rife/rife_v4.4.onnx'
+                input = @(1, 11, 'H', 'W')
+                output = @(1, 3, 'H', 'W')
+                precision = 'mixed-fp16-fp32'
+              },
+              [pscustomobject]@{
+                model = 'RIFE 4.6'
+                file = 'rife_v4.6.onnx'
+                sourceRelease = 'model-20220923'
+                sourceArchive = 'rife_v8.7z'
+                sourceArchiveSha256 = ('a' * 64)
+                sourceModel = 'rife/rife_v4.6.onnx'
+                input = @(1, 11, 'H', 'W')
+                output = @(1, 3, 'H', 'W')
+                precision = 'mixed-fp16-fp32'
+              },
+              [pscustomobject]@{
+                model = 'RIFE 4.15 Lite'
+                file = 'rife_v4.15_lite.onnx'
+                sourceRelease = 'external-models'
+                sourceArchive = 'rife_v4.15_lite.7z'
+                sourceArchiveSha256 = ('b' * 64)
+                sourceModel = 'rife/rife_v4.15_lite.onnx'
+                input = @(1, 11, 'H', 'W')
+                output = @(1, 3, 'H', 'W')
+                precision = 'mixed-fp16-fp32'
+              }
+            )
+          } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $model 'model-manifest.json') -Encoding UTF8
 
           @(
-            foreach ($file in @('rife_v4.6.onnx', 'model-manifest.json', 'SOURCE.txt', 'LICENSES/RIFE-model-license.txt')) {
+            foreach ($file in @('rife_v4.4.onnx', 'rife_v4.6.onnx', 'rife_v4.15_lite.onnx', 'model-manifest.json', 'SOURCE.txt', 'LICENSES/RIFE-model-license.txt')) {
               $nativePath = $file.Replace('/', [IO.Path]::DirectorySeparatorChar)
               $hash = (Get-FileHash -LiteralPath (Join-Path $model $nativePath) -Algorithm SHA256).Hash.ToLowerInvariant()
               "$hash  $file"
@@ -282,7 +311,7 @@ jobs:
 
           Compress-Archive `
             -Path (Join-Path $model '*') `
-            -DestinationPath (Join-Path $root 'MPCVR-RIFE-Model-v4.6.zip')
+            -DestinationPath (Join-Path $root 'MPCVR-RIFE-Models.zip')
 
       - name: Verify idempotence, cache preservation, and rollback with both PowerShell hosts
         shell: powershell
@@ -290,7 +319,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $root = Join-Path $env:RUNNER_TEMP 'rife-installer-fixture'
           $bundle = Join-Path $root 'bundle'
-          $modelArchive = Join-Path $root 'MPCVR-RIFE-Model-v4.6.zip'
+          $modelArchive = Join-Path $root 'MPCVR-RIFE-Models.zip'
           $script = 'tools/RifeRuntimeInstaller/Install-MPCVRRifeRuntime.ps1'
           $inventory = '[{"name":"NVIDIA GeForce RTX 2070 SUPER","computeCapability":"7.5"},{"name":"NVIDIA GeForce RTX 5070","computeCapability":"12.0"}]'
           $inventoryPath = Join-Path $root 'gpu-inventory.json'

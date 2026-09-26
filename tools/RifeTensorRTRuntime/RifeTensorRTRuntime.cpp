@@ -811,17 +811,18 @@ private:
         nvinfer1::IOptimizationProfile* profile = builder->createOptimizationProfile();
         if (!profile) return false;
 
-        // Keep both modes resolution-dynamic so one serialized engine can be
-        // reused by every normal video size on this GPU. Performance Boost is
-        // differentiated by a deterministic 1080p optimization point plus the
-        // highest TensorRT builder optimization level below, rather than by a
-        // separate fixed-shape engine for every source resolution.
-        const int minW = 128;
-        const int minH = 128;
-        const int maxW = std::max(3840, static_cast<int>(m_paddedWidth));
-        const int maxH = std::max(2176, static_cast<int>(m_paddedHeight));
-        const int optW = m_performanceBoost ? 1920 : static_cast<int>(m_paddedWidth);
-        const int optH = m_performanceBoost ? 1088 : static_cast<int>(m_paddedHeight);
+        // Performance Boost deliberately uses the original fixed-shape plan for
+        // the current padded resolution. Cached A/B throughput testing against
+        // the shared dynamic plan shows the fixed profile is consistently
+        // faster while avoiding the slower level-5 builder experiment.
+        const int minW = m_performanceBoost ? static_cast<int>(m_paddedWidth) : 128;
+        const int minH = m_performanceBoost ? static_cast<int>(m_paddedHeight) : 128;
+        const int maxW = m_performanceBoost ? static_cast<int>(m_paddedWidth)
+                                            : std::max(3840, static_cast<int>(m_paddedWidth));
+        const int maxH = m_performanceBoost ? static_cast<int>(m_paddedHeight)
+                                            : std::max(2176, static_cast<int>(m_paddedHeight));
+        const int optW = static_cast<int>(m_paddedWidth);
+        const int optH = static_cast<int>(m_paddedHeight);
         const nvinfer1::Dims4 minDims{1, 11, minH, minW};
         const nvinfer1::Dims4 optDims{1, 11, optH, optW};
         const nvinfer1::Dims4 maxDims{1, 11, maxH, maxW};
@@ -832,9 +833,6 @@ private:
         }
         if (config->addOptimizationProfile(profile) < 0) return false;
 
-        if (m_performanceBoost) {
-            config->setBuilderOptimizationLevel(5);
-        }
         config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, size_t{2} << 30);
 
         TrtPtr<nvinfer1::IHostMemory> serialized(builder->buildSerializedNetwork(*network, *config));
@@ -986,10 +984,13 @@ private:
             << "_trt" << NV_TENSORRT_MAJOR << '_' << NV_TENSORRT_MINOR
             << "_cc" << m_computeMajor << m_computeMinor
             << '_' << Sanitize(m_gpuName);
-        const uint32_t maxWidth = std::max<uint32_t>(3840, m_paddedWidth);
-        const uint32_t maxHeight = std::max<uint32_t>(2176, m_paddedHeight);
-        out << (m_performanceBoost ? "_dynamic_boost_max" : "_dynamic_max")
-            << maxWidth << 'x' << maxHeight;
+        if (m_performanceBoost) {
+            out << '_' << m_paddedWidth << 'x' << m_paddedHeight << "_static";
+        } else {
+            const uint32_t maxWidth = std::max<uint32_t>(3840, m_paddedWidth);
+            const uint32_t maxHeight = std::max<uint32_t>(2176, m_paddedHeight);
+            out << "_dynamic_max" << maxWidth << 'x' << maxHeight;
+        }
         return out.str();
     }
 

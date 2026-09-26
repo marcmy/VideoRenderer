@@ -941,6 +941,7 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 					rendered = hr == S_OK;
 					if (rendered) {
 						m_bValidBuffer = true;
+						m_FrameInterpolationPresenterRenderedFrames.fetch_add(1, std::memory_order_relaxed);
 					}
 				}
 			}
@@ -1247,7 +1248,7 @@ STDMETHODIMP CMpcVideoRenderer::Pause()
 
 	m_filterState = State_Paused;
 	if (m_RifePipeline) {
-		m_RifePipeline->Reset();
+		m_RifePipeline->Suspend();
 	}
 	ResetFrameInterpolationPresenterQueue();
 

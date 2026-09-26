@@ -287,6 +287,756 @@ void TestPerVideoCapsPreserveNtscRationals()
     Check(capped.numerator == 48000 && capped.denominator == 1001,
         "2x cap preserves canonical 23.976 rational rate");
 }
+
+void TestMeasuredLoadCapsOnlyUnsustainableRequests()
+{
+    const FrameRate source = Rate(30000, 1001);
+    const FrameRate fourTimes = Rate(120000, 1001);
+    const auto overloaded = EstimateFrameInterpolationLoad(
+        source, fourTimes, 2, 23'918, 80);
+    Check(overloaded.requestedOutputFpsMilli > 119'000,
+        "load estimate retains the requested NTSC output rate");
+    Check(overloaded.sustainableSyntheticFpsMilli > 80'000,
+        "two measured contexts contribute aggregate synthetic throughput");
+    Check(overloaded.outputCapFpsMilli == 89'910,
+        "an unattainable NTSC 4x request falls back to the exact 3x source-aligned rate");
+
+    const auto sustainable = EstimateFrameInterpolationLoad(
+        source, Rate(90000, 1001), 2, 23'918, 80);
+    Check(sustainable.outputCapFpsMilli == 0,
+        "a sustainable 3x request remains uncapped");
+
+    const auto warming = EstimateFrameInterpolationLoad(
+        source, fourTimes, 2, 23'918, 7);
+    Check(warming.outputCapFpsMilli == 0,
+        "the controller waits for enough measurements before applying a cap");
+
+    const auto aligned120 = EstimateFrameInterpolationLoad(
+        Rate(60), Rate(120), 2, 25'000, 80);
+    Check(aligned120.outputCapFpsMilli == 0,
+        "60 -> 120 remains sustainable because every source endpoint is reused");
+
+    const auto unaligned121 = EstimateFrameInterpolationLoad(
+        Rate(60), Rate(121), 2, 25'000, 80);
+    Check(unaligned121.outputCapFpsMilli == 120'000,
+        "60 -> 121 detects the doubled synthetic load and falls back to aligned 120 fps");
+
+    const auto sustainable71 = EstimateFrameInterpolationLoad(
+        Rate(60), Rate(71), 2, 25'000, 80);
+    Check(sustainable71.outputCapFpsMilli == 0,
+        "60 -> 71 stays unchanged when its actual synthetic workload is sustainable");
+
+    const auto overloaded71 = EstimateFrameInterpolationLoad(
+        Rate(60), Rate(71), 2, 30'000, 80);
+    Check(overloaded71.outputCapFpsMilli == 70'000,
+        "an overloaded 60 -> 71 request falls only to the highest sustainable grid, 70 fps");
+
+    const auto sustainable140 = EstimateFrameInterpolationLoad(
+        Rate(60), Rate(140), 2, 10'000, 80);
+    Check(sustainable140.outputCapFpsMilli == 0,
+        "RIFE-only 60 -> 140 remains uncapped when inference capacity is sufficient");
+
+    const auto sustainable150 = EstimateFrameInterpolationLoad(
+        Rate(60), Rate(150), 2, 10'000, 80);
+    Check(sustainable150.outputCapFpsMilli == 0,
+        "RIFE-only 60 -> 150 remains uncapped when inference capacity is sufficient");
+
+    const auto limitedFourTimes = EstimateFrameInterpolationLoad(
+        Rate(30), Rate(120), 2, 24'250, 80);
+    Check(limitedFourTimes.outputCapFpsMilli == 90'000,
+        "30 fps 4x request with roughly 110 fps total capacity falls back to sustainable 3x/90");
+}
+
+void TestFixedAndCustomRatesRaiseToNearbySourceMultiplier()
+{
+    CFrameInterpolationScheduler scheduler;
+    scheduler.Configure(FrameInterpolationRateMode::Fixed120, {}, {});
+    const FrameRate fixed = scheduler.ResolveConfiguredTargetRate(Rate(121, 2));
+    Check(fixed.numerator == 121 && fixed.denominator == 1,
+        "60.5 fps source with fixed 120 rounds to nearest 2x rate, 121 fps");
+
+    scheduler.Configure(FrameInterpolationRateMode::Custom, Rate(120), {});
+    const FrameRate custom = scheduler.ResolveConfiguredTargetRate(Rate(121, 2));
+    Check(custom.numerator == 121 && custom.denominator == 1,
+        "60.5 fps source with custom 120 also rounds to nearest 2x rate, 121 fps");
+
+    scheduler.Configure(FrameInterpolationRateMode::Custom, Rate(121), {});
+    const FrameRate explicit121 = scheduler.ResolveConfiguredTargetRate(Rate(60));
+    Check(explicit121.numerator == 121 && explicit121.denominator == 1,
+        "explicit 121 fps on a 60 fps source is preserved until measured load requires a cap");
+}
+
+void TestRuntimeCapComposesWithUserCaps()
+{
+    CFrameInterpolationScheduler scheduler;
+    scheduler.Configure(FrameInterpolationRateMode::Movie4x, {}, {}, 0, 110'000);
+    Check(scheduler.ResolveConfiguredTargetRate(Rate(30)).numerator == 110,
+        "configured rule cap is visible before runtime load control");
+
+    scheduler.SetRuntimeOutputFpsCap(95'000);
+    const FrameRate runtimeCapped = scheduler.ResolveTargetRate(Rate(30));
+    Check(runtimeCapped.numerator == 95 && runtimeCapped.denominator == 1,
+        "runtime load cap composes with the configured user cap");
+
+    scheduler.SetRuntimeOutputFpsCap(115'000);
+    const FrameRate userCapped = scheduler.ResolveTargetRate(Rate(30));
+    Check(userCapped.numerator == 110 && userCapped.denominator == 1,
+        "runtime load control never raises a user-selected cap");
+}
+
+void TestAdaptiveCapPreservesExactNtscMultiplier()
+{
+    CFrameInterpolationScheduler scheduler;
+    scheduler.Configure(FrameInterpolationRateMode::Movie4x, {}, {});
+    scheduler.SetRuntimeOutputFpsCap(89'910);
+    const FrameRate capped = scheduler.ResolveTargetRate(Rate(30000, 1001));
+    Check(capped.numerator == 90000 && capped.denominator == 1001,
+        "rounded adaptive milli-fps cap snaps back to the exact NTSC 3x source rate");
+}
+
+FrameInterpolationPressureSnapshot PressureSnapshot(
+    uint64_t sourcePoolMisses = 0,
+    uint64_t lateSyntheticDrops = 0,
+    uint64_t presentationDrops = 0,
+    uint64_t presentationReclaims = 0,
+    uint64_t presentationSurfaceWaitUs = 0,
+    uint64_t presentationSurfaceWaitCount = 0,
+    uint32_t sourceQueueDepth = 0,
+    uint32_t pendingPairDepth = 0,
+    uint32_t inferenceContexts = 2,
+    uint64_t presenterStaleDrops = 0)
+{
+    return {
+        sourcePoolMisses,
+        lateSyntheticDrops,
+        presentationDrops,
+        presentationReclaims,
+        presentationSurfaceWaitUs,
+        presentationSurfaceWaitCount,
+        sourceQueueDepth,
+        pendingPairDepth,
+        inferenceContexts,
+        presenterStaleDrops,
+    };
+}
+
+FrameInterpolationPressureSnapshot DeliverySnapshot(
+    uint64_t renderedFrames, uint64_t lateDrops = 0)
+{
+    auto snapshot = PressureSnapshot(0, lateDrops);
+    snapshot.presenterDeliveryAvailable = true;
+    snapshot.presenterRenderedFrames = renderedFrames;
+    return snapshot;
+}
+
+void TestSilentOutputShortfallBacksOff()
+{
+    CFrameInterpolationPressureController controller;
+    (void)controller.Update(120'000, 30'000, 0, DeliverySnapshot(0));
+    (void)controller.Update(120'000, 30'000, 1'000, DeliverySnapshot(60));
+    const auto decision = controller.Update(120'000, 30'000, 3'000, DeliverySnapshot(180));
+    Check(decision.pressureDetected && decision.outputCapFpsMilli == 90'000,
+        "a quiet 120 fps request delivering only 60 fps backs off to aligned 90");
+    Check((decision.confirmedPressureReasons & RIFE_PRESSURE_DELIVERY_SHORTFALL) != 0,
+        "silent output shortfall is visible as the cause of backoff");
+}
+
+void TestOutputValidatedProbeReturnsToKnownGood()
+{
+    CFrameInterpolationPressureController controller;
+    constexpr uint32_t Request = 120'000;
+    constexpr uint32_t Source = 30'000;
+    (void)controller.Update(Request, Source, 0, DeliverySnapshot(0));
+    (void)controller.Update(Request, Source, 1'000, DeliverySnapshot(60));
+    (void)controller.Update(Request, Source, 3'000, DeliverySnapshot(180));
+    (void)controller.Update(Request, Source, 4'000, DeliverySnapshot(270));
+    auto decision = controller.Update(Request, Source, 6'000, DeliverySnapshot(450));
+    Check(decision.phase == FrameInterpolationPressurePhase::Stable
+            && decision.lastKnownGoodFpsMilli == 90'000,
+        "90 fps becomes known-good only after the presenter delivers it");
+
+    decision = controller.Update(Request, Source, 6'066, DeliverySnapshot(456, 1));
+    decision = controller.Update(Request, Source, 6'132, DeliverySnapshot(462, 2));
+    Check(decision.outputCapFpsMilli == 90'000 && !decision.pressureDetected,
+        "two isolated late-drop samples cannot demote verified 90 fps to 60");
+
+    decision = controller.Update(Request, Source, 11'000, DeliverySnapshot(900, 2));
+    Check(decision.phase == FrameInterpolationPressurePhase::Probe
+            && decision.outputCapFpsMilli == 0,
+        "validated 90 fps eventually probes the requested 120 fps");
+    (void)controller.Update(Request, Source, 12'000, DeliverySnapshot(990, 2));
+    decision = controller.Update(Request, Source, 13'000, DeliverySnapshot(1'050, 2));
+    Check(decision.phase == FrameInterpolationPressurePhase::Probe,
+        "a quiet probe cannot become known-good before its output window completes");
+    decision = controller.Update(Request, Source, 14'000, DeliverySnapshot(1'110, 2));
+    Check(decision.phase == FrameInterpolationPressurePhase::Settling
+            && decision.outputCapFpsMilli == 90'000,
+        "120 fps silently delivering 60 returns to measured-good 90 fps");
+}
+
+void TestPressureControllerLeavesHealthyArbitraryRateUncapped()
+{
+    CFrameInterpolationPressureController controller;
+    controller.Reset();
+    (void)controller.Update(140'000, 60'000, 0, PressureSnapshot());
+    const auto decision = controller.Update(140'000, 60'000, 1'000, PressureSnapshot());
+
+    Check(!decision.pressureDetected,
+        "healthy pipeline reports no end-to-end pressure");
+    Check(decision.outputCapFpsMilli == 0,
+        "healthy 140 fps request remains uncapped regardless of source multiples");
+}
+
+void TestPressureControllerBacksOffToNearbyCheaperMultiple()
+{
+    CFrameInterpolationPressureController controller;
+    (void)controller.Update(121'000, Rate(60), 0, PressureSnapshot());
+    (void)controller.Update(121'000, Rate(60), 100, PressureSnapshot(0, 1));
+    const auto decision = controller.Update(121'000, Rate(60), 200, PressureSnapshot(0, 2));
+    Check(decision.outputCapFpsMilli == 120'000,
+        "overloaded 60 -> 121 uses cheaper 120 fps instead of lowering to costly 119 fps");
+}
+
+void TestPressureControllerSettlesBeforeAdditionalBackoff()
+{
+    CFrameInterpolationPressureController controller;
+    controller.Reset();
+    (void)controller.Update(190'000, 60'000, 0, PressureSnapshot());
+
+    auto decision = controller.Update(190'000, 60'000, 100,
+        PressureSnapshot(0, 1));
+    Check(!decision.pressureDetected && decision.outputCapFpsMilli == 0,
+        "one late synthetic output is observed but cannot cap the pipeline by itself");
+
+    decision = controller.Update(190'000, 60'000, 200,
+        PressureSnapshot(0, 2));
+    Check(decision.pressureDetected && decision.outputCapFpsMilli == 180'000,
+        "confirmed overload avoids a 2 fps cut that would increase synthetic work");
+
+    decision = controller.Update(190'000, 60'000, 400,
+        PressureSnapshot(0, 3));
+    Check(decision.outputCapFpsMilli == 180'000,
+        "confirmed pressure while the pipeline is settling cannot stack another cut");
+
+    decision = controller.Update(190'000, 60'000, 1'200,
+        PressureSnapshot(0, 4));
+    Check(decision.outputCapFpsMilli == 180'000,
+        "the first fresh post-settle distress observation starts confirmation without cutting again");
+
+    decision = controller.Update(190'000, 60'000, 1'300,
+        PressureSnapshot(1, 4));
+    Check(decision.outputCapFpsMilli == 120'000,
+        "continued distress drops to the next cheaper whole source multiple");
+}
+
+void TestPressureControllerDetectsBacklogAndPresentationWaits()
+{
+    CFrameInterpolationPressureController controller;
+    controller.Reset();
+    (void)controller.Update(150'000, 60'000, 0, PressureSnapshot());
+
+    auto decision = controller.Update(150'000, 60'000, 100,
+        PressureSnapshot(0, 0, 0, 0, 0, 0, 2, 1, 2));
+    Check(!decision.pressureDetected && decision.outputCapFpsMilli == 0,
+        "one backlog observation is not enough to reduce the output rate");
+    decision = controller.Update(150'000, 60'000, 200,
+        PressureSnapshot(0, 0, 0, 0, 0, 0, 2, 1, 2));
+    Check(decision.pressureDetected && decision.outputCapFpsMilli == 120'000,
+        "persistent backlog selects a cheaper aligned rate instead of increasing inference work");
+
+    controller.Reset();
+    (void)controller.Update(150'000, 60'000, 0, PressureSnapshot());
+    decision = controller.Update(150'000, 60'000, 100,
+        PressureSnapshot(0, 0, 0, 0, 3'000, 1));
+    Check(!decision.pressureDetected && decision.outputCapFpsMilli == 0,
+        "presentation-surface waits are telemetry-only producer backpressure");
+    Check((decision.observedPressureReasons & RIFE_PRESSURE_PRESENTATION_SURFACE_WAIT) != 0,
+        "presentation-surface waits remain visible in pressure diagnostics");
+}
+
+void TestPressureControllerDetectsPresenterStaleDrops()
+{
+    CFrameInterpolationPressureController controller;
+    controller.Reset();
+    (void)controller.Update(190'000, 15'000, 0, PressureSnapshot());
+
+    auto decision = controller.Update(190'000, 15'000, 100,
+        PressureSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 2, 1));
+    Check(!decision.pressureDetected && decision.outputCapFpsMilli == 0,
+        "one presenter stale drop is not enough to lower the output cap");
+    Check((decision.observedPressureReasons & RIFE_PRESSURE_PRESENTER_STALE_DROP) != 0,
+        "presenter stale drops are visible as an observed pressure reason");
+
+    decision = controller.Update(190'000, 15'000, 200,
+        PressureSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 2, 2));
+    Check(decision.pressureDetected && decision.outputCapFpsMilli == 180'000,
+        "repeated presenter stale drops select a cheaper aligned backoff");
+    Check((decision.confirmedPressureReasons & RIFE_PRESSURE_PRESENTER_STALE_DROP) != 0,
+        "confirmed pressure diagnostics identify presenter stale drops");
+}
+
+void TestPressureControllerAcceleratesPersistentPresenterOverload()
+{
+    CFrameInterpolationPressureController controller;
+    constexpr uint32_t Request = 190'000;
+    constexpr uint32_t Source = 15'000;
+    (void)controller.Update(Request, Source, 0, PressureSnapshot());
+    (void)controller.Update(Request, Source, 100,
+        PressureSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 2, 1));
+    auto decision = controller.Update(Request, Source, 200,
+        PressureSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 2, 2));
+    Check(decision.outputCapFpsMilli == 180'000,
+        "15 fps overload first selects the cheaper 180 fps multiple");
+
+    (void)controller.Update(Request, Source, 300,
+        PressureSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 2, 3));
+    decision = controller.Update(Request, Source, 400,
+        PressureSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 2, 4));
+    Check(decision.outputCapFpsMilli == 180'000,
+        "old queued losses cannot trigger another cut immediately");
+    decision = controller.Update(Request, Source, 550,
+        PressureSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 2, 5));
+    Check(decision.outputCapFpsMilli == 180'000,
+        "losses during the transition grace period do not trigger another cut");
+
+    decision = controller.Update(Request, Source, 1'200,
+        PressureSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 2, 6));
+    decision = controller.Update(Request, Source, 1'300,
+        PressureSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 2, 7));
+    Check(decision.outputCapFpsMilli == 165'000,
+        "confirmed presenter losses after the grace period lower the cap");
+
+    decision = controller.Update(Request, Source, 2'400,
+        PressureSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 2, 7));
+    Check(decision.phase == FrameInterpolationPressurePhase::Stable,
+        "quiet playback establishes a stable lower cap");
+    decision = controller.Update(Request, Source, 2'800,
+        PressureSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 2, 7));
+    Check(decision.phase == FrameInterpolationPressurePhase::Stable,
+        "a short quiet spell does not immediately reintroduce an overloaded rate");
+    decision = controller.Update(Request, Source, 2'900,
+        PressureSnapshot(0, 0, 0, 0, 0, 0, 0, 0, 2, 7));
+    Check(decision.phase == FrameInterpolationPressurePhase::Probe,
+        "recovery still checks for renewed GPU headroom after sustained quiet playback");
+}
+
+void TestPressureControllerResumeKeepsGoodCapWithoutOldLosses()
+{
+    CFrameInterpolationPressureController controller;
+    constexpr uint32_t Request = 140'000;
+    constexpr uint32_t Source = 60'000;
+    (void)controller.Update(Request, Source, 0, PressureSnapshot());
+    (void)controller.Update(Request, Source, 100, PressureSnapshot(0, 1));
+    auto decision = controller.Update(Request, Source, 200, PressureSnapshot(0, 2));
+    Check(decision.outputCapFpsMilli == 120'000,
+        "overload establishes the cap before pausing");
+    decision = controller.Update(Request, Source, 1'300, PressureSnapshot(0, 2));
+    decision = controller.Update(Request, Source, 3'400, PressureSnapshot(0, 2));
+    Check(decision.phase == FrameInterpolationPressurePhase::Probe,
+        "recovery probe is active when playback pauses");
+
+    controller.Resume(3'500);
+    decision = controller.Update(Request, Source, 3'500,
+        PressureSnapshot(0, 200, 0, 0, 0, 0, 0, 0, 2, 100));
+    Check(decision.outputCapFpsMilli == 120'000
+            && !decision.pressureDetected
+            && decision.observedPressureReasons == RIFE_PRESSURE_NONE,
+        "resume restores the proven cap and ignores drops from the old generation");
+    decision = controller.Update(Request, Source, 3'600,
+        PressureSnapshot(0, 200, 0, 0, 0, 0, 0, 0, 2, 100));
+    Check(decision.outputCapFpsMilli == 120'000,
+        "resumed playback does not restart at the overloaded request");
+
+    decision = controller.Update(Request, 30'000, 3'700,
+        PressureSnapshot(0, 200, 0, 0, 0, 0, 0, 0, 2, 100));
+    Check(decision.outputCapFpsMilli == 0,
+        "a different source frame rate still invalidates the learned cap");
+}
+
+void TestPressureControllerRecoversByBracketAndRevertsFailedProbe()
+{
+    CFrameInterpolationPressureController controller;
+    controller.Reset();
+    (void)controller.Update(140'000, 60'000, 0, PressureSnapshot());
+    auto decision = controller.Update(140'000, 60'000, 100,
+        PressureSnapshot(0, 1));
+    Check(decision.outputCapFpsMilli == 0,
+        "one transient late output does not establish a lower cap");
+    decision = controller.Update(140'000, 60'000, 200,
+        PressureSnapshot(0, 2));
+    Check(decision.outputCapFpsMilli == 120'000,
+        "confirmed repeated pressure selects a cheaper aligned cap before recovery");
+
+    decision = controller.Update(140'000, 60'000, 1'300,
+        PressureSnapshot(0, 2));
+    Check(decision.outputCapFpsMilli == 120'000,
+        "quiet after settling establishes the reduced rate as known-good");
+
+    decision = controller.Update(140'000, 60'000, 3'400,
+        PressureSnapshot(0, 2));
+    Check(decision.outputCapFpsMilli == 130'000,
+        "recovery probes the midpoint of the known-good/known-bad bracket");
+
+    decision = controller.Update(140'000, 60'000, 3'500,
+        PressureSnapshot(0, 3));
+    Check(decision.outputCapFpsMilli == 130'000,
+        "drops during a recovery probe transition do not reject the probe");
+    decision = controller.Update(140'000, 60'000, 3'600,
+        PressureSnapshot(0, 4));
+    Check(decision.outputCapFpsMilli == 130'000,
+        "repeated transition-window drops remain excluded from probe pressure");
+    decision = controller.Update(140'000, 60'000, 4'500,
+        PressureSnapshot(0, 5));
+    decision = controller.Update(140'000, 60'000, 4'600,
+        PressureSnapshot(0, 6));
+    Check(decision.outputCapFpsMilli == 120'000,
+        "confirmed post-transition pressure during a recovery probe returns to the last stable cap");
+}
+
+void TestPressureControllerRecoversQuicklyAfterAnOvershoot()
+{
+    CFrameInterpolationPressureController controller;
+    controller.Reset();
+    (void)controller.Update(190'000, 60'000, 0, PressureSnapshot());
+
+    uint64_t lateDrops = 0;
+    uint64_t now = 100;
+    auto decision = controller.Update(190'000, 60'000, now, PressureSnapshot(0, ++lateDrops));
+    now += 100;
+    decision = controller.Update(190'000, 60'000, now, PressureSnapshot(0, ++lateDrops));
+    for (int i = 0; i < 4; ++i) {
+        now += 1'000;
+        decision = controller.Update(190'000, 60'000, now, PressureSnapshot(0, ++lateDrops));
+        now += 100;
+        decision = controller.Update(190'000, 60'000, now, PressureSnapshot(0, ++lateDrops));
+    }
+    Check(decision.outputCapFpsMilli < 150'000,
+        "escalating backoff can move a badly overloaded 190 fps request down quickly");
+
+    const uint32_t lowCap = decision.outputCapFpsMilli;
+    now += 1'100;
+    decision = controller.Update(190'000, 60'000, now, PressureSnapshot(0, lateDrops));
+    Check(decision.outputCapFpsMilli == lowCap,
+        "first quiet settled sample records the low cap as known-good");
+
+    now += 2'100;
+    decision = controller.Update(190'000, 60'000, now, PressureSnapshot(0, lateDrops));
+    Check(decision.outputCapFpsMilli > lowCap + 1'000,
+        "recovery jumps toward the known-bad boundary instead of crawling upward at 1 fps every few seconds");
+}
+
+void TestPressureControllerRecoversThroughHigherWholeMultiples()
+{
+    CFrameInterpolationPressureController controller;
+    controller.Reset();
+    constexpr uint32_t Request = 190'000;
+    constexpr uint32_t Source = 30'000;
+    uint64_t now = 0;
+    uint64_t lateDrops = 0;
+    (void)controller.Update(Request, Source, now, PressureSnapshot());
+    (void)controller.Update(Request, Source, now += 100,
+        PressureSnapshot(0, ++lateDrops));
+    auto decision = controller.Update(Request, Source, now += 100,
+        PressureSnapshot(0, ++lateDrops));
+
+    // Backoff from 190 visits the cheaper aligned 180, 150, 120, and 90
+    // instead of stepping through arbitrary rates that need more inference.
+    for (int i = 0; i < 3; ++i) {
+        (void)controller.Update(Request, Source, now += 1'100,
+            PressureSnapshot(0, ++lateDrops));
+        decision = controller.Update(Request, Source, now += 100,
+            PressureSnapshot(0, ++lateDrops));
+    }
+    Check(decision.outputCapFpsMilli == 90'000,
+        "sustained pressure reaches 90 fps without skipping the aligned rates");
+    decision = controller.Update(Request, Source, now += 1'100,
+        PressureSnapshot(0, lateDrops));
+    Check(decision.phase == FrameInterpolationPressurePhase::Stable,
+        "quiet playback establishes a stable cap after backoff");
+
+    for (const uint32_t aligned : {120'000u, 150'000u, 180'000u}) {
+        decision = controller.Update(Request, Source, now += aligned == 120'000 ? 30'000 : 2'100,
+            PressureSnapshot(0, lateDrops));
+        Check(decision.phase == FrameInterpolationPressurePhase::Probe
+                && decision.outputCapFpsMilli == aligned,
+            "recovery tests each higher source-aligned rate after overload subsides");
+        decision = controller.Update(Request, Source, now += 1'100,
+            PressureSnapshot(0, lateDrops));
+        Check(decision.phase == FrameInterpolationPressurePhase::Stable
+                && decision.lastKnownGoodFpsMilli == aligned,
+            "a healthy aligned probe becomes the next known-good cap");
+    }
+}
+
+void TestPressureControllerRecoversFromNtscThreeTimesToFourTimes()
+{
+    CFrameInterpolationPressureController controller;
+    constexpr uint32_t Request = 190'000;
+    constexpr FrameRate Source{30'000, 1'001};
+    constexpr uint32_t ThreeTimes = 89'910;
+    constexpr uint32_t FourTimes = 119'880;
+    uint64_t now = 0;
+    uint64_t lateDrops = 0;
+    (void)controller.Update(Request, Source, now, PressureSnapshot());
+
+    // Drive sustained overload down to the 3x NTSC cadence, matching a clip
+    // that settles near 89.91 fps after the requested 190 fps proves too high.
+    (void)controller.Update(Request, Source, now += 100,
+        PressureSnapshot(0, ++lateDrops));
+    auto decision = controller.Update(Request, Source, now += 100,
+        PressureSnapshot(0, ++lateDrops));
+    for (int i = 0; i < 8 && decision.outputCapFpsMilli > ThreeTimes; ++i) {
+        (void)controller.Update(Request, Source, now += 1'100,
+            PressureSnapshot(0, ++lateDrops));
+        decision = controller.Update(Request, Source, now += 100,
+            PressureSnapshot(0, ++lateDrops));
+    }
+    Check(decision.outputCapFpsMilli == ThreeTimes,
+        "sustained overload reaches the exact 3x cadence for 29.97 fps content");
+
+    // Once playback is quiet, the controller must probe 4x (119.88) rather
+    // than remain parked indefinitely at the previous known-good 3x cap.
+    decision = controller.Update(Request, Source, now += 1'100,
+        PressureSnapshot(0, lateDrops));
+    Check(decision.phase == FrameInterpolationPressurePhase::Stable
+            && decision.lastKnownGoodFpsMilli == ThreeTimes,
+        "quiet playback establishes the 3x NTSC cap as known-good");
+    decision = controller.Update(Request, Source, now += 2'100,
+        PressureSnapshot(0, lateDrops));
+    Check(decision.phase == FrameInterpolationPressurePhase::Probe
+            && decision.outputCapFpsMilli == FourTimes,
+        "quiet 3x NTSC playback advances to a 4x recovery probe");
+}
+
+void TestPressureControllerStopsEscalatingAfterAlignedRateFails()
+{
+    CFrameInterpolationPressureController controller;
+    controller.Reset();
+    constexpr uint32_t Request = 94'000;
+    constexpr uint32_t Source = 30'000;
+    uint64_t now = 0;
+    uint64_t lateDrops = 0;
+    (void)controller.Update(Request, Source, now, PressureSnapshot());
+    (void)controller.Update(Request, Source, now += 100,
+        PressureSnapshot(0, ++lateDrops));
+    auto decision = controller.Update(Request, Source, now += 100,
+        PressureSnapshot(0, ++lateDrops));
+    Check(decision.outputCapFpsMilli == 90'000,
+        "a nearby 90 fps source multiple is chosen over a costly 92 fps backoff");
+    decision = controller.Update(Request, Source, now += 1'100,
+        PressureSnapshot(0, lateDrops));
+    Check(decision.phase == FrameInterpolationPressurePhase::Stable
+            && decision.lastKnownGoodFpsMilli == 90'000,
+        "quiet playback establishes 90 fps as known-good before its load changes");
+    (void)controller.Update(Request, Source, now += 100,
+        PressureSnapshot(0, ++lateDrops));
+    decision = controller.Update(Request, Source, now += 100,
+        PressureSnapshot(0, ++lateDrops));
+    Check(decision.outputCapFpsMilli == 60'000
+            && decision.phase == FrameInterpolationPressurePhase::Settling,
+        "sustained overload at 90 fps drops to the next cheaper aligned rate");
+    (void)controller.Update(Request, Source, now += 1'100,
+        PressureSnapshot(0, lateDrops));
+    decision = controller.Update(Request, Source, now += 2'100,
+        PressureSnapshot(0, lateDrops));
+    Check(decision.outputCapFpsMilli == 60'000
+            && decision.phase == FrameInterpolationPressurePhase::Stable,
+        "the known-good aligned rate is held instead of probing an intermediate cadence");
+    decision = controller.Update(Request, Source, now += 30'000,
+        PressureSnapshot(0, lateDrops));
+    Check(decision.outputCapFpsMilli == 90'000
+            && decision.phase == FrameInterpolationPressurePhase::Probe,
+        "the previously failed aligned rate is retried after sustained quiet playback");
+}
+
+void TestPressureControllerHolds90UntilFailed120CanBeRetried()
+{
+    CFrameInterpolationPressureController controller;
+    constexpr uint32_t Request = 190'000;
+    constexpr uint32_t Source = 30'000;
+    constexpr uint32_t KnownGood = 90'000;
+    constexpr uint32_t FailedProbe = 120'000;
+    uint64_t now = 0;
+    uint64_t lateDrops = 0;
+    (void)controller.Update(Request, Source, now, PressureSnapshot());
+    (void)controller.Update(Request, Source, now += 100,
+        PressureSnapshot(0, ++lateDrops));
+    auto decision = controller.Update(Request, Source, now += 100,
+        PressureSnapshot(0, ++lateDrops));
+
+    for (int i = 0; i < 3; ++i) {
+        (void)controller.Update(Request, Source, now += 1'100,
+            PressureSnapshot(0, ++lateDrops));
+        decision = controller.Update(Request, Source, now += 100,
+            PressureSnapshot(0, ++lateDrops));
+    }
+    Check(decision.outputCapFpsMilli == KnownGood,
+        "pressure backs the 30 fps source down to its sustainable 90 fps cadence");
+    decision = controller.Update(Request, Source, now += 1'100,
+        PressureSnapshot(0, lateDrops));
+    Check(decision.phase == FrameInterpolationPressurePhase::Stable,
+        "90 fps becomes the stable known-good cap before recovery");
+
+    decision = controller.Update(Request, Source, now += 2'100,
+        PressureSnapshot(0, lateDrops));
+    Check(decision.phase == FrameInterpolationPressurePhase::Probe
+            && decision.outputCapFpsMilli == FailedProbe,
+        "recovery probes the next exact cadence at 120 fps");
+
+    // Ignore transition-time drops, then confirm that the 120 fps probe is
+    // unsustainable. The controller should return to 90 and remember the
+    // failed aligned rate for its retry cooldown.
+    (void)controller.Update(Request, Source, now += 1'100,
+        PressureSnapshot(0, ++lateDrops));
+    decision = controller.Update(Request, Source, now += 100,
+        PressureSnapshot(0, ++lateDrops));
+    Check(decision.outputCapFpsMilli == KnownGood
+            && decision.phase == FrameInterpolationPressurePhase::Settling,
+        "an overloaded 120 fps probe falls directly back to the known-good 90 fps cap");
+    (void)controller.Update(Request, Source, now += 1'100,
+        PressureSnapshot(0, lateDrops));
+    decision = controller.Update(Request, Source, now += 2'100,
+        PressureSnapshot(0, lateDrops));
+    Check(decision.outputCapFpsMilli == KnownGood
+            && decision.phase == FrameInterpolationPressurePhase::Stable,
+        "90 fps stays selected instead of trying an unstable intermediate cap near 105 fps");
+
+    decision = controller.Update(Request, Source, now += 30'000,
+        PressureSnapshot(0, lateDrops));
+    Check(decision.outputCapFpsMilli == FailedProbe
+            && decision.phase == FrameInterpolationPressurePhase::Probe,
+        "120 fps is retried after its cooldown while preserving the stable 90 fps fallback");
+}
+
+void TestPressureControllerSupportsRatesAbove190AndFractionalSources()
+{
+    CFrameInterpolationPressureController controller;
+    constexpr FrameRate ntscSource = {24'000, 1'001};
+    (void)controller.Update(240'000, ntscSource, 0, PressureSnapshot());
+    (void)controller.Update(240'000, ntscSource, 100, PressureSnapshot(0, 1));
+    auto decision = controller.Update(240'000, ntscSource, 200, PressureSnapshot(0, 2));
+    Check(decision.outputCapFpsMilli == 239'760,
+        "a 240 fps request can back off to exact 10x NTSC cadence above 190 fps");
+
+    controller.Reset();
+    constexpr FrameRate uncommonSource = {100'000, 1'691};
+    constexpr uint32_t Request = 200'000;
+    uint64_t now = 0;
+    uint64_t lateDrops = 0;
+    (void)controller.Update(Request, uncommonSource, now, PressureSnapshot());
+    (void)controller.Update(Request, uncommonSource, now += 100,
+        PressureSnapshot(0, ++lateDrops));
+    decision = controller.Update(Request, uncommonSource, now += 100,
+        PressureSnapshot(0, ++lateDrops));
+    Check(decision.outputCapFpsMilli == 177'410,
+        "aligned backoff uses the exact source rational instead of multiplying rounded milli-fps");
+
+    CFrameInterpolationScheduler scheduler;
+    scheduler.Configure(FrameInterpolationRateMode::Custom, Rate(200), {});
+    scheduler.SetRuntimeOutputFpsCap(decision.outputCapFpsMilli);
+    const FrameRate output = scheduler.ResolveTargetRate(uncommonSource);
+    Check(output.numerator == 300'000 && output.denominator == 1'691,
+        "the rounded controller cap restores an exact uncommon source multiple in the scheduler");
+
+    controller.Reset();
+    (void)controller.Update(300'000, Rate(60), 0, PressureSnapshot());
+    (void)controller.Update(300'000, Rate(60), 100, PressureSnapshot(0, 1));
+    (void)controller.Update(300'000, Rate(60), 200, PressureSnapshot(0, 2));
+    (void)controller.Update(300'000, Rate(60), 1'300, PressureSnapshot(0, 2));
+    decision = controller.Update(300'000, Rate(60), 31'900, PressureSnapshot(0, 2));
+    Check(decision.phase == FrameInterpolationPressurePhase::Probe
+            && decision.outputCapFpsMilli == 0,
+        "a 5x 60 fps request can probe 300 fps rather than stopping at 190 or 240");
+}
+
+void TestPressureControllerDoesNotTreatOneDrainingSurfaceWaitAsFreshOverload()
+{
+    CFrameInterpolationPressureController controller;
+    controller.Reset();
+    (void)controller.Update(190'000, 60'000, 0, PressureSnapshot());
+    uint64_t waitUs = 0;
+    uint64_t waitCount = 0;
+    uint64_t lateDrops = 0;
+    FrameInterpolationPressureDecision decision;
+    for (uint64_t now = 100; now <= 5'000; now += 100) {
+        waitUs += 4'000;
+        ++waitCount;
+        if (now == 1'000 || now == 3'000 || now == 5'000) {
+            ++lateDrops;
+        }
+        decision = controller.Update(190'000, 60'000, now,
+            PressureSnapshot(0, lateDrops, 0, 0, waitUs, waitCount));
+        Check(decision.outputCapFpsMilli == 0,
+            "continuous presentation backpressure plus isolated late drops cannot ratchet the cap downward");
+    }
+    Check(!decision.pressureDetected
+            && (decision.observedPressureReasons & RIFE_PRESSURE_PRESENTATION_SURFACE_WAIT),
+        "surface waits remain observable without becoming cap-driving pressure");
+}
+
+void TestPressureControllerResetsWhenRequestedRateChanges()
+{
+    CFrameInterpolationPressureController controller;
+    controller.Reset();
+    (void)controller.Update(190'000, 60'000, 0, PressureSnapshot());
+    auto decision = controller.Update(190'000, 60'000, 100, PressureSnapshot(0, 1));
+    decision = controller.Update(190'000, 60'000, 200, PressureSnapshot(0, 2));
+    Check(decision.outputCapFpsMilli != 0,
+        "pressure establishes an adaptive cap before a user target change");
+
+    decision = controller.Update(120'000, 60'000, 300, PressureSnapshot(0, 2));
+    Check(decision.outputCapFpsMilli == 0 && !decision.pressureDetected,
+        "changing the requested output rate starts a fresh pressure measurement instead of inheriting a stale cap");
+}
+
+void TestPressureControllerNeverCapsBelowSourceRate()
+{
+    CFrameInterpolationPressureController controller;
+    controller.Reset();
+    (void)controller.Update(62'000, 60'000, 0, PressureSnapshot());
+    (void)controller.Update(62'000, 60'000, 100,
+        PressureSnapshot(1));
+    const auto decision = controller.Update(62'000, 60'000, 200,
+        PressureSnapshot(2));
+    Check(decision.outputCapFpsMilli == 60'000,
+        "pressure control never drives the output rate below the real source rate");
+}
+
+void TestPressureAtSourceRateDoesNotEraseKnownBadRate()
+{
+    CFrameInterpolationPressureController controller;
+    constexpr uint32_t Request = 190'000;
+    constexpr uint32_t Source = 60'000;
+    uint64_t now = 0;
+    uint64_t lateDrops = 0;
+    (void)controller.Update(Request, Source, now, PressureSnapshot());
+    (void)controller.Update(Request, Source, now += 100,
+        PressureSnapshot(0, ++lateDrops));
+    auto decision = controller.Update(Request, Source, now += 100,
+        PressureSnapshot(0, ++lateDrops));
+    for (int i = 0; i < 5; ++i) {
+        (void)controller.Update(Request, Source, now += 1'100,
+            PressureSnapshot(0, ++lateDrops));
+        decision = controller.Update(Request, Source, now += 100,
+            PressureSnapshot(0, ++lateDrops));
+    }
+    Check(decision.outputCapFpsMilli == Source,
+        "backoff stops at the real source rate after sustained pressure");
+    (void)controller.Update(Request, Source, now += 1'100,
+        PressureSnapshot(0, ++lateDrops));
+    decision = controller.Update(Request, Source, now += 100,
+        PressureSnapshot(0, ++lateDrops));
+    Check(decision.outputCapFpsMilli == Source
+            && decision.lastKnownBadFpsMilli > Source,
+        "pressure at source rate retains the last meaningful bad rate");
+    (void)controller.Update(Request, Source, now += 1'100,
+        PressureSnapshot(0, lateDrops));
+    decision = controller.Update(Request, Source, now += 2'100,
+        PressureSnapshot(0, lateDrops));
+    Check(decision.outputCapFpsMilli > Source
+            && decision.outputCapFpsMilli < Request,
+        "recovery probes cautiously instead of reopening the original overloaded target");
+}
 } // namespace
 
 int main()
@@ -304,6 +1054,30 @@ int main()
     TestTwoTimesWithQuantizedSourceTimestamps();
     TestPerVideoCapsNeverBoostRequestedRate();
     TestPerVideoCapsPreserveNtscRationals();
+    TestMeasuredLoadCapsOnlyUnsustainableRequests();
+    TestFixedAndCustomRatesRaiseToNearbySourceMultiplier();
+    TestRuntimeCapComposesWithUserCaps();
+    TestAdaptiveCapPreservesExactNtscMultiplier();
+    TestSilentOutputShortfallBacksOff();
+    TestOutputValidatedProbeReturnsToKnownGood();
+    TestPressureControllerLeavesHealthyArbitraryRateUncapped();
+    TestPressureControllerBacksOffToNearbyCheaperMultiple();
+    TestPressureControllerSettlesBeforeAdditionalBackoff();
+    TestPressureControllerDetectsBacklogAndPresentationWaits();
+    TestPressureControllerDetectsPresenterStaleDrops();
+    TestPressureControllerAcceleratesPersistentPresenterOverload();
+    TestPressureControllerResumeKeepsGoodCapWithoutOldLosses();
+    TestPressureControllerRecoversByBracketAndRevertsFailedProbe();
+    TestPressureControllerRecoversQuicklyAfterAnOvershoot();
+    TestPressureControllerRecoversThroughHigherWholeMultiples();
+    TestPressureControllerRecoversFromNtscThreeTimesToFourTimes();
+    TestPressureControllerStopsEscalatingAfterAlignedRateFails();
+    TestPressureControllerHolds90UntilFailed120CanBeRetried();
+    TestPressureControllerSupportsRatesAbove190AndFractionalSources();
+    TestPressureControllerDoesNotTreatOneDrainingSurfaceWaitAsFreshOverload();
+    TestPressureControllerResetsWhenRequestedRateChanges();
+    TestPressureControllerNeverCapsBelowSourceRate();
+    TestPressureAtSourceRateDoesNotEraseKnownBadRate();
 
     if (g_failures) {
         std::cerr << g_failures << " scheduler test(s) failed\n";

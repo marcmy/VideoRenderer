@@ -23,7 +23,7 @@ $rendererUpdater = Join-Path $payloadRoot 'Update-KLiteMPCVR.ps1'
 
 $rendererArchive = Join-Path $payloadRoot 'MpcVideoRenderer-Maxine-RIFE.zip'
 $maxineRuntimeArchive = Join-Path $payloadRoot 'MPCVR-Maxine-Runtime.zip'
-$rifeModelArchive = Join-Path $payloadRoot 'MPCVR-RIFE-Model-v4.6.zip'
+$rifeModelArchive = Join-Path $payloadRoot 'MPCVR-RIFE-Models.zip'
 $rifeRuntimeManifest = Join-Path $payloadRoot 'RIFE-runtime-manifest.json'
 $rifeRuntimeChecksums = Join-Path $payloadRoot 'RIFE-runtime-SHA256SUMS.txt'
 $rifeRuntimeSource = Join-Path $payloadRoot 'RIFE-runtime-release.json'
@@ -40,7 +40,7 @@ $requiredPayloadNames = @(
     'MpcVideoRenderer-Maxine-RIFE.zip',
     'MPCVR-Maxine-Runtime.zip',
     'MPCVR-RIFE-Common.zip',
-    'MPCVR-RIFE-Model-v4.6.zip',
+    'MPCVR-RIFE-Models.zip',
     'RIFE-runtime-manifest.json',
     'RIFE-runtime-SHA256SUMS.txt',
     'RIFE-runtime-release.json',
@@ -450,7 +450,7 @@ try {
         GpuInventoryJson = $normalizedGpuInventoryJson
     }
     Invoke-SetupStep `
-        -Name '2/4 Installing RIFE 4.6 TensorRT runtime...' `
+        -Name '2/4 Installing RIFE TensorRT runtime and models...' `
         -ScriptPath $rifeRuntimeInstaller `
         -Parameters $rifeInstallParameters
 
@@ -483,7 +483,7 @@ try {
     Write-Host 'Press Ctrl+J and confirm:'
     Write-Host "  Maxine runtime: $maxineRuntimePath"
     Write-Host '  RIFE runtime: ready'
-    Write-Host '  RIFE model: 4.6'
+    Write-Host '  RIFE models: 4.4, 4.6, 4.15 Lite'
     Write-Host 'First playback may build a TensorRT engine under %LOCALAPPDATA%\MPCVideoRenderer\RIFE\cache.'
 }
 catch {

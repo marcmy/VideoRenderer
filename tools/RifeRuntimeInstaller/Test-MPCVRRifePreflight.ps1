@@ -94,7 +94,6 @@ namespace MpcVrRifePreflight
 function Invoke-RifePreflight {
     $root = [IO.Path]::GetFullPath($InstallRoot)
     $runtimeRoot = Join-Path $root 'runtime'
-    $modelPath = Join-Path $root 'models\rife_v4.6.onnx'
     $cacheRoot = Join-Path $root 'cache'
     $manifestPath = Join-Path $root 'installed-manifest.json'
 
@@ -102,8 +101,8 @@ function Invoke-RifePreflight {
         throw "Installed RIFE manifest was not found: $manifestPath"
     }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-    if ([int](Get-RequiredProperty $manifest 'schemaVersion' 'installed manifest') -ne 1) {
-        throw 'Installed RIFE manifest schemaVersion must be 1.'
+    if ([int](Get-RequiredProperty $manifest 'schemaVersion' 'installed manifest') -ne 2) {
+        throw 'Installed RIFE manifest schemaVersion must be 2.'
     }
     if ([int](Get-RequiredProperty $manifest 'runtimeAbi' 'installed manifest') -ne 2) {
         throw 'Installed RIFE manifest runtimeAbi must be 2.'
@@ -111,7 +110,6 @@ function Invoke-RifePreflight {
 
     foreach ($fileName in @(
         'MPCVRRifeRuntime64.dll',
-        'cudart64_12.dll',
         'nvinfer_11.dll',
         'nvonnxparser_11.dll',
         'nvinfer_builder_resource_ptx_11.dll'
@@ -136,11 +134,32 @@ function Invoke-RifePreflight {
         }
     }
 
-    if (-not (Test-Path -LiteralPath $modelPath -PathType Leaf)) {
-        throw "RIFE preflight is missing model: $modelPath"
+    $expectedModels = @(
+        [pscustomobject]@{ Model = 'RIFE 4.4'; File = 'models/rife_v4.4.onnx' },
+        [pscustomobject]@{ Model = 'RIFE 4.6'; File = 'models/rife_v4.6.onnx' },
+        [pscustomobject]@{ Model = 'RIFE 4.15 Lite'; File = 'models/rife_v4.15_lite.onnx' }
+    )
+    $installedModels = @(Get-RequiredProperty $manifest 'models' 'installed manifest')
+    if ($installedModels.Count -ne $expectedModels.Count) {
+        throw "Installed RIFE manifest must contain exactly $($expectedModels.Count) models."
     }
-    $expectedModelHash = [string](Get-RequiredProperty $manifest 'modelSha256' 'installed manifest')
-    [void](Assert-RifeFileHash -Path $modelPath -ExpectedHash $expectedModelHash -DisplayName 'models/rife_v4.6.onnx')
+    $modelSummaries = @()
+    foreach ($expected in $expectedModels) {
+        $matches = @($installedModels | Where-Object {
+            [string]$_.model -eq $expected.Model -and [string]$_.modelFile -eq $expected.File
+        })
+        if ($matches.Count -ne 1) {
+            throw "Installed RIFE manifest must declare $($expected.Model) as $($expected.File) exactly once."
+        }
+        $entry = $matches[0]
+        $modelPath = Join-Path $root $expected.File.Replace('/', [IO.Path]::DirectorySeparatorChar)
+        if (-not (Test-Path -LiteralPath $modelPath -PathType Leaf)) {
+            throw "RIFE preflight is missing model: $modelPath"
+        }
+        $expectedModelHash = [string](Get-RequiredProperty $entry 'modelSha256' "$($expected.Model) installed manifest entry")
+        [void](Assert-RifeFileHash -Path $modelPath -ExpectedHash $expectedModelHash -DisplayName $expected.File)
+        $modelSummaries += "$($expected.Model) $($expectedModelHash.Substring(0, 12))"
+    }
 
     if (-not (Test-Path -LiteralPath $cacheRoot -PathType Container)) {
         throw "RIFE preflight is missing cache directory: $cacheRoot"
@@ -167,7 +186,7 @@ function Invoke-RifePreflight {
     Write-Host ('GPUs: {0}' -f (($gpuInventory | ForEach-Object { '{0} (CC {1})' -f $_.Name, $_.ComputeCapability }) -join '; '))
     Write-Host ('Architecture packs: {0}' -f ($architectureKeys -join ', '))
     Write-Host ('TensorRT: {0}' -f [string](Get-RequiredProperty $manifest 'tensorRtVersion' 'installed manifest'))
-    Write-Host ('Model SHA-256: {0}' -f $expectedModelHash)
+    Write-Host ('Models: {0}' -f ($modelSummaries -join '; '))
     Write-Host ('Runtime ABI: {0}' -f $abi)
 }
 

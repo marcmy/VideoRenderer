@@ -170,6 +170,8 @@ enum :int {
 
 enum :int {
 	RIFE_MODEL_46 = 46,
+	RIFE_MODEL_44 = 44,
+	RIFE_MODEL_415_LITE = 4151,
 };
 
 constexpr inline int RIFE_GPU_Auto = -1;

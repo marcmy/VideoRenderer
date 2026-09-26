@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - feature/rife-tensorrt-interpolation
+      - feature/rife-model-variants
     paths:
       - .github/workflows/rife-runtime.yml
       - tools/RifeTensorRTRuntime/**
@@ -20,16 +21,16 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 30
     env:
-      CUDA_VERSION: 12.9.1
-      CUDA_COMPILER_VERSION: 12.9.86
-      CUDA_RUNTIME_VERSION: 12.9.79
-      TENSORRT_VERSION: 11.2.1.2
+      CUDA_VERSION: 13.4.1
+      CUDA_COMPILER_VERSION: 13.4.59
+      CUDA_RUNTIME_VERSION: 13.4.49
+      TENSORRT_VERSION: 11.3.0.99
       TENSORRT_SLA_SHA256: eea91074c3bb4db31015e9c4bece1a1ff7db3ca59bdc3ad0d5b3c344aeb5cba4
       CUDA_LICENSE_SHA256: e2c71babfd18a8e69542dd7e9ca018f9caa438094001a58e6bc4d8c999bf0d07
       NVIDIA_DOWNLOAD_CACHE: ${{ github.workspace }}\_rife-download-cache
-      CUDA_ROOT: ${{ github.workspace }}\_rife-deps\cuda-12.9
-      TENSORRT_ARCHIVE: ${{ github.workspace }}\_rife-download-cache\TensorRT-11.2.1.2.zip
-      TENSORRT_EXPECTED_SHA256: 8653df0b9a57ea5fd349e12d20243f6131f02052ef8041e756366e5779348c16
+      CUDA_ROOT: ${{ github.workspace }}\_rife-deps\cuda-13.4
+      TENSORRT_ARCHIVE: ${{ github.workspace }}\_rife-download-cache\TensorRT-11.3.0.99.zip
+      TENSORRT_EXPECTED_SHA256: 8ffd112d7bab97bc81eed818358b85df8c317bcdfc3cd3c731c220df7ca737eb
       TENSORRT_EXTRACT: ${{ github.workspace }}\_rife-deps\tensorrt
       BUILD_DIR: ${{ github.workspace }}\_rife-runtime-build
       PACKAGE_DIR: ${{ github.workspace }}\_rife-runtime-package
@@ -43,7 +44,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}\_rife-download-cache
-          key: rife-nvidia-sdk-windows-cuda-12.9.1-tensorrt-11.2.1.2-v1
+          key: rife-nvidia-sdk-windows-cuda-13.4.1-tensorrt-11.3.0.99-v1
 
       - name: Enter Visual Studio x64 developer shell
         shell: pwsh
@@ -60,7 +61,7 @@ jobs:
           cmake --version
           ninja --version
 
-      - name: Download pinned CUDA 12.9.1 build components
+      - name: Download pinned CUDA 13.4.1 build components
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -94,14 +95,20 @@ jobs:
           }
 
           Add-CudaArchive 'cuda_nvcc' `
-            'cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-12.9.86-archive.zip' `
-            '227b109663b5e57d2718bcabb24a4ba0d9d4e52d958e327dc476f7c28691be85'
+            'cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-13.4.59-archive.zip' `
+            '06a4fe6ec543030c5e5a7b85493cda90612015d9fff2a54ed0227162c937ea46'
+          Add-CudaArchive 'cuda_crt' `
+            'cuda_crt/windows-x86_64/cuda_crt-windows-x86_64-13.4.59-archive.zip' `
+            'f969a0e3b086a48f940563cd1b965cb5197fd9540c79cc952b1abfa479f9ede7'
+          Add-CudaArchive 'libnvvm' `
+            'libnvvm/windows-x86_64/libnvvm-windows-x86_64-13.4.59-archive.zip' `
+            'a7a07bcc21cc05bce83eedebcbcd9b9f5418c58316b0fa28a57cb2c548b29841'
           Add-CudaArchive 'cuda_cudart' `
-            'cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.9.79-archive.zip' `
-            '179e9c43b0735ffe67207b3da556eb5a0c50f3047961882b7657d3b822d34ef8'
+            'cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-13.4.49-archive.zip' `
+            'e6663f3d3e8949eedc2d5ab92c7c5b9fa3f2a222086d91c42bfc5a38bf2b0225'
           Add-CudaArchive 'cuda_cccl' `
-            'cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-12.9.27-archive.zip' `
-            '17aaa7c6b8f94a417d8f3261780b7e34b9cbdfab7513bce86768623b06aa28b5'
+            'cccl/windows-x86_64/cccl-windows-x86_64-13.3.4.2.1-archive.zip' `
+            'ea3ebdd98d4d98819cc26b66bc5a0931004ed35ff18eea8b93e0bd2c8bfa5d7c'
 
           $nvcc = Join-Path $env:CUDA_ROOT 'bin\nvcc.exe'
           if (-not (Test-Path $nvcc)) { throw "nvcc not found at $nvcc" }
@@ -109,12 +116,12 @@ jobs:
           "CUDAToolkit_ROOT=$env:CUDA_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "$env:CUDA_ROOT\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
-      - name: Download TensorRT 11.2.1.2 for CUDA 12.9
+      - name: Download TensorRT 11.3.0.99 for CUDA 13.4
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path $env:NVIDIA_DOWNLOAD_CACHE | Out-Null
-          $url = 'https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/11.2.1/zip/TensorRT-Enterprise-11.2.1.2-Windows-amd64-cuda-12.9-Release-external.zip'
+          $url = 'https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/11.3.0/zip/TensorRT-Enterprise-11.3.0.99-Windows-amd64-cuda-13.4-Release-external.zip'
           if (-not (Test-Path -LiteralPath $env:TENSORRT_ARCHIVE -PathType Leaf)) {
               & curl.exe --fail --location --retry 3 --output $env:TENSORRT_ARCHIVE $url
               if ($LASTEXITCODE -ne 0) { throw 'TensorRT download failed' }
@@ -166,7 +173,7 @@ jobs:
           Import-Module (Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
           Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
           $depends = (& dumpbin /dependents $dll.FullName 2>&1 | Out-String)
-          foreach ($requiredDependency in @('cudart64_12.dll', 'nvinfer_11.dll', 'nvonnxparser_11.dll')) {
+          foreach ($requiredDependency in @('nvinfer_11.dll', 'nvonnxparser_11.dll')) {
               if ($depends -notmatch ('(?im)^\s*' + [regex]::Escape($requiredDependency) + '\s*$')) {
                   throw "Built runtime is missing expected dependency: $requiredDependency"
               }
@@ -191,7 +198,6 @@ jobs:
           }
 
           Copy-Item -LiteralPath $dll.FullName -Destination (Join-Path $common 'MPCVRRifeRuntime64.dll')
-          Copy-Item -LiteralPath (Resolve-RequiredFile $env:CUDA_ROOT 'cudart64_12.dll') -Destination $common
           foreach ($name in @('nvinfer_11.dll', 'nvonnxparser_11.dll', 'nvinfer_builder_resource_ptx_11.dll')) {
               Copy-Item -LiteralPath (Resolve-RequiredFile $env:TENSORRT_ROOT $name) -Destination $common
           }
@@ -204,6 +210,7 @@ jobs:
           CUDA toolkit: $env:CUDA_VERSION
           CUDA compiler: $env:CUDA_COMPILER_VERSION
           CUDA runtime: $env:CUDA_RUNTIME_VERSION
+          CUDA runtime linkage: CUDA 13 hybrid loader supplied by the NVIDIA display driver.
           Supported compute capabilities: 7.5 (sm75), 8.6 (sm86), 8.9 (sm89), 12.0 (sm120)
           TensorRT engines: generated locally; no prebuilt .plan files are distributed.
           "@

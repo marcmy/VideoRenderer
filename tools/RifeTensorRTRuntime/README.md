@@ -4,7 +4,7 @@
 
 ## Runtime contract
 
-The initial implementation targets RIFE 4.6 v1 exported as ONNX with one NCHW input and one NCHW output:
+The runtime accepts the original 11-channel Practical-RIFE representation used by the bundled RIFE 4.4, 4.6, and 4.15 Lite ONNX models, with one NCHW input and one NCHW output:
 
 - input: `[1, 11, H, W]`
 - output: `[1, 3, H, W]`
@@ -15,7 +15,7 @@ The initial implementation targets RIFE 4.6 v1 exported as ONNX with one NCHW in
 - channels 9-10: `2/(W-1)` and `2/(H-1)` planes
 - H/W are padded to multiples of 32; output is cropped back to the source size.
 
-For TensorRT 11, precision is model-defined because TensorRT 11 networks are strongly typed. Use the FP16 RIFE 4.6 ONNX model for the intended real-time path. TensorRT 10.14 is also supported by the source layout, but TensorRT 11 is the primary target.
+For TensorRT 11, precision is model-defined because TensorRT 11 networks are strongly typed. The bundled models are converted to mixed FP16/FP32 with FP16 public I/O for the intended real-time path. TensorRT 10.14 is also supported by the source layout, but TensorRT 11 is the primary target.
 
 ## Build
 
@@ -67,9 +67,9 @@ Serialized TensorRT engines are stored below the cache directory supplied by MPC
 - TensorRT major/minor version
 - GPU compute capability and device name
 - dynamic profile range
-- normal vs. Performance Boost builder mode
+- normal dynamic plan or Performance Boost fixed-resolution plan
 
-Both modes build a dynamic profile covering source sizes up to at least padded 4K dimensions. Normal mode uses the current size as the optimization point. Performance Boost uses a deterministic padded-1080p optimization point and TensorRT's highest builder optimization level, so one Boost engine can be reused across resolutions instead of compiling one fixed-shape plan per video size.
+Normal mode uses one dynamic profile covering source sizes up to at least padded 4K dimensions, with the current size as the optimization point. Performance Boost uses a fixed profile for the current padded resolution and therefore keeps a separate cached engine per resolution. Cached throughput testing showed this original fixed-shape path is consistently faster than the shared dynamic plan. The later TensorRT level-5 Boost experiment remains disabled because it benchmarked substantially slower.
 
 Deleting the cache is safe; the runtime rebuilds the engine from ONNX.
 

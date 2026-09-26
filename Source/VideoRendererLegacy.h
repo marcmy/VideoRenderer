@@ -158,6 +158,7 @@ private:
 	std::atomic_uint64_t m_FrameInterpolationPresenterLastRenderUs = 0;
 	std::atomic_uint64_t m_FrameInterpolationPresenterMaxRenderUs = 0;
 	std::atomic_uint64_t m_FrameInterpolationPresenterStaleDrops = 0;
+	std::atomic_uint64_t m_FrameInterpolationPresenterRenderedFrames = 0;
 	CRollingTimingWindow<256> m_FrameInterpolationPresenterLateTiming;
 	CRollingTimingWindow<256> m_FrameInterpolationPresenterRenderTiming;
 

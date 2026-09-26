@@ -102,7 +102,7 @@ jobs:
       - name: Download RIFE model artifact
         uses: actions/download-artifact@v8
         with:
-          name: mpcvr-rife-v4.6-model
+          name: mpcvr-rife-models
           path: release/rife-model
 
       - name: Prepare release assets
@@ -149,8 +149,10 @@ jobs:
             fi
           done
           for file in \
-            MPCVR-RIFE-Model-v4.6.zip \
+            MPCVR-RIFE-Models.zip \
+            rife_v4.4.onnx \
             rife_v4.6.onnx \
+            rife_v4.15_lite.onnx \
             model-manifest.json \
             SOURCE.txt \
             LICENSES/RIFE-model-license.txt; do
@@ -244,7 +246,7 @@ jobs:
           cp "$runtime_artifact/MPCVR-RIFE-Common.zip" "$payload_root/"
           cp "$runtime_artifact/runtime-manifest.json" "$payload_root/RIFE-runtime-manifest.json"
           cp "$runtime_sums" "$payload_root/RIFE-runtime-SHA256SUMS.txt"
-          cp "$model_artifact/MPCVR-RIFE-Model-v4.6.zip" "$payload_root/"
+          cp "$model_artifact/MPCVR-RIFE-Models.zip" "$payload_root/"
           cp "$model_artifact/LICENSES/RIFE-model-license.txt" "$payload_root/LICENSES/"
           cp "$maxine_license" "$payload_root/"
 
@@ -342,7 +344,7 @@ jobs:
             'payload/MpcVideoRenderer-Maxine-RIFE.zip'
             'payload/MPCVR-Maxine-Runtime.zip'
             'payload/MPCVR-RIFE-Common.zip'
-            'payload/MPCVR-RIFE-Model-v4.6.zip'
+            'payload/MPCVR-RIFE-Models.zip'
             'payload/RIFE-runtime-manifest.json'
             'payload/RIFE-runtime-SHA256SUMS.txt'
             'payload/RIFE-runtime-release.json'
@@ -371,7 +373,7 @@ jobs:
           Custom MPC Video Renderer Maxine + RIFE build from master commit ${GITHUB_SHA}.
 
           Recommended download:
-          - MPCVR-Maxine-RIFE-Setup.zip: one-click K-Lite setup containing the custom renderer, NVIDIA Maxine VSR runtime, RIFE 4.6 common TensorRT runtime/model, environment setup, and restore shortcut. During installation it detects the NVIDIA GPU compute capability and downloads only the matching architecture pack from this immutable release.
+          - MPCVR-Maxine-RIFE-Setup.zip: one-click K-Lite setup containing the custom renderer, NVIDIA Maxine VSR runtime, selectable RIFE 4.4 / 4.6 / 4.15 Lite TensorRT models, environment setup, and restore shortcut. During installation it detects the NVIDIA GPU compute capability and downloads only the matching architecture pack from this immutable release.
 
           Advanced/manual download:
           - MpcVideoRenderer-Maxine-RIFE.zip: portable renderer files only.

@@ -426,7 +426,9 @@ void InitializeDialog(HWND hwnd, const Settings_t& settings)
 		{L"1", 1}, {L"2", 2}, {L"3", 3},
 	});
 	PopulateCombo(hwnd, IDC_RIFE_MODEL, {
+		{L"4.4", RIFE_MODEL_44},
 		{L"4.6", RIFE_MODEL_46},
+		{L"4.15 Lite", RIFE_MODEL_415_LITE},
 	});
 	PopulateCombo(hwnd, IDC_RIFE_GPU, {
 		{L"Auto", RIFE_GPU_Auto},

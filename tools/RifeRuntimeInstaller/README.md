@@ -17,7 +17,6 @@ The shipping bundle contains:
 
 ```text
 MPCVRRifeRuntime64.dll
-cudart64_12.dll
 nvinfer_11.dll
 nvonnxparser_11.dll
 nvinfer_builder_resource_ptx_11.dll
@@ -26,7 +25,7 @@ BUILD-INFO.txt
 
 Each architecture archive contains exactly one matching `nvinfer_builder_resource_<architecture>_11.dll`. TensorRT engines are generated locally on the target machine; prebuilt `.plan` engines are not distributed.
 
-The release stack is pinned to CUDA toolkit 12.9.1, CUDA runtime 12.9.79, and TensorRT 11.2.1.2. `runtime-manifest.json` records that contract and runtime ABI 2.
+The release stack is pinned to CUDA toolkit 13.4.1, CUDA runtime 13.4.49, and TensorRT 11.3.0.99. CUDA 13 links the runtime through the NVIDIA display driver's hybrid CUDA loader, so the common archive does not carry a standalone `cudart64_13.dll`. `runtime-manifest.json` records the version contract and runtime ABI 2.
 
 Validate an assembled bundle with either Windows PowerShell 5.1 or PowerShell 7:
 
@@ -55,13 +54,14 @@ The installed tree is:
 ```text
 runtime\
   MPCVRRifeRuntime64.dll
-  cudart64_12.dll
   nvinfer_11.dll
   nvonnxparser_11.dll
   nvinfer_builder_resource_ptx_11.dll
   nvinfer_builder_resource_sm*_11.dll
 models\
+  rife_v4.4.onnx
   rife_v4.6.onnx
+  rife_v4.15_lite.onnx
 cache\
 installed-manifest.json
 ```
@@ -72,11 +72,11 @@ For a local release payload, run:
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
   .\Install-MPCVRRifeRuntime.ps1 `
   -RuntimeBundleRoot .\payload `
-  -ModelArchive .\payload\MPCVR-RIFE-Model-v4.6.zip `
+  -ModelArchive .\payload\MPCVR-RIFE-Models.zip `
   -NoPause
 ```
 
-The installer verifies archive/model hashes before moving the existing install. A compatible TensorRT engine cache is preserved only when the model SHA-256, TensorRT major/minor version, and runtime ABI all match the new payload. Any post-swap preflight failure removes the failed tree and restores the previous install.
+The installer verifies archive/model hashes before moving the existing install. Existing TensorRT engine plans are preserved across runtime upgrades because every cache filename is isolated by TensorRT major/minor, runtime ABI, model SHA-256, GPU, dimensions, and builder mode. Incompatible plans remain available for rollback but cannot be selected by a different runtime key. Upgrading from TensorRT 11.2 to 11.3 therefore requires a one-time 11.3 engine build for each selected model and builder mode. Any post-swap preflight failure removes the failed tree and restores the previous install.
 
 `Test-MPCVRRifePreflight.ps1` checks the common runtime DLLs, every builder resource required by the detected GPUs, the installed model hash, cache writability, and the native `MpcvrRifeGetAbiVersion` export. The expected ABI is 2.
 
