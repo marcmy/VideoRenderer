@@ -100,7 +100,7 @@ jobs:
               function Replace-RequiredText([string]$Path, [string]$Old, [string]$New) {
                 $text = Get-Content -Raw -LiteralPath $Path
                 if (-not $text.Contains($Old)) {
-                  throw "Expected compatibility text was not found in $Path: $Old"
+                  throw "Expected compatibility text was not found in ${Path}: $Old"
                 }
                 $text = $text.Replace($Old, $New)
                 Set-Content -LiteralPath $Path -Value $text -NoNewline -Encoding utf8
