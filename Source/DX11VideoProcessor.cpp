@@ -34,9 +34,9 @@
 #include "MaxineInteropPolicy.h"
 #include "MaxineSpatialPolicy.h"
 #include "RifePlaybackPipeline.h"
-#include "../Include/Version.h"
+#include "Version.h"
 #include "DX11VideoProcessor.h"
-#include "../Include/ID3DVideoMemoryConfiguration.h"
+#include <ID3DVideoMemoryConfiguration.h>
 #include "Shaders.h"
 #include "Utils/CPUInfo.h"
 
