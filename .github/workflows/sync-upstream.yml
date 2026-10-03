@@ -108,7 +108,7 @@ jobs:
 
               Replace-RequiredText 'Source/DX11VideoProcessor.cpp' '#include "../Include/Version.h"' '#include "Version.h"'
               Replace-RequiredText 'Source/DX11VideoProcessor.cpp' '#include "../Include/ID3DVideoMemoryConfiguration.h"' '#include <ID3DVideoMemoryConfiguration.h>'
-              Replace-RequiredText 'Source/VideoRenderer.cpp' '#include "../Include/Version.h"' '#include "Version.h"'
+              Replace-RequiredText 'Source/VideoRendererLegacy.inl' '#include "../Include/Version.h"' '#include "Version.h"'
 
               Replace-RequiredText 'Source/VideoRendererLegacy.h' '#include "../Include/ISubRender.h"' '#include <ISubRender.h>'
               Replace-RequiredText 'Source/VideoRendererLegacy.h' '#include "../Include/ISubRender11.h"' '#include <ISubRender11.h>'
@@ -132,7 +132,7 @@ jobs:
               )
               Set-Content -LiteralPath $legacyPath -Value $legacyText -NoNewline -Encoding utf8
 
-              git add -- Source/DX11VideoProcessor.cpp Source/VideoRenderer.cpp Source/VideoRenderer.h Source/VideoRendererLegacy.h
+              git add -- Source/DX11VideoProcessor.cpp Source/VideoRenderer.cpp Source/VideoRenderer.h Source/VideoRendererLegacy.h Source/VideoRendererLegacy.inl
 
               $remaining = @(git diff --name-only --diff-filter=U)
               if ($remaining.Count -ne 0) {
