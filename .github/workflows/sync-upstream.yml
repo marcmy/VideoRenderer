@@ -6,6 +6,8 @@ on:
       - master
     paths:
       - .github/workflows/sync-upstream.yml
+      - .github/scripts/resolve-upstream-superres.ps1
+      - .github/scripts/test-upstream-superres-resolver.ps1
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
@@ -29,6 +31,10 @@ jobs:
           ref: master
           fetch-depth: 0
           submodules: recursive
+
+      - name: Validate SuperRes resolver
+        shell: pwsh
+        run: .\.github\scripts\test-upstream-superres-resolver.ps1
 
       - name: Fetch and merge upstream
         id: merge
@@ -70,7 +76,97 @@ jobs:
               $upstreamSha -eq '99f1be6ee54025c121b17b77da37dd50b9acf649' -and
               $conflicts.Count -eq 1 -and $conflicts[0] -eq 'Source/VideoRenderer.cpp'
 
-            if ($windowProcConflict) {
+            # Upstream 6bb2f3d adds NV16 support after moving common headers onto
+            # the solution Include path. This fork keeps the renderer declaration
+            # in VideoRendererLegacy.h behind the RIFE migration wrapper, so replay
+            # those upstream edits into the fork-owned layout rather than replacing it.
+            git merge-base --is-ancestor cb6e6135e8eeb0f1501e5b9e237843f6567d9aa7 $originalHead
+            $nv16ForkLineageKnown = $LASTEXITCODE -eq 0
+            $nv16ResolverDelta = @(git diff --name-only cb6e6135e8eeb0f1501e5b9e237843f6567d9aa7..$originalHead)
+            $onlyNv16ResolverChanges = @($nv16ResolverDelta | Where-Object { $_ -ne '.github/workflows/sync-upstream.yml' }).Count -eq 0
+            $nv16ExpectedConflicts = @(
+              'Source/DX11VideoProcessor.cpp',
+              'Source/VideoRenderer.cpp',
+              'Source/VideoRenderer.h'
+            )
+            $nv16ActualConflicts = @($conflicts | Sort-Object)
+            $nv16ConflictSetMatches = $nv16ActualConflicts.Count -eq $nv16ExpectedConflicts.Count -and
+              -not (Compare-Object $nv16ActualConflicts ($nv16ExpectedConflicts | Sort-Object))
+
+            $nv16CompatConflict = $nv16ForkLineageKnown -and $onlyNv16ResolverChanges -and
+              $upstreamSha -eq '6bb2f3d702993f04e888bf5abd0944a83333b3c5' -and
+              $nv16ConflictSetMatches
+
+            # Resolve only the exact reviewed SuperRes hunk. Preserve both the
+            # upstream ACM restriction and the fork's Maxine exclusion, without
+            # discarding unrelated upstream changes in the same source file.
+            $superResConflict = $conflicts.Count -eq 1 -and
+              $conflicts[0] -eq 'Source/DX11VideoProcessor.cpp' -and
+              (& .\.github\scripts\resolve-upstream-superres.ps1 -Probe)
+
+            if ($superResConflict) {
+              & .\.github\scripts\resolve-upstream-superres.ps1
+              git add -- Source/DX11VideoProcessor.cpp
+              if ($LASTEXITCODE -ne 0) { throw 'Could not stage the resolved SuperRes hunk.' }
+              git diff --check --cached
+              if ($LASTEXITCODE -ne 0) { throw 'Resolved SuperRes merge failed whitespace checks.' }
+              $remaining = @(git diff --name-only --diff-filter=U)
+              if ($remaining.Count -ne 0) { throw 'SuperRes resolver left unresolved paths.' }
+              git commit --no-edit
+              if ($LASTEXITCODE -ne 0) { throw 'Could not commit the resolved SuperRes merge.' }
+            } elseif ($nv16CompatConflict) {
+              git checkout --ours -- Source/DX11VideoProcessor.cpp Source/VideoRenderer.cpp Source/VideoRenderer.h
+              if ($LASTEXITCODE -ne 0) {
+                throw 'Could not restore fork-owned files for the NV16/include-path conflict.'
+              }
+
+              function Replace-RequiredText([string]$Path, [string]$Old, [string]$New) {
+                $text = Get-Content -Raw -LiteralPath $Path
+                if (-not $text.Contains($Old)) {
+                  throw "Expected compatibility text was not found in ${Path}: $Old"
+                }
+                $text = $text.Replace($Old, $New)
+                Set-Content -LiteralPath $Path -Value $text -NoNewline -Encoding utf8
+              }
+
+              Replace-RequiredText 'Source/DX11VideoProcessor.cpp' '#include "../Include/Version.h"' '#include "Version.h"'
+              Replace-RequiredText 'Source/DX11VideoProcessor.cpp' '#include "../Include/ID3DVideoMemoryConfiguration.h"' '#include <ID3DVideoMemoryConfiguration.h>'
+              Replace-RequiredText 'Source/VideoRendererLegacy.inl' '#include "../Include/Version.h"' '#include "Version.h"'
+
+              Replace-RequiredText 'Source/VideoRendererLegacy.h' '#include "../Include/ISubRender.h"' '#include <ISubRender.h>'
+              Replace-RequiredText 'Source/VideoRendererLegacy.h' '#include "../Include/ISubRender11.h"' '#include <ISubRender11.h>'
+              Replace-RequiredText 'Source/VideoRendererLegacy.h' '#include "../Include/ID3DFullscreenControl.h"' '#include <ID3DFullscreenControl.h>'
+              Replace-RequiredText 'Source/VideoRendererLegacy.h' '#include "../Include/FilterInterfacesImpl.h"' '#include <FilterInterfacesImpl.h>'
+              Replace-RequiredText 'Source/VideoRendererLegacy.h' '#include "../Include/SubRenderIntf.h"' '#include <SubRenderIntf.h>'
+
+              $legacyPath = 'Source/VideoRendererLegacy.h'
+              $legacyText = Get-Content -Raw -LiteralPath $legacyPath
+              if ($legacyText.Contains('MEDIASUBTYPE_NV16')) {
+                throw 'VideoRendererLegacy.h unexpectedly already contains NV16 while resolving the guarded upstream conflict.'
+              }
+              $newline = if ($legacyText.Contains("`r`n")) { "`r`n" } else { "`n" }
+              $nv16Anchor = "`t{&MEDIATYPE_Video, &MEDIASUBTYPE_Y42B}," + $newline
+              if (-not $legacyText.Contains($nv16Anchor)) {
+                throw 'Could not locate the Y42B media subtype entry in VideoRendererLegacy.h.'
+              }
+              $legacyText = $legacyText.Replace(
+                $nv16Anchor,
+                $nv16Anchor + "`t{&MEDIATYPE_Video, &MEDIASUBTYPE_NV16}," + $newline
+              )
+              Set-Content -LiteralPath $legacyPath -Value $legacyText -NoNewline -Encoding utf8
+
+              git add -- Source/DX11VideoProcessor.cpp Source/VideoRenderer.cpp Source/VideoRenderer.h Source/VideoRendererLegacy.h Source/VideoRendererLegacy.inl
+
+              $remaining = @(git diff --name-only --diff-filter=U)
+              if ($remaining.Count -ne 0) {
+                throw "NV16/include-path resolver left unresolved paths: $($remaining -join ', ')"
+              }
+
+              git commit --no-edit
+              if ($LASTEXITCODE -ne 0) {
+                throw 'Could not commit the resolved NV16/include-path upstream merge.'
+              }
+            } elseif ($windowProcConflict) {
               git checkout --ours -- Source/VideoRenderer.cpp
               if ($LASTEXITCODE -ne 0) {
                 throw 'Could not restore the fork side of the known window-procedure conflict.'

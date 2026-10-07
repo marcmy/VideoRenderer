@@ -34,9 +34,9 @@
 #include "MaxineInteropPolicy.h"
 #include "MaxineSpatialPolicy.h"
 #include "RifePlaybackPipeline.h"
-#include "../Include/Version.h"
+#include "Version.h"
 #include "DX11VideoProcessor.h"
-#include "../Include/ID3DVideoMemoryConfiguration.h"
+#include <ID3DVideoMemoryConfiguration.h>
 #include "Shaders.h"
 #include "Utils/CPUInfo.h"
 
@@ -699,6 +699,16 @@ HRESULT CDX11VideoProcessor::Init(const HWND hwnd, const bool displayHdrChanged,
 
 	if (m_bExclusiveScreen != m_pFilter->m_bExclusiveScreen) {
 		m_srcVideoTransferFunction = 0;
+	}
+
+	if (!m_pDXGIFactory1->IsCurrent()) {
+		m_pDXGIFactory1.Release();
+
+		auto hr = CreateDXGIFactory1(IID_IDXGIFactory1, (void**)&m_pDXGIFactory1);
+		if (FAILED(hr)) {
+			DLog(L"CDX11VideoProcessor::Init() : CreateDXGIFactory1() failed with error {}", HR2Str(hr));
+			return E_FAIL;
+		}
 	}
 
 	IDXGIAdapter* pDXGIAdapter = nullptr;
@@ -1717,16 +1727,38 @@ HRESULT CDX11VideoProcessor::InitSwapChain(bool bWindowChanged)
 		if (bHdrOutput) {
 			hr2 = m_pDXGISwapChain1->QueryInterface(IID_PPV_ARGS(&m_pDXGISwapChain4));
 
-			if (m_pDXGIOutput) {
-				CComPtr<IDXGIOutput6> pDXGIOutput6;
-				if (SUCCEEDED(m_pDXGIOutput->QueryInterface(IID_PPV_ARGS(&pDXGIOutput6)))) {
-					DXGI_OUTPUT_DESC1 desc;
-					if (SUCCEEDED(pDXGIOutput6->GetDesc1(&desc))) {
-						m_MaxDisplayLuminance = static_cast<UINT>(desc.MaxLuminance);
+			if (m_pDXGIFactory1) {
+				[&] {
+					const auto hMonitor = MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST);
 
-						m_pFilter->UpdateDisplayInfo();
+					CComPtr<IDXGIAdapter1> pDXGIAdapter;
+					for (UINT i = 0; m_pDXGIFactory1->EnumAdapters1(i, &pDXGIAdapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+						CComPtr<IDXGIOutput> pDXGIOutput;
+						for (UINT j = 0; pDXGIAdapter->EnumOutputs(j, &pDXGIOutput) != DXGI_ERROR_NOT_FOUND; ++j) {
+							DXGI_OUTPUT_DESC desc;
+							if (SUCCEEDED(pDXGIOutput->GetDesc(&desc)) && desc.Monitor == hMonitor) {
+								CComPtr<IDXGIOutput6> pDXGIOutput6;
+								if (SUCCEEDED(pDXGIOutput->QueryInterface(IID_PPV_ARGS(&pDXGIOutput6)))) {
+									DXGI_OUTPUT_DESC1 desc;
+									if (SUCCEEDED(pDXGIOutput6->GetDesc1(&desc))) {
+										auto MaxLuminance = static_cast<UINT>(desc.MaxLuminance);
+										if (MaxLuminance != m_MaxDisplayLuminance) {
+											m_MaxDisplayLuminance = MaxLuminance;
+											m_pFilter->UpdateDisplayInfo();
+										}
+									}
+								}
+
+								return;
+							}
+
+							pDXGIOutput.Release();
+						}
+
+						pDXGIAdapter.Release();
 					}
-				}
+
+				}();
 			}
 		}
 	}
@@ -2158,9 +2190,12 @@ HRESULT CDX11VideoProcessor::InitializeD3D11VP(const FmtConvParams_t& params, co
 	auto rtxHDR = m_bVPRTXVideoHDR && m_bHdrPassthroughSupport && m_bHdrPassthrough && m_iTexFormat != TEXFMT_8INT && !SourceIsHDR();
 	m_bVPUseRTXVideoHDR = (m_D3D11VP.SetRTXVideoHDR(rtxHDR) == S_OK);
 
-	auto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled
-			&& (m_InternalTexFmt == DXGI_FORMAT_B8G8R8A8_UNORM || m_bVPUseRTXVideoHDR)
-			&& (params.CDepth == 8 || !m_bACMEnabled)) ? m_iVPSuperRes : SUPERRES_Disable;
+	int superRes = SUPERRES_Disable;
+	if (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled
+		&& !(m_bACMEnabled && !m_bVPUseRTXVideoHDR && params.CDepth == 8 && m_InternalTexFmt != DXGI_FORMAT_B8G8R8A8_UNORM)) {
+		superRes = m_iVPSuperRes;
+	}
+
 	m_bVPUseSuperRes = (m_D3D11VP.SetSuperRes(superRes) == S_OK);
 
 	if ((m_bVPUseRTXVideoHDR && !m_pDXGISwapChain4)
@@ -3298,10 +3333,10 @@ HRESULT CDX11VideoProcessor::Render(int field, const REFERENCE_TIME frameStartTi
 							m_lastHdr10.hdr10.MaxMasteringLuminance = m_DoviMaxMasteringLuminance ? m_DoviMaxMasteringLuminance : 1000; // 1000 nits
 							m_lastHdr10.hdr10.MinMasteringLuminance = m_DoviMinMasteringLuminance ? m_DoviMinMasteringLuminance : 50;   // 0.005 nits
 							if (m_DoviMaxContentLightLevel) {
-								m_hdr10.hdr10.MaxContentLightLevel = m_DoviMaxContentLightLevel;
+								m_lastHdr10.hdr10.MaxContentLightLevel = m_DoviMaxContentLightLevel;
 							}
 							if (m_DoviMaxFrameAverageLightLevel) {
-								m_hdr10.hdr10.MaxFrameAverageLightLevel = m_DoviMaxFrameAverageLightLevel;
+								m_lastHdr10.hdr10.MaxFrameAverageLightLevel = m_DoviMaxFrameAverageLightLevel;
 							}
 
 							if (m_bHdrPassthrough) {
@@ -5186,8 +5221,8 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 	}
 
 	if (changeSuperRes || changeMaxineVSR) {
-		auto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled
-				&& (m_srcParams.CDepth == 8 || !m_bACMEnabled)) ? m_iVPSuperRes : SUPERRES_Disable;
+		auto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled)
+			? m_iVPSuperRes : SUPERRES_Disable;
 		m_bVPUseSuperRes = (m_D3D11VP.SetSuperRes(superRes) == S_OK);
 	}
 
