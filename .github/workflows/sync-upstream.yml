@@ -6,6 +6,8 @@ on:
       - master
     paths:
       - .github/workflows/sync-upstream.yml
+      - .github/scripts/resolve-upstream-superres.ps1
+      - .github/scripts/test-upstream-superres-resolver.ps1
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
@@ -29,6 +31,10 @@ jobs:
           ref: master
           fetch-depth: 0
           submodules: recursive
+
+      - name: Validate SuperRes resolver
+        shell: pwsh
+        run: .\.github\scripts\test-upstream-superres-resolver.ps1
 
       - name: Fetch and merge upstream
         id: merge
@@ -91,7 +97,24 @@ jobs:
               $upstreamSha -eq '6bb2f3d702993f04e888bf5abd0944a83333b3c5' -and
               $nv16ConflictSetMatches
 
-            if ($nv16CompatConflict) {
+            # Resolve only the exact reviewed SuperRes hunk. Preserve both the
+            # upstream ACM restriction and the fork's Maxine exclusion, without
+            # discarding unrelated upstream changes in the same source file.
+            $superResConflict = $conflicts.Count -eq 1 -and
+              $conflicts[0] -eq 'Source/DX11VideoProcessor.cpp' -and
+              (& .\.github\scripts\resolve-upstream-superres.ps1 -Probe)
+
+            if ($superResConflict) {
+              & .\.github\scripts\resolve-upstream-superres.ps1
+              git add -- Source/DX11VideoProcessor.cpp
+              if ($LASTEXITCODE -ne 0) { throw 'Could not stage the resolved SuperRes hunk.' }
+              git diff --check --cached
+              if ($LASTEXITCODE -ne 0) { throw 'Resolved SuperRes merge failed whitespace checks.' }
+              $remaining = @(git diff --name-only --diff-filter=U)
+              if ($remaining.Count -ne 0) { throw 'SuperRes resolver left unresolved paths.' }
+              git commit --no-edit
+              if ($LASTEXITCODE -ne 0) { throw 'Could not commit the resolved SuperRes merge.' }
+            } elseif ($nv16CompatConflict) {
               git checkout --ours -- Source/DX11VideoProcessor.cpp Source/VideoRenderer.cpp Source/VideoRenderer.h
               if ($LASTEXITCODE -ne 0) {
                 throw 'Could not restore fork-owned files for the NV16/include-path conflict.'
