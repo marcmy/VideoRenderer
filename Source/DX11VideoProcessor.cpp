@@ -701,6 +701,16 @@ HRESULT CDX11VideoProcessor::Init(const HWND hwnd, const bool displayHdrChanged,
 		m_srcVideoTransferFunction = 0;
 	}
 
+	if (!m_pDXGIFactory1->IsCurrent()) {
+		m_pDXGIFactory1.Release();
+
+		auto hr = CreateDXGIFactory1(IID_IDXGIFactory1, (void**)&m_pDXGIFactory1);
+		if (FAILED(hr)) {
+			DLog(L"CDX11VideoProcessor::Init() : CreateDXGIFactory1() failed with error {}", HR2Str(hr));
+			return E_FAIL;
+		}
+	}
+
 	IDXGIAdapter* pDXGIAdapter = nullptr;
 	const UINT currentAdapter = GetAdapter(hwnd, m_pDXGIFactory1, &pDXGIAdapter);
 	CheckPointer(pDXGIAdapter, E_FAIL);
@@ -1709,16 +1719,38 @@ HRESULT CDX11VideoProcessor::InitSwapChain(bool bWindowChanged)
 		if (bHdrOutput) {
 			hr2 = m_pDXGISwapChain1->QueryInterface(IID_PPV_ARGS(&m_pDXGISwapChain4));
 
-			if (m_pDXGIOutput) {
-				CComPtr<IDXGIOutput6> pDXGIOutput6;
-				if (SUCCEEDED(m_pDXGIOutput->QueryInterface(IID_PPV_ARGS(&pDXGIOutput6)))) {
-					DXGI_OUTPUT_DESC1 desc;
-					if (SUCCEEDED(pDXGIOutput6->GetDesc1(&desc))) {
-						m_MaxDisplayLuminance = static_cast<UINT>(desc.MaxLuminance);
+			if (m_pDXGIFactory1) {
+				[&] {
+					const auto hMonitor = MonitorFromWindow(m_hWnd, MONITOR_DEFAULTTONEAREST);
 
-						m_pFilter->UpdateDisplayInfo();
+					CComPtr<IDXGIAdapter1> pDXGIAdapter;
+					for (UINT i = 0; m_pDXGIFactory1->EnumAdapters1(i, &pDXGIAdapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+						CComPtr<IDXGIOutput> pDXGIOutput;
+						for (UINT j = 0; pDXGIAdapter->EnumOutputs(j, &pDXGIOutput) != DXGI_ERROR_NOT_FOUND; ++j) {
+							DXGI_OUTPUT_DESC desc;
+							if (SUCCEEDED(pDXGIOutput->GetDesc(&desc)) && desc.Monitor == hMonitor) {
+								CComPtr<IDXGIOutput6> pDXGIOutput6;
+								if (SUCCEEDED(pDXGIOutput->QueryInterface(IID_PPV_ARGS(&pDXGIOutput6)))) {
+									DXGI_OUTPUT_DESC1 desc;
+									if (SUCCEEDED(pDXGIOutput6->GetDesc1(&desc))) {
+										auto MaxLuminance = static_cast<UINT>(desc.MaxLuminance);
+										if (MaxLuminance != m_MaxDisplayLuminance) {
+											m_MaxDisplayLuminance = MaxLuminance;
+											m_pFilter->UpdateDisplayInfo();
+										}
+									}
+								}
+
+								return;
+							}
+
+							pDXGIOutput.Release();
+						}
+
+						pDXGIAdapter.Release();
 					}
-				}
+
+				}();
 			}
 		}
 	}
@@ -2150,8 +2182,12 @@ HRESULT CDX11VideoProcessor::InitializeD3D11VP(const FmtConvParams_t& params, co
 	auto rtxHDR = m_bVPRTXVideoHDR && m_bHdrPassthroughSupport && m_bHdrPassthrough && m_iTexFormat != TEXFMT_8INT && !SourceIsHDR();
 	m_bVPUseRTXVideoHDR = (m_D3D11VP.SetRTXVideoHDR(rtxHDR) == S_OK);
 
-	auto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled)
-		? m_iVPSuperRes : SUPERRES_Disable;
+	int superRes = SUPERRES_Disable;
+	if (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled
+		&& !(m_bACMEnabled && !m_bVPUseRTXVideoHDR && params.CDepth == 8 && m_InternalTexFmt != DXGI_FORMAT_B8G8R8A8_UNORM)) {
+		superRes = m_iVPSuperRes;
+	}
+
 	m_bVPUseSuperRes = (m_D3D11VP.SetSuperRes(superRes) == S_OK);
 
 	if ((m_bVPUseRTXVideoHDR && !m_pDXGISwapChain4)
