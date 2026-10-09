@@ -18,6 +18,8 @@ Bundled notice: CUDA-LICENSE.txt
 NVIDIA TensorRT 11.3.0.99 for CUDA 13.4
 Source: https://developer.nvidia.com/tensorrt
 License source: https://docs.nvidia.com/deeplearning/tensorrt/latest/reference/sla.html
+Pinned repository snapshot: tools/RifeRuntimeInstaller/licenses/TensorRT-SLA.html
+Snapshot SHA-256: eea91074c3bb4db31015e9c4bece1a1ff7db3ca59bdc3ad0d5b3c344aeb5cba4
 Bundled notice: TensorRT-SLA.html
 
 RIFE 4.4, 4.6, and 4.15 Lite models
