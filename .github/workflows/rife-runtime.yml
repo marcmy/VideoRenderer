@@ -9,7 +9,6 @@ on:
     paths:
       - .github/workflows/rife-runtime.yml
       - tools/RifeTensorRTRuntime/**
-      - tools/RifeRuntimeInstaller/licenses/**
       - tools/RifeRuntimeInstaller/**
       - Source/RifeRuntimeApi.h
 
