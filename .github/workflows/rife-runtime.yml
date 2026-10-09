@@ -9,6 +9,7 @@ on:
     paths:
       - .github/workflows/rife-runtime.yml
       - tools/RifeTensorRTRuntime/**
+      - tools/RifeRuntimeInstaller/licenses/**
       - tools/RifeRuntimeInstaller/**
       - Source/RifeRuntimeApi.h
 
@@ -249,20 +250,28 @@ jobs:
           $notices = @(
               [pscustomobject]@{
                   Name = 'TensorRT-SLA.html'
-                  Url = 'https://docs.nvidia.com/deeplearning/tensorrt/latest/reference/sla.html'
+                  SourcePath = Join-Path $env:GITHUB_WORKSPACE 'tools/RifeRuntimeInstaller/licenses/TensorRT-SLA.html'
+                  Url = $null
                   Sha256 = $env:TENSORRT_SLA_SHA256
               },
               [pscustomobject]@{
                   Name = 'CUDA-LICENSE.txt'
+                  SourcePath = $null
                   Url = 'https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/LICENSE.txt'
                   Sha256 = $env:CUDA_LICENSE_SHA256
               }
           )
           foreach ($notice in $notices) {
               $destination = Join-Path $env:BUNDLE_DIR $notice.Name
-              & curl.exe --fail --location --retry 3 --output $destination $notice.Url
-              if ($LASTEXITCODE -ne 0) {
-                  throw "Failed to download required NVIDIA notice: $($notice.Name)"
+              if ($notice.SourcePath) {
+                  # Use the checksum-pinned snapshot; /latest/ changes with NVIDIA's docs.
+                  Copy-Item -LiteralPath $notice.SourcePath -Destination $destination
+              }
+              else {
+                  & curl.exe --fail --location --retry 3 --output $destination $notice.Url
+                  if ($LASTEXITCODE -ne 0) {
+                      throw "Failed to download required NVIDIA notice: $($notice.Name)"
+                  }
               }
               $actual = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
               if ($actual -ne $notice.Sha256) {
