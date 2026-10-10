@@ -34,11 +34,17 @@ constexpr LPCWSTR OPT_RifeCustomFps         = L"RifeCustomFps";
 constexpr LPCWSTR OPT_RifeGpuThreads        = L"RifeGpuThreads";
 constexpr LPCWSTR OPT_RifeModel             = L"RifeModel";
 constexpr LPCWSTR OPT_RifeGPU               = L"RifeGPU";
+constexpr LPCWSTR OPT_RifePreservePrecision = L"RifePreservePrecision";
+constexpr LPCWSTR OPT_RifeFeatureReuse = L"RifeFeatureReuse";
 constexpr LPCWSTR OPT_RifePerformanceBoost  = L"RifePerformanceBoost";
+constexpr LPCWSTR OPT_RifeProcessingResolution = L"RifeProcessingResolution";
+constexpr LPCWSTR OPT_RifeProcessingLimit      = L"RifeProcessingLimit";
 constexpr LPCWSTR OPT_RifeSceneDetection    = L"RifeSceneDetection";
+constexpr LPCWSTR OPT_RifeSceneThreshold    = L"RifeSceneThreshold";
 constexpr LPCWSTR OPT_RifeSceneProcessing   = L"RifeSceneProcessing";
 constexpr LPCWSTR OPT_RifeDuplicateRemoval  = L"RifeDuplicateRemoval";
 constexpr LPCWSTR OPT_RifeRateRules          = L"RifeRateRules";
+constexpr LPCWSTR OPT_DetailedStatistics     = L"DetailedStatistics";
 
 std::mutex g_rifeSettingsMutex;
 std::unordered_set<const CMpcVideoRenderer*> g_rifeSettingsLoaded;
@@ -56,8 +62,13 @@ bool RifeSettingsChanged(const Settings_t& a, const Settings_t& b)
 		|| a.iRifeGpuThreads != b.iRifeGpuThreads
 		|| a.iRifeModel != b.iRifeModel
 		|| a.iRifeGPU != b.iRifeGPU
+		|| a.bRifePreservePrecision != b.bRifePreservePrecision
+		|| a.bRifeFeatureReuse != b.bRifeFeatureReuse
 		|| a.bRifePerformanceBoost != b.bRifePerformanceBoost
+		|| a.iRifeProcessingResolution != b.iRifeProcessingResolution
+		|| a.iRifeProcessingLimit != b.iRifeProcessingLimit
 		|| a.iRifeSceneDetection != b.iRifeSceneDetection
+		|| a.iRifeSceneThreshold != b.iRifeSceneThreshold
 		|| a.iRifeSceneProcessing != b.iRifeSceneProcessing
 		|| a.iRifeDuplicateRemoval != b.iRifeDuplicateRemoval
 		|| a.rifeRules != b.rifeRules;
@@ -84,7 +95,18 @@ void LoadRifeSettings(Settings_t& settings)
 			? static_cast<int>(dw) : RIFE_GPU_THREADS_DEF;
 	}
 	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeModel, dw)) {
-		settings.iRifeModel = dw == RIFE_MODEL_46 ? RIFE_MODEL_46 : RIFE_MODEL_46;
+		switch (dw) {
+		case RIFE_MODEL_44:
+		case RIFE_MODEL_46:
+		case RIFE_MODEL_415_LITE:
+		case RIFE_MODEL_425:
+		case RIFE_MODEL_425_LITE:
+			settings.iRifeModel = static_cast<int>(dw);
+			break;
+		default:
+			settings.iRifeModel = RIFE_MODEL_425;
+			break;
+		}
 	}
 	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeGPU, dw)) {
 		if (dw == MAXDWORD) {
@@ -93,11 +115,27 @@ void LoadRifeSettings(Settings_t& settings)
 			settings.iRifeGPU = static_cast<int>(dw);
 		}
 	}
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifePreservePrecision, dw)) settings.bRifePreservePrecision = !!dw;
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeFeatureReuse, dw)) settings.bRifeFeatureReuse = !!dw;
 	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifePerformanceBoost, dw)) {
 		settings.bRifePerformanceBoost = !!dw;
 	}
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeProcessingResolution, dw)) {
+		settings.iRifeProcessingResolution = dw < RIFE_RESOLUTION_COUNT
+			? static_cast<int>(dw) : RIFE_RESOLUTION_Source;
+	}
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeProcessingLimit, dw)) {
+		settings.iRifeProcessingLimit = dw >= RifeProcessingLimitMin && dw <= RifeProcessingLimitMax
+			? static_cast<int>(dw) : RifeProcessingLimitDefault;
+	}
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_DetailedStatistics, dw)) {
+		settings.bDetailedStats = !!dw;
+	}
 	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeSceneDetection, dw)) {
-		settings.iRifeSceneDetection = dw < RIFE_SCENE_COUNT ? static_cast<int>(dw) : RIFE_SCENE_NVOF;
+		settings.iRifeSceneDetection = dw < RIFE_SCENE_COUNT ? static_cast<int>(dw) : RIFE_SCENE_SVPflow1;
+	}
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeSceneThreshold, dw)) {
+		settings.iRifeSceneThreshold = dw <= 100 ? static_cast<int>(dw) : 15;
 	}
 	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeSceneProcessing, dw)) {
 		settings.iRifeSceneProcessing = dw < RIFE_SCENE_PROCESS_COUNT ? static_cast<int>(dw) : RIFE_SCENE_PROCESS_Repeat;
@@ -158,6 +196,12 @@ STDMETHODIMP_(void) CMpcVideoRenderer::SetSettings(const Settings_t& settings)
 	EnsureRifeSettingsLoaded(this, m_Sets);
 
 	Settings_t adjusted = settings;
+	adjusted.iRifeSceneThreshold = std::clamp(settings.iRifeSceneThreshold, 0, 100);
+	adjusted.iRifeProcessingResolution = settings.iRifeProcessingResolution >= 0
+		&& settings.iRifeProcessingResolution < RIFE_RESOLUTION_COUNT
+		? settings.iRifeProcessingResolution : RIFE_RESOLUTION_Source;
+	adjusted.iRifeProcessingLimit = std::clamp(settings.iRifeProcessingLimit,
+		RifeProcessingLimitMin, RifeProcessingLimitMax);
 	if (adjusted.iRifeMode != RIFE_MODE_Disabled) {
 		// RIFE owns production frame synthesis once enabled. Keep the old
 		// NvOFFRUC values only as migration data; never let both paths run.
@@ -190,8 +234,14 @@ STDMETHODIMP CMpcVideoRenderer::SaveSettings()
 		key.SetDWORDValue(OPT_RifeGpuThreads,       static_cast<DWORD>(m_Sets.iRifeGpuThreads));
 		key.SetDWORDValue(OPT_RifeModel,            static_cast<DWORD>(m_Sets.iRifeModel));
 		key.SetDWORDValue(OPT_RifeGPU,              static_cast<DWORD>(m_Sets.iRifeGPU));
+		key.SetDWORDValue(OPT_RifePreservePrecision, m_Sets.bRifePreservePrecision ? 1u : 0u);
+		key.SetDWORDValue(OPT_RifeFeatureReuse, m_Sets.bRifeFeatureReuse ? 1u : 0u);
 		key.SetDWORDValue(OPT_RifePerformanceBoost, m_Sets.bRifePerformanceBoost ? 1u : 0u);
+		key.SetDWORDValue(OPT_DetailedStatistics,   m_Sets.bDetailedStats ? 1u : 0u);
 		key.SetDWORDValue(OPT_RifeSceneDetection,   static_cast<DWORD>(m_Sets.iRifeSceneDetection));
+		key.SetDWORDValue(OPT_RifeProcessingResolution, static_cast<DWORD>(m_Sets.iRifeProcessingResolution));
+		key.SetDWORDValue(OPT_RifeProcessingLimit, static_cast<DWORD>(m_Sets.iRifeProcessingLimit));
+		key.SetDWORDValue(OPT_RifeSceneThreshold,    static_cast<DWORD>(m_Sets.iRifeSceneThreshold));
 		key.SetDWORDValue(OPT_RifeSceneProcessing,  static_cast<DWORD>(m_Sets.iRifeSceneProcessing));
 		key.SetDWORDValue(OPT_RifeDuplicateRemoval, static_cast<DWORD>(m_Sets.iRifeDuplicateRemoval));
 		const std::wstring serializedRules = SerializeRifeRateRules(m_Sets.rifeRules);
@@ -316,11 +366,12 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 		return NOERROR;
 	}
 
-	// A full source pool, device transition, or source-preparation failure must
-	// never stall playback. Keep PrepareReceive's original timing notification,
-	// render this frame normally, and invalidate any partially queued RIFE work.
+	// Paused seek/step samples and running source fallbacks use the synchronous
+	// renderer. Invalidate queued RIFE work without discarding the learned cap:
+	// BeginFlush/NewSegment already preserve it, and a paused preroll must not
+	// turn that suspension into a hard reset. Stop/settings changes own resets.
 	if (m_RifePipeline) {
-		m_RifePipeline->Reset();
+		m_RifePipeline->Suspend();
 	}
 
 	hr = WaitForRenderTime();

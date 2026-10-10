@@ -198,7 +198,7 @@ jobs:
           $rifeFixture = Join-Path $rifeArchiveSource 'fixture.txt'
           Set-Content -LiteralPath $rifeFixture -Value 'mock RIFE payload' -Encoding ASCII
           Compress-Archive -LiteralPath $rifeFixture -DestinationPath (Join-Path $payloadRoot 'MPCVR-RIFE-Common.zip')
-          Compress-Archive -LiteralPath $rifeFixture -DestinationPath (Join-Path $payloadRoot 'MPCVR-RIFE-Model-v4.6.zip')
+          Compress-Archive -LiteralPath $rifeFixture -DestinationPath (Join-Path $payloadRoot 'MPCVR-RIFE-Models.zip')
 
           $runtimeArchiveNames = @(
             'MPCVR-RIFE-Common.zip',
@@ -213,10 +213,10 @@ jobs:
 
           [pscustomobject]@{
             schemaVersion = 1
-            cudaVersion = '12.9.1'
-            cudaRuntimeVersion = '12.9.79'
-            tensorRtVersion = '11.2.1.2'
-            runtimeAbi = 1
+            cudaVersion = '13.4.1'
+            cudaRuntimeVersion = '13.4.49'
+            tensorRtVersion = '11.3.0.99'
+            runtimeAbi = 2
             architectures = @(
               [pscustomobject]@{ computeCapability = '7.5'; key = 'sm75'; builderResource = 'nvinfer_builder_resource_sm75_11.dll' },
               [pscustomobject]@{ computeCapability = '8.6'; key = 'sm86'; builderResource = 'nvinfer_builder_resource_sm86_11.dll' },
@@ -275,7 +275,7 @@ jobs:
               -NoPause 2>&1 | Out-String
             Write-Host $output
             if ($LASTEXITCODE -ne 0) { throw "$hostExe unified setup validation failed with $LASTEXITCODE" }
-            if ($output -notmatch 'RIFE architecture downloads: sm75, sm120') {
+            if ($output -notmatch 'RIFE architecture packs: sm75, sm120') {
               throw "$hostExe unified setup did not select exactly sm75 and sm120 for the test inventory"
             }
           }

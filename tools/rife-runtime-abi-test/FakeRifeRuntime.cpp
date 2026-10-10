@@ -16,7 +16,10 @@ extern "C" __declspec(dllexport) uint32_t WINAPI MpcvrRifeGetAbiVersion()
 extern "C" __declspec(dllexport) int WINAPI MpcvrRifeCreate(
     const MpcvrRifeCreateParams* params, void** handle)
 {
-    if (!params || !handle || params->abiVersion != MPCVR_RIFE_RUNTIME_ABI) {
+    if (!params || !handle || params->size < sizeof(MpcvrRifeCreateParams)
+            || params->abiVersion != MPCVR_RIFE_RUNTIME_ABI
+            || !params->width || !params->height
+            || !params->contentWidth || !params->contentHeight) {
         return MPCVR_RIFE_INVALID_ARGUMENT;
     }
     constexpr int fakeCreateResult = FAKE_CREATE_RESULT;

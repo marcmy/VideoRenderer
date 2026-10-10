@@ -178,9 +178,12 @@ $selectedAssetName = $primaryAssetName
 $exitCode = 0
 
 try {
-    $runningPlayers = Get-Process -Name 'mpc-hc', 'mpc-hc64' -ErrorAction SilentlyContinue
-    if ($runningPlayers) {
-        throw 'Close MPC-HC before updating MPC Video Renderer.'
+    if (Get-Process -Name 'mpc-hc', 'mpc-hc64' -ErrorAction SilentlyContinue) {
+        Write-Host 'MPC-HC is open. Close it to continue installation automatically (Ctrl+C to cancel).' -ForegroundColor Yellow
+        while (Get-Process -Name 'mpc-hc', 'mpc-hc64' -ErrorAction SilentlyContinue) {
+            Start-Sleep -Milliseconds 500
+        }
+        Write-Host 'MPC-HC has closed. Continuing installation...' -ForegroundColor Green
     }
 
     foreach ($destination in $targets.Values) {

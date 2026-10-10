@@ -30,6 +30,7 @@
 #include "IVideoRenderer.h"
 #include "DX9VideoProcessor.h"
 #include "DX11VideoProcessor.h"
+#include "RollingTimingWindow.h"
 #include <ISubRender.h>
 #include <ISubRender11.h>
 #include <ID3DFullscreenControl.h>
@@ -151,9 +152,20 @@ private:
 	CAMEvent m_FrameInterpolationPresenterWake;
 	std::atomic_bool m_bStopFrameInterpolationPresenter = false;
 	std::atomic<uint64_t> m_FrameInterpolationPresenterGeneration = 0;
+	std::atomic_uint32_t m_FrameInterpolationPresenterDepth = 0;
+	std::atomic_uint32_t m_FrameInterpolationPresenterMaxDepth = 0;
+	std::atomic_uint64_t m_FrameInterpolationPresenterLastLateUs = 0;
+	std::atomic_uint64_t m_FrameInterpolationPresenterMaxLateUs = 0;
+	std::atomic_uint64_t m_FrameInterpolationPresenterLastRenderUs = 0;
+	std::atomic_uint64_t m_FrameInterpolationPresenterMaxRenderUs = 0;
+	std::atomic_uint64_t m_FrameInterpolationPresenterStaleDrops = 0;
+	std::atomic_uint64_t m_FrameInterpolationPresenterRenderedFrames = 0;
+	CRollingTimingWindow<256> m_FrameInterpolationPresenterLateTiming;
+	CRollingTimingWindow<256> m_FrameInterpolationPresenterRenderTiming;
+	CRollingTimingWindow<256> m_FrameInterpolationPresenterPreparationTiming;
 
 	void FrameInterpolationPresenter();
-	bool WaitForFrameInterpolationTime(const FrameInterpolationPresentation& frame);
+	bool WaitForFrameInterpolationTime(const FrameInterpolationPresentation& frame, HANDLE timer, REFERENCE_TIME preparationLead = 0);
 	bool QueueFrameInterpolationSource(UINT sourceSurface, REFERENCE_TIME streamTime,
 		bool synthetic, uint64_t expectedGeneration);
 	bool ReclaimFrameInterpolationPresentationSource();

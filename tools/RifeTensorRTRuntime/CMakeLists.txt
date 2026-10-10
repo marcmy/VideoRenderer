@@ -78,10 +78,11 @@ target_compile_options(MPCVRRifeRuntime64 PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/W4>
 )
 
+set(MPCVR_CUDA_ARCHITECTURES "75-real;86-real;89-real;120" CACHE STRING "CUDA architectures for the runtime")
 set_target_properties(MPCVRRifeRuntime64 PROPERTIES
     OUTPUT_NAME "MPCVRRifeRuntime64"
     CUDA_SEPARABLE_COMPILATION ON
-    CUDA_ARCHITECTURES "75-real;86-real;89-real;120"
+    CUDA_ARCHITECTURES "${MPCVR_CUDA_ARCHITECTURES}"
 )
 
 target_link_libraries(MPCVRRifeRuntime64 PRIVATE
@@ -94,3 +95,12 @@ target_link_libraries(MPCVRRifeRuntime64 PRIVATE
 )
 
 message(STATUS "CUDA toolkit: ${CUDAToolkit_VERSION}")
+
+option(MPCVR_RIFE_BUILD_TESTS "Build the offline CUDA/D3D precision and feature-reuse test" OFF)
+if(MPCVR_RIFE_BUILD_TESTS)
+    add_executable(RifePrecisionGpuTest ../rife-precision-test/GpuTest.cpp RifeKernels.cu)
+    target_include_directories(RifePrecisionGpuTest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../Source")
+    target_compile_definitions(RifePrecisionGpuTest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    set_target_properties(RifePrecisionGpuTest PROPERTIES CUDA_ARCHITECTURES "${MPCVR_CUDA_ARCHITECTURES}")
+    target_link_libraries(RifePrecisionGpuTest PRIVATE CUDA::cudart d3d11 dxgi)
+endif()

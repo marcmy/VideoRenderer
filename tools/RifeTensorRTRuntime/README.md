@@ -4,7 +4,7 @@
 
 ## Runtime contract
 
-The initial implementation targets RIFE 4.6 v1 exported as ONNX with one NCHW input and one NCHW output:
+The runtime accepts the original 11-channel Practical-RIFE representation used by the bundled RIFE 4.4, 4.6, 4.15 Lite, 4.25, and 4.25 Lite ONNX models, with one NCHW input and one NCHW output:
 
 - input: `[1, 11, H, W]`
 - output: `[1, 3, H, W]`
@@ -13,9 +13,11 @@ The initial implementation targets RIFE 4.6 v1 exported as ONNX with one NCHW in
 - channel 6: requested interpolation timestep `t`
 - channels 7-8: normalized X/Y coordinate grids
 - channels 9-10: `2/(W-1)` and `2/(H-1)` planes
-- H/W are padded to multiples of 32; output is cropped back to the source size.
+- H/W are padded to the model's required alignment; the current models use 32 pixels except RIFE 4.25 Lite, which requires 128. Output is cropped back to the source size.
 
-For TensorRT 11, precision is model-defined because TensorRT 11 networks are strongly typed. Use the FP16 RIFE 4.6 ONNX model for the intended real-time path. TensorRT 10.14 is also supported by the source layout, but TensorRT 11 is the primary target.
+The 4.25 archives also ship an experimental 7-channel `rife_v2` interface with internal padding. MPCVR intentionally uses the stable legacy 11-channel models for now because upstream still marks implementation 2 as experimental and potentially removable.
+
+For TensorRT 11, precision is model-defined because TensorRT 11 networks are strongly typed. The bundled models are converted to mixed FP16/FP32 with FP16 public I/O for the intended real-time path. TensorRT 10.14 is also supported by the source layout, but TensorRT 11 is the primary target.
 
 ## Build
 
@@ -57,7 +59,57 @@ Steady-state interpolation is GPU-only:
 
 There is no normal-playback CPU pixel readback.
 
+ABI-2 requests may include a nonzero `inputPairId` for one immutable source-pair
+job. Each execution context packs that pair once and reuses its existing tensor
+for subsequent outputs by updating only timestep channel 6. Source textures are
+mapped/unmapped normally on the first output; later outputs use the CUDA tensor
+without mapping the D3D inputs again. No additional tensor allocation is needed.
+The renderer assigns a fresh ID to every pair job, including after seeking or
+repeat playback; texture addresses and timestamps are not content identifiers.
+Failures, context drains, and runtime/model/geometry replacement invalidate reuse.
+Old ABI-2 callers omit the ID and keep full-pack behavior. Old runtimes ignore the
+optional request tail, so renderer/runtime rollback remains compatible.
+
+In deferred-release mode, a fresh pair maps both inputs and its output together,
+then unmaps all three together after the existing kernel-completion wait. Later
+outputs from a reused pair map only their output. Generic non-deferred callers
+retain the separate input-release stream. Input claims, D3D locking, error cleanup
+and drain completion remain required; batching does not permit graphics access
+while resources are CUDA-mapped. Combined map/unmap host time is counted once in
+`inputMapMs`/`outputUnmapMs`. Output acquisition now precedes the inference start
+event, so compare total delivered throughput rather than historical inference
+event timing alone.
+
 The current ABI call is synchronous from the caller's point of view because it waits for the selected CUDA stream before returning the output surface. MPCVR's pipeline is responsible for dispatching these calls from worker threads so the renderer/reference-clock thread never blocks on inference.
+
+## Optional CUDA output leases
+
+`Source/RifeCudaOutputApi.h` defines an independently versioned optional API.
+The original ABI-2 request, create parameters and D3D interpolation exports stay
+compatible. The renderer enables CUDA outputs only when all five optional
+exports are present and the CUDA output ABI matches.
+
+Each runtime owns up to eight lazily allocated pitched BGRA8 buffers. Acquire
+returns a generation-tagged lease, InterpolateCuda writes completed full padded
+pixels using the same clamp/round/alpha kernel contract as the D3D path, and
+Release returns the slot. Logical content dimensions are separate from padded
+dimensions. A completed lease is immutable. Invalid or stale tokens are rejected;
+pool exhaustion falls back to ordinary D3D interpolation. ExportCudaOutput copies
+the complete padded image to a compatible texture and completes its CUDA read
+before returning, including error cleanup.
+
+The renderer lease retains the producing runtime and DLL through queueing,
+presentation, cancellation, flush and model replacement. Consumers must complete
+all reads before releasing the last lease. The initial Maxine consumer opts in
+only after the tested native SDK 1.2 primary-context path initializes, for single
+VSR passes with even input/output widths. Source frames, scene repeats/blends,
+effect chains, odd widths and unsupported runtimes retain the D3D path. If settings
+change after queueing, the renderer exports the lease and retries normal Maxine
+processing. D3D graphics/video completion before Maxine mapping remains required.
+
+The odd-width restriction is conservative: a portrait fixture showed small VSR
+pixel variation on repeated original D3D calls as well as borrowed CUDA input.
+This is not a claim that the underlying SDK behavior has been fixed.
 
 ## Engine cache
 
@@ -66,10 +118,17 @@ Serialized TensorRT engines are stored below the cache directory supplied by MPC
 - RIFE model SHA-256
 - TensorRT major/minor version
 - GPU compute capability and device name
-- padded source dimensions
-- dynamic vs. Performance Boost/static shape mode
+- dynamic profile range
+- normal dynamic plan or Performance Boost fixed-resolution plan
 
-Performance Boost builds a fixed H/W optimization profile. Normal mode builds a dynamic profile with the current size as the optimization point and a range up to at least padded 4K dimensions.
+Normal mode uses one dynamic profile covering source sizes up to at least padded 4K dimensions, with the current size as the optimization point. Performance Boost uses a fixed profile for the current padded resolution and therefore keeps a separate cached engine per resolution. Cached throughput testing showed this original fixed-shape path is consistently faster than the shared dynamic plan. The later TensorRT level-5 Boost experiment remains disabled because it benchmarked substantially slower.
+
+Normal inputs with a padded dimension below 128 use a separate profile whose
+minimum includes the requested size. Its cache suffix records the reduced minima;
+existing normal and Boost cache names are unchanged. Original and feature-stage
+plans use private staging files and checked replacement without deleting the
+previous plan on publication failure. A failed save reports its path to the debug
+log; the already-built engine remains usable in memory.
 
 Deleting the cache is safe; the runtime rebuilds the engine from ONNX.
 

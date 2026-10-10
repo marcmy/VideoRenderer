@@ -39,6 +39,9 @@
     <ClCompile Include="PropPage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="SettingsDialogTheme.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="DX9VideoProcessor.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -140,6 +143,12 @@
     <ClInclude Include="stdafx.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="SettingsDialogTheme.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="RifeRuntimeCachePolicy.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="VideoRenderer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -171,6 +180,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="RifeRuntimeApi.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="RifeCudaOutputApi.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="FrameStats.h">
@@ -245,7 +257,19 @@
     <ClInclude Include="NvidiaMaxineVSR.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="MaxineInputStaging.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="NvidiaFrameInterpolation.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="RifeImageSceneDetector.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="RifePresentationPreparation.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="MaxineCompletionEvent.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Utils\gpu_memcpy_sse4.h">

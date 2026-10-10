@@ -7,6 +7,7 @@
 #include "stdafx.h"
 #include "resource.h"
 #include "RifeSettingsDialog.h"
+#include "SettingsDialogTheme.h"
 
 #include <algorithm>
 #include <format>
@@ -300,6 +301,7 @@ INT_PTR CALLBACK RuleDialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
 	case WM_INITDIALOG:
 		rule = reinterpret_cast<RifeRateRule*>(lParam);
 		SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(rule));
+		InitializeSettingsDialogTheme(hwnd);
 		SetRuleControls(hwnd, *rule);
 		return TRUE;
 	case WM_COMMAND:
@@ -345,10 +347,16 @@ void CopyRifeSettings(Settings_t& dst, const Settings_t& src)
 	dst.iRifeModel = src.iRifeModel;
 	dst.iRifeGPU = src.iRifeGPU;
 	dst.bRifePerformanceBoost = src.bRifePerformanceBoost;
+	dst.bRifePreservePrecision = src.bRifePreservePrecision;
+	dst.bRifeFeatureReuse = src.bRifeFeatureReuse;
+	dst.iRifeProcessingResolution = src.iRifeProcessingResolution;
+	dst.iRifeProcessingLimit = src.iRifeProcessingLimit;
 	dst.iRifeSceneDetection = src.iRifeSceneDetection;
+	dst.iRifeSceneThreshold = src.iRifeSceneThreshold;
 	dst.iRifeSceneProcessing = src.iRifeSceneProcessing;
 	dst.iRifeDuplicateRemoval = src.iRifeDuplicateRemoval;
 	dst.rifeRules = src.rifeRules;
+	dst.bDetailedStats = src.bDetailedStats;
 }
 
 bool RifeSettingsEqual(const Settings_t& a, const Settings_t& b)
@@ -358,11 +366,17 @@ bool RifeSettingsEqual(const Settings_t& a, const Settings_t& b)
 		&& a.iRifeGpuThreads == b.iRifeGpuThreads
 		&& a.iRifeModel == b.iRifeModel
 		&& a.iRifeGPU == b.iRifeGPU
+		&& a.bRifePreservePrecision == b.bRifePreservePrecision
+		&& a.bRifeFeatureReuse == b.bRifeFeatureReuse
 		&& a.bRifePerformanceBoost == b.bRifePerformanceBoost
+		&& a.iRifeProcessingResolution == b.iRifeProcessingResolution
+		&& a.iRifeProcessingLimit == b.iRifeProcessingLimit
 		&& a.iRifeSceneDetection == b.iRifeSceneDetection
+		&& a.iRifeSceneThreshold == b.iRifeSceneThreshold
 		&& a.iRifeSceneProcessing == b.iRifeSceneProcessing
 		&& a.iRifeDuplicateRemoval == b.iRifeDuplicateRemoval
-		&& a.rifeRules == b.rifeRules;
+		&& a.rifeRules == b.rifeRules
+		&& a.bDetailedStats == b.bDetailedStats;
 }
 
 void EnableControls(HWND hwnd)
@@ -378,12 +392,23 @@ void EnableControls(HWND hwnd)
 		IDC_RIFE_MODEL,
 		IDC_RIFE_GPU,
 		IDC_RIFE_PERFORMANCE_BOOST,
+		IDC_RIFE_PRESERVE_PRECISION,
+		IDC_RIFE_PROCESSING_RESOLUTION,
 		IDC_RIFE_SCENE_DETECTION,
 		IDC_RIFE_SCENE_PROCESSING,
 		IDC_RIFE_DUPLICATE_REMOVAL,
 	}) {
 		EnableWindow(GetDlgItem(hwnd, id), enabled);
 	}
+	const auto model = ComboValue(hwnd, IDC_RIFE_MODEL);
+	EnableWindow(GetDlgItem(hwnd, IDC_RIFE_FEATURE_REUSE), enabled
+		&& (model == RIFE_MODEL_415_LITE || model == RIFE_MODEL_425));
+	const BOOL imageEnabled = enabled && ComboValue(hwnd, IDC_RIFE_SCENE_DETECTION) == RIFE_SCENE_Image;
+	EnableWindow(GetDlgItem(hwnd, IDC_RIFE_SCENE_THRESHOLD), imageEnabled);
+	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_RIFE_SCENE_THRESHOLD), imageEnabled);
+	const BOOL limitEnabled = enabled && ComboValue(hwnd, IDC_RIFE_PROCESSING_RESOLUTION) == RIFE_RESOLUTION_Limit;
+	EnableWindow(GetDlgItem(hwnd, IDC_RIFE_PROCESSING_LIMIT), limitEnabled);
+	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_RIFE_PROCESSING_LIMIT), limitEnabled);
 }
 
 void SetControls(HWND hwnd, const Settings_t& settings)
@@ -393,9 +418,16 @@ void SetControls(HWND hwnd, const Settings_t& settings)
 	SelectComboValue(hwnd, IDC_RIFE_GPU_THREADS, settings.iRifeGpuThreads);
 	SelectComboValue(hwnd, IDC_RIFE_MODEL, settings.iRifeModel);
 	SelectComboValue(hwnd, IDC_RIFE_GPU, settings.iRifeGPU);
+	SelectComboValue(hwnd, IDC_RIFE_PROCESSING_RESOLUTION, settings.iRifeProcessingResolution);
+	SetDlgItemInt(hwnd, IDC_RIFE_PROCESSING_LIMIT, settings.iRifeProcessingLimit, FALSE);
 	CheckDlgButton(hwnd, IDC_RIFE_PERFORMANCE_BOOST,
 		settings.bRifePerformanceBoost ? BST_CHECKED : BST_UNCHECKED);
+	CheckDlgButton(hwnd, IDC_RIFE_PRESERVE_PRECISION, settings.bRifePreservePrecision ? BST_CHECKED : BST_UNCHECKED);
+	CheckDlgButton(hwnd, IDC_RIFE_FEATURE_REUSE, settings.bRifeFeatureReuse ? BST_CHECKED : BST_UNCHECKED);
+	CheckDlgButton(hwnd, IDC_DETAILED_STATS,
+		settings.bDetailedStats ? BST_CHECKED : BST_UNCHECKED);
 	SelectComboValue(hwnd, IDC_RIFE_SCENE_DETECTION, settings.iRifeSceneDetection);
+	SetDlgItemInt(hwnd, IDC_RIFE_SCENE_THRESHOLD, settings.iRifeSceneThreshold, FALSE);
 	SelectComboValue(hwnd, IDC_RIFE_SCENE_PROCESSING, settings.iRifeSceneProcessing);
 	SelectComboValue(hwnd, IDC_RIFE_DUPLICATE_REMOVAL, settings.iRifeDuplicateRemoval);
 	CheckDlgButton(hwnd, IDC_RIFE_RULES_ENABLED,
@@ -426,7 +458,11 @@ void InitializeDialog(HWND hwnd, const Settings_t& settings)
 		{L"1", 1}, {L"2", 2}, {L"3", 3},
 	});
 	PopulateCombo(hwnd, IDC_RIFE_MODEL, {
+		{L"4.25", RIFE_MODEL_425},
+		{L"4.25 Lite", RIFE_MODEL_425_LITE},
+		{L"4.4", RIFE_MODEL_44},
 		{L"4.6", RIFE_MODEL_46},
+		{L"4.15 Lite", RIFE_MODEL_415_LITE},
 	});
 	PopulateCombo(hwnd, IDC_RIFE_GPU, {
 		{L"Auto", RIFE_GPU_Auto},
@@ -434,9 +470,15 @@ void InitializeDialog(HWND hwnd, const Settings_t& settings)
 		{L"GPU 4", 4}, {L"GPU 5", 5}, {L"GPU 6", 6}, {L"GPU 7", 7},
 	});
 	PopulateCombo(hwnd, IDC_RIFE_SCENE_DETECTION, {
+		{L"SVPflow1 motion vectors", RIFE_SCENE_SVPflow1},
 		{L"NVOF motion vectors", RIFE_SCENE_NVOF},
 		{L"Image comparison", RIFE_SCENE_Image},
 		{L"Disabled", RIFE_SCENE_Disabled},
+	});
+	PopulateCombo(hwnd, IDC_RIFE_PROCESSING_RESOLUTION, {
+		{L"Source resolution", RIFE_RESOLUTION_Source},
+		{L"Match displayed size", RIFE_RESOLUTION_Display},
+		{L"Custom limit", RIFE_RESOLUTION_Limit},
 	});
 	PopulateCombo(hwnd, IDC_RIFE_SCENE_PROCESSING, {
 		{L"Blend adjacent frames", RIFE_SCENE_PROCESS_Blend},
@@ -455,12 +497,34 @@ bool ReadControls(HWND hwnd, Settings_t& settings)
 	settings.iRifeGpuThreads = static_cast<int>(ComboValue(hwnd, IDC_RIFE_GPU_THREADS));
 	settings.iRifeModel = static_cast<int>(ComboValue(hwnd, IDC_RIFE_MODEL));
 	settings.iRifeGPU = static_cast<int>(ComboValue(hwnd, IDC_RIFE_GPU));
+	settings.bRifePreservePrecision = IsDlgButtonChecked(hwnd, IDC_RIFE_PRESERVE_PRECISION) == BST_CHECKED;
+	settings.bRifeFeatureReuse = IsDlgButtonChecked(hwnd, IDC_RIFE_FEATURE_REUSE) == BST_CHECKED;
 	settings.bRifePerformanceBoost = IsDlgButtonChecked(hwnd, IDC_RIFE_PERFORMANCE_BOOST) == BST_CHECKED;
+	settings.iRifeProcessingResolution = static_cast<int>(ComboValue(hwnd, IDC_RIFE_PROCESSING_RESOLUTION));
+	BOOL limitValid = FALSE;
+	const UINT limit = GetDlgItemInt(hwnd, IDC_RIFE_PROCESSING_LIMIT, &limitValid, FALSE);
+	if (settings.iRifeProcessingResolution == RIFE_RESOLUTION_Limit
+			&& (!limitValid || limit < RifeProcessingLimitMin || limit > RifeProcessingLimitMax)) {
+		MessageBoxW(hwnd, L"Enter a maximum short edge from 64 to 4320 pixels. Aspect ratio is preserved; smaller videos are not enlarged.",
+			L"RIFE processing resolution", MB_OK | MB_ICONERROR);
+		return false;
+	}
+	if (limitValid) settings.iRifeProcessingLimit = std::clamp(static_cast<int>(limit),
+		RifeProcessingLimitMin, RifeProcessingLimitMax);
+	settings.bDetailedStats = IsDlgButtonChecked(hwnd, IDC_DETAILED_STATS) == BST_CHECKED;
 	settings.iRifeSceneDetection = static_cast<int>(ComboValue(hwnd, IDC_RIFE_SCENE_DETECTION));
 	settings.iRifeSceneProcessing = static_cast<int>(ComboValue(hwnd, IDC_RIFE_SCENE_PROCESSING));
 	settings.iRifeDuplicateRemoval = static_cast<int>(ComboValue(hwnd, IDC_RIFE_DUPLICATE_REMOVAL));
 	settings.rifeRules.enabled = IsDlgButtonChecked(hwnd, IDC_RIFE_RULES_ENABLED) == BST_CHECKED;
 
+	BOOL thresholdValid = FALSE;
+	const UINT threshold = GetDlgItemInt(hwnd, IDC_RIFE_SCENE_THRESHOLD, &thresholdValid, FALSE);
+	if (!thresholdValid || threshold > 100) {
+		MessageBoxW(hwnd, L"Enter an image scene threshold from 0 to 100 percent.",
+			L"RIFE frame interpolation settings", MB_OK | MB_ICONERROR);
+		return false;
+	}
+	settings.iRifeSceneThreshold = static_cast<int>(threshold);
 	BOOL valid = FALSE;
 	const UINT customFps = GetDlgItemInt(hwnd, IDC_RIFE_CUSTOM_FPS, &valid, FALSE);
 	if (settings.iRifeMode == RIFE_MODE_Custom
@@ -489,12 +553,16 @@ INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 	case WM_INITDIALOG:
 		settings = reinterpret_cast<Settings_t*>(lParam);
 		SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(settings));
+		InitializeSettingsDialogTheme(hwnd);
 		InitializeDialog(hwnd, *settings);
 		return TRUE;
 
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
 		case IDC_RIFE_MODE:
+		case IDC_RIFE_MODEL:
+		case IDC_RIFE_SCENE_DETECTION:
+		case IDC_RIFE_PROCESSING_RESOLUTION:
 			if (HIWORD(wParam) == CBN_SELCHANGE) {
 				EnableControls(hwnd);
 				return TRUE;

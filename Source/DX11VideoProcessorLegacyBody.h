@@ -21,6 +21,7 @@
 #pragma once
 
 #include <DXGI1_2.h>
+#include <dxgi1_3.h>
 #include <dxva2api.h>
 #include <dxgi1_5.h>
 #include <strmif.h>
@@ -33,6 +34,7 @@
 #include "D3DUtil/D3D11Font.h"
 #include "D3DUtil/D3D11Geometry.h"
 #include "VideoProcessor.h"
+#include "RollingTimingWindow.h"
 #include "SubPic/DX11SubPic.h"
 
 #include <array>
@@ -77,6 +79,13 @@ private:
 	Tex2D_t m_TexMaxineVSR;
 	Tex2D_t m_TexMaxineDenoise;
 	Tex2D_t m_TexMaxineDeblur;
+	Tex2D_t m_MaxineAmountSource, m_TexMaxineAmountEnhanced, m_TexMaxineAmountBaseline, m_TexMaxineAmountVPBaseline;
+	CRect m_MaxineAmountSourceRect;
+	ID3D11Texture2D* m_MaxineAmountExpectedTexture = nullptr;
+	bool m_bMaxineAmountPending = false;
+	bool m_bMaxineAmountBaselineOriented = false;
+	CComPtr<ID3D11PixelShader> m_pPSMaxineAmount, m_pPSMaxineMix;
+	CComPtr<ID3D11Buffer> m_pMaxineAmountConstants;
 	// Regular D3D11 staging target for the fully processed source frame.
 	// Maxine must finish before the NvOFFRUC keyed-mutex input transaction
 	// begins, otherwise the two CUDA/D3D11 interop stacks can serialize.
@@ -95,6 +104,25 @@ private:
 
 	// D3D11 Video Processor
 	CD3D11VP m_D3D11VP;
+	// Independent progressive presentation processors; decoder/field history
+	// stays in m_D3D11VP. NVIDIA VSR receives NV12 after RIFE's RGB output.
+	CD3D11VP m_RifeVsrConvertVP;
+	CD3D11VP m_RifeUpscaleVP;
+	D3D11_TEXTURE2D_DESC m_RifeUpscaleInputDesc = {};
+	CRect m_RifeUpscaleContentRect;
+	CSize m_RifeVsrContentSize;
+	CSize m_RifeVsrStorageSize;
+	// Local diagnostic builds only; registry selection is ignored in normal builds.
+	DWORD m_RifeVsrInputProbeMode = 0;
+	ULONGLONG m_RifeVsrInputProbeReadTick = 0;
+	bool m_bRifeVsrProbeSourceDisabled = false;
+	CSize m_RifeUpscaleOutputSize;
+	int m_RifeUpscaleSuperRes = SUPERRES_Disable;
+	bool m_bRifeUpscaleAttempted = false;
+	bool m_bRifeUpscaleUsed = false;
+	std::wstring m_strRifeUpscaleStatus;
+	Tex2D_t m_TexRifeUpscaleOutput;
+	Tex2D_t m_TexRifeVsrNV12;
 
 	CComPtr<ID3D11Buffer> m_pCorrectionConstants;
 	CComPtr<ID3D11PixelShader> m_pPSCorrection;
@@ -154,6 +182,7 @@ private:
 
 	CComPtr<IDXGIFactory2>   m_pDXGIFactory2;
 	CComPtr<IDXGISwapChain1> m_pDXGISwapChain1;
+	CComPtr<IDXGISwapChainMedia> m_pDXGISwapChainMedia;
 	CComPtr<IDXGISwapChain4> m_pDXGISwapChain4;
 	CComPtr<IDXGIOutput>    m_pDXGIOutput;
 	DXGI_COLOR_SPACE_TYPE m_currentSwapChainColorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
@@ -188,6 +217,11 @@ private:
 	CD3D11Rectangle m_Underlay;
 	CD3D11Lines     m_Lines;
 	CD3D11Polyline  m_SyncLine;
+	CRollingTimingWindow<256> m_DxgiPresentCallTiming;
+	std::atomic_int m_DxgiPresentationMode = -1;
+	std::atomic_long m_DxgiMediaStatsHr = E_PENDING;
+	std::atomic_uint64_t m_DxgiPresentationModeChanges = 0;
+	UINT m_DxgiMediaStatsPollCountdown = 0;
 
 	bool m_bExclusiveScreen = false;
 	bool m_bFullScreen = false;
@@ -206,8 +240,11 @@ private:
 	int m_iMaxinePipeline = MAXINE_PIPELINE_UpscaleDenoiseDeblur;
 	int m_iMaxineGPU = MAXINE_GPU_Auto;
 	int m_iMaxineAutoBitrate = MAXINE_AUTO_BITRATE_DEF;
+	int m_iMaxineStrength = 100;
+	int m_iMaxineAmount = 100;
 	DWORD m_dwSourceBitRate = 0;
 	bool m_bMaxineVSRUsed = false;
+	CSize m_MaxineVSRInputSize;
 	CSize m_MaxineVSRSize;
 	int m_iMaxineResolvedMode = -1;
 	bool m_bMaxineOversampleClamped = false;
@@ -247,12 +284,20 @@ private:
 	};
 	struct FrameInterpolationPresentationSurface {
 		Tex2D_t texture;
+		CSize rifeContentSize = CSize(0, 0); // Logical crop captured with the queued frame.
+		std::shared_ptr<RifeCudaOutputLease> cudaOutput;
 		CComPtr<ID3D11Query> retireQuery;
 		bool inUse = false;
 		bool retirePending = false;
+		int64_t retireStartTick = 0;
 	};
-	static constexpr UINT FrameInterpolationSurfaceCount = 4;
+	static constexpr UINT FrameInterpolationSurfaceCount = 8;
 	std::array<FrameInterpolationPresentationSurface, FrameInterpolationSurfaceCount> m_FrameInterpolationPresentationSurfaces;
+	std::atomic_uint64_t m_RifePresentationRetireLastUs = 0;
+	std::atomic_uint64_t m_RifePresentationRetireMaxUs = 0;
+	std::atomic_uint64_t m_RifePresentationRetireCount = 0;
+	std::atomic_uint64_t m_RifePresentationRetireBusyChecks = 0;
+	CRollingTimingWindow<256> m_RifePresentationRetireTiming;
 	std::atomic_uint m_RifeD3DFailureStage = RIFE_D3D_FAILURE_NONE;
 	std::atomic_long m_RifeD3DFailureHr = S_OK;
 	std::atomic_long m_RifeDeviceRemovedReason = S_OK;
@@ -438,7 +483,8 @@ private:
 	bool GetMaxineVSRTargetSizeForInput(const CRect& dstRect, const CSize& sourceSize,
 		bool sourceAlreadyOriented, CSize& targetSize, bool& upscaleNeeded);
 	bool ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, const CSize& sourceSize,
-		const CSize& targetSize, bool upscaleNeeded, bool forceInputStaging);
+		const CSize& targetSize, bool upscaleNeeded, bool forceInputStaging,
+		const MpcvrRifeCudaOutput* cudaInput = nullptr);
 	unsigned ResolveMaxineUpscaleMode() const;
 	void UpdateTexures();
 	void UpdatePostScaleTexures();
@@ -455,6 +501,10 @@ private:
 	void DrawSubtitles(ID3D11Texture2D* pRenderTarget);
 	HRESULT Process(ID3D11Texture2D* pRenderTarget, const CRect& srcRect, const CRect& dstRect, const bool second,
 		const bool rifeSourcePreparation = false);
+	DWORD GetRifeVsrInputProbeMode();
+	void UpdateRifeVsrProbeSourceRequest(bool rifeSourcePreparation);
+	bool GetRifeVsrProbeDecoderInput(CComPtr<ID3D11Texture2D>& texture,
+		CComPtr<IMediaSample>& sample, UINT& arraySlice);
 
 	HRESULT AlphaBlt(ID3D11ShaderResourceView* pShaderResource, ID3D11Texture2D* pRenderTarget,
 					 ID3D11Buffer* pVertexBuffer, D3D11_VIEWPORT* pViewPort,

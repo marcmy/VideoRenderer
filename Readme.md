@@ -8,11 +8,11 @@ This fork adds a dedicated **NVIDIA Maxine** control panel, a tested five-DLL Ma
 
 Go to the [latest release](https://github.com/marcmy/VideoRenderer/releases/latest) and download:
 
-- **`MPCVR-Maxine-Setup.zip`** for the normal one-click K-Lite installation
+- **`MPCVR-Maxine-RIFE-Setup.zip`** for the normal one-click K-Lite installation
 - **`MpcVideoRenderer-Maxine.zip`** only for manual or portable installation
 - **`SHA256SUMS.txt`** to verify the two public ZIP files
 
-For most people, `MPCVR-Maxine-Setup.zip` is the only ZIP they need.
+For most people, `MPCVR-Maxine-RIFE-Setup.zip` is the only ZIP they need.
 
 ## Requirements
 
@@ -33,7 +33,7 @@ Maxine processing is implemented in the 64-bit renderer. The setup still updates
 ## One-click setup with K-Lite
 
 1. Install [K-Lite Codec Pack](https://codecguide.com/download_kl.htm) with **MPC-HC** and **MPC Video Renderer** selected.
-2. Download **`MPCVR-Maxine-Setup.zip`** from the [latest release](https://github.com/marcmy/VideoRenderer/releases/latest).
+2. Download **`MPCVR-Maxine-RIFE-Setup.zip`** from the [latest release](https://github.com/marcmy/VideoRenderer/releases/latest).
 3. Extract the ZIP completely. Do not run the installer from inside the compressed archive.
 4. Close every open MPC-HC window.
 5. Run **`Install-MPCVR-Maxine.cmd`**.
@@ -219,6 +219,40 @@ Converts SDR video to HDR through NVIDIA's driver-level processing. It cannot be
 
 Displays the renderer debug overlay. MPC-HC also toggles this overlay with **Ctrl+J**. The overlay is the fastest way to confirm which processing path is actually active.
 
+## RIFE processing size
+
+RIFE has two independent, opt-in options. **Preserve 10-bit** uses RGBA16F working
+and output surfaces when the source and video-conversion path retain more than
+8 bits. Explicit 8-bit conversion stays 8-bit. Models still use their existing
+mixed FP16/FP32 arithmetic; this option avoids the BGRA8 input/output bottleneck.
+Normal rendering retains precision until its existing output conversion/dither.
+Maxine's current BGRA8 input remains an 8-bit boundary and the BGRA CUDA handoff
+is bypassed for this precision path. Larger surfaces can cost memory/bandwidth.
+
+**Feature reuse** runs the image encoder once per immutable source pair and
+execution context for the pinned 4.15 Lite and 4.25 exports. 4.4 and 4.6 lack
+that encoder. 4.25 Lite keeps its original engine because the split produced a
+reproducible border artifact in native GPU validation. Hash-qualified
+encoder/synthesis sidecars are included in the
+model package; they leave original models and old plans intact. The first use
+builds separate fixed-resolution stage plans. A new pair, seek, drain or failed
+request invalidates reuse. Missing/incompatible sidecars fall back to the
+original engine; detailed Ctrl+J reports whether features are actually active.
+This is experimental: compare delivered FPS and picture quality at identical
+settings. Encoder reuse does not guarantee a throughput improvement.
+
+Frame interpolation settings includes an optional processing-size control:
+
+- **Source resolution** (default) keeps the original oriented picture size.
+- **Match displayed size** reduces it to fit the displayed video rectangle, without upscaling.
+- **Custom limit** caps the short edge, preserving aspect ratio and never upscaling. For example, 720 gives 1280x720 for a 1920x1080 source, or 720x1280 for a portrait 1080x1920 source.
+
+Lower resolution trades picture detail for less inference work. All frames in the active RIFE path use this working size, including source endpoints. Normal resizing and optional Maxine enhancement then produce the displayed image. Maxine's extra work can offset the inference saving, so compare first with Maxine disabled. Source-size playback rules still match the original video.
+
+Ctrl+J's existing **RIFE input** line shows original, working and model-padded dimensions. Match displayed size can reinitialize RIFE when the displayed rectangle changes; a custom limit stays independent of window size. Changed working dimensions invalidate queued frames and the learned capacity. Seeking and pause/resume otherwise retain their existing behavior, and Stop still clears it. Performance Boost may build a new engine for the new working dimensions; existing caches are retained.
+
+**SVPflow1 motion vectors** is the first scene-detector choice and the default for new or reset settings. Existing saved detector selections remain selected.
+
 ## When Maxine will not activate
 
 The Ctrl+J overlay normally explains why Maxine was bypassed. Common reasons include:
@@ -262,7 +296,7 @@ The shortcut downloads the latest custom renderer, verifies its SHA-256 hash, an
 
 `MpcVideoRenderer-Maxine.zip` contains the renderer files only. It is intended for advanced users who already know where their player loads MPC Video Renderer from.
 
-The manual ZIP does not perform the complete K-Lite setup and does not install the Maxine runtime or environment variable. Normal K-Lite users should use `MPCVR-Maxine-Setup.zip` instead.
+The manual ZIP does not perform the complete K-Lite setup and does not install the Maxine runtime or environment variable. Normal K-Lite users should use `MPCVR-Maxine-RIFE-Setup.zip` instead.
 
 ## Key renderer features
 
@@ -288,7 +322,7 @@ Confirm that MPC-HC is actually loading this fork's renderer. Open **View > Rend
 
 ### Maxine runtime could not be loaded
 
-Run `MPCVR-Maxine-Setup.zip` again, close and reopen MPC-HC, and verify that Ctrl+J reports a runtime path under:
+Run `MPCVR-Maxine-RIFE-Setup.zip` again, close and reopen MPC-HC, and verify that Ctrl+J reports a runtime path under:
 
 `%LOCALAPPDATA%\MPCVR Maxine Runtime\nvvfx\libs`
 
@@ -318,7 +352,7 @@ The repository includes `build_mpcvr.cmd` and GitHub Actions workflows for x86/x
 
 Release automation produces an immutable Maxine release containing:
 
-- `MPCVR-Maxine-Setup.zip`
+- `MPCVR-Maxine-RIFE-Setup.zip`
 - `MpcVideoRenderer-Maxine.zip`
 - `SHA256SUMS.txt`
 
@@ -333,3 +367,8 @@ Upstream information and bug reports unrelated to this fork's Maxine changes sho
 ## License
 
 MPC Video Renderer's code is licensed under the [GNU General Public License v3](https://www.gnu.org/licenses/gpl-3.0.html).
+
+The optional SVPflow1 scene detector includes GPL-2.0-or-later motion-search
+code from SVP/MVTools and x264 pixel kernels. Attribution, source provenance,
+classifier differences and NASM build instructions are in
+[external/SVPflow1/README.md](external/SVPflow1/README.md).

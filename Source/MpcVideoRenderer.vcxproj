@@ -61,6 +61,13 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="SvpSceneMotion.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PreprocessorDefinitions>Q_OS_WIN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions Condition="'$(Platform)'=='x64'">Q_PROCESSOR_X86_64;Q_OS_WIN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClInclude Include="SvpSceneMotion.h" />
+    <ClInclude Include="SvpSceneDetector.h" />
     <ClCompile Include="csputils.cpp" />
     <ClCompile Include="CustomAllocator.cpp" />
     <ClCompile Include="D3D11VP.cpp" />
@@ -92,6 +99,7 @@
     <ClCompile Include="RifePlaybackPipeline.cpp" />
     <ClCompile Include="RifeSceneBlender.cpp" />
     <ClCompile Include="RifeSettingsDialog.cpp" />
+    <ClCompile Include="SettingsDialogTheme.cpp" />
     <ClCompile Include="Shaders.cpp" />
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader>Create</PrecompiledHeader>
@@ -132,17 +140,26 @@
     <ClInclude Include="IVideoRenderer.h" />
     <ClInclude Include="MediaSampleSideData.h" />
     <ClInclude Include="NvidiaMaxineVSR.h" />
+    <ClInclude Include="MaxineInputStaging.h" />
     <ClInclude Include="NvidiaFrameInterpolation.h" />
     <ClInclude Include="NvidiaSceneChangeDetector.h" />
+    <ClInclude Include="NvofInverseFlow.h" />
+    <ClInclude Include="NvofAnalysisInput.h" />
     <ClInclude Include="PropPage.h" />
     <ClInclude Include="renbase2.h" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="RifeFrameInterpolation.h" />
     <ClInclude Include="RifePlaybackPipeline.h" />
+    <ClInclude Include="RifeImageSceneDetector.h" />
+    <ClInclude Include="RifePresentationPreparation.h" />
     <ClInclude Include="RifeRateRules.h" />
     <ClInclude Include="RifeRuntimeApi.h" />
+    <ClInclude Include="RifeCudaOutputApi.h" />
+    <ClInclude Include="MaxineCompletionEvent.h" />
+    <ClInclude Include="RifeRuntimeCachePolicy.h" />
     <ClInclude Include="RifeSceneBlender.h" />
     <ClInclude Include="RifeSettingsDialog.h" />
+    <ClInclude Include="SettingsDialogTheme.h" />
     <ClInclude Include="Shaders.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="SubPic\DX11SubPic.h" />
@@ -176,6 +193,7 @@
     <None Include="res\dither32x32float16.bin" />
     <None Include="res\MpcVideoRenderer.rc2" />
   </ItemGroup>
+  <Import Project="..\external\SVPflow1\SVPflow1.targets" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

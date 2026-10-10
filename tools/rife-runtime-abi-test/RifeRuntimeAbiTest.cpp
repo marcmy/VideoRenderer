@@ -24,6 +24,7 @@ int wmain()
     static_assert(MPCVR_RIFE_TENSORRT_FAILURE == -4);
     static_assert(MPCVR_RIFE_BUILDER_RESOURCE_MISSING == -5);
     static_assert(MPCVR_RIFE_UNSUPPORTED_COMPUTE_CAPABILITY == -6);
+    static_assert(MPCVR_RIFE_UNSUPPORTED_TENSOR_FORMAT == -7);
 
     const auto missing = CRifeFrameInterpolation::Probe(L"missing-runtime");
     Check(!missing.available, "missing runtime must be reported as unavailable");
@@ -34,11 +35,11 @@ int wmain()
 
     const auto good = CRifeFrameInterpolation::Probe(L"good-runtime");
     Check(good.available, "matching runtime ABI must be accepted");
-    Check(good.abiVersion == MPCVR_RIFE_RUNTIME_ABI, "matching runtime must report ABI 1");
+    Check(good.abiVersion == MPCVR_RIFE_RUNTIME_ABI, "matching runtime must report ABI 2");
 
     CRifeFrameInterpolation runtime;
     Check(runtime.Initialize(
-        L"good-runtime", nullptr, 1920, 1080, UINT32_MAX, 2, false,
+        L"good-runtime", nullptr, 1920, 1088, 1920, 1080, UINT32_MAX, 2, false,
         L"rife_v4.6.onnx", L"cache"),
         "matching fake runtime must initialize");
     Check(runtime.IsReady(), "initialized runtime must report ready");
@@ -57,14 +58,14 @@ int wmain()
 
     CRifeFrameInterpolation badRuntime;
     Check(!badRuntime.Initialize(
-        L"bad-runtime", nullptr, 1920, 1080, UINT32_MAX, 2, false,
+        L"bad-runtime", nullptr, 1920, 1088, 1920, 1080, UINT32_MAX, 2, false,
         L"rife_v4.6.onnx", L"cache"),
         "ABI mismatch must fail persistent initialization");
     Check(!badRuntime.IsReady(), "failed initialization must not leave a ready runtime");
 
     CRifeFrameInterpolation unsupportedArchitecture;
     Check(!unsupportedArchitecture.Initialize(
-        L"unsupported-cc-runtime", nullptr, 1920, 1080, UINT32_MAX, 2, false,
+        L"unsupported-cc-runtime", nullptr, 1920, 1088, 1920, 1080, UINT32_MAX, 2, false,
         L"rife_v4.6.onnx", L"cache"),
         "unsupported compute capability must fail initialization");
     Check(unsupportedArchitecture.GetStatus() == L"RIFE runtime does not support this CUDA compute capability",
@@ -72,7 +73,7 @@ int wmain()
 
     CRifeFrameInterpolation missingBuilderResource;
     Check(!missingBuilderResource.Initialize(
-        L"builder-missing-runtime", nullptr, 1920, 1080, UINT32_MAX, 2, false,
+        L"builder-missing-runtime", nullptr, 1920, 1088, 1920, 1080, UINT32_MAX, 2, false,
         L"rife_v4.6.onnx", L"cache"),
         "missing TensorRT builder resource must fail initialization");
     Check(missingBuilderResource.GetStatus() == L"RIFE TensorRT builder resource for this GPU architecture is missing",
@@ -80,7 +81,7 @@ int wmain()
 
     CRifeFrameInterpolation futureFailure;
     Check(!futureFailure.Initialize(
-        L"future-failure-runtime", nullptr, 1920, 1080, UINT32_MAX, 2, false,
+        L"future-failure-runtime", nullptr, 1920, 1088, 1920, 1080, UINT32_MAX, 2, false,
         L"rife_v4.6.onnx", L"cache"),
         "unknown future runtime failure must fail initialization");
     Check(futureFailure.GetStatus().find(L"-99") != std::wstring::npos,
@@ -92,7 +93,7 @@ int wmain()
     SetEnvironmentVariableW(L"MPCVR_RIFE_RUNTIME_DIR", L"missing-env-runtime");
     CRifeFrameInterpolation candidateFallback;
     Check(!candidateFallback.Initialize(
-        L"", nullptr, 1920, 1080, UINT32_MAX, 2, false,
+        L"", nullptr, 1920, 1088, 1920, 1080, UINT32_MAX, 2, false,
         L"rife_v4.6.onnx", L"cache"),
         "multi-directory runtime lookup must fail for unsupported compute capability");
     Check(candidateFallback.GetStatus() == L"RIFE runtime does not support this CUDA compute capability",

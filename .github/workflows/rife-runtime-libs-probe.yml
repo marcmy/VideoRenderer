@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/rife-tensorrt-interpolation
+      - feature/rife-model-variants
     paths:
       - .github/workflows/rife-runtime-libs-probe.yml
 
@@ -18,11 +19,14 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $wheel = Join-Path $env:RUNNER_TEMP 'tensorrt_cu12_libs-11.2.1.2-py3-none-win_amd64.whl'
-          $url = 'https://pypi.nvidia.com/tensorrt-cu12-libs/tensorrt_cu12_libs-11.2.1.2-py3-none-win_amd64.whl'
+          $wheel = Join-Path $env:RUNNER_TEMP 'tensorrt_cu13_libs-11.3.0.99-py3-none-win_amd64.whl'
+          $url = 'https://pypi.nvidia.com/tensorrt-cu13-libs/tensorrt_cu13_libs-11.3.0.99-py3-none-win_amd64.whl'
           & curl.exe --fail --location --retry 3 --output $wheel $url
           if ($LASTEXITCODE -ne 0) { throw 'TensorRT wheel download failed' }
           $hash = (Get-FileHash -Algorithm SHA256 $wheel).Hash.ToLowerInvariant()
+          if ($hash -ne '9d504bd9f77a93b30f5c782c1a3cb3f4e53595ea100347360134e5adea198eff') {
+              throw "TensorRT wheel SHA-256 mismatch: $hash"
+          }
           $size = (Get-Item $wheel).Length
           Write-Host "WHEEL_SHA256=$hash"
           Write-Host "WHEEL_BYTES=$size"

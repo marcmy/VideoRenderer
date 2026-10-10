@@ -162,10 +162,12 @@ if ($ValidateOnly) {
     Complete-Run -ExitCode 0
 }
 
-$runningPlayers = Get-Process -Name 'mpc-hc', 'mpc-hc64' -ErrorAction SilentlyContinue
-if ($runningPlayers) {
-    Write-Host 'Close MPC-HC before installing the Maxine runtime.' -ForegroundColor Red
-    Complete-Run -ExitCode 1
+if (Get-Process -Name 'mpc-hc', 'mpc-hc64' -ErrorAction SilentlyContinue) {
+    Write-Host 'MPC-HC is open. Close it to continue installation automatically (Ctrl+C to cancel).' -ForegroundColor Yellow
+    while (Get-Process -Name 'mpc-hc', 'mpc-hc64' -ErrorAction SilentlyContinue) {
+        Start-Sleep -Milliseconds 500
+    }
+    Write-Host 'MPC-HC has closed. Continuing installation...' -ForegroundColor Green
 }
 
 if ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12) {

@@ -35,15 +35,19 @@ public:
         const Settings_t& settings,
         uint64_t presenterGeneration,
         FrameRate displayRate,
-        REFERENCE_TIME frameDuration);
+        REFERENCE_TIME& frameDuration);
 
     // Non-blocking reset used for seek/flush/configuration changes. In-flight
     // GPU work is invalidated by generation checks and discarded on completion.
     void Reset() noexcept;
 
+    // Pause and seek invalidate in-flight work but keep the learned throughput
+    // cap for the same clip when playback resumes.
+    void Suspend() noexcept;
+
     // Lightweight live diagnostics for Ctrl+J. Counters are intentionally
     // cumulative so a user can see which fallback path is actually active.
-    [[nodiscard]] std::wstring GetDiagnostics() const;
+    [[nodiscard]] std::wstring GetDiagnostics(bool detailed = false) const;
 
 private:
     struct Impl;

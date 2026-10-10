@@ -3,9 +3,45 @@
 
 #include "../../Source/MaxineInteropPolicy.h"
 #include "../../Source/MaxineSpatialPolicy.h"
+#include "../../Source/MaxineRunFailure.h"
+#include "../../Source/RifeVideoProcessorPolicy.h"
 
 int main()
 {
+	// Exact failing anamorphic case: 720 stored pixels must not be sent
+	// directly to a 626-wide AI target while enlarging the height to 1080.
+	assert((ResolveMaxineUpscaleEnvelope({720, 480}, {626, 1080}) == MaxineSpatialSize{720, 1243}));
+	assert((ResolveMaxineUpscaleEnvelope({480, 720}, {1080, 626}) == MaxineSpatialSize{1243, 720}));
+	assert((ResolveMaxineUpscaleEnvelope({1280, 720}, {1920, 1080}) == MaxineSpatialSize{1920, 1080}));
+	assert((ResolveMaxineUpscaleEnvelope({278, 480}, {1080, 1865}) == MaxineSpatialSize{1080, 1865}));
+	assert((ResolveMaxineUpscaleEnvelope({1920, 1080}, {1280, 720}) == MaxineSpatialSize{1280, 720}));
+	assert((ResolveMaxineUpscaleEnvelope({720, 480}, {90, 1080}) == MaxineSpatialSize{}));
+	assert((ResolveMaxineUpscaleEnvelope({}, {1920, 1080}) == MaxineSpatialSize{}));
+	// Native RTX VSR is a presentation pass on unpadded content, with Maxine
+	// exclusion and a precision-preserving fallback for unsupported RGB/HDR.
+	assert(CanUseRifeVideoProcessorUpscale(true, false, true, {1280, 720}, {1920, 1080}));
+	assert(CanUseRifeVideoProcessorUpscale(true, false, true, {278, 480}, {626, 1080}));
+	assert(!CanUseRifeVideoProcessorUpscale(true, true, true, {1280, 720}, {1920, 1080}));
+	assert(!CanUseRifeVideoProcessorUpscale(false, false, true, {1280, 720}, {1920, 1080}));
+	assert(!CanUseRifeVideoProcessorUpscale(true, false, false, {1280, 720}, {1920, 1080}));
+	assert(!CanUseRifeVideoProcessorUpscale(true, false, true, {1920, 1080}, {1280, 720}));
+	assert(!CanUseRifeVideoProcessorUpscale(true, false, true, {1280, 720}, {1920, 720}));
+	MaxineRunFailure failure;
+	const MaxineRunBinding rejected{{720, 480}, {626, 1080}, 3, -1, 7};
+	const MaxineRunBinding rife{{278, 480}, {1080, 1865}, 3, -1, 7};
+	assert(!failure.HasDifferentBinding(rife));
+	failure.Record(rejected);
+	for (int frame = 0; frame < 10000; ++frame) assert(!failure.HasDifferentBinding(rejected));
+	assert(failure.HasDifferentBinding(rife));
+	auto different = rejected;
+	different.mode = 18;
+	assert(failure.HasDifferentBinding(different));
+	different = rejected;
+	different.adapter = 8;
+	assert(failure.HasDifferentBinding(different));
+	failure.Clear();
+	assert(!failure.HasDifferentBinding(rife));
+
 	// RIFE presentation textures can otherwise satisfy every direct-input
 	// condition while still being owned by RIFE's persistent CUDA registration.
 	assert(CanUseDirectMaxineInput(true, false));

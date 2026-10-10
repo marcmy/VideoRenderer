@@ -1,2 +1,3 @@
 # Preserve the exact bytes covered by the runtime notice checksum.
 tools/RifeRuntimeInstaller/licenses/TensorRT-SLA.html -text -whitespace
+external/SVPflow1/** -text -whitespace

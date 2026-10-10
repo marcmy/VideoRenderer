@@ -15,7 +15,7 @@
 #include <cstdint>
 #include <type_traits>
 
-#define MPCVR_RIFE_RUNTIME_ABI 1u
+#define MPCVR_RIFE_RUNTIME_ABI 2u
 
 enum MpcvrRifeResult : int32_t {
     MPCVR_RIFE_OK = 0,
@@ -25,20 +25,43 @@ enum MpcvrRifeResult : int32_t {
     MPCVR_RIFE_TENSORRT_FAILURE = -4,
     MPCVR_RIFE_BUILDER_RESOURCE_MISSING = -5,
     MPCVR_RIFE_UNSUPPORTED_COMPUTE_CAPABILITY = -6,
+    MPCVR_RIFE_UNSUPPORTED_TENSOR_FORMAT = -7,
 };
 
 struct MpcvrRifeCreateParams {
     uint32_t size = sizeof(MpcvrRifeCreateParams);
     uint32_t abiVersion = MPCVR_RIFE_RUNTIME_ABI;
     ID3D11Device* device = nullptr;
+    // width/height describe the allocated D3D11/tensor surface. The logical
+    // video content can be smaller because RIFE surfaces are padded to the
+    // selected model's required alignment (32 px for most current models,
+    // 128 px for RIFE 4.25 Lite).
     uint32_t width = 0;
     uint32_t height = 0;
+    uint32_t contentWidth = 0;
+    uint32_t contentHeight = 0;
     uint32_t gpuIndex = UINT32_MAX;
     uint32_t contextCount = 2;
     uint32_t performanceBoost = 0;
     const wchar_t* modelPath = nullptr;
     const wchar_t* cachePath = nullptr;
+    // ABI-2 optional tail. When enabled, the renderer guarantees that input
+    // textures are retained and are not reused by another context until this
+    // context is invoked again. This lets the runtime defer the expensive
+    // D3D11/CUDA input ownership release instead of synchronizing it at the end
+    // of every interpolation call.
+    uint32_t flags = 0;
 };
+
+enum MpcvrRifeCreateFlags : uint32_t {
+    MPCVR_RIFE_CREATE_DEFER_INPUT_RELEASE = 1u << 0,
+    MPCVR_RIFE_CREATE_FEATURE_REUSE = 1u << 1,
+    MPCVR_RIFE_CREATE_HIGH_PRECISION = 1u << 2,
+};
+
+inline constexpr uint32_t MPCVR_RIFE_CAP_HIGH_PRECISION = 1u << 0;
+inline constexpr uint32_t MPCVR_RIFE_CAP_FEATURE_REUSE = 1u << 1;
+using MpcvrRifeGetCapabilitiesFn = uint32_t(WINAPI*)();
 
 struct MpcvrRifeRequest {
     uint32_t size = sizeof(MpcvrRifeRequest);
@@ -47,17 +70,65 @@ struct MpcvrRifeRequest {
     ID3D11Texture2D* second = nullptr;
     ID3D11Texture2D* output = nullptr;
     float timestep = 0.5f;
+    // ABI-2 optional tail. Zero keeps the original full-pack behavior. A nonzero
+    // ID identifies one immutable source-pair job, never merely a texture address
+    // or timestamp. A context may reuse its packed input for later timesteps of
+    // this pair. New jobs (including seek/repeat) must receive a new ID.
+    uint64_t inputPairId = 0;
 };
 
 struct MpcvrRifeStats {
     uint32_t size = sizeof(MpcvrRifeStats);
     double inferenceMs = 0.0;
     uint64_t engineBytes = 0;
+    // ABI-2 optional tail. New runtimes accept the original ABI-2 stats size
+    // and only write these fields when the caller supplied enough space.
+    double inputMapMs = 0.0;
+    double inputPackMs = 0.0;
+    double inputUnmapMs = 0.0;
+    double outputMapMs = 0.0;
+    double tensorRtMs = 0.0;
+    double outputWriteMs = 0.0;
+    double outputUnmapMs = 0.0;
+    double contextLockWaitMs = 0.0;
+    double cudaSetDeviceMs = 0.0;
+    double registrationMs = 0.0;
+    double inputPackLockWaitMs = 0.0;
+    double totalRuntimeMs = 0.0;
+    double tensorRtSubmitMs = 0.0;
+    uint32_t tensorRtGraphUsed = 0;
+    double packHostMs = 0.0;
+    double writeHostMs = 0.0;
+    double packSyncMs = 0.0;
+    double writeSyncMs = 0.0;
+    double handoffSyncMs = 0.0;
+    double inputReleaseSyncMs = 0.0;
+    // Diagnostic split of handoffSyncMs. startWaitMs measures how long the
+    // host waits for the stream's start event (including queued D3D/CUDA
+    // ownership work before RIFE begins). endWaitMs measures the remaining
+    // wait from startEvent completion through endEvent.
+    double handoffStartWaitMs = 0.0;
+    double handoffEndWaitMs = 0.0;
+    uint32_t handoffStartReady = 0;
+    // Further diagnostic split of handoffStartWaitMs. preMapWaitMs is the
+    // host wait for an event queued immediately before cudaGraphicsMapResources;
+    // mapWaitMs is the remaining wait until an event queued immediately after
+    // the input resources have been mapped. This distinguishes CUDA/WDDM stream
+    // scheduling delay from D3D11 -> CUDA resource-ownership delay.
+    double handoffPreMapWaitMs = 0.0;
+    double handoffMapWaitMs = 0.0;
+    uint32_t handoffPreMapReady = 0;
+    // ABI-2 optional tail: 0 = unsupported/not reported, 1 = full pair pack,
+    // 2 = reused RGB/geometry with only the timestep plane updated.
+    uint64_t inputPairReuse = 0;
+    // Optional tail: 0 = original engine, 1 = fresh encoder, 2 = reused encoder.
+    uint64_t featureReuse = 0;
 };
 
 using MpcvrRifeGetAbiVersionFn = uint32_t(WINAPI*)();
 using MpcvrRifeCreateFn = int(WINAPI*)(const MpcvrRifeCreateParams*, void**);
 using MpcvrRifeInterpolateFn = int(WINAPI*)(void*, const MpcvrRifeRequest*, MpcvrRifeStats*);
+using MpcvrRifeDrainContextFn = int(WINAPI*)(void*, uint32_t);
 using MpcvrRifeDestroyFn = void(WINAPI*)(void*);
 
 static_assert(std::is_standard_layout_v<MpcvrRifeCreateParams>);

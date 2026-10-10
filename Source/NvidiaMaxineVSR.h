@@ -11,6 +11,8 @@
 #include <memory>
 #include <string>
 
+struct MpcvrRifeCudaOutput;
+
 class CNvidiaMaxineVSR
 {
 public:
@@ -26,12 +28,21 @@ public:
 		ID3D11Texture2D* pOutputTexture,
 		unsigned mode,
 		int gpuIndex = -1,
-		bool releaseD3DImagesAfterRun = true);
+		bool releaseD3DImagesAfterRun = true,
+		bool throttleGpuQueue = false,
+		bool waitForD3DInput = false,
+		const MpcvrRifeCudaOutput* cudaInput = nullptr,
+		int strengthPercent = 100);
 
 	void Reset();
+	bool CanUseCudaInput() const noexcept;
 	const std::wstring& GetStatus() const;
 	const std::wstring& GetRuntimeInfo() const;
 	double GetLastProcessTimeMs() const;
+	double GetAverageGpuProcessTimeMs() const;
+	std::wstring GetGpuTimingDiagnostics() const;
+	std::wstring GetGraphicsInputWaitDiagnostics() const;
+	std::wstring GetStrengthDiagnostics() const;
 
 private:
 	struct Impl;

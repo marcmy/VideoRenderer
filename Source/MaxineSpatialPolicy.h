@@ -26,6 +26,29 @@ constexpr uint32_t ScaleMaxineDimension(
 	return static_cast<uint32_t>((static_cast<uint64_t>(value) * numerator + denominator / 2u) / denominator);
 }
 
+// VSR is an upscale pass. For mixed resizing (often anamorphic media),
+// enlarge the requested rectangle uniformly until neither stored axis shrinks.
+// A final shader/VP resize returns to the requested presentation rectangle.
+// Ordinary upscales and complete downscales retain their existing dimensions.
+constexpr MaxineSpatialSize ResolveMaxineUpscaleEnvelope(
+        const MaxineSpatialSize source, const MaxineSpatialSize target) noexcept
+{
+    if (!source.width || !source.height || !target.width || !target.height) return {};
+    if (target.width <= source.width && target.height <= source.height) return target;
+    uint64_t width = target.width;
+    uint64_t height = target.height;
+    if (width < source.width) {
+        height = (height * source.width + width - 1u) / width;
+        width = source.width;
+    } else if (height < source.height) {
+        width = (width * source.height + height - 1u) / height;
+        height = source.height;
+    }
+    if (width > static_cast<uint64_t>(source.width) * 4u
+            || height > static_cast<uint64_t>(source.height) * 4u) return {};
+    return {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
+}
+
 // Match-output normally follows the aspect-fitted video rectangle exactly.
 // When the video's presentation orientation differs from the physical display,
 // use the fitted extent along the display's short-resolution axis as the source

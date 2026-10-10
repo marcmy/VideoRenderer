@@ -1,4 +1,4 @@
-﻿//{{NO_DEPENDENCIES}}
+//{{NO_DEPENDENCIES}}
 // Microsoft Visual C++ generated include file.
 // Used by MpcVideoRenderer.rc
 //
@@ -74,6 +74,8 @@
 #define IDF_PS_11_INTERP_LANCZOS3_X      846
 #define IDF_PS_11_INTERP_LANCZOS3_Y      847
 #define IDF_PS_11_INTERP_JINC2           848
+#define IDF_PS_11_MAXINE_AMOUNT          849
+#define IDF_PS_11_MAXINE_MIX             862
 #define IDF_PS_11_CONVOL_BOX_X           850
 #define IDF_PS_11_CONVOL_BOX_Y           851
 #define IDF_PS_11_CONVOL_BILINEAR_X      852
@@ -174,6 +176,8 @@
 #define IDC_RIFE_SCENE_DETECTION         1099
 #define IDC_RIFE_SCENE_PROCESSING        1100
 #define IDC_RIFE_DUPLICATE_REMOVAL       1101
+#define IDC_RIFE_PRESERVE_PRECISION      1132
+#define IDC_RIFE_FEATURE_REUSE           1133
 #define IDC_RIFE_MODEL                   1102
 #define IDC_STATIC_RIFE_CUSTOM_FPS       1103
 #define IDC_RIFE_RULES_ENABLED           1104
@@ -194,6 +198,16 @@
 #define IDC_RIFE_RULE_MAX_OUTPUT_FPS     1119
 #define IDC_RIFE_RULE_UP                 1120
 #define IDC_RIFE_RULE_DOWN               1121
+#define IDC_RIFE_SCENE_THRESHOLD         1127
+#define IDC_STATIC_RIFE_SCENE_THRESHOLD  1128
+#define IDC_RIFE_PROCESSING_RESOLUTION   1129
+#define IDC_RIFE_PROCESSING_LIMIT        1130
+#define IDC_STATIC_RIFE_PROCESSING_LIMIT 1131
+#define IDC_DETAILED_STATS               1122
+#define IDC_MAXINE_STRENGTH              1123
+#define IDC_STATIC_MAXINE_STRENGTH       1124
+#define IDC_MAXINE_AMOUNT                1125
+#define IDC_STATIC_MAXINE_AMOUNT         1126
 
 // Next default values for new objects
 // 
@@ -201,7 +215,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        109
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1122
+#define _APS_NEXT_CONTROL_VALUE         1129
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

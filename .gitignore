@@ -7,3 +7,21 @@
 /signinfo.txt
 
 .worktrees/
+
+# Local test deliveries, research, downloaded CI artifacts, and compiler output.
+/_test-bundles/
+/_test-validation/
+/_research/
+/_ci-*/
+/_maxine-setup-ci-log.zip
+*.obj
+*.pdb
+*.exp
+*.pyc
+**/__pycache__/
+tools/*-test/*.exe
+tools/*-test/*.dll
+tools/*-test/*.lib
+tools/*-test/RIFE/
+tools/*-test/*-runtime/
+tools/*-test/out/

@@ -4,6 +4,7 @@
 
 #include "Helper.h"
 #include "RifeSceneBlender.h"
+#include "RifePrecision.h"
 #include "Shaders.h"
 
 #include <algorithm>
@@ -54,7 +55,7 @@ bool CompatibleTexture(ID3D11Texture2D* texture, const D3D11_TEXTURE2D_DESC& exp
     texture->GetDesc(&desc);
     return desc.Width == expected.Width
         && desc.Height == expected.Height
-        && desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM
+        && desc.Format == expected.Format && RifeSupportedSurfaceFormat(desc.Format)
         && desc.SampleDesc.Count == 1;
 }
 
@@ -154,7 +155,7 @@ struct CRifeSceneBlender::Impl
 
         D3D11_TEXTURE2D_DESC desc = {};
         output->GetDesc(&desc);
-        if (!desc.Width || !desc.Height || desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM
+        if (!desc.Width || !desc.Height || !RifeSupportedSurfaceFormat(desc.Format)
                 || desc.SampleDesc.Count != 1
                 || !CompatibleTexture(first, desc) || !CompatibleTexture(second, desc)) {
             return false;

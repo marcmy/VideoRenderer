@@ -29,18 +29,39 @@ assert "constexpr UINT kAnalysisStride = 2;" in detector, (
     "scene-cut statistics should subsample the full bidirectional 4x4 flow field instead of reducing every vector"
 )
 
-process_pair = function_body(pipeline, "void ProcessPair(")
+process_pair = function_body(pipeline, "void ProcessPairJob(")
 begin_pos = process_pair.find("nvofDetector.BeginAnalyze(")
 generate_pos = process_pair.find("GenerateRife(")
 finish_pos = process_pair.find("nvofDetector.FinishAnalyze(")
 assert begin_pos != -1 and generate_pos != -1 and finish_pos != -1, (
-    "ProcessPair must launch NVOF, run RIFE, then finish the NVOF scene decision"
+    "the uncontended path must launch NVOF, run RIFE, then finish the NVOF scene decision"
 )
 assert begin_pos < generate_pos < finish_pos, (
     "bidirectional NVOF must overlap the first RIFE inference rather than serialize before it"
 )
-assert "DetectImageSceneCut(first, second)" in process_pair[finish_pos:], (
+assert "DetectImageSceneCut(workerState.imageDetector, first, second, true)" in process_pair[finish_pos:], (
     "an NVOF completion failure must retain image-comparison fallback"
+)
+assert "std::mutex nvofMutex;" in pipeline and "CNvidiaSceneChangeDetector nvofDetector;" in pipeline, (
+    "parallel TensorRT workers must share one serialized NVOF detector/session"
+)
+assert "std::try_to_lock" in process_pair, (
+    "NVOF contention must not block a parallel worker before it submits TensorRT inference"
+)
+generate_after_begin = process_pair.find("GenerateRife(", begin_pos)
+serialized_begin = process_pair.find("nvofDetector.BeginAnalyze(", generate_after_begin)
+serialized_finish = process_pair.find("nvofDetector.FinishAnalyze(", serialized_begin)
+assert generate_after_begin < serialized_begin < serialized_finish, (
+    "a worker that loses the NVOF lock must run RIFE first and serialize scene analysis afterward"
+)
+assert "second.settings.iRifeSceneDetection == RIFE_SCENE_Disabled" in process_pair
+assert "second.settings.iRifeSceneDetection == RIFE_SCENE_Image" in process_pair
+
+present_pair = function_body(pipeline, "bool PresentPairJob(")
+assert "second.settings.iRifeSceneProcessing == RIFE_SCENE_PROCESS_Blend" in present_pair
+assert "sceneBlender.Blend(" in present_pair and "sceneRepeatFrames.fetch_add(" in present_pair
+assert "workerState.nvofDetector" not in pipeline, (
+    "per-worker NVOF sessions reintroduce concurrent OFA/D3D11 driver stalls"
 )
 
 print("RIFE NVOF overlap source-contract test passed")

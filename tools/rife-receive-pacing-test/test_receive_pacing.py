@@ -6,7 +6,6 @@ source = (repo / "Source" / "VideoRenderer.cpp").read_text(encoding="utf-8")
 
 submit_marker = "rifeSubmitted = m_RifePipeline->SubmitSample("
 start_marker = "\n\tif (rifeSubmitted) {\n"
-end_marker = "\n\t// A full source pool, device transition, or source-preparation failure"
 
 submit = source.find(submit_marker)
 assert submit != -1, "RIFE submission call was not found"
@@ -14,7 +13,17 @@ assert submit != -1, "RIFE submission call was not found"
 start = source.find(start_marker, submit)
 assert start != -1, "RIFE success branch was not found"
 
-end = source.find(end_marker, start)
+brace = source.find("{", start)
+depth = 0
+end = -1
+for index in range(brace, len(source)):
+    if source[index] == "{":
+        depth += 1
+    elif source[index] == "}":
+        depth -= 1
+        if depth == 0:
+            end = index + 1
+            break
 assert end != -1, "RIFE success branch end was not found"
 
 branch = source[start:end]

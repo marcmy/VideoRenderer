@@ -46,10 +46,61 @@ jobs:
       - name: Test RIFE lifecycle
         run: python .\tools\rife-lifecycle-test\test_rife_lifecycle.py
 
+      - name: Test RIFE cache and runtime creation
+        run: .\tools\rife-cache-test\build-test.cmd
+        shell: cmd
+
+      - name: Test scene detection inputs and thresholds (CPU WARP)
+        shell: cmd
+        run: |
+          call .\tools\rife-image-scene-test\build-test.cmd
+          if errorlevel 1 exit /b 1
+          call .\tools\rife-nvof-input-test\build-test.cmd
+          if errorlevel 1 exit /b 1
+
+      - name: Test RTX VSR and Maxine preparation routing
+        shell: pwsh
+        run: |
+          python .\tools\rife-spatial-contract-test\test_rife_vsr_routing.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python .\tools\rife-presentation-preparation-test\test_preparation_contract.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Test RIFE processing-size policy
+        run: .\tools\rife-spatial-policy-test\build-test.cmd
+        shell: cmd
+
+      - name: Test RIFE spatial contract
+        run: python .\tools\rife-spatial-contract-test\test_rife_spatial_contract.py
+
+      - name: Prepare NASM for SVPflow1 motion search
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'nasm-3.01-win64.zip'
+          Invoke-WebRequest 'https://www.nasm.us/pub/nasm/releasebuilds/3.01/win64/nasm-3.01-win64.zip' -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne 'E0BA5157007ABC7B1A65118A96657A961DDF55F7E3F632EE035366DFCE039CA4') {
+            throw 'NASM archive checksum mismatch'
+          }
+          $destination = Join-Path $env:RUNNER_TEMP 'mpcvr-nasm'
+          Expand-Archive $archive -DestinationPath $destination
+          (Join-Path $destination 'nasm-3.01') | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Test native SVPflow1 scene analysis (CPU and WARP)
+        run: .\tools\rife-svp-scene-test\build-test.cmd
+        shell: cmd
+
+      - name: Test higher-precision scene analysis (CPU WARP)
+        run: .\tools\rife-precision-test\build-warp.cmd
+        shell: cmd
+
       - name: Build VideoRenderer
         run: |
           .\build_mpcvr.cmd NoWait
         shell: pwsh
+
+      - name: Test compiled RIFE settings dialog
+        run: .\tools\rife-working-resolution-test\build-test.cmd
+        shell: cmd
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
@@ -65,9 +116,28 @@ jobs:
   rife-model:
     uses: ./.github/workflows/rife-model.yml
 
+  maxine-runtime:
+    name: Package pinned Maxine 1.3 runtime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Package the tested NVIDIA VFX SDK
+        run: python tools/MaxineRuntimeInstaller/Build-MPCVRMaxineRuntime.py --output "$RUNNER_TEMP/maxine-runtime"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mpcvr-maxine-runtime-bundle
+          path: |
+            ${{ runner.temp }}/maxine-runtime/MPCVR-Maxine-Runtime.zip
+            ${{ runner.temp }}/maxine-runtime/MPCVR-Maxine-Runtime.zip.sha256
+          compression-level: 0
+          if-no-files-found: error
+
   publish-maxine:
     name: Publish latest Maxine + RIFE build
-    needs: [build, rife-runtime, rife-model]
+    needs: [build, rife-runtime, rife-model, maxine-runtime]
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master')
@@ -102,8 +172,14 @@ jobs:
       - name: Download RIFE model artifact
         uses: actions/download-artifact@v8
         with:
-          name: mpcvr-rife-v4.6-model
+          name: mpcvr-rife-models
           path: release/rife-model
+
+      - name: Download Maxine runtime artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: mpcvr-maxine-runtime-bundle
+          path: release/runtime-source
 
       - name: Prepare release assets
         shell: bash
@@ -149,8 +225,12 @@ jobs:
             fi
           done
           for file in \
-            MPCVR-RIFE-Model-v4.6.zip \
+            MPCVR-RIFE-Models.zip \
+            rife_v4.4.onnx \
             rife_v4.6.onnx \
+            rife_v4.15_lite.onnx \
+            rife_v4.25.onnx \
+            rife_v4.25_lite.onnx \
             model-manifest.json \
             SOURCE.txt \
             LICENSES/RIFE-model-license.txt; do
@@ -160,57 +240,15 @@ jobs:
             fi
           done
 
-          mkdir -p release/runtime-source
-
-          # Carry the previously verified Maxine runtime forward. Prefer the
-          # Maxine + RIFE setup, then its compatibility alias, then legacy
-          # standalone runtime assets for the first migration release.
-          mkdir -p release/previous-setup
+          # Package the same SDK used by the local builds, with its native libraries
+          # and bundled NVIDIA notices. Do not inherit an older release's runtime.
           runtime_zip='release/runtime-source/MPCVR-Maxine-Runtime.zip'
-          runtime_expected=''
-          for setup_asset in MPCVR-Maxine-RIFE-Setup.zip MPCVR-Maxine-Setup.zip; do
-            rm -rf release/previous-setup/*
-            if gh release download \
-                --repo "$GITHUB_REPOSITORY" \
-                --pattern "$setup_asset" \
-                --dir release/previous-setup; then
-              previous_setup="$(find release/previous-setup -maxdepth 1 -type f -name "$setup_asset" -print -quit)"
-              if [[ -n "$previous_setup" ]] && unzip -p "$previous_setup" 'payload/MPCVR-Maxine-Runtime.zip' > "$runtime_zip"; then
-                if unzip -p "$previous_setup" 'payload/PAYLOAD-SHA256SUMS.txt' > release/runtime-source/PAYLOAD-SHA256SUMS.txt 2>/dev/null; then
-                  runtime_expected="$(awk '$2 ~ /(^|\/)MPCVR-Maxine-Runtime\.zip$/ {print tolower($1); exit}' release/runtime-source/PAYLOAD-SHA256SUMS.txt)"
-                fi
-                if [[ -z "$runtime_expected" ]] && unzip -p "$previous_setup" 'payload/MPCVR-Maxine-Runtime.zip.sha256' > release/runtime-source/MPCVR-Maxine-Runtime.zip.sha256 2>/dev/null; then
-                  runtime_expected="$(awk '{print tolower($1); exit}' release/runtime-source/MPCVR-Maxine-Runtime.zip.sha256)"
-                fi
-                if [[ -n "$runtime_expected" ]]; then
-                  break
-                fi
-              fi
-            fi
-          done
-
-          if [[ ! -f "$runtime_zip" || -z "$runtime_expected" ]]; then
-            echo "No embedded runtime was found; trying the legacy standalone release assets."
-            rm -f "$runtime_zip" release/runtime-source/MPCVR-Maxine-Runtime.zip.sha256
-            gh release download \
-              --repo "$GITHUB_REPOSITORY" \
-              --pattern 'MPCVR-Maxine-Runtime.zip' \
-              --pattern 'MPCVR-Maxine-Runtime.zip.sha256' \
-              --dir release/runtime-source
-            runtime_expected="$(awk '{print tolower($1); exit}' release/runtime-source/MPCVR-Maxine-Runtime.zip.sha256)"
-          fi
-
-          if [[ ! -f "$runtime_zip" || -z "$runtime_expected" ]]; then
-            echo "A verified Maxine runtime bundle is required to publish the unified setup." >&2
-            exit 1
-          fi
-
-          actual="$(sha256sum "$runtime_zip" | awk '{print tolower($1)}')"
-          if [[ ! "$runtime_expected" =~ ^[a-f0-9]{64}$ || "$actual" != "$runtime_expected" ]]; then
-            echo "The carried Maxine runtime checksum did not verify." >&2
-            exit 1
-          fi
-          echo "Verified the carried Maxine runtime bundle: $actual"
+          (
+            cd release/runtime-source
+            sha256sum --check --strict MPCVR-Maxine-Runtime.zip.sha256
+          )
+          unzip -p "$runtime_zip" 'MPCVR-Maxine-Runtime/runtime-manifest.json' \
+            | python3 -c 'import json,sys; m=json.load(sys.stdin); assert m["RuntimeVersion"] == "1.3.0.0"; assert m["SourceSHA256"] == "cebaa12411f7e22b39293205c5c4d07b8073d14ca1e0e7727ee4375207a36445"'
 
           maxine_license='release/runtime-source/Maxine-SDK-License.pdf'
           curl --fail --location --silent --show-error \
@@ -244,7 +282,7 @@ jobs:
           cp "$runtime_artifact/MPCVR-RIFE-Common.zip" "$payload_root/"
           cp "$runtime_artifact/runtime-manifest.json" "$payload_root/RIFE-runtime-manifest.json"
           cp "$runtime_sums" "$payload_root/RIFE-runtime-SHA256SUMS.txt"
-          cp "$model_artifact/MPCVR-RIFE-Model-v4.6.zip" "$payload_root/"
+          cp "$model_artifact/MPCVR-RIFE-Models.zip" "$payload_root/"
           cp "$model_artifact/LICENSES/RIFE-model-license.txt" "$payload_root/LICENSES/"
           cp "$maxine_license" "$payload_root/"
 
@@ -342,7 +380,7 @@ jobs:
             'payload/MpcVideoRenderer-Maxine-RIFE.zip'
             'payload/MPCVR-Maxine-Runtime.zip'
             'payload/MPCVR-RIFE-Common.zip'
-            'payload/MPCVR-RIFE-Model-v4.6.zip'
+            'payload/MPCVR-RIFE-Models.zip'
             'payload/RIFE-runtime-manifest.json'
             'payload/RIFE-runtime-SHA256SUMS.txt'
             'payload/RIFE-runtime-release.json'
@@ -371,7 +409,7 @@ jobs:
           Custom MPC Video Renderer Maxine + RIFE build from master commit ${GITHUB_SHA}.
 
           Recommended download:
-          - MPCVR-Maxine-RIFE-Setup.zip: one-click K-Lite setup containing the custom renderer, NVIDIA Maxine VSR runtime, RIFE 4.6 common TensorRT runtime/model, environment setup, and restore shortcut. During installation it detects the NVIDIA GPU compute capability and downloads only the matching architecture pack from this immutable release.
+          - MPCVR-Maxine-RIFE-Setup.zip: one-click K-Lite setup containing the custom renderer, NVIDIA Maxine VSR runtime, selectable RIFE 4.4 / 4.6 / 4.15 Lite / 4.25 / 4.25 Lite TensorRT models, environment setup, and restore shortcut. RIFE 4.25 is the default for new settings. During installation it detects the NVIDIA GPU compute capability and downloads only the matching architecture pack from this immutable release.
 
           Advanced/manual download:
           - MpcVideoRenderer-Maxine-RIFE.zip: portable renderer files only.

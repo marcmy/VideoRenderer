@@ -1,4 +1,4 @@
-﻿/*
+/*
  * (C) 2018-2026 see Authors.txt
  *
  * This file is part of MPC-BE.
@@ -22,6 +22,7 @@
 
 #include <dxva2api.h>
 #include "RifeRateRules.h"
+#include "RifeSpatialPolicy.h"
 
 enum :int {
 	TEXFMT_AUTOINT = 0,
@@ -153,6 +154,7 @@ enum :int {
 	RIFE_SCENE_NVOF = 0,
 	RIFE_SCENE_Image,
 	RIFE_SCENE_Disabled,
+	RIFE_SCENE_SVPflow1, // append: preserve existing saved setting values
 	RIFE_SCENE_COUNT
 };
 
@@ -170,6 +172,10 @@ enum :int {
 
 enum :int {
 	RIFE_MODEL_46 = 46,
+	RIFE_MODEL_44 = 44,
+	RIFE_MODEL_415_LITE = 4151,
+	RIFE_MODEL_425 = 425,
+	RIFE_MODEL_425_LITE = 4251,
 };
 
 constexpr inline int RIFE_GPU_Auto = -1;
@@ -298,12 +304,20 @@ struct Settings_t {
 	int iRifeSceneProcessing;
 	int iRifeDuplicateRemoval;
 	RifeRateRules rifeRules;
+	bool bDetailedStats;
+	int iMaxineStrength; // VSR effect strength, percent; appended to preserve existing offsets.
+	int iMaxineAmount; // Normal resize/Maxine pipeline mix, percent.
+	int iRifeSceneThreshold; // Image-difference percent; appended to preserve existing offsets.
+	int iRifeProcessingResolution; // Appended: preserve earlier settings layout.
+	int iRifeProcessingLimit; // Maximum short edge in pixels, preserving aspect.
+	bool bRifePreservePrecision;
+	bool bRifeFeatureReuse;
 
 	Settings_t() {
 		SetDefault();
 	}
 
-	void SetDefault() {
+	void SetMainPageDefault() {
 		if (IsWindows8OrGreater()) {
 			bUseD3D11                   = true;
 		} else {
@@ -348,6 +362,11 @@ struct Settings_t {
 		bConvertToSdr                   = true;
 		iHdrOsdBrightness               = 0;
 		iSDRDisplayNits                 = SDR_NITS_DEF;
+	}
+
+	void SetDefault() {
+		SetMainPageDefault();
+
 		iMaxineOperation                = MAXINE_OPERATION_Disabled;
 		iMaxineSourceMode               = MAXINE_SOURCE_Auto;
 		iMaxineQuality                  = MAXINE_QUALITY_High;
@@ -359,6 +378,8 @@ struct Settings_t {
 		iMaxinePipeline                 = MAXINE_PIPELINE_UpscaleDenoiseDeblur;
 		iMaxineGPU                      = MAXINE_GPU_Auto;
 		iMaxineAutoBitrate              = MAXINE_AUTO_BITRATE_DEF;
+		iMaxineStrength                 = 100;
+		iMaxineAmount                   = 100;
 
 		iFrameInterpolationMode         = FRUC_MODE_Disabled;
 		iFrameInterpolationSourceLimit  = FRUC_SOURCE_LIMIT_1080p;
@@ -369,13 +390,19 @@ struct Settings_t {
 		iRifeMode                       = RIFE_MODE_Disabled;
 		iRifeCustomFps                  = RIFE_CUSTOM_FPS_DEF;
 		iRifeGpuThreads                 = RIFE_GPU_THREADS_DEF;
-		iRifeModel                      = RIFE_MODEL_46;
+		iRifeModel                      = RIFE_MODEL_425;
 		iRifeGPU                        = RIFE_GPU_Auto;
 		bRifePerformanceBoost           = false;
-		iRifeSceneDetection             = RIFE_SCENE_NVOF;
+		bRifePreservePrecision          = false;
+		bRifeFeatureReuse               = false;
+		iRifeSceneDetection             = RIFE_SCENE_SVPflow1;
+		iRifeProcessingResolution       = RIFE_RESOLUTION_Source;
+		iRifeProcessingLimit            = RifeProcessingLimitDefault;
+		iRifeSceneThreshold             = 15;
 		iRifeSceneProcessing            = RIFE_SCENE_PROCESS_Repeat;
 		iRifeDuplicateRemoval           = RIFE_DUPLICATES_Keep;
 		rifeRules                       = {};
+		bDetailedStats                  = false;
 	}
 };
 

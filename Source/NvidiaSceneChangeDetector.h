@@ -17,6 +17,7 @@ class CNvidiaSceneChangeDetector
 public:
     struct Metrics {
         bool valid = false;
+        UINT analysisWidth = 0, analysisHeight = 0;
         bool likelyCut = false;
         float meanMotionPixels = 0.0f;
         float p90MotionPixels = 0.0f;
@@ -32,7 +33,9 @@ public:
     CNvidiaSceneChangeDetector(const CNvidiaSceneChangeDetector&) = delete;
     CNvidiaSceneChangeDetector& operator=(const CNvidiaSceneChangeDetector&) = delete;
 
-    bool Initialize(ID3D11Device* device, UINT width, UINT height);
+    // Texture dimensions include model padding; content dimensions do not.
+    bool Initialize(ID3D11Device* device, UINT width, UINT height,
+        UINT contentWidth = 0, UINT contentHeight = 0);
     bool BeginAnalyze(ID3D11Texture2D* first, ID3D11Texture2D* second);
     bool FinishAnalyze(Metrics& metrics);
     bool Analyze(ID3D11Texture2D* first, ID3D11Texture2D* second, Metrics& metrics);

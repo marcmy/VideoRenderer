@@ -19,6 +19,13 @@
 */
 
 #include "stdafx.h"
+
+// A/B builds opt in through a local compiler definition; production defaults
+// retain the verified paused-seek fix without adding a playback barrier.
+#ifndef MPCVR_TEST_MAXINE_PLAYBACK_WAIT
+#define MPCVR_TEST_MAXINE_PLAYBACK_WAIT 1
+#endif
+static constexpr bool MaxinePlaybackInputWait = MPCVR_TEST_MAXINE_PLAYBACK_WAIT != 0;
 #include <uuids.h>
 #include <Mferror.h>
 #include <Mfidl.h>
@@ -32,6 +39,7 @@
 #include "resource.h"
 #include "VideoRenderer.h"
 #include "MaxineInteropPolicy.h"
+#include "MaxineInputStaging.h"
 #include "MaxineSpatialPolicy.h"
 #include "RifePlaybackPipeline.h"
 #include "Version.h"
@@ -520,6 +528,8 @@ CDX11VideoProcessor::CDX11VideoProcessor(CMpcVideoRenderer* pFilter, const Setti
 	m_iMaxinePipeline      = config.iMaxinePipeline;
 	m_iMaxineGPU           = config.iMaxineGPU;
 	m_iMaxineAutoBitrate   = config.iMaxineAutoBitrate;
+	m_iMaxineStrength     = 100;
+	m_iMaxineAmount       = std::clamp(config.iMaxineAmount, 0, 100);
 	m_iFrameInterpolationMode = config.iFrameInterpolationMode;
 	m_iFrameInterpolationSourceLimit = config.iFrameInterpolationSourceLimit;
 	m_iFrameInterpolationMaxOutput = config.iFrameInterpolationMaxOutput;
@@ -819,6 +829,7 @@ void CDX11VideoProcessor::ReleaseVP()
 	m_MaxineDenoise.Reset();
 	m_MaxineDeblur.Reset();
 	m_bMaxineVSRUsed = false;
+	m_MaxineVSRInputSize = CSize(0, 0);
 	m_MaxineVSRSize = CSize(0, 0);
 	m_iMaxineResolvedMode = -1;
 	m_strMaxinePipeline.clear();
@@ -827,6 +838,16 @@ void CDX11VideoProcessor::ReleaseVP()
 	m_TexMaxineVSR.Release();
 	m_TexMaxineDenoise.Release();
 	m_TexMaxineDeblur.Release();
+	m_MaxineAmountSource.Release();
+	m_TexMaxineAmountEnhanced.Release();
+	m_TexMaxineAmountBaseline.Release();
+	m_TexMaxineAmountVPBaseline.Release();
+	m_MaxineAmountExpectedTexture = nullptr;
+	m_bMaxineAmountPending = false;
+	m_bMaxineAmountBaselineOriented = false;
+	m_pPSMaxineAmount.Release();
+	m_pPSMaxineMix.Release();
+	m_pMaxineAmountConstants.Release();
 	m_TexFrameInterpolationInput.Release();
 	m_TexSrcVideo.Release();
 	m_TexConvertOutput.Release();
@@ -839,6 +860,12 @@ void CDX11VideoProcessor::ReleaseVP()
 	m_pDoviCurvesConstantBuffer.Release();
 
 	m_D3D11VP.ReleaseVideoProcessor();
+	m_RifeVsrConvertVP.ReleaseVideoProcessor();
+	m_RifeUpscaleVP.ReleaseVideoProcessor();
+	m_TexRifeVsrNV12.Release();
+	m_TexRifeUpscaleOutput.Release();
+	m_bRifeUpscaleAttempted = m_bRifeUpscaleUsed = false;
+	m_strRifeUpscaleStatus.clear();
 	m_strCorrection = nullptr;
 
 	m_srcParams      = {};
@@ -854,6 +881,8 @@ void CDX11VideoProcessor::ReleaseDevice()
 
 	ReleaseVP();
 	m_D3D11VP.ReleaseVideoDevice();
+	m_RifeVsrConvertVP.ReleaseVideoDevice();
+	m_RifeUpscaleVP.ReleaseVideoDevice();
 
 	m_StatsBackground.InvalidateDeviceObjects();
 	m_Font3D.InvalidateDeviceObjects();
@@ -941,7 +970,13 @@ void CDX11VideoProcessor::ReleaseSwapChain()
 	}
 	m_pDXGIOutput.Release();
 	m_pDXGISwapChain4.Release();
+	m_pDXGISwapChainMedia.Release();
 	m_pDXGISwapChain1.Release();
+	m_DxgiPresentCallTiming.Clear();
+	m_DxgiPresentationMode.store(-1, std::memory_order_relaxed);
+	m_DxgiMediaStatsHr.store(E_PENDING, std::memory_order_relaxed);
+	m_DxgiPresentationModeChanges.store(0, std::memory_order_relaxed);
+	m_DxgiMediaStatsPollCountdown = 0;
 
 	m_MaxDisplayLuminance = 0;
 }
@@ -1664,7 +1699,7 @@ HRESULT CDX11VideoProcessor::InitSwapChain(bool bWindowChanged)
 		if ((m_iSwapEffect == SWAPEFFECT_Flip && IsWindows8OrGreater()) || bHdrOutput) {
 			desc1.BufferCount = bHdrOutput ? 6 : 2;
 			desc1.Scaling = DXGI_SCALING_NONE;
-			desc1.SwapEffect = IsWindows10OrGreater() ? DXGI_SWAP_EFFECT_FLIP_DISCARD : DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+			desc1.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
 		} else { // SWAPEFFECT_Discard or Windows 7
 			desc1.BufferCount = 1;
 			desc1.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
@@ -1693,7 +1728,7 @@ HRESULT CDX11VideoProcessor::InitSwapChain(bool bWindowChanged)
 		if ((m_iSwapEffect == SWAPEFFECT_Flip && IsWindows8OrGreater()) || bHdrOutput) {
 			desc1.BufferCount = bHdrOutput ? 6 : 2;
 			desc1.Scaling = DXGI_SCALING_NONE;
-			desc1.SwapEffect = IsWindows10OrGreater() ? DXGI_SWAP_EFFECT_FLIP_DISCARD : DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+			desc1.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
 		} else { // SWAPEFFECT_Discard or Windows 7
 			desc1.BufferCount = 1;
 			desc1.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
@@ -1712,6 +1747,8 @@ HRESULT CDX11VideoProcessor::InitSwapChain(bool bWindowChanged)
 
 	if (m_pDXGISwapChain1) {
 		m_UsedSwapEffect = desc1.SwapEffect;
+		const HRESULT mediaHr = m_pDXGISwapChain1->QueryInterface(IID_PPV_ARGS(&m_pDXGISwapChainMedia));
+		m_DxgiMediaStatsHr.store(mediaHr, std::memory_order_relaxed);
 
 		HRESULT hr2 = m_pDXGISwapChain1->GetContainingOutput(&m_pDXGIOutput);
 
@@ -2185,6 +2222,7 @@ HRESULT CDX11VideoProcessor::InitializeD3D11VP(const FmtConvParams_t& params, co
 	auto rtxHDR = m_bVPRTXVideoHDR && m_bHdrPassthroughSupport && m_bHdrPassthrough && m_iTexFormat != TEXFMT_8INT && !SourceIsHDR();
 	m_bVPUseRTXVideoHDR = (m_D3D11VP.SetRTXVideoHDR(rtxHDR) == S_OK);
 
+	// Keep RTX VSR configured, but suppress it while Maxine is selected.
 	int superRes = SUPERRES_Disable;
 	if (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled
 		&& !(m_bACMEnabled && !m_bVPUseRTXVideoHDR && params.CDepth == 8 && m_InternalTexFmt != DXGI_FORMAT_B8G8R8A8_UNORM)) {
@@ -2409,6 +2447,8 @@ bool CDX11VideoProcessor::IsFrameInterpolationEligible(const REFERENCE_TIME fram
 void CDX11VideoProcessor::ResetFrameInterpolation()
 {
 	m_FrameInterpolationGeneration.fetch_add(1);
+	m_RifePreparedMaxineKey.Clear();
+	m_TexRifePreparedMaxine.Release();
 	m_FrameInterpolation.Reset();
 	m_bFrameInterpolationPrepared = false;
 	m_bFrameInterpolationOutputReady = false;
@@ -2720,14 +2760,18 @@ HRESULT CDX11VideoProcessor::RenderFrameInterpolationSource(UINT sourceSurface, 
 
 	m_pFrameInterpolationTexture = surface.texture.pTexture;
 	m_pFrameInterpolationView = surface.texture.pShaderResource;
+	m_RifeRenderingSurface = sourceSurface;
 	m_rtStart = frameStartTime;
 	const HRESULT hr = Render(1, frameStartTime);
 	if (surface.retireQuery) {
 		m_pDeviceContext->End(surface.retireQuery);
 		surface.retirePending = true;
+		surface.retireStartTick = GetPreciseTick();
 	}
 	m_pFrameInterpolationTexture = nullptr;
 	m_pFrameInterpolationView = nullptr;
+	m_RifeRenderingSurface = UINT_MAX;
+	m_RifePreparedMaxineKey.Clear();
 	if (FAILED(hr)) {
 		RecordRifeD3DFailure(RIFE_D3D_FAILURE_RENDER_SOURCE, hr);
 	}
@@ -2746,6 +2790,11 @@ void CDX11VideoProcessor::ReleaseFrameInterpolationSource(UINT sourceSurface)
 {
 #ifdef _WIN64
 	if (sourceSurface < FrameInterpolationSurfaceCount) {
+		if (m_RifePreparedMaxineKey.surface == sourceSurface) {
+			m_RifePreparedMaxineKey.Clear();
+		}
+		m_FrameInterpolationPresentationSurfaces[sourceSurface].cudaOutput.reset();
+		m_FrameInterpolationPresentationSurfaces[sourceSurface].rifeContentSize = CSize(0, 0);
 		m_FrameInterpolationPresentationSurfaces[sourceSurface].inUse = false;
 	}
 #else
@@ -3251,7 +3300,6 @@ HRESULT CDX11VideoProcessor::Render(int field, const REFERENCE_TIME frameStartTi
 	}
 
 	uint64_t tick1 = GetPreciseTick();
-
 	if (!m_windowRect.IsRectEmpty()) {
 		// fill the BackBuffer with black
 		ID3D11RenderTargetView* pRenderTargetView = nullptr;
@@ -3444,9 +3492,31 @@ HRESULT CDX11VideoProcessor::Render(int field, const REFERENCE_TIME frameStartTi
 		SyncFrameToStreamTime(frameStartTime);
 	}
 
+	const uint64_t presentStart = GetPreciseTick();
 	g_bPresent = true;
 	hr = m_pDXGISwapChain1->Present(1, 0);
 	g_bPresent = false;
+	const uint64_t presentCallTicks = GetPreciseTick() - presentStart;
+	m_DxgiPresentCallTiming.AddMicroseconds(
+		presentCallTicks * 1000000 / GetPreciseTicksPerSecondI());
+	if (SUCCEEDED(hr) && m_pDXGISwapChainMedia) {
+		if (m_DxgiMediaStatsPollCountdown == 0) {
+			DXGI_FRAME_STATISTICS_MEDIA mediaStats = {};
+			const HRESULT mediaHr = m_pDXGISwapChainMedia->GetFrameStatisticsMedia(&mediaStats);
+			m_DxgiMediaStatsHr.store(mediaHr, std::memory_order_relaxed);
+			if (SUCCEEDED(mediaHr)) {
+				const int mode = static_cast<int>(mediaStats.CompositionMode);
+				const int previousMode = m_DxgiPresentationMode.exchange(mode, std::memory_order_relaxed);
+				if (previousMode >= 0 && previousMode != mode) {
+					m_DxgiPresentationModeChanges.fetch_add(1, std::memory_order_relaxed);
+				}
+			}
+			m_DxgiMediaStatsPollCountdown = 29;
+		}
+		else {
+			--m_DxgiMediaStatsPollCountdown;
+		}
+	}
 	if (FAILED(hr) && rifePresentation) {
 		RecordRifeD3DFailure(RIFE_D3D_FAILURE_RENDER_PRESENT, hr);
 	}
@@ -3556,6 +3626,11 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSizeForInput(const CRect& dstRect, c
 		m_strMaxineVSRStatus = L"Disabled";
 		return false;
 	}
+	if (m_iMaxineOperation == MAXINE_OPERATION_Upscale
+            && m_iMaxineSourceMode != MAXINE_SOURCE_Bicubic && m_iMaxineAmount == 0) {
+        m_strMaxineVSRStatus = L"AI amount 0%: normal resizing (Maxine bypassed)";
+        return false;
+    }
 	if (m_VendorId != PCIV_NVIDIA) {
 		m_strMaxineVSRStatus = L"Requires an NVIDIA GPU";
 		return false;
@@ -3612,16 +3687,20 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSizeForInput(const CRect& dstRect, c
 			return false;
 		}
 
-		bool presentationPortrait = sourceHeight > sourceWidth;
-		if (!sourceAlreadyOriented && (m_iRotation == 90 || m_iRotation == 270)) {
-			presentationPortrait = sourceWidth > sourceHeight;
-		}
-		const MaxineSpatialSize baseTarget = ResolveMaxineMatchOutputBaseSize(
-			{ sourceWidth, sourceHeight },
+		// The stored texture can be landscape while anamorphic presentation is
+		// portrait. Resolve the output class in display-aspect space on both the
+		// source and RIFE paths, then return to the raw texture's orientation.
+		const CSize presentationSource = sourceAlreadyOriented ? sourceSize : GetRifeSourceContentSize();
+		MaxineSpatialSize baseTarget = ResolveMaxineMatchOutputBaseSize(
+			{ static_cast<uint32_t>(std::max<LONG>(0, presentationSource.cx)),
+			  static_cast<uint32_t>(std::max<LONG>(0, presentationSource.cy)) },
 			{ static_cast<uint32_t>(dstWidth), static_cast<uint32_t>(dstHeight) },
 			{ static_cast<uint32_t>(std::max<LONG>(0, m_DisplaySize.cx)),
 			  static_cast<uint32_t>(std::max<LONG>(0, m_DisplaySize.cy)) },
-			presentationPortrait);
+			presentationSource.cy > presentationSource.cx);
+		if (!sourceAlreadyOriented && (m_iRotation == 90 || m_iRotation == 270)) {
+			std::swap(baseTarget.width, baseTarget.height);
+		}
 		if (!baseTarget.width || !baseTarget.height) {
 			m_strMaxineVSRStatus = L"Invalid player output size";
 			return false;
@@ -3655,6 +3734,17 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSizeForInput(const CRect& dstRect, c
 		targetHeight = (static_cast<unsigned long long>(sourceHeight) * scale + 50ull) / 100ull;
 	}
 
+	// Anamorphic/cropped output can shrink one axis while enlarging the other.
+	// Keep the AI pass upscale-only; the final configured resizer handles reduction.
+	const auto envelope = ResolveMaxineUpscaleEnvelope({sourceWidth, sourceHeight},
+		{static_cast<uint32_t>(targetWidth), static_cast<uint32_t>(targetHeight)});
+	if (!envelope.width || !envelope.height) {
+		m_strMaxineVSRStatus = L"Aspect-correct output exceeds the Maxine 4x source limit";
+		return false;
+	}
+	targetWidth = envelope.width;
+	targetHeight = envelope.height;
+
 	if (targetWidth > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION
 			|| targetHeight > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) {
 		m_strMaxineVSRStatus = L"Selected Maxine output exceeds the D3D11 texture-size limit";
@@ -3682,10 +3772,12 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSizeForInput(const CRect& dstRect, c
 }
 
 bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, const CSize& sourceSize,
-		const CSize& targetSize, const bool upscaleNeeded, const bool forceInputStaging)
+		const CSize& targetSize, const bool upscaleNeeded, const bool forceInputStaging,
+		const MpcvrRifeCudaOutput* cudaInput)
 {
 #ifdef _WIN64
 	m_bMaxineVSRUsed = false;
+	m_MaxineVSRInputSize = CSize(0, 0);
 	m_MaxineVSRSize = CSize(0, 0);
 	m_iMaxineResolvedMode = -1;
 	m_strMaxinePipeline.clear();
@@ -3694,6 +3786,15 @@ bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, c
 		m_strMaxineVSRStatus = L"The source texture cannot be sampled";
 		return false;
 	}
+
+	// Amount affects the complete upscale/cleanup pipeline. Native VSR
+	// strength stays fixed at 100%. Retain the unenhanced frame
+	// only for this Process call; it must never survive a seek/source change.
+	const bool mixAmount = m_iMaxineOperation == MAXINE_OPERATION_Upscale
+		&& m_iMaxineSourceMode != MAXINE_SOURCE_Bicubic && m_iMaxineAmount < 100;
+	Tex2D_t original;
+	if (mixAmount) original = *pInputTexture;
+	const CRect originalRect = srcRect;
 
 	const CRect inputRect(0, 0, sourceSize.cx, sourceSize.cy);
 	D3D11_TEXTURE2D_DESC maxineInputDesc = {};
@@ -3715,7 +3816,11 @@ bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, c
 			return false;
 		}
 
-		const HRESULT copyHr = TextureCopyRect(*pInputTexture, m_TexMaxineInput.pTexture,
+		// Only the RIFE handoff opts into the copy path; format conversion or
+		// resizing retains the existing point-sampled shader fallback.
+		const bool copiedBgra = !cudaInput && forceInputStaging && TryCopyMaxineBgraInput(m_pDeviceContext,
+			pInputTexture->pTexture, m_TexMaxineInput.pTexture, srcRect);
+		const HRESULT copyHr = cudaInput || copiedBgra ? S_OK : TextureCopyRect(*pInputTexture, m_TexMaxineInput.pTexture,
 			srcRect, inputRect, m_pPS_Simple, nullptr, 0, false);
 		if (FAILED(copyHr)) {
 			m_strMaxineVSRStatus = L"Could not convert the source to BGRA8";
@@ -3726,6 +3831,7 @@ bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, c
 	CSize currentSize = sourceSize;
 	bool passesOk = true;
 	bool ranPass = false;
+	const MpcvrRifeCudaOutput* pendingCudaInput = cudaInput;
 	int activePassCount = 0;
 	if (m_iMaxineOperation == MAXINE_OPERATION_Upscale) {
 		activePassCount += upscaleNeeded ? 1 : 0;
@@ -3735,6 +3841,10 @@ bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, c
 		activePassCount = 1;
 	}
 	const bool releaseD3DImagesAfterRun = activePassCount > 1;
+	const bool throttleMaxineForRife = m_pFrameInterpolationTexture != nullptr
+		&& m_pFilter->m_Sets.iRifeMode != RIFE_MODE_Disabled;
+	const bool waitForMaxineD3DInput = MaxinePlaybackInputWait
+		|| m_pFilter->m_filterState == State_Paused;
 
 	auto AppendPassName = [&](const wchar_t* name) {
 		if (!m_strMaxinePipeline.empty()) {
@@ -3793,12 +3903,17 @@ bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, c
 			return false;
 		}
 		if (!pEffect->Process(m_pDeviceContext, pMaxineResult->pTexture,
-				pOutput->pTexture, mode, m_iMaxineGPU, releaseD3DImagesAfterRun)) {
-			m_strMaxineVSRStatus = std::format(L"{} failed: {}", passName, pEffect->GetStatus());
+				pOutput->pTexture, mode, m_iMaxineGPU, releaseD3DImagesAfterRun,
+				throttleMaxineForRife, waitForMaxineD3DInput, pendingCudaInput,
+				pass == MaxinePass::Upscale ? m_iMaxineStrength : 100)) {
+			m_strMaxineVSRStatus = std::format(L"{} failed: {} ({}x{} -> {}x{}, mode {})",
+				passName, pEffect->GetStatus(), currentSize.cx, currentSize.cy,
+				outputSize.cx, outputSize.cy, mode);
 			return false;
 		}
 
 		pMaxineResult = pOutput;
+		pendingCudaInput = nullptr;
 		currentSize = outputSize;
 		ranPass = true;
 		AppendPassName(passName);
@@ -3822,9 +3937,16 @@ bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, c
 	}
 
 	if (passesOk && ranPass) {
+		if (mixAmount) {
+			m_MaxineAmountSource = original;
+			m_MaxineAmountSourceRect = originalRect;
+			m_MaxineAmountExpectedTexture = pMaxineResult->pTexture;
+			m_bMaxineAmountPending = true;
+		}
 		pInputTexture = pMaxineResult;
 		srcRect.SetRect(0, 0, currentSize.cx, currentSize.cy);
 		m_bMaxineVSRUsed = true;
+		m_MaxineVSRInputSize = sourceSize;
 		m_MaxineVSRSize = currentSize;
 		m_strMaxineVSRStatus = L"Active";
 		return true;
@@ -3836,12 +3958,22 @@ bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, c
 	UNREFERENCED_PARAMETER(sourceSize);
 	UNREFERENCED_PARAMETER(targetSize);
 	UNREFERENCED_PARAMETER(upscaleNeeded);
+	UNREFERENCED_PARAMETER(cudaInput);
 	return false;
 #endif
 }
 
 void CDX11VideoProcessor::UpdateTexures()
 {
+	// A prepared image must not outlive a change of Maxine settings or sizing.
+	m_RifePreparedMaxineKey.Clear();
+	m_bMaxineAmountPending = false;
+	m_bMaxineAmountBaselineOriented = false;
+	m_MaxineAmountExpectedTexture = nullptr;
+	m_MaxineAmountSource.Release();
+	m_TexMaxineAmountEnhanced.Release();
+	m_TexMaxineAmountBaseline.Release();
+	m_TexMaxineAmountVPBaseline.Release();
 	if (!m_srcWidth || !m_srcHeight) {
 		return;
 	}
@@ -3852,6 +3984,7 @@ void CDX11VideoProcessor::UpdateTexures()
 	m_MaxineDenoise.Reset();
 	m_MaxineDeblur.Reset();
 	m_bMaxineVSRUsed = false;
+	m_MaxineVSRInputSize = CSize(0, 0);
 	m_MaxineVSRSize = CSize(0, 0);
 	m_iMaxineResolvedMode = -1;
 	m_strMaxinePipeline.clear();
@@ -4098,6 +4231,96 @@ HRESULT CDX11VideoProcessor::ConvertColorPass(ID3D11Texture2D* pRenderTarget)
 
 HRESULT CDX11VideoProcessor::ResizeShaderPass(const Tex2D_t& Tex, ID3D11Texture2D* pRenderTarget, const CRect& srcRect, const CRect& dstRect, const int rotation, const bool flip)
 {
+	if (m_bMaxineAmountPending && Tex.pTexture == m_MaxineAmountExpectedTexture) {
+		const Tex2D_t original = m_MaxineAmountSource;
+		const CRect originalRect = m_MaxineAmountSourceRect;
+		const int baselineRotation = m_bMaxineAmountBaselineOriented ? 0 : rotation;
+		const bool baselineUsesVP = m_bMaxineAmountBaselineOriented;
+		m_bMaxineAmountPending = false;
+		m_bMaxineAmountBaselineOriented = false;
+		m_MaxineAmountExpectedTexture = nullptr;
+		m_MaxineAmountSource.Release();
+		if (dstRect.IsRectEmpty() || !original.pShaderResource) return E_INVALIDARG;
+		if (m_iMaxineAmount == 0) {
+			return ResizeShaderPass(original, pRenderTarget, originalRect, dstRect, baselineRotation, flip);
+		}
+
+		D3D11_TEXTURE2D_DESC targetDesc = {};
+		pRenderTarget->GetDesc(&targetDesc);
+		HRESULT amountHr = m_TexMaxineAmountEnhanced.CheckCreate(m_pDevice,
+			targetDesc.Format, targetDesc.Width, targetDesc.Height, Tex2D_DefaultShaderRTarget);
+		if (FAILED(amountHr)) return amountHr;
+		amountHr = ResizeShaderPass(Tex, m_TexMaxineAmountEnhanced.pTexture,
+			srcRect, dstRect, rotation, flip);
+		if (FAILED(amountHr)) return amountHr;
+
+		// Fuse only when the normal policy actually selects one-pass Jinc2m.
+		// Other filters use the ordinary two-axis/50%-reduction decisions.
+		const bool quarterTurn = baselineRotation == 90 || baselineRotation == 270;
+		const int w1 = quarterTurn ? originalRect.Height() : originalRect.Width();
+		const int h1 = quarterTurn ? originalRect.Width() : originalRect.Height();
+		const int k = m_bInterpolateAt50pct ? 2 : 1;
+		const bool fusedJinc = !baselineUsesVP && m_iUpscaling == UPSCALE_Jinc2
+			&& w1 != dstRect.Width() && h1 != dstRect.Height()
+			&& w1 <= k * dstRect.Width() && h1 <= k * dstRect.Height();
+		Tex2D_t baseline;
+		CRect baselineRect;
+		int drawRotation = 0;
+		bool drawFlip = false;
+		ID3D11PixelShader** blendShader;
+		UINT resource;
+		if (fusedJinc) {
+			baseline = original;
+			baselineRect = originalRect;
+			drawRotation = baselineRotation;
+			drawFlip = flip;
+			blendShader = &m_pPSMaxineAmount.p;
+			resource = IDF_PS_11_MAXINE_AMOUNT;
+		} else {
+			amountHr = m_TexMaxineAmountBaseline.CheckCreate(m_pDevice,
+				targetDesc.Format, targetDesc.Width, targetDesc.Height, Tex2D_DefaultShaderRTarget);
+			if (FAILED(amountHr)) return amountHr;
+			amountHr = ResizeShaderPass(original, m_TexMaxineAmountBaseline.pTexture,
+				originalRect, dstRect, baselineRotation, flip);
+			if (FAILED(amountHr)) return amountHr;
+			baseline = m_TexMaxineAmountBaseline;
+			baselineRect = dstRect;
+			blendShader = &m_pPSMaxineMix.p;
+			resource = IDF_PS_11_MAXINE_MIX;
+		}
+		if (!*blendShader) {
+			amountHr = CreatePShaderFromResource(blendShader, resource);
+			if (FAILED(amountHr)) return amountHr;
+		}
+		if (!m_pMaxineAmountConstants) {
+			D3D11_BUFFER_DESC desc = {};
+			desc.ByteWidth = 32;
+			desc.Usage = D3D11_USAGE_DYNAMIC;
+			desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+			desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+			amountHr = m_pDevice->CreateBuffer(&desc, nullptr, &m_pMaxineAmountConstants);
+			if (FAILED(amountHr)) return amountHr;
+		}
+		const float constants[8] = {0, 0,
+			static_cast<float>(targetDesc.Width), static_cast<float>(targetDesc.Height),
+			m_iMaxineAmount / 100.0f, 0, 0, 0};
+		D3D11_MAPPED_SUBRESOURCE mapped = {};
+		amountHr = m_pDeviceContext->Map(m_pMaxineAmountConstants, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+		if (FAILED(amountHr)) return amountHr;
+		memcpy(mapped.pData, constants, sizeof(constants));
+		m_pDeviceContext->Unmap(m_pMaxineAmountConstants, 0);
+		m_pDeviceContext->OMSetRenderTargets(0, nullptr, nullptr);
+		m_pDeviceContext->PSSetShaderResources(1, 1, &m_TexMaxineAmountEnhanced.pShaderResource.p);
+		m_pDeviceContext->PSSetConstantBuffers(1, 1, &m_pMaxineAmountConstants.p);
+		amountHr = TextureResizeShader(baseline, pRenderTarget, baselineRect, dstRect,
+			*blendShader, drawRotation, drawFlip);
+		ID3D11ShaderResourceView* emptyView = nullptr;
+		ID3D11Buffer* emptyBuffer = nullptr;
+		m_pDeviceContext->PSSetShaderResources(1, 1, &emptyView);
+		m_pDeviceContext->PSSetConstantBuffers(1, 1, &emptyBuffer);
+		return amountHr;
+	}
+
 	HRESULT hr = S_OK;
 	const int w2 = dstRect.Width();
 	const int h2 = dstRect.Height();
@@ -4281,12 +4504,21 @@ void CDX11VideoProcessor::DrawSubtitles(ID3D11Texture2D* pRenderTarget)
 HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect& srcRect, const CRect& dstRect,
 		const bool second, const bool rifeSourcePreparation)
 {
+	if (!m_pFrameInterpolationTexture) UpdateRifeVsrProbeSourceRequest(rifeSourcePreparation);
+	m_bMaxineAmountPending = false;
+	m_bMaxineAmountBaselineOriented = false;
+	m_MaxineAmountExpectedTexture = nullptr;
+	m_MaxineAmountSource.Release();
+	if (!rifeSourcePreparation) {
+		m_bRifeUpscaleUsed = false;
+		m_strRifeUpscaleStatus.clear();
+	}
 	if (m_pFrameInterpolationTexture && m_pFrameInterpolationView) {
 		Tex2D_t prepared;
 		prepared.pTexture = m_pFrameInterpolationTexture;
 		prepared.pShaderResource = m_pFrameInterpolationView;
 		m_pFrameInterpolationTexture->GetDesc(&prepared.desc);
-		const CSize contentSize = GetRifeContentSize();
+		const CSize contentSize = GetRifePresentationContentSize(m_RifeRenderingSurface);
 		const CRect contentRect(
 			0,
 			0,
@@ -4295,26 +4527,68 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 		if (contentRect.IsRectEmpty() || dstRect.IsRectEmpty()) {
 			return E_FAIL;
 		}
+		if (m_TexRifePreparedMaxine.pTexture
+				&& m_RifePreparedMaxineKey.Matches(m_FrameInterpolationGeneration.load(),
+					m_rtStart, m_RifeRenderingSurface)
+				&& m_RifePreparedMaxineDestRect == dstRect) {
+			m_bMaxineVSRUsed = true;
+			m_MaxineVSRInputSize = contentRect.Size();
+			m_MaxineVSRSize = m_RifePreparedMaxineSize;
+			m_iMaxineResolvedMode = m_RifePreparedMaxineMode;
+			m_bMaxineOversampleClamped = m_RifePreparedMaxineOversampleClamped;
+			m_strMaxinePipeline = m_RifePreparedMaxinePipeline;
+			m_strMaxineVSRStatus = m_RifePreparedMaxineStatus;
+			return ResizeShaderPass(m_TexRifePreparedMaxine, pRenderTarget,
+				m_RifePreparedMaxineInputRect, dstRect, 0, false);
+		}
 
-		// RIFE works on the source-sized, presentation-oriented video image.
+		// RIFE works on the explicitly selected, presentation-oriented image.
 		// Apply Maxine after interpolation so generated frames receive the same
 		// enhancement as source frames and Match output uses the real player size.
 		Tex2D_t* pInputTexture = &prepared;
 		CRect inputRect = contentRect;
 		m_bMaxineVSRUsed = false;
+		m_MaxineVSRInputSize = CSize(0, 0);
 		m_MaxineVSRSize = CSize(0, 0);
 		m_iMaxineResolvedMode = -1;
 		m_strMaxinePipeline.clear();
 		CSize maxineTargetSize;
 		bool maxineUpscaleNeeded = false;
-		if (GetMaxineVSRTargetSizeForInput(dstRect, contentRect.Size(), true,
-				maxineTargetSize, maxineUpscaleNeeded)) {
+		const auto cudaOutput = m_RifeRenderingSurface < FrameInterpolationSurfaceCount
+			? m_FrameInterpolationPresentationSurfaces[m_RifeRenderingSurface].cudaOutput : nullptr;
+		bool enhanced = false;
+		const bool canUseMaxine = GetMaxineVSRTargetSizeForInput(dstRect, contentRect.Size(), true,
+			maxineTargetSize, maxineUpscaleNeeded);
+		bool cudaExported = false;
+		// Partial blending also needs the original image in D3D. At zero or
+		// when Maxine is ineligible, the fallback below performs the sole export.
+		if (cudaOutput && canUseMaxine && m_iMaxineOperation == MAXINE_OPERATION_Upscale
+				&& m_iMaxineSourceMode != MAXINE_SOURCE_Bicubic && m_iMaxineAmount < 100) {
+			if (!cudaOutput->Export(m_pFrameInterpolationTexture)) return E_FAIL;
+			cudaExported = true;
+		}
+		if (canUseMaxine) {
 			// RIFE keeps its input/output D3D11 textures CUDA-registered between
 			// inference calls. NvCV cannot register the same resource independently,
 			// so always stage RIFE-owned presentation textures before Maxine interop.
-			ApplyMaxine(pInputTexture, inputRect, contentRect.Size(),
-				maxineTargetSize, maxineUpscaleNeeded, true);
+			enhanced = ApplyMaxine(pInputTexture, inputRect, contentRect.Size(),
+				maxineTargetSize, maxineUpscaleNeeded, true, cudaOutput ? &cudaOutput->GetImage() : nullptr);
 		}
+		// A setting/size/GPU/runtime change may reject the optional handoff.
+		// Export the complete padded image before any shader samples the surface.
+		if (cudaOutput && !enhanced) {
+			if (!cudaExported && !cudaOutput->Export(m_pFrameInterpolationTexture)) return E_FAIL;
+			// Unsupported bindings/settings must still receive the same Maxine
+			// processing as source frames through the ordinary D3D route.
+			if (canUseMaxine) {
+				ApplyMaxine(pInputTexture, inputRect, contentRect.Size(),
+					maxineTargetSize, maxineUpscaleNeeded, true);
+			}
+		}
+		// Original and generated RIFE frames need a real VP upscale for native
+		// RTX VSR. Source preparation remains at the selected inference size.
+		// Maxine selection excludes this route even when its effect is ineligible.
+		if (TryRifeVideoProcessorUpscale(*pInputTexture, pRenderTarget, inputRect, dstRect)) return S_OK;
 		return ResizeShaderPass(*pInputTexture, pRenderTarget, inputRect, dstRect, 0, false);
 	}
 
@@ -4328,7 +4602,7 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 	const UINT numSteps = GetPostScaleSteps();
 	CSize maxineTargetSize;
 	bool maxineUpscaleNeeded = false;
-	// RIFE source preparation should remain source-sized. Maxine is applied to
+	// RIFE source preparation uses its working size. Maxine is applied to
 	// the source and generated RIFE presentation frames after interpolation.
 	const bool canUseMaxineVSR = !rifeSourcePreparation
 		&& GetMaxineVSRTargetSize(dstRect, maxineTargetSize, maxineUpscaleNeeded);
@@ -4356,14 +4630,27 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 			return hr;
 		}
 
-		hr = pPostScaleTextures->CheckCreate(m_pDevice, m_InternalTexFmt,
+		hr = pPostScaleTextures->CheckCreate(m_pDevice, GetRifeSurfaceFormat(),
 			dstRect.Width(), dstRect.Height(), numSteps);
 		if (FAILED(hr)) {
 			return hr;
 		}
 	}
 
-	if (m_D3D11VP.IsReady()) {
+	bool amountVpBaselinePrepared = false;
+    if (m_D3D11VP.IsReady()) {
+        if (canUseMaxineVSR && m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Upscale
+                && m_iMaxineSourceMode != MAXINE_SOURCE_Bicubic && m_iMaxineAmount < 100) {
+            // Same source/field and configured VP rotation as normal resizing.
+            // This precedes the temporary identity rotation used for Maxine.
+            hr = m_TexMaxineAmountVPBaseline.CheckCreate(m_pDevice, m_D3D11OutputFmt,
+                dstRect.Width(), dstRect.Height(), Tex2D_DefaultShaderRTarget);
+            if (FAILED(hr)) return hr;
+            hr = D3D11VPPass(m_TexMaxineAmountVPBaseline.pTexture, srcRect,
+                CRect(0, 0, dstRect.Width(), dstRect.Height()), second);
+            if (FAILED(hr)) return hr;
+            amountVpBaselinePrepared = true;
+        }
 		if (!(m_iSwapEffect == SWAPEFFECT_Discard && (m_VendorId == PCIV_AMDATI || m_VendorId == PCIV_INTEL))) {
 			const bool bNeedShaderTransform = rifeSourcePreparation || canUseMaxineVSR ||
 				(pConvertOutput->desc.Width != dstRect.Width() || pConvertOutput->desc.Height != dstRect.Height() || m_bFlip
@@ -4402,6 +4689,7 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 	}
 
 	m_bMaxineVSRUsed = false;
+	m_MaxineVSRInputSize = CSize(0, 0);
 	m_MaxineVSRSize = CSize(0, 0);
 	m_iMaxineResolvedMode = -1;
 	m_strMaxinePipeline.clear();
@@ -4410,6 +4698,12 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 			CSize(static_cast<int>(m_srcRectWidth), static_cast<int>(m_srcRectHeight)),
 			maxineTargetSize, maxineUpscaleNeeded, false);
 	}
+
+    if (amountVpBaselinePrepared && m_bMaxineAmountPending) {
+        m_MaxineAmountSource = m_TexMaxineAmountVPBaseline;
+        m_MaxineAmountSourceRect = CRect(0, 0, dstRect.Width(), dstRect.Height());
+        m_bMaxineAmountBaselineOriented = true;
+    }
 
 	if (numSteps) {
 		UINT step = 0;
@@ -4434,7 +4728,7 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 			m_bVPScalingUseShaders = rSrc.Width() != dstRect.Width() || rSrc.Height() != dstRect.Height();
 		}
 
-		if (rSrc != dstRect || rotation != 0) {
+		if (rSrc != dstRect || rotation != 0 || m_bMaxineAmountPending) {
 			hr = ResizeShaderPass(*pInputTexture, pRT, rSrc, dstRect, rotation, m_bFlip);
 		} else {
 			pTex = pInputTexture; // Hmm
@@ -4914,6 +5208,7 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 	bool changeResizeStats       = false;
 	bool changeSuperRes          = false;
 	bool changeMaxineVSR         = false;
+	bool changeMaxineTextures    = false;
 	bool changeFrameInterpolation = false;
 	bool changeRTXVideoHDR       = false;
 	bool changeLuminanceParams   = false;
@@ -5068,7 +5363,29 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 		m_iMaxineGPU = config.iMaxineGPU;
 		m_iMaxineAutoBitrate = config.iMaxineAutoBitrate;
 		changeMaxineVSR = true;
-		changeTextures = true;
+		changeMaxineTextures = true;
+	}
+
+	if (m_iMaxineStrength != 100) {
+		m_iMaxineStrength = 100;
+		// Strength is a dynamic effect parameter; no source/presenter reset or
+		// texture resize is required. Invalidate only optional prepared pixels.
+		m_RifePreparedMaxineKey.Clear();
+	}
+	if (config.iMaxineAmount != m_iMaxineAmount) {
+		const bool wasBypassed = m_iMaxineAmount == 0;
+		m_iMaxineAmount = std::clamp(config.iMaxineAmount, 0, 100);
+		changeMaxineTextures |= wasBypassed != (m_iMaxineAmount == 0);
+		m_RifePreparedMaxineKey.Clear();
+		m_bMaxineAmountPending = false;
+		m_bMaxineAmountBaselineOriented = false;
+		m_MaxineAmountExpectedTexture = nullptr;
+		m_MaxineAmountSource.Release();
+		if (m_iMaxineAmount == 100) {
+			m_TexMaxineAmountEnhanced.Release();
+			m_TexMaxineAmountBaseline.Release();
+			m_TexMaxineAmountVPBaseline.Release();
+		}
 	}
 
 	if (config.iFrameInterpolationMode != m_iFrameInterpolationMode
@@ -5155,6 +5472,11 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 		}
 		UpdateTexures();
 		UpdatePostScaleTexures();
+	} else if (changeMaxineTextures) {
+		// Maxine changes only enhancement/resize resources. Reinitializing the
+		// source VP here discards its current input and deinterlacing history;
+		// a paused redraw cannot replace that input until another sample arrives.
+		UpdateTexures();
 	}
 
 	if (changeConvertShader) {
@@ -5190,6 +5512,7 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 	}
 
 	if (changeSuperRes || changeMaxineVSR) {
+		// Keep RTX VSR configured, but suppress it while Maxine is selected.
 		auto superRes = (m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled)
 			? m_iVPSuperRes : SUPERRES_Disable;
 		m_bVPUseSuperRes = (m_D3D11VP.SetSuperRes(superRes) == S_OK);
@@ -5556,10 +5879,14 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 		if (m_bMaxineVSRUsed) {
 			str.append(L" NVIDIA Maxine VSR");
 		}
+		else if (m_bRifeUpscaleUsed) {
+			str.append(L" D3D11 (RTX VSR requested)");
+		}
 		else if (m_D3D11VP.IsReady() && m_bVPScaling && !m_bVPScalingUseShaders) {
 			str.append(L" D3D11");
 			if (m_bVPUseSuperRes && m_srcRectWidth < dstW && m_srcRectHeight < dstH) {
-				str.append(L" SuperResolution*");
+				str.append(m_VendorId == PCIV_NVIDIA
+					? L" (RTX VSR requested)" : L" (SuperResolution requested)");
 			}
 		}
 		else {
@@ -5576,6 +5903,9 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 			}
 		}
 	}
+	if (!m_strRifeUpscaleStatus.empty()) {
+		str += L"\nRTX VSR       : " + m_strRifeUpscaleStatus;
+	}
 	if (m_bMaxineVSRUsed) {
 		const bool ranVSR = m_iMaxineResolvedMode >= 0;
 		const bool ranDenoise = m_strMaxinePipeline.find(L"Denoise") != std::wstring::npos;
@@ -5589,26 +5919,46 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 			: std::to_wstring(m_iMaxineGPU);
 		str += std::format(L"\nMaxine       : {}, {}x{} -> {}x{}",
 			MaxineOperationToString(m_iMaxineOperation),
-			m_srcRectWidth, m_srcRectHeight, m_MaxineVSRSize.cx, m_MaxineVSRSize.cy);
+			m_MaxineVSRInputSize.cx, m_MaxineVSRInputSize.cy, m_MaxineVSRSize.cx, m_MaxineVSRSize.cy);
 		if (ranVSR) {
 			str += std::format(L", {}", MaxineModeToString(m_iMaxineResolvedMode));
 		}
-		str += std::format(L"\nMaxine pipe  : {} ({:.2f} ms total, VSR {:.2f}, DN {:.2f}, DB {:.2f})",
-			m_strMaxinePipeline, totalMs, vsrMs, denoiseMs, deblurMs);
-		str += std::format(L"\nMaxine config: quality {}, denoise {}, deblur {}, GPU {}",
-			MaxineQualityToString(m_iMaxineQuality), MaxineFilterToString(m_iMaxineDenoise),
-			MaxineFilterToString(m_iMaxineDeblur), gpuLabel);
-		if (m_iMaxineScale == MAXINE_SCALE_MatchOutput) {
-			str += std::format(L", output oversampling {}", MaxineOversampleToString(m_iMaxineOversample));
-			if (m_bMaxineOversampleClamped) {
-				str.append(L" (clamped to 4x source limit)");
+		if (m_iMaxineOperation == MAXINE_OPERATION_Upscale
+				&& m_iMaxineSourceMode != MAXINE_SOURCE_Bicubic) {
+			str += std::format(L", AI amount {}%", m_iMaxineAmount);
+		}
+		if (m_pFilter->m_Sets.bDetailedStats) {
+			str += std::format(L"\nMaxine pipe  : {} ({:.2f} ms total, VSR {:.2f}, DN {:.2f}, DB {:.2f})",
+				m_strMaxinePipeline, totalMs, vsrMs, denoiseMs, deblurMs);
+			const auto& timingEffect = ranVSR ? m_MaxineVSR : ranDenoise ? m_MaxineDenoise : m_MaxineDeblur;
+			str += std::format(L"\nMaxine GPU   : {}", timingEffect.GetGpuTimingDiagnostics());
+			str += std::format(L"\nMaxine sync  : {}, {}",
+				MaxinePlaybackInputWait ? L"every frame" : L"paused only",
+				timingEffect.GetGraphicsInputWaitDiagnostics());
+			str += std::format(L"\nMaxine config: quality {}, denoise {}, deblur {}, GPU {}",
+				MaxineQualityToString(m_iMaxineQuality), MaxineFilterToString(m_iMaxineDenoise),
+				MaxineFilterToString(m_iMaxineDeblur), gpuLabel);
+			if (m_iMaxineScale == MAXINE_SCALE_MatchOutput) {
+				str += std::format(L", output oversampling {}", MaxineOversampleToString(m_iMaxineOversample));
+				if (m_bMaxineOversampleClamped) {
+					str.append(L" (clamped to 4x source limit)");
+				}
 			}
-		}
-		if (m_dwSourceBitRate) {
-			str += std::format(L", source {:.1f} Mbps", m_dwSourceBitRate / 1000000.0);
-		}
-		if (!m_strMaxineRuntimeInfo.empty()) {
-			str += std::format(L"\nMaxine runtime: {}", m_strMaxineRuntimeInfo);
+			if (m_dwSourceBitRate) {
+				str += std::format(L", source {:.1f} Mbps", m_dwSourceBitRate / 1000000.0);
+			}
+			if (!m_strMaxineRuntimeInfo.empty()) {
+				str += std::format(L"\nMaxine runtime: {}", m_strMaxineRuntimeInfo);
+			}
+		} else {
+			if (ranDenoise || ranDeblur) {
+				str += std::format(L"\nMaxine filters: denoise {}, deblur {}",
+					MaxineFilterToString(m_iMaxineDenoise), MaxineFilterToString(m_iMaxineDeblur));
+			}
+			if (m_iMaxineOversample != MAXINE_OVERSAMPLE_Off && m_iMaxineScale == MAXINE_SCALE_MatchOutput) {
+				str += std::format(L"\nMaxine sample : {}{}", MaxineOversampleToString(m_iMaxineOversample),
+					m_bMaxineOversampleClamped ? L" (clamped to 4x source limit)" : L"");
+			}
 		}
 	}
 	else if (m_iMaxineOperation != MAXINE_OPERATION_Disabled) {
@@ -5623,15 +5973,24 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 		}
 	}
 	if (m_pFilter->m_Sets.iRifeMode != RIFE_MODE_Disabled && m_pFilter->m_RifePipeline) {
-		const auto rifeDiagnostics = m_pFilter->m_RifePipeline->GetDiagnostics();
+		const bool detailed = m_pFilter->m_Sets.bDetailedStats;
+		const auto rifeDiagnostics = m_pFilter->m_RifePipeline->GetDiagnostics(detailed);
 		if (!rifeDiagnostics.empty()) {
-			str += std::format(L"\nRIFE pipeline: {}", rifeDiagnostics);
+			str += std::format(L"\n{} {}", L"RIFE          :", rifeDiagnostics);
 		}
 		const CSize rifeContentSize = GetRifeContentSize();
-		const CSize rifeFrameSize = GetRifeFrameSize();
+		const UINT rifeAlignment = m_pFilter->m_Sets.iRifeModel == RIFE_MODEL_425_LITE
+			? 128u : 32u;
+		const CSize rifeFrameSize = GetRifeFrameSize(rifeAlignment);
 		if (rifeFrameSize.cx > 0 && rifeFrameSize.cy > 0) {
-			str += std::format(L"\nRIFE input   : {}x{} (content {}x{})",
-				rifeFrameSize.cx, rifeFrameSize.cy, rifeContentSize.cx, rifeContentSize.cy);
+			const CSize sourceSize = GetRifeSourceContentSize();
+			const int resolution = m_pFilter->m_Sets.iRifeProcessingResolution;
+			const wchar_t* mode = resolution == RIFE_RESOLUTION_Display ? L"display"
+				: resolution == RIFE_RESOLUTION_Limit ? L"limit" : L"source";
+			str += std::format(L"\nRIFE input   : {}x{} -> {}x{} (padded {}x{}, {}, {})",
+				sourceSize.cx, sourceSize.cy, rifeContentSize.cx, rifeContentSize.cy,
+				rifeFrameSize.cx, rifeFrameSize.cy, mode,
+				GetRifeSurfaceFormat() == DXGI_FORMAT_R16G16B16A16_FLOAT ? L"16F" : L"8-bit");
 		}
 		const UINT failureStage = m_RifeD3DFailureStage.load(std::memory_order_acquire);
 		if (failureStage != RIFE_D3D_FAILURE_NONE && failureStage != UINT_MAX) {
@@ -5640,6 +5999,21 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 			str += std::format(L"\nRIFE D3D11 : {} failed {}, removed-reason {}",
 				RifeD3DFailureStageName(failureStage), HR2Str(failureHr), HR2Str(removedReason));
 		}
+		const auto late = m_pFilter->m_FrameInterpolationPresenterLateTiming.GetSummary();
+		str += std::format(L"\nRIFE present  : late {:.2f} avg/{:.2f} p95 ms, stale-drop {}",
+			late.averageMs, late.p95Ms,
+			m_pFilter->m_FrameInterpolationPresenterStaleDrops.load(std::memory_order_relaxed));
+		if (detailed) {
+			const auto render = m_pFilter->m_FrameInterpolationPresenterRenderTiming.GetSummary();
+			str += std::format(L"\nRIFE render   : {:.2f} avg/{:.2f} p95 ms, queue {}",
+				render.averageMs, render.p95Ms,
+				m_pFilter->m_FrameInterpolationPresenterDepth.load(std::memory_order_relaxed));
+			const auto preparation = m_pFilter->m_FrameInterpolationPresenterPreparationTiming.GetSummary();
+			if (preparation.count) {
+				str += std::format(L", prepare {:.2f}/{:.2f} ms", preparation.averageMs, preparation.p95Ms);
+			}
+		}
+
 	}
 
 	if (m_strCorrection || m_pPostScaleShaders.size() || m_bDitherUsed) {
@@ -5657,6 +6031,33 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 	}
 	str.append(m_strStatsHDR);
 	str.append(m_strStatsPresent);
+	if (m_pFilter->m_Sets.bDetailedStats && m_pDXGISwapChain1) {
+		DXGI_SWAP_CHAIN_DESC1 swapchainDesc = {};
+		if (SUCCEEDED(m_pDXGISwapChain1->GetDesc1(&swapchainDesc))) {
+			const int presentationMode = m_DxgiPresentationMode.load(std::memory_order_relaxed);
+			const wchar_t* presentationModeName = L"unavailable";
+			switch (presentationMode) {
+			case DXGI_FRAME_PRESENTATION_MODE_COMPOSED:
+				presentationModeName = L"Composed";
+				break;
+			case DXGI_FRAME_PRESENTATION_MODE_OVERLAY:
+				presentationModeName = L"Overlay";
+				break;
+			case DXGI_FRAME_PRESENTATION_MODE_NONE:
+				presentationModeName = L"None";
+				break;
+			case DXGI_FRAME_PRESENTATION_MODE_COMPOSITION_FAILURE:
+				presentationModeName = L"Composition failure";
+				break;
+			}
+
+			const auto presentRoll = m_DxgiPresentCallTiming.GetSummary();
+			str += std::format(
+				L"\nDXGI present  : {}, {:.2f} avg/{:.2f} p95 ms, {}x{}, buffers {}",
+				presentationModeName, presentRoll.averageMs, presentRoll.p95Ms,
+				swapchainDesc.Width, swapchainDesc.Height, swapchainDesc.BufferCount);
+		}
+	}
 
 	str += std::format(L"\nFrames        : {:5}, skipped: {}/{}, failed: {}",
 		m_pFilter->m_FrameStats.GetFrames(), m_pFilter->m_DrawStats.m_dropped, m_RenderStats.dropped2, m_RenderStats.failed);

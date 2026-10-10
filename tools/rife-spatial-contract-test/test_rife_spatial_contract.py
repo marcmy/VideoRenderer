@@ -7,6 +7,9 @@ dx11_header = (repo / "Source" / "DX11VideoProcessor.h").read_text(encoding="utf
 dx11_legacy_header = (repo / "Source" / "DX11VideoProcessorLegacyBody.h").read_text(encoding="utf-8")
 rife_bridge = (repo / "Source" / "RifeDX11Bridge.cpp").read_text(encoding="utf-8")
 rife_pipeline = (repo / "Source" / "RifePlaybackPipeline.cpp").read_text(encoding="utf-8")
+rife_api = (repo / "Source" / "RifeRuntimeApi.h").read_text(encoding="utf-8")
+rife_loader = (repo / "Source" / "RifeFrameInterpolation.cpp").read_text(encoding="utf-8")
+runtime = (repo / "tools" / "RifeTensorRTRuntime" / "RifeTensorRTRuntime.cpp").read_text(encoding="utf-8")
 dx11_processor = (repo / "Source" / "DX11VideoProcessor.cpp").read_text(encoding="utf-8")
 renderer_header = (repo / "Source" / "VideoRendererLegacy.h").read_text(encoding="utf-8")
 renderer_legacy = (repo / "Source" / "VideoRendererLegacy.inl").read_text(encoding="utf-8")
@@ -16,7 +19,7 @@ assert "GetRifeContentSize()" in dx11_header, (
     "RIFE needs a stable source-derived content size separate from the window size"
 )
 
-frame_size_start = dx11_header.find("CSize GetRifeFrameSize() const")
+frame_size_start = dx11_header.find("CSize GetRifeFrameSize(")
 assert frame_size_start != -1, "GetRifeFrameSize() was not found"
 frame_size_end = dx11_header.find("\\\nprivate:", frame_size_start)
 assert frame_size_end != -1, "GetRifeFrameSize() declaration block end was not found"
@@ -24,7 +27,7 @@ frame_size_block = dx11_header[frame_size_start:frame_size_end]
 assert "m_windowRect" not in frame_size_block, (
     "RIFE working dimensions must not change when only the player window changes"
 )
-assert "ResolveRifeContentSize" in frame_size_block and "AlignRifeSize" in frame_size_block, (
+assert "GetRifeContentSize" in frame_size_block and "AlignRifeSize" in frame_size_block, (
     "RIFE aligned working dimensions must use the tested source-derived spatial policy"
 )
 
@@ -90,7 +93,7 @@ assert prepared_start != -1, "prepared RIFE presentation branch was not found"
 prepared_end = dx11_processor.find("\n\tHRESULT hr = S_OK;", prepared_start)
 assert prepared_end != -1, "prepared RIFE presentation branch end was not found"
 prepared_branch = dx11_processor[prepared_start:prepared_end]
-assert "GetRifeContentSize()" in prepared_branch, (
+assert "GetRifePresentationContentSize(m_RifeRenderingSurface)" in prepared_branch, (
     "prepared RIFE output must crop aligned padding back to the actual content dimensions"
 )
 assert "dstRect" in prepared_branch, (
@@ -100,8 +103,42 @@ assert "ResizeShaderPass" in prepared_branch, (
     "prepared RIFE output must use the renderer scaling path instead of a top-left point copy"
 )
 
-assert "RIFE input" in dx11_processor and "GetRifeFrameSize()" in dx11_processor, (
+assert "RIFE input" in dx11_processor and "GetRifeFrameSize(" in dx11_processor, (
     "Ctrl+J diagnostics must expose the stable RIFE working dimensions for fullscreen verification"
+)
+
+assert "contentWidth" in rife_api and "contentHeight" in rife_api, (
+    "the runtime ABI must carry logical content dimensions separately from the aligned tensor surface"
+)
+assert "params.contentWidth = contentWidth" in rife_loader and "params.contentHeight = contentHeight" in rife_loader, (
+    "the renderer runtime loader must forward logical content dimensions through the ABI"
+)
+assert "m_contentWidth = params.contentWidth" in runtime and "m_paddedHeight = params.height" in runtime, (
+    "the runtime must retain logical content dimensions separately from the aligned tensor surface"
+)
+assert "m_paddedWidth < m_contentWidth" in runtime and "m_paddedWidth % kPadMultiple" in runtime, (
+    "the runtime must accept model-specific padding above the 32-pixel base alignment"
+)
+assert "m_paddedWidth != RoundUp(m_contentWidth, kPadMultiple)" not in runtime, (
+    "the runtime must not reject models such as RIFE 4.25 Lite that require 128-pixel padding"
+)
+assert runtime.count(
+    "static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),"
+) >= 4, (
+    "RIFE CUDA pack/write must use aligned model-space geometry for both texture coordinates and tensor strides"
+)
+assert '"_abi" << MPCVR_RIFE_RUNTIME_ABI' in runtime, (
+    "TensorRT engine cache keys must be isolated by the renderer/runtime ABI"
+)
+assert "GetRifeEngineProfile(m_paddedWidth, m_paddedHeight, m_performanceBoost)" in runtime \
+    and "out << RifeEngineProfileCacheSuffix(m_paddedWidth, m_paddedHeight, m_performanceBoost)" in runtime, (
+    "TensorRT profiles and cache keys must use the CPU-tested normal/Boost geometry policy"
+)
+assert "config->setBuilderOptimizationLevel(5)" not in runtime, (
+    "Performance Boost must not reintroduce the measured slower level-5 TensorRT plan"
+)
+assert "BuildLegacyCacheKey" not in runtime, (
+    "ABI2 must not migrate pre-ABI TensorRT plans built under the old tensor-layout contract"
 )
 
 render_start = dx11_processor.find("HRESULT CDX11VideoProcessor::Render(int field")
@@ -123,6 +160,21 @@ assert queue_texture_end != -1, "RIFE QueueTexture() end was not found"
 queue_texture_body = rife_pipeline[queue_texture_start:queue_texture_end]
 assert "frame.presenterGeneration" in queue_texture_body and "QueueFrameInterpolationSource" in queue_texture_body, (
     "RIFE worker must carry its original presenter generation through final queue insertion"
+)
+
+process_pair_start = rife_pipeline.find("void ProcessPairJob(")
+assert process_pair_start != -1, "RIFE ProcessPairJob() was not found"
+process_pair_end = rife_pipeline.find("\n    void InferenceWorkerMain", process_pair_start)
+assert process_pair_end != -1, "RIFE ProcessPairJob() end was not found"
+process_pair_body = rife_pipeline[process_pair_start:process_pair_end]
+assert "PublishTargetResult" in process_pair_body and "job.results.push_back" not in process_pair_body, (
+    "RIFE targets must be published as each inference finishes instead of batching a whole source pair"
+)
+worker_main_start = rife_pipeline.find("void WorkerMain()")
+assert worker_main_start != -1, "RIFE WorkerMain() was not found"
+worker_main_body = rife_pipeline[worker_main_start:]
+assert "presentReadyFront" in worker_main_body and "readyResults.load" in worker_main_body, (
+    "RIFE presentation must consume completed targets incrementally while preserving pair order"
 )
 
 queue_source_start = renderer_legacy.find("bool CMpcVideoRenderer::QueueFrameInterpolationSource(")

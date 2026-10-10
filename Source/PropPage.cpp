@@ -24,6 +24,7 @@
 #include "DisplayConfig.h"
 #include "PropPage.h"
 #include "RifeSettingsDialog.h"
+#include "SettingsDialogTheme.h"
 
 void SetCursor(HWND hWnd, LPCWSTR lpCursorName)
 {
@@ -81,6 +82,8 @@ void CopyMaxineSettings(Settings_t& dst, const Settings_t& src)
 	dst.iMaxinePipeline = src.iMaxinePipeline;
 	dst.iMaxineGPU = src.iMaxineGPU;
 	dst.iMaxineAutoBitrate = src.iMaxineAutoBitrate;
+	dst.iMaxineStrength = 100;
+	dst.iMaxineAmount = src.iMaxineAmount;
 }
 
 bool MaxineSettingsEqual(const Settings_t& a, const Settings_t& b)
@@ -95,7 +98,9 @@ bool MaxineSettingsEqual(const Settings_t& a, const Settings_t& b)
 		&& a.iMaxineDeblur == b.iMaxineDeblur
 		&& a.iMaxinePipeline == b.iMaxinePipeline
 		&& a.iMaxineGPU == b.iMaxineGPU
-		&& a.iMaxineAutoBitrate == b.iMaxineAutoBitrate;
+		&& a.iMaxineAutoBitrate == b.iMaxineAutoBitrate
+		&& a.iMaxineStrength == b.iMaxineStrength
+		&& a.iMaxineAmount == b.iMaxineAmount;
 }
 
 void PopulateMaxineCombo(HWND hwnd, int id, std::initializer_list<std::pair<LPCWSTR, LONG_PTR>> items)
@@ -122,6 +127,8 @@ void EnableMaxineDialogControls(HWND hwnd)
 	}
 	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_QUALITY), enabled && upscale && sourceMode != MAXINE_SOURCE_Bicubic);
 	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_MAXINE_QUALITY), enabled && upscale && sourceMode != MAXINE_SOURCE_Bicubic);
+	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_AMOUNT), enabled && upscale && sourceMode != MAXINE_SOURCE_Bicubic);
+	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_MAXINE_AMOUNT), enabled && upscale && sourceMode != MAXINE_SOURCE_Bicubic);
 	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_MAXINE_OVERSAMPLE), enabled && upscale && scale == MAXINE_SCALE_MatchOutput);
 	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_OVERSAMPLE), enabled && upscale && scale == MAXINE_SCALE_MatchOutput);
 	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_SOURCE_LIMIT), enabled);
@@ -145,6 +152,7 @@ void SetMaxineDialogControls(HWND hwnd, const Settings_t& settings)
 	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_PIPELINE, settings.iMaxinePipeline);
 	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_GPU, settings.iMaxineGPU);
 	SetDlgItemInt(hwnd, IDC_MAXINE_AUTO_BITRATE, settings.iMaxineAutoBitrate, FALSE);
+	SetDlgItemInt(hwnd, IDC_MAXINE_AMOUNT, settings.iMaxineAmount, FALSE);
 	EnableMaxineDialogControls(hwnd);
 }
 
@@ -239,6 +247,14 @@ bool ReadMaxineDialog(HWND hwnd, Settings_t& settings)
 		return false;
 	}
 	settings.iMaxineAutoBitrate = static_cast<int>(bitrate);
+	settings.iMaxineStrength = 100; // AI amount is the sole strength control.
+	const UINT amount = GetDlgItemInt(hwnd, IDC_MAXINE_AMOUNT, &valid, FALSE);
+	if (!valid || amount > 100) {
+		MessageBoxW(hwnd, L"Enter an AI amount from 0 to 100 percent.",
+			L"NVIDIA Maxine settings", MB_OK | MB_ICONERROR);
+		return false;
+	}
+	settings.iMaxineAmount = static_cast<int>(amount);
 
 	if (settings.iMaxineOperation == MAXINE_OPERATION_Denoise
 			&& settings.iMaxineDenoise == MAXINE_FILTER_Off) {
@@ -263,6 +279,7 @@ INT_PTR CALLBACK MaxineSettingsDlgProc(HWND hwnd, UINT message, WPARAM wParam, L
 	case WM_INITDIALOG:
 		settings = reinterpret_cast<Settings_t*>(lParam);
 		SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(settings));
+		InitializeSettingsDialogTheme(hwnd);
 		InitializeMaxineDialog(hwnd, *settings);
 		return TRUE;
 
@@ -572,7 +589,7 @@ HRESULT CVRMainPPage::OnActivate()
 		L"Opens the dedicated NVIDIA Maxine settings window.\n"
 		L"Maxine is available in the 64-bit Direct3D 11 renderer.");
 	AddHint(IDC_BUTTON_FRAMEINTERPOLATION,
-		L"Configures RIFE 4.6 frame interpolation through the optional NVIDIA TensorRT runtime.\n"
+		L"Configures RIFE frame interpolation through the optional NVIDIA TensorRT runtime.\n"
 		L"The normal renderer remains available when the RIFE runtime is not installed.");
 	AddHint(IDC_CHECK19,
 		L"Available for Direct3D 11.\n"
@@ -709,7 +726,10 @@ INT_PTR CVRMainPPage::OnReceiveMessage(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 			}
 
 			if (nID == IDC_BUTTON1) {
-				m_SetsPP.SetDefault();
+				// This button belongs to the main property page. Maxine and RIFE
+				// have dedicated settings dialogs with their own Defaults buttons,
+				// so do not silently reset those hidden configurations here.
+				m_SetsPP.SetMainPageDefault();
 				SetControls();
 				EnableControls();
 				SetDirty();

@@ -1,5 +1,9 @@
 #pragma once
 
+// Keep public CI and local test-build numbering on the same fork revision scale.
+#define VER_REVISION_BASE 2844
+#define VER_REVISION_BASE_COMMIT 250608d03e3f0030423ee03924498a3999726231
+
 #include "../revision.h"
 
 #ifndef REV_DATE

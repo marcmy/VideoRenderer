@@ -123,6 +123,10 @@ public:
 	void Clear() {
 		m_InputViews.clear();
 		m_Samples.clear();
+		// Input views belong to their processor enumerator. Resizing/recreating
+		// a processor must not reuse a view made for the previous enumerator.
+		m_InputDecoderViews.clear();
+		m_Texture.Release();
 	}
 
 	void ClearInputDecoderViews() {
@@ -172,6 +176,16 @@ public:
 		return m_Texture;
 	}
 
+	CComPtr<IMediaSample> GetLatestSample() const
+	{
+		return m_Samples.empty() ? CComPtr<IMediaSample>() : m_Samples.back();
+	}
+
+	bool HasLatestInputView() const
+	{
+		return !m_InputViews.empty() && m_InputViews.back();
+	}
+
 	CComPtr<ID3D11VideoProcessorInputView>& GetInputDecoderView(UINT num)
 	{
 		return m_InputDecoderViews[num];
@@ -214,6 +228,8 @@ private:
 	VideoTextureBuffer m_VideoTextures;
 	VideoInputData m_VideoInputData;
 	UINT m_nInputFrameOrField = 0;
+	UINT m_InputArraySlice = 0;
+	bool m_bDecoderInputValid = false;
 	bool m_bPresentFrame      = false;
 	bool m_bUseFutureFrames   = false;
 	UINT m_nPastFrames        = 0;
@@ -242,18 +258,23 @@ public:
 	HRESULT InitVideoProcessor(
 		const DXGI_FORMAT inputFmt, const UINT width, const UINT height,
 		const DXVA2_ExtendedFormat exFmt, const int deinterlacing, const bool bHdrPassthrough,
-		DXGI_FORMAT& outputFmt);
+		DXGI_FORMAT& outputFmt, const CSize outputSize = CSize(0, 0),
+		const bool nv12Output = false);
 	void ReleaseVideoProcessor();
 
-	HRESULT InitInputTextures(ID3D11Device* pDevice);
+	HRESULT InitInputTextures(ID3D11Device* pDevice, bool allocateTextures = true);
 
 	bool IsVideoDeviceOk() { return (m_pVideoDevice != nullptr); }
-	bool IsReady() { return (m_pVideoProcessor != nullptr); }
+	bool IsReady() const { return (m_pVideoProcessor != nullptr); }
 	void GetVPParams(D3D11_VIDEO_PROCESSOR_CAPS& caps, UINT& rateConvIndex, D3D11_VIDEO_PROCESSOR_RATE_CONVERSION_CAPS& rateConvCaps);
 	BOOL IsPqSupported() { return m_bConvSupportedG2084; }
 
 	ID3D11Texture2D* GetNextInputTexture(const D3D11_VIDEO_FRAME_FORMAT vframeFormat);
 	void SetInputVideoData(ID3D11Texture2D* pTexture, IMediaSample* pSample, UINT ArraySlice, const D3D11_VIDEO_FRAME_FORMAT vframeFormat);
+	// Owned snapshot of the latest external decoder input, without advancing
+	// this processor's frame/field history. Software-upload textures are excluded.
+	bool GetLatestDecoderInput(CComPtr<ID3D11Texture2D>& texture,
+		CComPtr<IMediaSample>& sample, UINT& arraySlice);
 	void ResetFrameOrder();
 
 	HRESULT SetRectangles(const RECT * pSrcRect, const RECT* pDstRect);
@@ -274,7 +295,7 @@ private:
 
 	HRESULT SetRTXVideoHDRNvidia(const bool enable);
 public:
-	HRESULT SetSuperRes(const int iSuperRes);
+	HRESULT SetSuperRes(const int iSuperRes, const CSize contentSize = CSize(0, 0));
 
 	HRESULT SetRTXVideoHDR(bool enable);
 

@@ -197,6 +197,15 @@ public:
 		return false;
 	}
 	virtual void CancelFrameInterpolationSubmission() {}
+	virtual REFERENCE_TIME RifePresentationPreparationLeadTime(REFERENCE_TIME frameInterval) {
+		UNREFERENCED_PARAMETER(frameInterval);
+		return 0;
+	}
+	virtual bool PrepareRifePresentationSource(UINT sourceSurface, REFERENCE_TIME frameTime) {
+		UNREFERENCED_PARAMETER(sourceSurface);
+		UNREFERENCED_PARAMETER(frameTime);
+		return false;
+	}
 	virtual HRESULT RenderFrameInterpolation(const REFERENCE_TIME frameStartTime) {
 		UNREFERENCED_PARAMETER(frameStartTime);
 		return E_NOTIMPL;

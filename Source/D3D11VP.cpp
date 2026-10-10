@@ -157,7 +157,7 @@ int GetBitDepth(const DXGI_FORMAT format)
 HRESULT CD3D11VP::InitVideoProcessor(
 	const DXGI_FORMAT inputFmt, const UINT width, const UINT height,
 	const DXVA2_ExtendedFormat exFmt, const int deinterlacing, const bool bHdrPassthrough,
-	DXGI_FORMAT& outputFmt)
+	DXGI_FORMAT& outputFmt, const CSize outputSize, const bool nv12Output)
 {
 	ReleaseVideoProcessor();
 	HRESULT hr = S_OK;
@@ -168,8 +168,8 @@ HRESULT CD3D11VP::InitVideoProcessor(
 	ContentDesc.InputFrameFormat = deinterlacing ? D3D11_VIDEO_FRAME_FORMAT_INTERLACED_TOP_FIELD_FIRST : D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
 	ContentDesc.InputWidth   = width;
 	ContentDesc.InputHeight  = height;
-	ContentDesc.OutputWidth  = ContentDesc.InputWidth;
-	ContentDesc.OutputHeight = ContentDesc.InputHeight;
+	ContentDesc.OutputWidth  = outputSize.cx > 0 ? outputSize.cx : width;
+	ContentDesc.OutputHeight = outputSize.cy > 0 ? outputSize.cy : height;
 	ContentDesc.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
 
 	hr = m_pVideoDevice->CreateVideoProcessorEnumerator(&ContentDesc, &m_pVideoProcessorEnum);
@@ -245,7 +245,28 @@ HRESULT CD3D11VP::InitVideoProcessor(
 	DXGI_COLOR_SPACE_TYPE cstype_input = DXGI_COLOR_SPACE_CUSTOM;
 	DXGI_COLOR_SPACE_TYPE cstype_output = DXGI_COLOR_SPACE_CUSTOM;
 
-	if (GetBitDepth(inputFmt) > 8 || (outputFmt == DXGI_FORMAT_R10G10B10A2_UNORM || outputFmt == DXGI_FORMAT_R16G16B16A16_FLOAT)) {
+	if (nv12Output) {
+		// Dedicated SDR RGB -> NV12 bridge. Never silently substitute RGB or
+		// quantize an HDR/high-precision input when this conversion is requested.
+		outputFmt = DXGI_FORMAT_NV12;
+		if (inputFmt != DXGI_FORMAT_B8G8R8A8_UNORM || exFmt.value || bHdrPassthrough
+				|| deinterlacing || !m_pVideoProcessorEnum1 || !m_pVideoContext1) {
+			return E_INVALIDARG;
+		}
+		hr = m_pVideoProcessorEnum->CheckVideoProcessorFormat(outputFmt, &uiFlags);
+		if (SUCCEEDED(hr)) {
+			hr = (uiFlags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT) ? S_OK : E_INVALIDARG;
+		}
+		if (SUCCEEDED(hr)) {
+			cstype_input = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+			cstype_output = DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709;
+			BOOL supported = FALSE;
+			hr = m_pVideoProcessorEnum1->CheckVideoProcessorFormatConversion(
+				inputFmt, cstype_input, outputFmt, cstype_output, &supported);
+			if (SUCCEEDED(hr) && !supported) hr = E_INVALIDARG;
+		}
+	}
+	else if (GetBitDepth(inputFmt) > 8 || (outputFmt == DXGI_FORMAT_R10G10B10A2_UNORM || outputFmt == DXGI_FORMAT_R16G16B16A16_FLOAT)) {
 		// checking the 10-bit output
 		outputFmt = DXGI_FORMAT_R10G10B10A2_UNORM;
 
@@ -265,7 +286,7 @@ HRESULT CD3D11VP::InitVideoProcessor(
 		DLogIf(FAILED(hr), L"CD3D11VP::InitVideoProcessor() : DXGI_FORMAT_R10G10B10A2_UNORM is not supported for D3D11 VP output.");
 	}
 
-	if (FAILED(hr)) {
+	if (FAILED(hr) && !nv12Output) {
 		// checking the 8-bit output
 		outputFmt = DXGI_FORMAT_B8G8R8A8_UNORM;
 
@@ -285,7 +306,7 @@ HRESULT CD3D11VP::InitVideoProcessor(
 	}
 
 	if (FAILED(hr)) {
-		DLog(L"CD3D11VP::InitVideoProcessor() : DXGI_FORMAT_B8G8R8A8_UNORM is not supported for D3D11 VP output.");
+		DLog(L"CD3D11VP::InitVideoProcessor() : {} is not supported for D3D11 VP output.", DXGIFormatToString(outputFmt));
 		return E_INVALIDARG;
 	}
 
@@ -409,14 +430,15 @@ void CD3D11VP::ReleaseVideoProcessor()
 	ResetFrameOrder();
 }
 
-HRESULT CD3D11VP::InitInputTextures(ID3D11Device* pDevice)
+HRESULT CD3D11VP::InitInputTextures(ID3D11Device* pDevice, const bool allocateTextures)
 {
 	UINT referenceFrames = 1 + m_RateConvCaps.PastFrames;
 	if (m_bUseFutureFrames) {
 		referenceFrames += m_RateConvCaps.FutureFrames;
 	}
-	m_VideoTextures.Resize(referenceFrames);
+	m_VideoTextures.Resize(allocateTextures ? referenceFrames : 0);
 	m_VideoInputData.Resize(referenceFrames);
+	if (!allocateTextures) return S_OK;
 
 	HRESULT hr = E_NOT_VALID_STATE;
 
@@ -502,11 +524,29 @@ void CD3D11VP::SetInputVideoData(ID3D11Texture2D* pTexture, IMediaSample* pSampl
 
 	m_VideoInputData.PushSample(pSample);
 	m_VideoInputData.SetInputView(inputDecoderView.p);
+	m_InputArraySlice = ArraySlice;
+	m_bDecoderInputValid = pSample && inputDecoderView;
+}
+
+bool CD3D11VP::GetLatestDecoderInput(CComPtr<ID3D11Texture2D>& texture,
+		CComPtr<IMediaSample>& sample, UINT& arraySlice)
+{
+	texture.Release();
+	sample.Release();
+	arraySlice = 0;
+	if (!IsReady() || !m_bDecoderInputValid || m_VideoTextures.Size() || !m_VideoInputData.HasLatestInputView()) return false;
+	sample = m_VideoInputData.GetLatestSample();
+	if (!sample) return false;
+	texture = m_VideoInputData.GetTexture();
+	arraySlice = m_InputArraySlice;
+	return texture != nullptr;
 }
 
 void CD3D11VP::ResetFrameOrder()
 {
 	m_nInputFrameOrField = 0;
+	m_InputArraySlice    = 0;
+	m_bDecoderInputValid = false;
 	m_bPresentFrame      = false;
 	m_nPastFrames        = 0;
 	m_nFutureFrames      = 0;
@@ -801,17 +841,19 @@ HRESULT CD3D11VP::SetSuperResIntel(const bool enable)
 	return hr;
 }
 
-HRESULT CD3D11VP::SetSuperRes(const int iSuperRes)
+HRESULT CD3D11VP::SetSuperRes(const int iSuperRes, const CSize contentSize)
 {
 	if (!m_pVideoContext) {
 		return E_ABORT;
 	}
 
-	auto checkDimension = [this](UINT width, UINT height) {
-		if (m_srcWidth >= m_srcHeight) {
-			return m_srcWidth <= width && m_srcHeight <= height;
+	const UINT contentWidth = contentSize.cx > 0 ? contentSize.cx : m_srcWidth;
+	const UINT contentHeight = contentSize.cy > 0 ? contentSize.cy : m_srcHeight;
+	auto checkDimension = [contentWidth, contentHeight](UINT width, UINT height) {
+		if (contentWidth >= contentHeight) {
+			return contentWidth <= width && contentHeight <= height;
 		} else {
-			return m_srcHeight <= width && m_srcWidth <= height;
+			return contentHeight <= width && contentWidth <= height;
 		}
 	};
 
@@ -951,6 +993,7 @@ HRESULT CD3D11VP::Process(ID3D11Texture2D* pRenderTarget, const D3D11_VIDEO_FRAM
 		FillStreamData(m_VideoInputData);
 	}
 
+	if (!StreamData.pInputSurface) return E_FAIL;
 	hr = m_pVideoContext->VideoProcessorBlt(m_pVideoProcessor, pOutputView, StreamData.InputFrameOrField, 1, &StreamData);
 	if (FAILED(hr)) {
 		DLog(L"CD3D11VP::Process() : VideoProcessorBlt() failed with error {}", HR2Str(hr));

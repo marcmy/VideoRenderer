@@ -1,21 +1,11 @@
 #include "RifeKernels.h"
+#include "RifeInputTimestep.h"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <chrono>
 
 namespace {
-
-template <typename T>
-__device__ inline void Store(T* base, size_t index, float value)
-{
-    base[index] = static_cast<T>(value);
-}
-
-template <>
-__device__ inline void Store<__half>(__half* base, size_t index, float value)
-{
-    base[index] = __float2half_rn(value);
-}
 
 template <typename T>
 __device__ inline float Load(const T* base, size_t index)
@@ -29,7 +19,7 @@ __device__ inline float Load<__half>(const __half* base, size_t index)
     return __half2float(base[index]);
 }
 
-template <typename T>
+template <typename T, bool Rgba16>
 __global__ void PackInputKernel(
     cudaTextureObject_t first,
     cudaTextureObject_t second,
@@ -51,16 +41,24 @@ __global__ void PackInputKernel(
 
     float r0 = 0.0f, g0 = 0.0f, b0 = 0.0f;
     float r1 = 0.0f, g1 = 0.0f, b1 = 0.0f;
-    float timeValue = 0.0f;
     float gridX = 0.0f;
     float gridY = 0.0f;
     float multiplierX = 0.0f;
     float multiplierY = 0.0f;
 
-    // RIFE v1 auxiliary clips are constructed at the original video size
-    // before padding to the model's 32-pixel multiple. Keep source-space
-    // normalization for visible pixels and zero-fill the padded tail.
+    // The auxiliary grid must use the same spatial extent as the tensor fed
+    // to RIFE. MPC-VR prepares an aligned D3D texture for that tensor and
+    // crops it back to the logical content rectangle only at presentation.
+    // Keeping model-space normalization here avoids shifting inferred frames
+    // when content height (for example 1080) differs from the aligned texture
+    // height (1088).
     if (x < sourceWidth && y < sourceHeight) {
+        if constexpr (Rgba16) {
+            const float4 a = tex2D<float4>(first, x + 0.5f, y + 0.5f);
+            const float4 b = tex2D<float4>(second, x + 0.5f, y + 0.5f);
+            r0 = a.x; g0 = a.y; b0 = a.z;
+            r1 = b.x; g1 = b.y; b1 = b.z;
+        } else {
         const uchar4 a = tex2D<uchar4>(first, static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f);
         const uchar4 b = tex2D<uchar4>(second, static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f);
         constexpr float inv255 = 1.0f / 255.0f;
@@ -70,28 +68,37 @@ __global__ void PackInputKernel(
         b1 = b.x * inv255;
         g1 = b.y * inv255;
         r1 = b.z * inv255;
+        }
 
-        timeValue = timestep;
         gridX = sourceWidth > 1 ? (2.0f * x / static_cast<float>(sourceWidth - 1) - 1.0f) : 0.0f;
         gridY = sourceHeight > 1 ? (2.0f * y / static_cast<float>(sourceHeight - 1) - 1.0f) : 0.0f;
         multiplierX = sourceWidth > 1 ? 2.0f / static_cast<float>(sourceWidth - 1) : 0.0f;
         multiplierY = sourceHeight > 1 ? 2.0f / static_cast<float>(sourceHeight - 1) : 0.0f;
     }
 
-    Store(tensor, 0 * plane + pixel, r0);
-    Store(tensor, 1 * plane + pixel, g0);
-    Store(tensor, 2 * plane + pixel, b0);
-    Store(tensor, 3 * plane + pixel, r1);
-    Store(tensor, 4 * plane + pixel, g1);
-    Store(tensor, 5 * plane + pixel, b1);
-    Store(tensor, 6 * plane + pixel, timeValue);
-    Store(tensor, 7 * plane + pixel, gridX);
-    Store(tensor, 8 * plane + pixel, gridY);
-    Store(tensor, 9 * plane + pixel, multiplierX);
-    Store(tensor, 10 * plane + pixel, multiplierY);
+    RifeStoreInputValue(tensor, 0 * plane + pixel, r0);
+    RifeStoreInputValue(tensor, 1 * plane + pixel, g0);
+    RifeStoreInputValue(tensor, 2 * plane + pixel, b0);
+    RifeStoreInputValue(tensor, 3 * plane + pixel, r1);
+    RifeStoreInputValue(tensor, 4 * plane + pixel, g1);
+    RifeStoreInputValue(tensor, 5 * plane + pixel, b1);
+    RifeUpdateInputTimestepAt(tensor, x, y, sourceWidth, sourceHeight, paddedWidth, paddedHeight, timestep);
+    RifeStoreInputValue(tensor, 7 * plane + pixel, gridX);
+    RifeStoreInputValue(tensor, 8 * plane + pixel, gridY);
+    RifeStoreInputValue(tensor, 9 * plane + pixel, multiplierX);
+    RifeStoreInputValue(tensor, 10 * plane + pixel, multiplierY);
 }
 
 template <typename T>
+__global__ void UpdateTimestepKernel(
+    T* tensor, int sourceWidth, int sourceHeight, int paddedWidth, int paddedHeight, float timestep)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    RifeUpdateInputTimestepAt(tensor, x, y, sourceWidth, sourceHeight, paddedWidth, paddedHeight, timestep);
+}
+
+template <typename T, bool Rgba16>
 __global__ void WriteOutputKernel(
     const T* tensor,
     cudaSurfaceObject_t output,
@@ -112,12 +119,37 @@ __global__ void WriteOutputKernel(
     const float g = fminf(1.0f, fmaxf(0.0f, Load(tensor, 1 * plane + pixel)));
     const float b = fminf(1.0f, fmaxf(0.0f, Load(tensor, 2 * plane + pixel)));
 
+    if constexpr (Rgba16) {
+        const ushort4 rgba = make_ushort4(__half_as_ushort(__float2half_rn(r)),
+            __half_as_ushort(__float2half_rn(g)), __half_as_ushort(__float2half_rn(b)),
+            __half_as_ushort(__float2half_rn(1.0f)));
+        surf2Dwrite(rgba, output, x * static_cast<int>(sizeof(ushort4)), y);
+    } else {
     const uchar4 bgra = make_uchar4(
         static_cast<unsigned char>(b * 255.0f + 0.5f),
         static_cast<unsigned char>(g * 255.0f + 0.5f),
         static_cast<unsigned char>(r * 255.0f + 0.5f),
         255);
     surf2Dwrite(bgra, output, x * static_cast<int>(sizeof(uchar4)), y);
+    }
+}
+
+template<typename T>
+__global__ void WriteLinearKernel(const T* tensor, unsigned char* output, size_t pitch,
+    int width, int height, int paddedWidth, int paddedHeight)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+    const size_t plane = static_cast<size_t>(paddedWidth) * paddedHeight;
+    const size_t pixel = static_cast<size_t>(y) * paddedWidth + x;
+    const float r = fminf(1.0f, fmaxf(0.0f, Load(tensor, pixel)));
+    const float g = fminf(1.0f, fmaxf(0.0f, Load(tensor, plane + pixel)));
+    const float b = fminf(1.0f, fmaxf(0.0f, Load(tensor, 2 * plane + pixel)));
+    reinterpret_cast<uchar4*>(output + static_cast<size_t>(y) * pitch)[x] = make_uchar4(
+        static_cast<unsigned char>(b * 255.0f + 0.5f),
+        static_cast<unsigned char>(g * 255.0f + 0.5f),
+        static_cast<unsigned char>(r * 255.0f + 0.5f), 255);
 }
 
 cudaError_t CreateTexture(cudaArray_t array, cudaTextureObject_t* texture)
@@ -145,6 +177,22 @@ cudaError_t CreateSurface(cudaArray_t array, cudaSurfaceObject_t* surface)
 
 } // namespace
 
+cudaError_t MpcvrRifeWriteLinearOutput(const void* tensor, bool fp16, void* output, size_t pitch,
+    int width, int height, int paddedWidth, int paddedHeight, cudaStream_t stream)
+{
+    if (!tensor || !output || width <= 0 || height <= 0 || paddedWidth < width || paddedHeight < height
+            || pitch < static_cast<size_t>(width) * 4 || pitch % 4) return cudaErrorInvalidValue;
+    const dim3 block(16, 16), grid((width + 15) / 16, (height + 15) / 16);
+    if (fp16) {
+        WriteLinearKernel<<<grid, block, 0, stream>>>(static_cast<const __half*>(tensor),
+            static_cast<unsigned char*>(output), pitch, width, height, paddedWidth, paddedHeight);
+    } else {
+        WriteLinearKernel<<<grid, block, 0, stream>>>(static_cast<const float*>(tensor),
+            static_cast<unsigned char*>(output), pitch, width, height, paddedWidth, paddedHeight);
+    }
+    return cudaGetLastError();
+}
+
 cudaError_t MpcvrRifePackInput(
     cudaArray_t first,
     cudaArray_t second,
@@ -155,12 +203,19 @@ cudaError_t MpcvrRifePackInput(
     int paddedWidth,
     int paddedHeight,
     float timestep,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    cudaTextureObject_t* firstTextureOut,
+    cudaTextureObject_t* secondTextureOut,
+    bool rgba16Input)
 {
     if (!first || !second || !tensor || sourceWidth <= 0 || sourceHeight <= 0 ||
-        paddedWidth < sourceWidth || paddedHeight < sourceHeight) {
+        paddedWidth < sourceWidth || paddedHeight < sourceHeight ||
+        !firstTextureOut || !secondTextureOut) {
         return cudaErrorInvalidValue;
     }
+
+    *firstTextureOut = 0;
+    *secondTextureOut = 0;
 
     cudaTextureObject_t firstTexture = 0;
     cudaTextureObject_t secondTexture = 0;
@@ -175,23 +230,49 @@ cudaError_t MpcvrRifePackInput(
     const dim3 block(16, 16);
     const dim3 grid((paddedWidth + block.x - 1) / block.x, (paddedHeight + block.y - 1) / block.y);
     if (tensorIsFp16) {
-        PackInputKernel<<<grid, block, 0, stream>>>(firstTexture, secondTexture,
+        if (rgba16Input) PackInputKernel<__half, true><<<grid, block, 0, stream>>>(firstTexture, secondTexture,
+            static_cast<__half*>(tensor), sourceWidth, sourceHeight, paddedWidth, paddedHeight, timestep);
+        else PackInputKernel<__half, false><<<grid, block, 0, stream>>>(firstTexture, secondTexture,
             static_cast<__half*>(tensor), sourceWidth, sourceHeight, paddedWidth, paddedHeight, timestep);
     } else {
-        PackInputKernel<<<grid, block, 0, stream>>>(firstTexture, secondTexture,
+        if (rgba16Input) PackInputKernel<float, true><<<grid, block, 0, stream>>>(firstTexture, secondTexture,
+            static_cast<float*>(tensor), sourceWidth, sourceHeight, paddedWidth, paddedHeight, timestep);
+        else PackInputKernel<float, false><<<grid, block, 0, stream>>>(firstTexture, secondTexture,
             static_cast<float*>(tensor), sourceWidth, sourceHeight, paddedWidth, paddedHeight, timestep);
     }
     err = cudaGetLastError();
-    if (err == cudaSuccess) {
-        // Texture objects are referenced by the asynchronous kernel above.
-        // Keep them alive until the stream has consumed that launch; destroying
-        // them immediately can invalidate the objects while the GPU is still
-        // reading the mapped D3D11 resources.
-        err = cudaStreamSynchronize(stream);
+    if (err != cudaSuccess) {
+        cudaDestroyTextureObject(secondTexture);
+        cudaDestroyTextureObject(firstTexture);
+        return err;
     }
-    cudaDestroyTextureObject(secondTexture);
-    cudaDestroyTextureObject(firstTexture);
-    return err;
+
+    // The launch is asynchronous. The caller owns these texture objects until
+    // the request-level stream completion point so input unmap, TensorRT, and
+    // the other inference context can make progress without a host-side stall.
+    *firstTextureOut = firstTexture;
+    *secondTextureOut = secondTexture;
+    return cudaSuccess;
+}
+
+cudaError_t MpcvrRifeUpdateTimestep(
+    void* tensor, bool tensorIsFp16, int sourceWidth, int sourceHeight,
+    int paddedWidth, int paddedHeight, float timestep, cudaStream_t stream)
+{
+    if (!tensor || sourceWidth <= 0 || sourceHeight <= 0 ||
+        paddedWidth < sourceWidth || paddedHeight < sourceHeight ||
+        !(timestep > 0.0f && timestep < 1.0f)) return cudaErrorInvalidValue;
+
+    const dim3 block(16, 16);
+    const dim3 grid((paddedWidth + block.x - 1) / block.x, (paddedHeight + block.y - 1) / block.y);
+    if (tensorIsFp16) {
+        UpdateTimestepKernel<<<grid, block, 0, stream>>>(static_cast<__half*>(tensor),
+            sourceWidth, sourceHeight, paddedWidth, paddedHeight, timestep);
+    } else {
+        UpdateTimestepKernel<<<grid, block, 0, stream>>>(static_cast<float*>(tensor),
+            sourceWidth, sourceHeight, paddedWidth, paddedHeight, timestep);
+    }
+    return cudaGetLastError();
 }
 
 cudaError_t MpcvrRifeWriteOutput(
@@ -202,12 +283,16 @@ cudaError_t MpcvrRifeWriteOutput(
     int sourceHeight,
     int paddedWidth,
     int paddedHeight,
-    cudaStream_t stream)
+    cudaStream_t stream,
+    cudaSurfaceObject_t* surfaceOut,
+    bool rgba16Output)
 {
     if (!tensor || !output || sourceWidth <= 0 || sourceHeight <= 0 ||
-        paddedWidth < sourceWidth || paddedHeight < sourceHeight) {
+        paddedWidth < sourceWidth || paddedHeight < sourceHeight || !surfaceOut) {
         return cudaErrorInvalidValue;
     }
+
+    *surfaceOut = 0;
 
     cudaSurfaceObject_t surface = 0;
     cudaError_t err = CreateSurface(output, &surface);
@@ -216,20 +301,24 @@ cudaError_t MpcvrRifeWriteOutput(
     const dim3 block(16, 16);
     const dim3 grid((sourceWidth + block.x - 1) / block.x, (sourceHeight + block.y - 1) / block.y);
     if (tensorIsFp16) {
-        WriteOutputKernel<<<grid, block, 0, stream>>>(static_cast<const __half*>(tensor), surface,
+        if (rgba16Output) WriteOutputKernel<__half, true><<<grid, block, 0, stream>>>(static_cast<const __half*>(tensor), surface,
+            sourceWidth, sourceHeight, paddedWidth, paddedHeight);
+        else WriteOutputKernel<__half, false><<<grid, block, 0, stream>>>(static_cast<const __half*>(tensor), surface,
             sourceWidth, sourceHeight, paddedWidth, paddedHeight);
     } else {
-        WriteOutputKernel<<<grid, block, 0, stream>>>(static_cast<const float*>(tensor), surface,
+        if (rgba16Output) WriteOutputKernel<float, true><<<grid, block, 0, stream>>>(static_cast<const float*>(tensor), surface,
+            sourceWidth, sourceHeight, paddedWidth, paddedHeight);
+        else WriteOutputKernel<float, false><<<grid, block, 0, stream>>>(static_cast<const float*>(tensor), surface,
             sourceWidth, sourceHeight, paddedWidth, paddedHeight);
     }
     err = cudaGetLastError();
-    if (err == cudaSuccess) {
-        // The surface object must outlive the asynchronous write kernel. The
-        // caller will hand this D3D11 texture back to the renderer immediately
-        // after the request, so complete the write before destroying the CUDA
-        // view and transferring ownership back to D3D11.
-        err = cudaStreamSynchronize(stream);
+    if (err != cudaSuccess) {
+        cudaDestroySurfaceObject(surface);
+        return err;
     }
-    cudaDestroySurfaceObject(surface);
-    return err;
+
+    // Keep the CUDA surface alive through the request-level stream completion
+    // point. D3D11 ownership is transferred back only after that point.
+    *surfaceOut = surface;
+    return cudaSuccess;
 }

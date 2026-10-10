@@ -8,13 +8,18 @@
 
 #include "stdafx.h"
 #include "NvidiaMaxineVSR.h"
+#include "RifeCudaOutputApi.h"
 #include "Helper.h"
+#include "RollingTimingWindow.h"
+#include "MaxineCompletionEvent.h"
+#include "MaxineRunFailure.h"
 
 #include <d3d11_4.h>
 #include <array>
 #include <chrono>
 #include <filesystem>
 #include <format>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -65,6 +70,35 @@ constexpr unsigned NVCV_GPU = 1;
 
 struct CUstream_st;
 using CUstream = CUstream_st*;
+struct CUevent_st;
+using CUevent = CUevent_st*;
+struct CUctx_st;
+using CUcontext = CUctx_st*;
+using CUdevice = int;
+using CUresult = int;
+using CUdeviceptr = unsigned long long;
+
+constexpr CUresult CUDA_SUCCESS = 0;
+constexpr CUresult CUDA_ERROR_NOT_READY = 600;
+constexpr unsigned CU_STREAM_NON_BLOCKING = 1;
+
+using PFN_cuInit = CUresult (WINAPI*)(unsigned int flags);
+using PFN_cuD3D11GetDevice = CUresult (WINAPI*)(CUdevice* device, IDXGIAdapter* adapter);
+using PFN_cuDevicePrimaryCtxRetain = CUresult (WINAPI*)(CUcontext* context, CUdevice device);
+using PFN_cuDevicePrimaryCtxRelease = CUresult (WINAPI*)(CUdevice device);
+using PFN_cuCtxGetCurrent = CUresult (WINAPI*)(CUcontext* context);
+using PFN_cuCtxSetCurrent = CUresult (WINAPI*)(CUcontext context);
+using PFN_cuCtxGetStreamPriorityRange = CUresult (WINAPI*)(int* leastPriority, int* greatestPriority);
+using PFN_cuStreamCreate = CUresult (WINAPI*)(CUstream* stream, unsigned int flags);
+using PFN_cuStreamCreateWithPriority = CUresult (WINAPI*)(CUstream* stream, unsigned int flags, int priority);
+using PFN_cuStreamDestroy = CUresult (WINAPI*)(CUstream stream);
+using PFN_cuStreamSynchronize = CUresult (WINAPI*)(CUstream stream);
+using PFN_cuPointerGetAttribute = CUresult (WINAPI*)(void* data, int attribute, CUdeviceptr pointer);
+using PFN_cuEventCreate = CUresult (WINAPI*)(CUevent* event, unsigned int flags);
+using PFN_cuEventDestroy = CUresult (WINAPI*)(CUevent event);
+using PFN_cuEventRecord = CUresult (WINAPI*)(CUevent event, CUstream stream);
+using PFN_cuEventQuery = CUresult (WINAPI*)(CUevent event);
+using PFN_cuEventElapsedTime = CUresult (WINAPI*)(float* milliseconds, CUevent start, CUevent end);
 
 struct NvCVImage {
 	unsigned int width;
@@ -93,6 +127,7 @@ using PFN_NvVFX_CreateEffect = NvCV_Status (__cdecl*)(const char* code, NvVFX_Ha
 using PFN_NvVFX_DestroyEffect = void (__cdecl*)(NvVFX_Handle effect);
 using PFN_NvVFX_SetU32 = NvCV_Status (__cdecl*)(NvVFX_Handle effect, const char* paramName, unsigned int value);
 using PFN_NvVFX_SetS32 = NvCV_Status (__cdecl*)(NvVFX_Handle effect, const char* paramName, int value);
+using PFN_NvVFX_SetF32 = NvCV_Status (__cdecl*)(NvVFX_Handle effect, const char* paramName, float value);
 using PFN_NvVFX_SetImage = NvCV_Status (__cdecl*)(NvVFX_Handle effect, const char* paramName, NvCVImage* image);
 using PFN_NvVFX_SetCudaStream = NvCV_Status (__cdecl*)(NvVFX_Handle effect, const char* paramName, CUstream stream);
 using PFN_NvVFX_Load = NvCV_Status (__cdecl*)(NvVFX_Handle effect);
@@ -230,14 +265,34 @@ struct CNvidiaMaxineVSR::Impl
 #ifdef _WIN64
 	HMODULE hNvCVImage = nullptr;
 	HMODULE hNvVideoEffects = nullptr;
+	HMODULE hCudaDriver = nullptr;
 	std::vector<HMODULE> hRuntimeDependencies;
 	std::wstring runtimeDirectory;
+
+	PFN_cuInit CuInit = nullptr;
+	PFN_cuD3D11GetDevice CuD3D11GetDevice = nullptr;
+	PFN_cuDevicePrimaryCtxRetain CuDevicePrimaryCtxRetain = nullptr;
+	PFN_cuDevicePrimaryCtxRelease CuDevicePrimaryCtxRelease = nullptr;
+	PFN_cuCtxGetCurrent CuCtxGetCurrent = nullptr;
+	PFN_cuCtxSetCurrent CuCtxSetCurrent = nullptr;
+	PFN_cuCtxGetStreamPriorityRange CuCtxGetStreamPriorityRange = nullptr;
+	PFN_cuStreamCreate CuStreamCreate = nullptr;
+	PFN_cuStreamCreateWithPriority CuStreamCreateWithPriority = nullptr;
+	PFN_cuStreamDestroy CuStreamDestroy = nullptr;
+	PFN_cuStreamSynchronize CuStreamSynchronize = nullptr;
+	PFN_cuPointerGetAttribute CuPointerGetAttribute = nullptr;
+	PFN_cuEventCreate CuEventCreate = nullptr;
+	PFN_cuEventDestroy CuEventDestroy = nullptr;
+	PFN_cuEventRecord CuEventRecord = nullptr;
+	PFN_cuEventQuery CuEventQuery = nullptr;
+	PFN_cuEventElapsedTime CuEventElapsedTime = nullptr;
 
 	PFN_NvVFX_GetVersion NvVFX_GetVersion = nullptr;
 	PFN_NvVFX_CreateEffect NvVFX_CreateEffect = nullptr;
 	PFN_NvVFX_DestroyEffect NvVFX_DestroyEffect = nullptr;
 	PFN_NvVFX_SetU32 NvVFX_SetU32 = nullptr;
 	PFN_NvVFX_SetS32 NvVFX_SetS32 = nullptr;
+	PFN_NvVFX_SetF32 NvVFX_SetF32 = nullptr;
 	PFN_NvVFX_SetImage NvVFX_SetImage = nullptr;
 	PFN_NvVFX_SetCudaStream NvVFX_SetCudaStream = nullptr;
 	PFN_NvVFX_Load NvVFX_Load = nullptr;
@@ -255,17 +310,43 @@ struct CNvidiaMaxineVSR::Impl
 
 	NvVFX_Handle effect = nullptr;
 	CUstream stream = nullptr;
+	CUcontext primaryCudaContext = nullptr;
+	CUdevice primaryCudaDevice = -1;
+	bool streamUsesPrimaryContext = false;
+	bool streamPriorityKnown = false;
+	int streamPriority = 0;
+	CUevent gpuTimingStartEvent = nullptr;
+	CUevent gpuTimingEndEvent = nullptr;
+	bool gpuTimingPending = false;
+	bool gpuTimingSampleValid = false;
+	double lastGpuTimingMs = 0.0;
+	double lastGpuCompletionLagMs = 0.0;
+	double lastGpuQueueThrottleWaitMs = 0.0;
+	double lastGraphicsInputWaitMs = 0.0;
+	bool graphicsInputWaitUsed = false;
+	bool cudaInputUsed = false;
+	CRollingTimingWindow<128> graphicsInputWaitTiming;
+	CRollingTimingWindow<128> gpuTiming;
+	unsigned gpuTimingPendingPolls = 0;
+	unsigned lastGpuTimingPendingPolls = 0;
+	std::chrono::steady_clock::time_point gpuTimingSubmittedAt = {};
 	NvCVImage d3dInput = {};
 	NvCVImage d3dOutput = {};
 	NvCVImage gpuInput = {};
 	NvCVImage gpuOutput = {};
 	CComPtr<ID3D11Multithread> d3dMultithread;
+	CMaxineCompletionEvent graphicsInputCompletion;
 
 	ID3D11Texture2D* inputTexture = nullptr;
 	ID3D11Texture2D* outputTexture = nullptr;
 	unsigned quality = 0;
+	int requestedStrengthPercent = 100;
+	int appliedStrengthPercent = 100;
+	bool strengthAvailable = false;
+	bool strengthRejected = false;
 	bool runtimeAttempted = false;
 	bool failed = false;
+	MaxineRunFailure runFailure;
 	unsigned int sdkVersion = 0;
 	int selectedGPU = -1;
 	LUID effectAdapterLuid = {};
@@ -284,6 +365,294 @@ struct CNvidiaMaxineVSR::Impl
 		return proc != nullptr;
 	}
 
+	template<class T>
+	bool LoadCudaProc(const char* name, T& proc, const char* alternate = nullptr)
+	{
+		proc = hCudaDriver ? reinterpret_cast<T>(GetProcAddress(hCudaDriver, name)) : nullptr;
+		if (!proc && alternate && hCudaDriver) {
+			proc = reinterpret_cast<T>(GetProcAddress(hCudaDriver, alternate));
+		}
+		return proc != nullptr;
+	}
+
+	bool LoadCudaDriver()
+	{
+		if (hCudaDriver) {
+			return true;
+		}
+
+		hCudaDriver = LoadLibraryW(L"nvcuda.dll");
+		if (!hCudaDriver) {
+			return false;
+		}
+
+		const bool loaded = LoadCudaProc("cuInit", CuInit)
+			&& LoadCudaProc("cuD3D11GetDevice", CuD3D11GetDevice)
+			&& LoadCudaProc("cuDevicePrimaryCtxRetain", CuDevicePrimaryCtxRetain)
+			&& LoadCudaProc("cuDevicePrimaryCtxRelease_v2", CuDevicePrimaryCtxRelease, "cuDevicePrimaryCtxRelease")
+			&& LoadCudaProc("cuCtxGetCurrent", CuCtxGetCurrent)
+			&& LoadCudaProc("cuCtxSetCurrent", CuCtxSetCurrent)
+			&& LoadCudaProc("cuStreamCreate", CuStreamCreate)
+			&& LoadCudaProc("cuStreamDestroy_v2", CuStreamDestroy, "cuStreamDestroy");
+		LoadCudaProc("cuCtxGetStreamPriorityRange", CuCtxGetStreamPriorityRange);
+		LoadCudaProc("cuStreamCreateWithPriority", CuStreamCreateWithPriority);
+		LoadCudaProc("cuStreamSynchronize", CuStreamSynchronize);
+		LoadCudaProc("cuPointerGetAttribute", CuPointerGetAttribute);
+		LoadCudaProc("cuEventCreate", CuEventCreate);
+		LoadCudaProc("cuEventDestroy_v2", CuEventDestroy, "cuEventDestroy");
+		LoadCudaProc("cuEventRecord", CuEventRecord);
+		LoadCudaProc("cuEventQuery", CuEventQuery);
+		LoadCudaProc("cuEventElapsedTime", CuEventElapsedTime);
+		if (!loaded || CuInit(0) != CUDA_SUCCESS) {
+			FreeLibrary(hCudaDriver);
+			hCudaDriver = nullptr;
+			CuInit = nullptr;
+			CuD3D11GetDevice = nullptr;
+			CuDevicePrimaryCtxRetain = nullptr;
+			CuDevicePrimaryCtxRelease = nullptr;
+			CuCtxGetCurrent = nullptr;
+			CuCtxSetCurrent = nullptr;
+			CuCtxGetStreamPriorityRange = nullptr;
+			CuStreamCreate = nullptr;
+			CuStreamCreateWithPriority = nullptr;
+			CuStreamDestroy = nullptr;
+			CuStreamSynchronize = nullptr;
+			CuPointerGetAttribute = nullptr;
+			CuEventCreate = nullptr;
+			CuEventDestroy = nullptr;
+			CuEventRecord = nullptr;
+			CuEventQuery = nullptr;
+			CuEventElapsedTime = nullptr;
+			return false;
+		}
+		return true;
+	}
+
+	bool EnsureGpuTimingEvents()
+	{
+		if (gpuTimingStartEvent && gpuTimingEndEvent) {
+			return true;
+		}
+		if (!streamUsesPrimaryContext || !CuEventCreate || !CuEventDestroy || !CuEventRecord
+				|| !CuEventQuery || !CuEventElapsedTime) {
+			return false;
+		}
+		if (CuEventCreate(&gpuTimingStartEvent, 0) != CUDA_SUCCESS || !gpuTimingStartEvent) {
+			gpuTimingStartEvent = nullptr;
+			return false;
+		}
+		if (CuEventCreate(&gpuTimingEndEvent, 0) != CUDA_SUCCESS || !gpuTimingEndEvent) {
+			CuEventDestroy(gpuTimingStartEvent);
+			gpuTimingStartEvent = nullptr;
+			gpuTimingEndEvent = nullptr;
+			return false;
+		}
+		return true;
+	}
+
+	void DestroyGpuTimingEvents()
+	{
+		if (CuEventDestroy) {
+			if (gpuTimingEndEvent) {
+				CuEventDestroy(gpuTimingEndEvent);
+			}
+			if (gpuTimingStartEvent) {
+				CuEventDestroy(gpuTimingStartEvent);
+			}
+		}
+		gpuTimingStartEvent = nullptr;
+		gpuTimingEndEvent = nullptr;
+		gpuTimingPending = false;
+		gpuTimingSampleValid = false;
+		lastGpuTimingMs = 0.0;
+		lastGpuCompletionLagMs = 0.0;
+		gpuTimingPendingPolls = 0;
+		lastGpuTimingPendingPolls = 0;
+		gpuTimingSubmittedAt = {};
+		gpuTiming.Clear();
+		graphicsInputWaitTiming.Clear();
+	}
+
+	void PollGpuTiming()
+	{
+		if (!gpuTimingPending || !gpuTimingEndEvent || !CuEventQuery || !CuEventElapsedTime) {
+			return;
+		}
+
+		const CUresult queryResult = CuEventQuery(gpuTimingEndEvent);
+		if (queryResult == CUDA_ERROR_NOT_READY) {
+			++gpuTimingPendingPolls;
+			return;
+		}
+		if (queryResult != CUDA_SUCCESS) {
+			gpuTimingPending = false;
+			return;
+		}
+
+		float elapsedMs = 0.0f;
+		if (CuEventElapsedTime(&elapsedMs, gpuTimingStartEvent, gpuTimingEndEvent) == CUDA_SUCCESS) {
+			lastGpuTimingMs = elapsedMs;
+			lastGpuCompletionLagMs = std::chrono::duration<double, std::milli>(
+				std::chrono::steady_clock::now() - gpuTimingSubmittedAt).count();
+			lastGpuTimingPendingPolls = gpuTimingPendingPolls;
+			gpuTimingSampleValid = true;
+			gpuTiming.AddMicroseconds(static_cast<uint64_t>(elapsedMs * 1000.0f));
+		}
+		gpuTimingPending = false;
+		gpuTimingPendingPolls = 0;
+	}
+
+	bool BeginGpuTiming()
+	{
+		PollGpuTiming();
+		if (gpuTimingPending || !EnsureGpuTimingEvents()) {
+			return false;
+		}
+		return CuEventRecord(gpuTimingStartEvent, stream) == CUDA_SUCCESS;
+	}
+
+	void EndGpuTiming(const bool started)
+	{
+		if (!started || !gpuTimingEndEvent || !CuEventRecord) {
+			return;
+		}
+		if (CuEventRecord(gpuTimingEndEvent, stream) == CUDA_SUCCESS) {
+			gpuTimingPending = true;
+			gpuTimingPendingPolls = 0;
+			gpuTimingSubmittedAt = std::chrono::steady_clock::now();
+		}
+	}
+
+	bool GetCudaDeviceForTexture(ID3D11Texture2D* texture, CUdevice& cudaDevice)
+	{
+		cudaDevice = -1;
+		if (!texture || !LoadCudaDriver()) {
+			return false;
+		}
+
+		CComPtr<ID3D11Device> device;
+		texture->GetDevice(&device);
+		if (!device) {
+			return false;
+		}
+		CComPtr<IDXGIDevice> dxgiDevice;
+		if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
+			return false;
+		}
+		CComPtr<IDXGIAdapter> adapter;
+		if (FAILED(dxgiDevice->GetAdapter(&adapter))) {
+			return false;
+		}
+		return CuD3D11GetDevice(&cudaDevice, adapter) == CUDA_SUCCESS;
+	}
+
+	bool ActivatePrimaryCudaContext(CUcontext& previousContext)
+	{
+		previousContext = nullptr;
+		if (!streamUsesPrimaryContext) {
+			return true;
+		}
+		if (!primaryCudaContext || !CuCtxGetCurrent || !CuCtxSetCurrent
+				|| CuCtxGetCurrent(&previousContext) != CUDA_SUCCESS) {
+			return false;
+		}
+		return previousContext == primaryCudaContext
+			|| CuCtxSetCurrent(primaryCudaContext) == CUDA_SUCCESS;
+	}
+
+	void RestoreCudaContext(CUcontext previousContext)
+	{
+		if (CuCtxSetCurrent) {
+			CuCtxSetCurrent(previousContext);
+		}
+	}
+
+	class PrimaryCudaContextScope final
+	{
+	public:
+		explicit PrimaryCudaContextScope(Impl& owner) noexcept
+			: m_owner(owner)
+			, m_required(owner.streamUsesPrimaryContext)
+		{
+			m_valid = m_owner.ActivatePrimaryCudaContext(m_previousContext);
+		}
+
+		~PrimaryCudaContextScope()
+		{
+			if (m_valid && m_required) {
+				m_owner.RestoreCudaContext(m_previousContext);
+			}
+		}
+
+		bool IsValid() const noexcept { return m_valid; }
+
+	private:
+		Impl& m_owner;
+		CUcontext m_previousContext = nullptr;
+		bool m_required = false;
+		bool m_valid = false;
+	};
+
+	HRESULT WaitForGraphicsInput(ID3D11DeviceContext* context)
+	{
+		// Finish graphics/video work BEFORE CUDA mapping, not after the upload
+		// or effect. Required for paused seeks; playback A/B builds also use it.
+		// Never wait with the D3D11 interop lock held: other workers may need
+		// it to complete GPU work.
+		constexpr DWORD timeoutMs = 250;
+		CComPtr<ID3D11DeviceContext3> context3;
+		if (SUCCEEDED(context->QueryInterface(IID_PPV_ARGS(&context3)))) {
+			HANDLE ready = nullptr;
+			const HRESULT acquireHr = graphicsInputCompletion.Acquire(ready);
+			if (FAILED(acquireHr)) return acquireHr;
+			{
+				D3D11InteropLock interopLock(d3dMultithread);
+				ID3D11ShaderResourceView* nullViews[3] = {};
+				context->PSSetShaderResources(0, std::size(nullViews), nullViews);
+				context->OMSetRenderTargets(0, nullptr, nullptr);
+				// Include video processing and any shader/copy work producing
+				// this input, rather than fence only the 3D queue.
+				graphicsInputCompletion.MarkPending();
+				context3->Flush1(D3D11_CONTEXT_TYPE_ALL, ready);
+			}
+			return graphicsInputCompletion.Wait(timeoutMs);
+		}
+
+		// Compatibility fallback for runtimes without DeviceContext3. The query
+		// is local to this call, so a late completion after timeout cannot satisfy
+		// a future seek's wait.
+		CComPtr<ID3D11Device> device;
+		context->GetDevice(&device);
+		CComPtr<ID3D11Query> ready;
+		const D3D11_QUERY_DESC desc = {D3D11_QUERY_EVENT, 0};
+		HRESULT hr = device->CreateQuery(&desc, &ready);
+		if (FAILED(hr)) {
+			return hr;
+		}
+		{
+			D3D11InteropLock interopLock(d3dMultithread);
+			ID3D11ShaderResourceView* nullViews[3] = {};
+			context->PSSetShaderResources(0, std::size(nullViews), nullViews);
+			context->OMSetRenderTargets(0, nullptr, nullptr);
+			context->End(ready);
+			context->Flush();
+		}
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+		for (;;) {
+			{
+				D3D11InteropLock interopLock(d3dMultithread);
+				hr = context->GetData(ready, nullptr, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH);
+			}
+			if (hr != S_FALSE) {
+				return hr;
+			}
+			if (std::chrono::steady_clock::now() >= deadline) {
+				return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+			}
+			Sleep(1);
+		}
+	}
+
 	void SetError(const wchar_t* operation, NvCV_Status code)
 	{
 		std::wstring detail;
@@ -296,6 +665,31 @@ struct CNvidiaMaxineVSR::Impl
 			status = std::format(L"{} failed: {} ({})", operation, detail, code);
 		}
 		DLog(L"NVIDIA Maxine VSR: {}", status);
+	}
+
+	void UpdateRuntimeInfo()
+	{
+		if (!sdkVersion || runtimeDirectory.empty()) {
+			return;
+		}
+		const std::wstring gpuInfo = selectedGPU >= 0
+			? std::format(L" (GPU {})", selectedGPU)
+			: std::wstring(L" (GPU auto)");
+		std::wstring streamInfo;
+		if (stream) {
+			if (streamUsesPrimaryContext) {
+				streamInfo = streamPriorityKnown
+					? std::format(L", CUDA primary stream priority {}", streamPriority)
+					: L", CUDA primary stream";
+			} else {
+				streamInfo = L", SDK CUDA stream";
+			}
+		}
+		runtimeInfo = std::format(L"{}.{}.{} from {}{}{}",
+			(sdkVersion >> 24) & 0xff,
+			(sdkVersion >> 16) & 0xff,
+			(sdkVersion >> 8) & 0xff,
+			runtimeDirectory, gpuInfo, streamInfo);
 	}
 
 	bool GetAdapterLuid(ID3D11Texture2D* texture, LUID& adapterLuid)
@@ -329,8 +723,135 @@ struct CNvidiaMaxineVSR::Impl
 		return true;
 	}
 
+	bool CreateEffectStream(ID3D11Texture2D* input, int requestedGPU)
+	{
+		if (stream) {
+			return true;
+		}
+
+		CUdevice cudaDevice = -1;
+		if (GetCudaDeviceForTexture(input, cudaDevice)
+				&& (requestedGPU < 0 || requestedGPU == cudaDevice)) {
+			CUcontext retainedContext = nullptr;
+			if (CuDevicePrimaryCtxRetain(&retainedContext, cudaDevice) == CUDA_SUCCESS && retainedContext) {
+				CUcontext previousContext = nullptr;
+				const bool gotCurrent = CuCtxGetCurrent(&previousContext) == CUDA_SUCCESS;
+				const bool activated = gotCurrent
+					&& (previousContext == retainedContext || CuCtxSetCurrent(retainedContext) == CUDA_SUCCESS);
+				CUstream primaryStream = nullptr;
+				bool priorityKnown = false;
+				int selectedPriority = 0;
+				bool created = false;
+				if (activated) {
+					// SDK 1.3's native VSR work is not fully ordered on a nonblocking
+					// stream in our changing-frame probes. A blocking stream orders
+					// its conversion with legacy-default work without a context-wide
+					// drain. RIFE keeps its independent nonblocking worker streams.
+					const unsigned streamFlags = ((sdkVersion >> 24) & 0xff) == 1
+						&& ((sdkVersion >> 16) & 0xff) >= 3 ? 0 : CU_STREAM_NON_BLOCKING;
+					int leastPriority = 0;
+					int greatestPriority = 0;
+					if (CuCtxGetStreamPriorityRange && CuStreamCreateWithPriority
+							&& CuCtxGetStreamPriorityRange(&leastPriority, &greatestPriority) == CUDA_SUCCESS) {
+						// RIFE inference feeds presentation, so keep Maxine at
+						// the context's normal/least priority while RIFE uses
+						// greatest priority. Otherwise repeated presentation
+						// work can occupy the GPU long enough that a queued RIFE
+						// stream does not reach its start event for multiple
+						// frame intervals.
+						selectedPriority = leastPriority;
+						created = CuStreamCreateWithPriority(
+							&primaryStream, streamFlags, selectedPriority) == CUDA_SUCCESS
+							&& primaryStream;
+						priorityKnown = created;
+					}
+					if (!created) {
+						created = CuStreamCreate(&primaryStream, streamFlags) == CUDA_SUCCESS
+							&& primaryStream;
+					}
+				}
+				if (gotCurrent && previousContext != retainedContext) {
+					CuCtxSetCurrent(previousContext);
+				}
+
+				if (created) {
+					stream = primaryStream;
+					primaryCudaContext = retainedContext;
+					primaryCudaDevice = cudaDevice;
+					streamUsesPrimaryContext = true;
+					streamPriorityKnown = priorityKnown;
+					streamPriority = selectedPriority;
+					UpdateRuntimeInfo();
+					DLog(L"NVIDIA Maxine VSR: using CUDA primary-context stream on device {}{}",
+						cudaDevice, priorityKnown ? std::format(L" at priority {}", selectedPriority) : std::wstring());
+					return true;
+				}
+				CuDevicePrimaryCtxRelease(cudaDevice);
+			}
+		}
+
+		const NvCV_Status code = NvVFX_CudaStreamCreate(&stream);
+		if (code != NVCV_SUCCESS) {
+			SetError(L"NvVFX_CudaStreamCreate", code);
+			stream = nullptr;
+			return false;
+		}
+		streamUsesPrimaryContext = false;
+		streamPriorityKnown = false;
+		streamPriority = 0;
+		primaryCudaContext = nullptr;
+		primaryCudaDevice = -1;
+		UpdateRuntimeInfo();
+		DLog(L"NVIDIA Maxine VSR: using SDK-created CUDA stream");
+		return true;
+	}
+
+	void DestroyEffectStream()
+	{
+		if (!stream) {
+			return;
+		}
+
+		if (streamUsesPrimaryContext) {
+			CUcontext previousContext = nullptr;
+			const bool activated = ActivatePrimaryCudaContext(previousContext);
+			if (activated) {
+				DestroyGpuTimingEvents();
+			}
+			if (activated && CuStreamDestroy) {
+				CuStreamDestroy(stream);
+			}
+			if (activated) {
+				RestoreCudaContext(previousContext);
+			}
+			stream = nullptr;
+			streamUsesPrimaryContext = false;
+			streamPriorityKnown = false;
+			streamPriority = 0;
+			primaryCudaContext = nullptr;
+			if (primaryCudaDevice >= 0 && CuDevicePrimaryCtxRelease) {
+				CuDevicePrimaryCtxRelease(primaryCudaDevice);
+			}
+			primaryCudaDevice = -1;
+			UpdateRuntimeInfo();
+			return;
+		}
+
+		if (NvVFX_CudaStreamDestroy) {
+			NvVFX_CudaStreamDestroy(stream);
+		}
+		stream = nullptr;
+		streamPriorityKnown = false;
+		streamPriority = 0;
+		UpdateRuntimeInfo();
+	}
+
 	void ReleaseD3DImages()
 	{
+		PrimaryCudaContextScope cudaContext(*this);
+		if (!cudaContext.IsValid()) {
+			return;
+		}
 		{
 			D3D11InteropLock interopLock(d3dMultithread);
 			if (NvCVImage_Dealloc) {
@@ -342,11 +863,16 @@ struct CNvidiaMaxineVSR::Impl
 		d3dOutput = {};
 		inputTexture = nullptr;
 		outputTexture = nullptr;
+		graphicsInputCompletion.Clear();
 		d3dMultithread.Release();
 	}
 
 	void ReleaseGpuImages()
 	{
+		PrimaryCudaContextScope cudaContext(*this);
+		if (!cudaContext.IsValid()) {
+			return;
+		}
 		if (NvCVImage_Dealloc) {
 			NvCVImage_Dealloc(&gpuInput);
 			NvCVImage_Dealloc(&gpuOutput);
@@ -368,6 +894,12 @@ struct CNvidiaMaxineVSR::Impl
 		}
 
 		ReleaseD3DImages();
+		PrimaryCudaContextScope cudaContext(*this);
+		if (!cudaContext.IsValid()) {
+			status = L"Could not activate the CUDA primary context for Maxine D3D11 interop";
+			DLog(L"NVIDIA Maxine VSR: {}", status);
+			return false;
+		}
 
 		CComPtr<ID3D11Device> inputDevice;
 		CComPtr<ID3D11Device> outputDevice;
@@ -423,6 +955,12 @@ struct CNvidiaMaxineVSR::Impl
 	bool AllocateGpuImages()
 	{
 		ReleaseGpuImages();
+		PrimaryCudaContextScope cudaContext(*this);
+		if (!cudaContext.IsValid()) {
+			status = L"Could not activate the CUDA primary context for Maxine GPU buffers";
+			DLog(L"NVIDIA Maxine VSR: {}", status);
+			return false;
+		}
 
 		NvCV_Status code = NvCVImage_Alloc(&gpuInput, d3dInput.width, d3dInput.height, d3dInput.pixelFormat,
 			NVCV_U8, NVCV_INTERLEAVED, NVCV_GPU, 32);
@@ -445,16 +983,20 @@ struct CNvidiaMaxineVSR::Impl
 
 	void ResetEffect()
 	{
-		if (effect && NvVFX_DestroyEffect) {
-			NvVFX_DestroyEffect(effect);
+		runFailure.Clear();
+		{
+			PrimaryCudaContextScope cudaContext(*this);
+			if (cudaContext.IsValid() && effect && NvVFX_DestroyEffect) {
+				NvVFX_DestroyEffect(effect);
+			}
 		}
 		effect = nullptr;
 		ReleaseImages();
-		if (stream && NvVFX_CudaStreamDestroy) {
-			NvVFX_CudaStreamDestroy(stream);
-		}
-		stream = nullptr;
+		DestroyEffectStream();
 		quality = 0;
+		appliedStrengthPercent = 100;
+		strengthAvailable = false;
+		strengthRejected = false;
 		failed = false;
 		effectAdapterLuid = {};
 		effectAdapterLuidValid = false;
@@ -463,6 +1005,7 @@ struct CNvidiaMaxineVSR::Impl
 	void UnloadRuntime()
 	{
 		ResetEffect();
+		NvVFX_SetF32 = nullptr;
 
 		for (auto it = hRuntimeDependencies.rbegin(); it != hRuntimeDependencies.rend(); ++it) {
 			if (*it) {
@@ -479,6 +1022,27 @@ struct CNvidiaMaxineVSR::Impl
 			FreeLibrary(hNvCVImage);
 			hNvCVImage = nullptr;
 		}
+		if (hCudaDriver) {
+			FreeLibrary(hCudaDriver);
+			hCudaDriver = nullptr;
+		}
+		CuInit = nullptr;
+		CuD3D11GetDevice = nullptr;
+		CuDevicePrimaryCtxRetain = nullptr;
+		CuDevicePrimaryCtxRelease = nullptr;
+		CuCtxGetCurrent = nullptr;
+		CuCtxSetCurrent = nullptr;
+		CuCtxGetStreamPriorityRange = nullptr;
+		CuStreamCreate = nullptr;
+		CuStreamCreateWithPriority = nullptr;
+		CuStreamDestroy = nullptr;
+		CuStreamSynchronize = nullptr;
+		CuPointerGetAttribute = nullptr;
+		CuEventCreate = nullptr;
+		CuEventDestroy = nullptr;
+		CuEventRecord = nullptr;
+		CuEventQuery = nullptr;
+		CuEventElapsedTime = nullptr;
 		runtimeDirectory.clear();
 		runtimeInfo.clear();
 	}
@@ -595,6 +1159,7 @@ struct CNvidiaMaxineVSR::Impl
 			LoadProc(hNvCVImage, "NvCVImage_UnmapResource", NvCVImage_UnmapResource);
 
 		LoadProc(hNvVideoEffects, "NvVFX_SetS32", NvVFX_SetS32);
+		LoadProc(hNvVideoEffects, "NvVFX_SetF32", NvVFX_SetF32);
 		LoadProc(hNvCVImage, "NvCV_GetErrorStringFromCode", NvCV_GetErrorStringFromCode);
 
 		if (!ok) {
@@ -624,20 +1189,47 @@ struct CNvidiaMaxineVSR::Impl
 			}
 		}
 
-		const std::wstring gpuInfo = selectedGPU >= 0
-			? std::format(L" (GPU {})", selectedGPU)
-			: std::wstring(L" (GPU auto)");
-		runtimeInfo = std::format(L"{}.{}.{} from {}{}",
-			(sdkVersion >> 24) & 0xff,
-			(sdkVersion >> 16) & 0xff,
-			(sdkVersion >> 8) & 0xff,
-			runtimeDirectory, gpuInfo);
+		UpdateRuntimeInfo();
 		status = std::format(L"Runtime {} loaded", runtimeInfo);
 		DLog(L"NVIDIA Maxine VSR: {}", status);
 		return true;
 	}
 
-	bool EnsureEffect(ID3D11Texture2D* input, ID3D11Texture2D* output, unsigned requestedMode, int requestedGPU)
+	bool UpdateStrength(unsigned mode, int percent)
+	{
+		requestedStrengthPercent = std::clamp(percent, 0, 100);
+		const bool aiUpscale = (mode >= 1 && mode <= 4) || (mode >= 16 && mode <= 19);
+		if (!aiUpscale || !NvVFX_SetF32 || strengthRejected
+				|| ((sdkVersion >> 24) & 0xff) != 1 || ((sdkVersion >> 16) & 0xff) < 3) {
+			strengthAvailable = false;
+			return true;
+		}
+		if (strengthAvailable && appliedStrengthPercent == requestedStrengthPercent) {
+			return true;
+		}
+		// A setting update must not change a still-running effect's parameters.
+		// This wait occurs only on creation/strength changes, never each frame.
+		if (CuStreamSynchronize && CuStreamSynchronize(stream) != CUDA_SUCCESS) {
+			status = L"Could not complete Maxine before updating VSR strength";
+			return false;
+		}
+		const NvCV_Status code = NvVFX_SetF32(effect, "Strength", requestedStrengthPercent / 100.0f);
+		if (code == -2) {
+			strengthRejected = true;
+			strengthAvailable = false;
+			return true;
+		}
+		if (code != NVCV_SUCCESS) {
+			SetError(L"NvVFX_SetF32(Strength)", code);
+			return false;
+		}
+		appliedStrengthPercent = requestedStrengthPercent;
+		strengthAvailable = true;
+		return true;
+	}
+
+	bool EnsureEffect(ID3D11Texture2D* input, ID3D11Texture2D* output, unsigned requestedMode,
+			int requestedGPU, MaxineRunBinding& runBinding)
 	{
 		if (requestedGPU != selectedGPU) {
 			UnloadRuntime();
@@ -645,12 +1237,19 @@ struct CNvidiaMaxineVSR::Impl
 			selectedGPU = requestedGPU;
 		}
 
-		if (!LoadRuntime() || failed) {
+		if (!LoadRuntime()) {
 			return false;
 		}
 
 		LUID inputAdapterLuid = {};
 		const bool inputAdapterLuidValid = GetAdapterLuid(input, inputAdapterLuid);
+		runBinding.adapter = (static_cast<uint64_t>(static_cast<uint32_t>(inputAdapterLuid.HighPart)) << 32)
+			| inputAdapterLuid.LowPart;
+		if (failed) {
+			if (!inputAdapterLuidValid || !runFailure.HasDifferentBinding(runBinding)) return false;
+			failed = false;
+			runFailure.Clear();
+		}
 		const bool effectAdapterMatches = effect && effectAdapterLuidValid && inputAdapterLuidValid
 			&& effectAdapterLuid.HighPart == inputAdapterLuid.HighPart
 			&& effectAdapterLuid.LowPart == inputAdapterLuid.LowPart;
@@ -678,6 +1277,14 @@ struct CNvidiaMaxineVSR::Impl
 
 			if (gpuImagesMatch && qualityMatches) {
 				return true;
+			}
+
+			PrimaryCudaContextScope cudaContext(*this);
+			if (!cudaContext.IsValid()) {
+				status = L"Could not activate the CUDA primary context for Maxine effect update";
+				ResetEffect();
+				failed = true;
+				return false;
 			}
 
 			if (!gpuImagesMatch) {
@@ -718,9 +1325,7 @@ struct CNvidiaMaxineVSR::Impl
 			// dynamic rebinding, fall through to the original full effect build.
 		}
 
-		NvCV_Status code = NvVFX_CudaStreamCreate(&stream);
-		if (code != NVCV_SUCCESS) {
-			SetError(L"NvVFX_CudaStreamCreate", code);
+		if (!CreateEffectStream(input, requestedGPU)) {
 			failed = true;
 			return false;
 		}
@@ -737,7 +1342,15 @@ struct CNvidiaMaxineVSR::Impl
 			return false;
 		}
 
-		code = NvVFX_CreateEffect("VideoSuperRes", &effect);
+		PrimaryCudaContextScope cudaContext(*this);
+		if (!cudaContext.IsValid()) {
+			status = L"Could not activate the CUDA primary context for Maxine effect creation";
+			ResetEffect();
+			failed = true;
+			return false;
+		}
+
+		NvCV_Status code = NvVFX_CreateEffect("VideoSuperRes", &effect);
 		if (code != NVCV_SUCCESS) {
 			if (code == -2) {
 				status = std::format(L"VideoSuperRes feature did not register in runtime {}.{}.{} at {}",
@@ -809,10 +1422,17 @@ bool CNvidiaMaxineVSR::Process(
 	ID3D11Texture2D* pOutputTexture,
 	unsigned mode,
 	int gpuIndex,
-	bool releaseD3DImagesAfterRun)
+	bool releaseD3DImagesAfterRun,
+	bool throttleGpuQueue,
+	bool waitForD3DInput,
+	const MpcvrRifeCudaOutput* cudaInput,
+	int strengthPercent)
 {
 #ifdef _WIN64
 	const auto started = std::chrono::steady_clock::now();
+	m_impl->lastGraphicsInputWaitMs = 0.0;
+	m_impl->graphicsInputWaitUsed = false;
+	m_impl->cudaInputUsed = false;
 	auto Finish = [&](bool result) {
 		m_impl->lastProcessTimeMs = std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - started).count();
@@ -830,6 +1450,8 @@ bool CNvidiaMaxineVSR::Process(
 	D3D11_TEXTURE2D_DESC outputDesc = {};
 	pInputTexture->GetDesc(&inputDesc);
 	pOutputTexture->GetDesc(&outputDesc);
+	MaxineRunBinding runBinding{
+		{inputDesc.Width, inputDesc.Height}, {outputDesc.Width, outputDesc.Height}, mode, gpuIndex, 0};
 
 	if (upscaleMode) {
 		if (outputDesc.Width <= inputDesc.Width && outputDesc.Height <= inputDesc.Height) {
@@ -842,31 +1464,125 @@ bool CNvidiaMaxineVSR::Process(
 		return Finish(false);
 	}
 
-	if (!m_impl->EnsureEffect(pInputTexture, pOutputTexture, mode, gpuIndex)) {
+	if (!m_impl->EnsureEffect(pInputTexture, pOutputTexture, mode, gpuIndex, runBinding)) {
 		return Finish(false);
 	}
+
+	Impl::PrimaryCudaContextScope cudaContext(*m_impl);
+	if (!cudaContext.IsValid()) {
+		m_impl->status = L"Could not activate the CUDA primary context for Maxine processing";
+		m_impl->ResetEffect();
+		m_impl->failed = true;
+		return Finish(false);
+	}
+
+	if (!m_impl->UpdateStrength(mode, strengthPercent)) {
+		m_impl->ResetEffect();
+		m_impl->failed = true;
+		return Finish(false);
+	}
+
+	NvCVImage borrowedInput{};
+	if (cudaInput) {
+		// The tested 1.2 nonblocking and 1.3 blocking streams order all input
+		// reads before lease release; future SDKs retain the D3D route.
+		CUcontext pointerContext = nullptr;
+		int pointerDevice = -1;
+		int pointerMemoryType = 0;
+		const CUdeviceptr pointer = reinterpret_cast<CUdeviceptr>(cudaInput->pixels);
+		if (cudaInput->size != sizeof(*cudaInput) || cudaInput->abiVersion != MPCVR_RIFE_CUDA_OUTPUT_ABI
+				|| cudaInput->format != MPCVR_RIFE_CUDA_OUTPUT_BGRA8 || !pointer
+				|| inputDesc.Format != DXGI_FORMAT_B8G8R8A8_UNORM || outputDesc.Format != DXGI_FORMAT_B8G8R8A8_UNORM
+				|| cudaInput->contentWidth != inputDesc.Width || cudaInput->contentHeight != inputDesc.Height
+				|| cudaInput->width < inputDesc.Width || cudaInput->height < inputDesc.Height
+				|| cudaInput->pitch < static_cast<uint64_t>(cudaInput->width) * 4
+				|| cudaInput->pitch > INT_MAX || cudaInput->pitch % 4
+				|| !upscaleMode || inputDesc.Width % 2 || outputDesc.Width % 2
+				|| !CanUseCudaInput()
+				|| cudaInput->cudaDevice != static_cast<uint32_t>(m_impl->primaryCudaDevice)
+				|| m_impl->CuPointerGetAttribute(&pointerContext, 1, pointer) != CUDA_SUCCESS
+				|| m_impl->CuPointerGetAttribute(&pointerMemoryType, 2, pointer) != CUDA_SUCCESS
+				|| m_impl->CuPointerGetAttribute(&pointerDevice, 9, pointer) != CUDA_SUCCESS
+				|| pointerContext != m_impl->primaryCudaContext || pointerMemoryType != 2
+				|| pointerDevice != m_impl->primaryCudaDevice) {
+			m_impl->status = L"CUDA input is incompatible with this Maxine runtime or GPU";
+			return Finish(false);
+		}
+		borrowedInput = m_impl->gpuInput;
+		m_impl->cudaInputUsed = true;
+		borrowedInput.pitch = static_cast<int>(cudaInput->pitch);
+		borrowedInput.pixels = cudaInput->pixels;
+		borrowedInput.deletePtr = nullptr;
+		borrowedInput.deleteProc = nullptr;
+		borrowedInput.bufferBytes = 0;
+	}
+
+	if (waitForD3DInput && !cudaInput) {
+		m_impl->graphicsInputWaitUsed = true;
+		const auto waitStarted = std::chrono::steady_clock::now();
+		const HRESULT readyHr = m_impl->WaitForGraphicsInput(pDeviceContext);
+		m_impl->lastGraphicsInputWaitMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - waitStarted).count();
+		m_impl->graphicsInputWaitTiming.AddMicroseconds(
+			static_cast<uint64_t>(m_impl->lastGraphicsInputWaitMs * 1000.0));
+		if (FAILED(readyHr)) {
+			// Nothing has been CUDA-mapped and Run has not happened. Let the
+			// renderer draw the current unenhanced frame through its existing
+			// fallback, without poisoning the cached effect for the next call.
+			m_impl->status = std::format(L"D3D input completion failed: {}", HR2Str(readyHr));
+			return Finish(false);
+		}
+	}
+
+	// Maxine runs asynchronously on its own low-priority CUDA stream. During
+	// RIFE presentation, allowing several VSR passes to accumulate on that
+	// stream can still starve RIFE despite RIFE using CUDA's greatest stream
+	// priority: priority affects selection at scheduling boundaries, not
+	// preemption of already-running kernels. Keep at most one Maxine pass in
+	// flight so the next high-priority RIFE launch gets a scheduling boundary
+	// before another VSR pass is submitted.
+	m_impl->lastGpuQueueThrottleWaitMs = 0.0;
+	if (throttleGpuQueue && m_impl->stream && m_impl->CuStreamSynchronize) {
+		const auto throttleStart = std::chrono::steady_clock::now();
+		const CUresult throttleResult = m_impl->CuStreamSynchronize(m_impl->stream);
+		m_impl->lastGpuQueueThrottleWaitMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - throttleStart).count();
+		if (throttleResult != CUDA_SUCCESS) {
+			m_impl->status = L"Could not throttle the Maxine CUDA queue";
+			return Finish(false);
+		}
+	}
+	const bool gpuTimingStarted = m_impl->BeginGpuTiming();
 
 	bool inputMapped = false;
 	bool outputMapped = false;
 	const wchar_t* failedOperation = L"NvCVImage_MapResource(input)";
 	NvCV_Status code = NVCV_SUCCESS;
+	if (cudaInput) {
+		failedOperation = L"NvVFX_SetImage(CUDA input)";
+		code = m_impl->NvVFX_SetImage(m_impl->effect, "SrcImage0", &borrowedInput);
+	}
 	{
 		D3D11InteropLock interopLock(m_impl->d3dMultithread);
 		ID3D11ShaderResourceView* nullViews[3] = {};
 		pDeviceContext->PSSetShaderResources(0, std::size(nullViews), nullViews);
 		pDeviceContext->OMSetRenderTargets(0, nullptr, nullptr);
 
-		code = m_impl->NvCVImage_MapResource(&m_impl->d3dInput, m_impl->stream);
+		if (code == NVCV_SUCCESS && !cudaInput) {
+			code = m_impl->NvCVImage_MapResource(&m_impl->d3dInput, m_impl->stream);
+			inputMapped = code == NVCV_SUCCESS;
+		}
 		if (code == NVCV_SUCCESS) {
-			inputMapped = true;
 			failedOperation = L"NvCVImage_MapResource(output)";
 			code = m_impl->NvCVImage_MapResource(&m_impl->d3dOutput, m_impl->stream);
 		}
 	}
 	if (code == NVCV_SUCCESS) {
 		outputMapped = true;
-		failedOperation = L"NvCVImage_Transfer(input)";
-		code = m_impl->NvCVImage_Transfer(&m_impl->d3dInput, &m_impl->gpuInput, 1.0f, m_impl->stream, nullptr);
+		if (!cudaInput) {
+			failedOperation = L"NvCVImage_Transfer(input)";
+			code = m_impl->NvCVImage_Transfer(&m_impl->d3dInput, &m_impl->gpuInput, 1.0f, m_impl->stream, nullptr);
+		}
 	}
 	if (code == NVCV_SUCCESS) {
 		failedOperation = L"NvVFX_Run";
@@ -899,6 +1615,18 @@ bool CNvidiaMaxineVSR::Process(
 		code = unmapCode;
 		failedOperation = unmapOperation ? unmapOperation : L"NvCVImage_UnmapResource";
 	}
+	m_impl->EndGpuTiming(gpuTimingStarted);
+	if (cudaInput) {
+		// Unlike a D3D input, this owned CUDA buffer can be overwritten as soon
+		// as the presenter releases its lease. Complete every read on all paths,
+		// and restore the normal input binding before the borrowed image expires.
+		const CUresult completed = m_impl->CuStreamSynchronize(m_impl->stream);
+		const NvCV_Status restored = m_impl->NvVFX_SetImage(m_impl->effect, "SrcImage0", &m_impl->gpuInput);
+		if (code == NVCV_SUCCESS && (completed != CUDA_SUCCESS || restored != NVCV_SUCCESS)) {
+			code = restored != NVCV_SUCCESS ? restored : -1;
+			failedOperation = L"CUDA input completion/rebind";
+		}
+	}
 
 	// Chained effects cannot retain registrations because one pass's output is
 	// the next pass's input. A single effect with stable textures can safely keep
@@ -912,6 +1640,9 @@ bool CNvidiaMaxineVSR::Process(
 		m_impl->SetError(failedOperation, code);
 		m_impl->ResetEffect();
 		m_impl->failed = true;
+		if (code == -7 && std::wstring_view(failedOperation) == L"NvVFX_Run") {
+			m_impl->runFailure.Record(runBinding);
+		}
 		return Finish(false);
 	}
 
@@ -923,6 +1654,23 @@ bool CNvidiaMaxineVSR::Process(
 	UNREFERENCED_PARAMETER(pOutputTexture);
 	UNREFERENCED_PARAMETER(mode);
 	UNREFERENCED_PARAMETER(gpuIndex);
+	UNREFERENCED_PARAMETER(releaseD3DImagesAfterRun);
+	UNREFERENCED_PARAMETER(throttleGpuQueue);
+	UNREFERENCED_PARAMETER(waitForD3DInput);
+	UNREFERENCED_PARAMETER(cudaInput);
+	UNREFERENCED_PARAMETER(strengthPercent);
+	return false;
+#endif
+}
+
+bool CNvidiaMaxineVSR::CanUseCudaInput() const noexcept
+{
+#ifdef _WIN64
+	return m_impl->effect && !m_impl->failed && m_impl->streamUsesPrimaryContext
+		&& m_impl->CuPointerGetAttribute && m_impl->CuStreamSynchronize
+		&& ((m_impl->sdkVersion >> 24) & 0xff) == 1
+		&& (((m_impl->sdkVersion >> 16) & 0xff) == 2 || ((m_impl->sdkVersion >> 16) & 0xff) == 3);
+#else
 	return false;
 #endif
 }
@@ -939,6 +1687,7 @@ void CNvidiaMaxineVSR::Reset()
 	// a hard rebuild only for a GPU/adapter transition or incompatible runtime.
 	m_impl->ReleaseD3DImages();
 	m_impl->failed = false;
+	m_impl->runFailure.Clear();
 	m_impl->lastProcessTimeMs = 0.0;
 	if (m_impl->effect) {
 		m_impl->status = std::format(L"Ready, mode {}", m_impl->quality);
@@ -970,4 +1719,60 @@ const std::wstring& CNvidiaMaxineVSR::GetRuntimeInfo() const
 double CNvidiaMaxineVSR::GetLastProcessTimeMs() const
 {
 	return m_impl->lastProcessTimeMs;
+}
+
+double CNvidiaMaxineVSR::GetAverageGpuProcessTimeMs() const
+{
+#ifdef _WIN64
+	return m_impl->gpuTiming.GetSummary().averageMs;
+#else
+	return 0.0;
+#endif
+}
+
+std::wstring CNvidiaMaxineVSR::GetGpuTimingDiagnostics() const
+{
+#ifdef _WIN64
+	if (!m_impl->streamUsesPrimaryContext || !m_impl->CuEventCreate || !m_impl->CuEventRecord
+			|| !m_impl->CuEventQuery || !m_impl->CuEventElapsedTime) {
+		return L"CUDA events unavailable";
+	}
+	const auto timing = m_impl->gpuTiming.GetSummary();
+	if (!timing.count) {
+		return m_impl->gpuTimingPending ? L"sampling" : L"sample not ready";
+	}
+	return std::format(L"stream {:.2f} avg/{:.2f} p95 ms, queue-wait {:.2f} ms",
+		timing.averageMs, timing.p95Ms, m_impl->lastGpuQueueThrottleWaitMs);
+#else
+	return L"unavailable";
+#endif
+}
+
+std::wstring CNvidiaMaxineVSR::GetGraphicsInputWaitDiagnostics() const
+{
+#ifdef _WIN64
+	if (m_impl->cudaInputUsed) {
+		return L"CUDA BGRA handoff, completed";
+	}
+	if (!m_impl->graphicsInputWaitUsed) {
+		return L"no graphics wait on this call";
+	}
+	const auto timing = m_impl->graphicsInputWaitTiming.GetSummary();
+	return std::format(L"graphics wait {:.2f} avg/{:.2f} p95 ms", timing.averageMs, timing.p95Ms);
+#else
+	return L"unavailable";
+#endif
+}
+
+std::wstring CNvidiaMaxineVSR::GetStrengthDiagnostics() const
+{
+#ifdef _WIN64
+	if (m_impl->strengthAvailable) {
+		return std::format(L"VSR strength {}%", m_impl->appliedStrengthPercent);
+	}
+	if (m_impl->requestedStrengthPercent != 100) {
+		return L"VSR strength unavailable (SDK 1.3 required)";
+	}
+#endif
+	return {};
 }

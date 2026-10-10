@@ -1,0 +1,34 @@
+{
+  "url": "https://www.svp-team.com/files/gpl/svpflow1-src.zip",
+  "archive_sha256": "c384b3b969d66f2e22003f87b644fa79ce9093a8af326f7fc79cc305239d05f3",
+  "original_files": {
+    "common.h": "4660bfe67fb1628595cbf59afa7e40c4b3000d83517e658fdaf3e098ce99f345",
+    "mvframe.h": "083572a12f58575bd2abb66da977cf0de203518a6bbffecce2a0a3cd4f15b849",
+    "mvframe.cpp": "7c038604bfeb61e07ab40061b661eca532e8b05b20bb8937c5d765ae1b022151",
+    "mvframe_interpolation.h": "dabd09164fcf03758a55ee9187edaaac8a2b5ed9b2209832659e8e1587d441bb",
+    "mvframe_interpolation.cpp": "90d7c9c5c5fcd2be45b7d2a455b0efe7086ad83a342f61c3a5b9bcda34e18d4a",
+    "planeofblocks.h": "491a00bb27ca144b661596c9cb01dc9a1d8f43187a0af3e6090182a8a611ae9f",
+    "planeofblocks.cpp": "cb1f99c76405e0a2570a7086e2e00f9141a22c821eb9d5145a3ca28f2ea92ef7",
+    "search.cpp": "e6ed277c591ad20b96e97ea322542b6b9d2af1f823bf087e032b9017cd07647c",
+    "groupofplanes.h": "dd16772aca7e61e9fa75016e4d69673b9d0eb94e356fad826f9014b8ab71f17f",
+    "groupofplanes.cpp": "a2d96e2a61e53d28bd67dccce8ccbcdd5086f6337472c70fe94829f15605599d",
+    "blockmath.h": "579e1ff2e1f9006a85c9a8afd584d28d0687ab45ca74a9f6980beece903fe5e0",
+    "blockmath.cpp": "41b07c77308cd6bcd114dd67d8e2e0a02ff5d1e06def15a7090644d2e29b4a37",
+    "x264_pixel.h": "69afffd17db026f9cba3b1fea4c4f45239510163d260fa70d04b4a8d2761def6",
+    "x264_pixel.cpp": "c57847871b175e253f69977fa44bee930b50a1926ece0164411a459ee7f760a9",
+    "x264_cpu.cpp": "5879e2a1e3e2c8ca18da800df605379319e1fc77afd130d9bd20e53a37731078",
+    "x86/const-a.asm": "8f6dee9feb1a528e921175ebd8c72b6ae1478ff841cc7c77466ae27aa6be68a6",
+    "x86/cpu-a.asm": "1558179518398e19a831289bd22fc687854ca9c77a8248c0f746bacf6da4852b",
+    "x86/pixel-a.asm": "8b81cce3fe845461a444684553a2d5f6871e9a1cf3b7189ebc198726fc135a0c",
+    "x86/sad-a.asm": "68eda6328845d6d3056685c9b500e0522d9e5e319f7b50f7ffbf425d33a8aa91",
+    "x86/x86inc.asm": "8b1040b372e46ca71be810d3320edfc66016ce1840eefd7a68e21339da2e2612",
+    "x86/x86util.asm": "19e53c643e0914f883bc9e88aa17c4aabac79a8f45135d5b34413525550de557",
+    "x86/bilinear.asm": "d9dafda41da4b32d7ac68d7810b61db7acd4cdd6d04d301903b569984c505ebe",
+    "x86/pixel-32.asm": "43757fa498e2de72943b19bad3f5f0da0d4f5d985f3f782f23dc9b6a0679a491"
+  },
+  "ports": [
+    "common.h: explicitly include cstdint without host PCH",
+    "mvframe.cpp: use host-free pyramid layout helpers extracted from mvsuper.cpp",
+    "common.h: use upstream x264_cpu_emms assembly for modern MSVC MMX cleanup"
+  ]
+}

@@ -23,7 +23,7 @@ using FnStreamCreate=Error(*)(Stream*,unsigned);
 using FnStreamOp=Error(*)(Stream);
 int wmain(int argc,wchar_t** argv) {
     const bool guarded=!(argc>2 && std::wstring(argv[2])==L"--unguarded");
-    if(argc<2){std::cerr<<"Usage: RifeInteropConcurrencyTest.exe <cudart64_12.dll> [--unguarded]"<<std::endl;return 2;}
+    if(argc<2){std::cerr<<"Usage: RifeInteropConcurrencyTest.exe <cudart64_13.dll> [--unguarded]"<<std::endl;return 2;}
     const auto dll=std::filesystem::absolute(argv[1]);
     auto module=LoadLibraryW(dll.c_str()); if(!module)return 2;
     auto getDevices=reinterpret_cast<FnGetDevices>(GetProcAddress(module,"cudaD3D11GetDevices"));
