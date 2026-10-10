@@ -7,6 +7,8 @@
     <SvpAssemblerFormat Condition="'$(Platform)'=='Win32'">win32</SvpAssemblerFormat>
     <SvpArch64 Condition="'$(Platform)'=='x64'">1</SvpArch64>
     <SvpArch64 Condition="'$(Platform)'=='Win32'">0</SvpArch64>
+    <!-- MSVC x86 C symbols have a leading underscore; x64 symbols do not. -->
+    <SvpSymbolPrefix Condition="'$(Platform)'=='Win32'">-DPREFIX</SvpSymbolPrefix>
   </PropertyGroup>
   <ItemGroup>
     <ClCompile Include="$(SvpCoreDir)mvframe.cpp;$(SvpCoreDir)mvframe_interpolation.cpp;$(SvpCoreDir)planeofblocks.cpp;$(SvpCoreDir)search.cpp;$(SvpCoreDir)groupofplanes.cpp;$(SvpCoreDir)blockmath.cpp;$(SvpCoreDir)x264_pixel.cpp;$(SvpCoreDir)x264_cpu.cpp">
@@ -17,7 +19,7 @@
     <ClInclude Include="$(SvpCoreDir)*.h" />
     <CustomBuild Include="$(SvpCoreDir)x86\const-a.asm;$(SvpCoreDir)x86\cpu-a.asm;$(SvpCoreDir)x86\pixel-a.asm;$(SvpCoreDir)x86\sad-a.asm">
       <Command>if not exist "$(IntDir)SVPflow1" mkdir "$(IntDir)SVPflow1"
-"$(NasmPath)" -f $(SvpAssemblerFormat) -w-macro-params-legacy -DARCH_X86_64=$(SvpArch64) -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 -I"$(SvpCoreDir)/" -o "$(IntDir)SVPflow1\%(Filename).obj" "%(FullPath)"</Command>
+"$(NasmPath)" -f $(SvpAssemblerFormat) -w-macro-params-legacy $(SvpSymbolPrefix) -DARCH_X86_64=$(SvpArch64) -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 -I"$(SvpCoreDir)/" -o "$(IntDir)SVPflow1\%(Filename).obj" "%(FullPath)"</Command>
       <Outputs>$(IntDir)SVPflow1\%(Filename).obj</Outputs>
       <AdditionalInputs>$(SvpCoreDir)x86\x86inc.asm;$(SvpCoreDir)x86\x86util.asm;%(AdditionalInputs)</AdditionalInputs>
       <Message>Assembling SVPflow1 %(Filename) ($(Platform))</Message>
@@ -25,7 +27,7 @@
     </CustomBuild>
     <CustomBuild Include="$(SvpCoreDir)x86\bilinear.asm;$(SvpCoreDir)x86\pixel-32.asm" Condition="'$(Platform)'=='Win32'">
       <Command>if not exist "$(IntDir)SVPflow1" mkdir "$(IntDir)SVPflow1"
-"$(NasmPath)" -f win32 -w-macro-params-legacy -DARCH_X86_64=0 -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 -I"$(SvpCoreDir)/" -o "$(IntDir)SVPflow1\%(Filename).obj" "%(FullPath)"</Command>
+"$(NasmPath)" -f win32 -w-macro-params-legacy $(SvpSymbolPrefix) -DARCH_X86_64=0 -DHIGH_BIT_DEPTH=0 -DBIT_DEPTH=8 -I"$(SvpCoreDir)/" -o "$(IntDir)SVPflow1\%(Filename).obj" "%(FullPath)"</Command>
       <Outputs>$(IntDir)SVPflow1\%(Filename).obj</Outputs>
       <AdditionalInputs>$(SvpCoreDir)x86\x86inc.asm;$(SvpCoreDir)x86\x86util.asm;%(AdditionalInputs)</AdditionalInputs>
       <LinkObjects>true</LinkObjects>
