@@ -23,6 +23,7 @@
 #include "mvframe.h"
 #include "mvframe_interpolation.h"
 #include "pyramidlayout.h"
+#include <stdexcept>
 
 
 /******************************************************************************
@@ -40,7 +41,9 @@ MVPlane::MVPlane(int nWidth, int nHeight, int nPel, bool hardCopy)
     this->nPel = nPel;
     this->hardCopy=hardCopy;
 
-    pPlane.resize(nPel*nPel);
+    // Multiply as size_t, not as signed int before vector::resize.
+    if (nPel <= 0) throw std::invalid_argument("invalid subpixel grid size");
+    pPlane.resize(static_cast<size_t>(nPel) * static_cast<size_t>(nPel));
 }
 
 MVPlane::~MVPlane()

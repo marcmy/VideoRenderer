@@ -12,14 +12,14 @@ unsigned checks = 0;
 void Check(bool value, const char* text) { ++checks; if (!value) { fprintf(stderr, "FAIL %s\n", text); exit(1); } }
 uint32_t Hash(uint32_t v) { v ^= v >> 16; v *= 0x7feb352d; v ^= v >> 15; v *= 0x846ca68b; return v ^ (v >> 16); }
 Image Picture(unsigned w, unsigned h, int ox = 0, int oy = 0, int seed = 0, double zoom = 1) {
-    Image out(w*h*4);
+    Image out(static_cast<size_t>(w) * h * 4);
     for (unsigned y = 0; y < h; ++y) for (unsigned x = 0; x < w; ++x) {
         const int xx = int((x - w * .5) / zoom + w * .5) + ox;
         const int yy = int((y - h * .5) / zoom + h * .5) + oy;
         const auto coarse = Hash((xx/7 + 3000) * 1117 + (yy/7 + 3000) * 7879 + seed*65537) % 75;
         const int value = std::clamp(int(100 + 50*sin(xx*.073 + seed) + 35*cos(yy*.091 - seed) + coarse), 0, 255);
-        for (unsigned c = 0; c < 3; ++c) out[(y*w+x)*4+c] = value;
-        out[(y*w+x)*4+3] = 255;
+        for (unsigned c = 0; c < 3; ++c) out[(static_cast<size_t>(y) * w + x) * 4 + c] = value;
+        out[(static_cast<size_t>(y) * w + x) * 4 + 3] = 255;
     }
     return out;
 }
@@ -54,12 +54,12 @@ void RunShape(unsigned w, unsigned h) {
     for(size_t i=0;i<noise.size();i+=4) for(unsigned c=0;c<3;++c) noise[i+c]=std::clamp(int(noise[i+c])+int(Hash(i)%13)-6,0,255);
     test("compression noise",noise,false);
     auto occlusion = a;
-    for(unsigned y=0;y<h;++y) for(unsigned x=0;x<w/10;++x) for(unsigned c=0;c<3;++c) occlusion[(y*w+x)*4+c]=0;
+    for(unsigned y=0;y<h;++y) for(unsigned x=0;x<w/10;++x) for(unsigned c=0;c<3;++c) occlusion[(static_cast<size_t>(y) * w + x) * 4 + c]=0;
     test("10pct occlusion",occlusion,false);
     auto partialCut = a;
-    for(unsigned y=0;y<h;++y) for(unsigned x=0;x<w/2;++x) for(unsigned c=0;c<3;++c) partialCut[(y*w+x)*4+c]=0;
+    for(unsigned y=0;y<h;++y) for(unsigned x=0;x<w/2;++x) for(unsigned c=0;c<3;++c) partialCut[(static_cast<size_t>(y) * w + x) * 4 + c]=0;
     test("50pct changed area",partialCut,true);
-    Image black(w*h*4,0),white(w*h*4,255);
+    Image black(static_cast<size_t>(w) * h * 4,0),white(static_cast<size_t>(w) * h * 4,255);
     Check(detector.Analyze(black.data(),w*4,white.data(),w*4,w,h,result) && result.cut,"hard cut black white");
     // Round-trip shape changes and old pair revisits must not retain decisions.
     test("revisit old pair",a,false);
@@ -84,8 +84,8 @@ int main() {
     Check(!detector.Analyze(dummy.data(),8192,dummy.data(),8192,2048,2048,result),"work bound");
     // Exercise allocator/layout boundary dimensions and pitch independent of width.
     for(unsigned w : {32u,34u,46u,63u,64u,78u,129u,257u}) for(unsigned h : {32u,35u,62u,127u}) {
-        auto a=Picture(w,h); Image padded((w*4+20)*h,0);
-        for(unsigned y=0;y<h;++y) std::copy_n(a.data()+y*w*4,w*4,padded.data()+y*(w*4+20));
+        auto a=Picture(w,h); Image padded((static_cast<size_t>(w) * 4 + 20) * h,0);
+        for(unsigned y=0;y<h;++y) std::copy_n(a.data()+static_cast<size_t>(y)*w*4,w*4,padded.data()+static_cast<size_t>(y)*(static_cast<size_t>(w)*4+20));
         Check(detector.Analyze(a.data(),w*4,padded.data(),w*4+20,w,h,result) && !result.cut,"shape/pitch transition");
     }
     auto a=Picture(320,180),b=Picture(320,180,8);
