@@ -34,4 +34,20 @@
 #define VERSION_NUM    VER_MAJOR,VER_MINOR,VER_BUILD,REV_NUM
 #define VERSION_STR    MAKE_STR(VER_MAJOR) "." MAKE_STR(VER_MINOR) "." MAKE_STR(VER_BUILD) "." MAKE_STR(REV_NUM)
 
+// Numeric FileVersion remains compatible with installed updater shortcuts.
+// Local/test ProductVersion and visible labels identify the exact source state.
+#ifndef REV_PRODUCT_VERSION
+#define REV_PRODUCT_VERSION VERSION_STR
+#endif
+#ifndef REV_SOURCE_ID
+#define REV_SOURCE_ID "unknown"
+#endif
+#ifndef REV_COMMIT
+#define REV_COMMIT "unknown"
+#endif
+#ifndef REV_IS_LOCAL
+#define REV_IS_LOCAL 0
+#endif
+#define VERSION_DISPLAY REV_PRODUCT_VERSION
+
 #define BRANCH_STR     MAKE_STR(REV_BRANCH)

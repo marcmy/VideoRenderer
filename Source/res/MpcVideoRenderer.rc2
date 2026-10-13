@@ -116,6 +116,8 @@ VS_VERSION_INFO VERSIONINFO
  FILEFLAGSMASK 0x17L
 #ifdef _DEBUG
  FILEFLAGS 0x1L
+#elif REV_IS_LOCAL
+ FILEFLAGS 0x8L
 #else
  FILEFLAGS 0x0L
 #endif
@@ -139,7 +141,9 @@ BEGIN
             VALUE "OriginalFilename", "MpcVideoRenderer.ax"
 #endif
             VALUE "ProductName", "MPC Video Renderer"
-            VALUE "ProductVersion", VERSION_STR
+            VALUE "ProductVersion", VERSION_DISPLAY
+            VALUE "PrivateBuild", REV_SOURCE_ID
+            VALUE "SourceCommit", REV_COMMIT
         END
     END
     BLOCK "VarFileInfo"
