@@ -163,14 +163,10 @@ def publish(directory):
                'Immutable runtime/model packages: https://github.com/marcmy/VideoRenderer-Dependencies/releases. Exact tags, sizes, hashes, licenses and compatibility are embedded in dependencies.lock.json. No moving dependency URLs.\n\n'
                '**Upgrade note:** updater shortcuts installed before this release recognize only the old ZIP names. Run this setup once to update those scripts. Old offline setups remain tied to their historical runtime URLs.\n\n'
                'Verify downloads with SHA256SUMS.txt. NVIDIA runtime components retain their separate license terms. Historical releases have not been deleted; cleanup awaits approval.\n')
-        notes_path=Path(directory)/'release-notes.md'; notes_path.write_text(notes)
-        subprocess.run(['gh','release','create',tag,'--repo',REPO,'--target',version['commit'],'--title',version['releaseName'],'--notes-file',str(notes_path),'--draft','--latest=false'],check=True)
-        release=dependencies.find_release(REPO,tag)
+        release=dependencies.create_draft(REPO,tag,version['commit'],version['releaseName'],notes)
     dependencies.upload_missing(REPO, release, {name:Path(directory)/name for name in ASSETS})
     # Verify server digests before publishing, and confirm source is still current.
-    release=dependencies.find_release(REPO,tag)
-    for a in release['assets']:
-        if a['digest']!='sha256:'+dependencies.digest(Path(directory)/a['name']): raise ValueError('Uploaded checksum differs')
+    release=dependencies.verify_uploaded(REPO,release['id'],{name:Path(directory)/name for name in ASSETS})
     if json.loads(gh('api',f'repos/{REPO}/commits/master'))['sha']!=version['commit']:
         print('Source advanced during upload; verified draft retained, not promoted.'); return
     subprocess.run(['gh','api','--method','PATCH',f'repos/{REPO}/releases/{release["id"]}','-F','draft=false','-f','make_latest=false'],check=True,stdout=subprocess.DEVNULL)

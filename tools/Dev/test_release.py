@@ -11,6 +11,23 @@ import release
 
 
 class PublicationTests(unittest.TestCase):
+    def test_creation_uses_api_response_even_when_list_is_not_updated(self):
+        draft={'id':123,'draft':True,'assets':[]}
+        with patch.object(dependencies.subprocess,'check_output',return_value=json.dumps(draft).encode()) as call:
+            result=dependencies.create_draft('owner/repo','version','a'*40,'Title','Notes')
+        self.assertEqual(result['id'],123)
+        self.assertEqual(json.loads(call.call_args.kwargs['input'])['target_commitish'],'a'*40)
+        self.assertIn('POST',call.call_args.args[0])
+
+    def test_verification_waits_for_server_digest_without_replacing_assets(self):
+        with tempfile.TemporaryDirectory(prefix='mpcvr-release-test-') as directory:
+            path=Path(directory)/'a.zip'; path.write_bytes(b'verified')
+            ready={'id':1,'assets':[{'name':'a.zip','digest':'sha256:'+dependencies.digest(path)}]}
+            pending={'id':1,'assets':[{'name':'a.zip','digest':None}]}
+            with patch.object(dependencies.subprocess,'check_output',side_effect=[json.dumps(pending).encode(),json.dumps(ready).encode()]), \
+                 patch.object(dependencies.time,'sleep'):
+                self.assertEqual(dependencies.verify_uploaded('owner/repo',1,{'a.zip':path}),ready)
+
     def test_partial_draft_resumes_by_id_without_replacing_verified_asset(self):
         with tempfile.TemporaryDirectory(prefix='mpcvr-release-test-') as directory:
             files={name:Path(directory)/name for name in ['existing.zip','missing.zip']}

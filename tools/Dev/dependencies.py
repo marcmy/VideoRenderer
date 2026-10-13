@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import subprocess
+import time
 import urllib.parse
 import urllib.request
 import zipfile
@@ -113,6 +114,26 @@ def find_release(repo, tag):
 def write_json(path, value):
     Path(path).parent.mkdir(parents=True,exist_ok=True)
     Path(path).write_bytes((json.dumps(value,indent=2)+'\n').encode('utf-8'))
+
+
+def create_draft(repo, tag, target, title, notes):
+    # Use the authoritative POST response, not an immediately repeated list query.
+    payload={'tag_name':tag,'target_commitish':target,'name':title,'body':notes,
+             'draft':True,'make_latest':'false'}
+    return json.loads(subprocess.check_output(['gh','api','--method','POST',f'repos/{repo}/releases',
+                                               '--input','-'],input=json.dumps(payload).encode()))
+
+
+def verify_uploaded(repo, release_id, files):
+    expected={name:'sha256:'+digest(path) for name,path in files.items()}
+    for attempt in range(5):
+        result=json.loads(subprocess.check_output(['gh','api',f'repos/{repo}/releases/{release_id}']))
+        actual={a['name']:a.get('digest') for a in result['assets']}
+        if actual==expected: return result
+        if set(actual)-set(expected) or any(sha and sha!=expected[name] for name,sha in actual.items()):
+            raise ValueError('Uploaded release contains conflicting assets')
+        if attempt<4: time.sleep(2)
+    raise ValueError('Uploaded assets are incomplete or their server hashes are not ready; preserve draft and retry')
 
 
 def upload_missing(repo, release, files):
@@ -235,17 +256,12 @@ def publish_seed(directory, component=None):
                 files[name]=directory/name
         release=find_release(REPO,tag)
         if not release:
-            subprocess.run(['gh','release','create',tag,'--repo',REPO,'--target','main',
-                '--title','Immutable '+component+' dependencies '+manifest['sourceFingerprint'][:16],
-                '--notes',f'Immutable application dependencies for MPC Video Renderer. Source: {SOURCE_REPO}@{manifest["sourceCommit"]}. See {component}.json for original provenance, exact sizes, SHA-256 hashes and compatibility. NVIDIA components retain their own license terms and are not licensed under the renderer license. Never replace these assets.','--draft','--latest=false'],check=True)
-            release=find_release(REPO,tag)
+            release=create_draft(REPO,tag,'main','Immutable '+component+' dependencies '+manifest['sourceFingerprint'][:16],
+                f'Immutable application dependencies for MPC Video Renderer. Source: {SOURCE_REPO}@{manifest["sourceCommit"]}. See {component}.json for original provenance, exact sizes, SHA-256 hashes and compatibility. NVIDIA components retain their own license terms and are not licensed under the renderer license. Never replace these assets.')
         upload_missing(REPO,release,files)
-        release=find_release(REPO,tag)
-        actual={a['name']:a.get('digest','').removeprefix('sha256:') for a in release['assets']}
-        if actual!={name:digest(path) for name,path in files.items()}: raise ValueError('Uploaded dependency hashes differ')
+        release=verify_uploaded(REPO,release['id'],files)
         if release['draft']:
-            subprocess.run(['gh','api','--method','PATCH',f'repos/{REPO}/releases/{release["id"]}','-F','draft=false','-f','make_latest=false'],check=True,stdout=subprocess.DEVNULL)
-            release=find_release(REPO,tag)
+            release=json.loads(subprocess.check_output(['gh','api','--method','PATCH',f'repos/{REPO}/releases/{release["id"]}','-F','draft=false','-f','make_latest=false']))
         if not release.get('immutable'): raise ValueError('Enable native immutable releases before dependency publishing')
         print('Verified immutable component: '+tag)
 
