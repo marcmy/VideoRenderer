@@ -16,7 +16,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: dependency-publishing
+  group: dependency-publishing-${{ inputs.component }}
   cancel-in-progress: false
 jobs:
   plan:
