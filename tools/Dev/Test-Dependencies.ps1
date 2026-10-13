@@ -100,8 +100,43 @@ exit $LASTEXITCODE
     Check ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $marker)) "Updater did not delegate a verified, pinned setup (host $hostExecutable, exit $LASTEXITCODE)"
     Remove-Item -LiteralPath $marker -Force
     ('0'*64+'  MPCVR-Setup.zip') | Set-Content -LiteralPath (Join-Path $fixture 'SHA256SUMS.txt') -Encoding ASCII
-    & $hostExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $routingFixture -Root $fixture -Updater $updater
-    Check ($LASTEXITCODE -ne 0 -and -not (Test-Path -LiteralPath $marker)) 'Updater executed a setup with a bad checksum'
+    $previousNativePreference=$ErrorActionPreference
+    try {
+        $ErrorActionPreference='Continue'
+        $rejectionOutput=@(& $hostExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $routingFixture -Root $fixture -Updater $updater 2>&1)
+        $rejectionExit=$LASTEXITCODE
+    } finally { $ErrorActionPreference=$previousNativePreference }
+    $rejectionText=($rejectionOutput | ForEach-Object { $_.ToString() }) -join "`n"
+    if ($rejectionExit -eq 0 -or (Test-Path -LiteralPath $marker) -or $rejectionText -notlike '*SHA-256 verification failed*') {
+        $rejectionOutput | ForEach-Object { Write-Host $_ }
+        throw 'Updater did not reject a setup with a bad checksum before execution'
+    }
+    'PASS: updater rejected the intentionally invalid SHA-256; no setup executed.'
+    # Exercise PATH repair without invoking the build, GPU, or developer shell.
+    $devSource=Join-Path $PSScriptRoot '..\..\dev.ps1'
+    $devAst=[Management.Automation.Language.Parser]::ParseFile($devSource,[ref]$tokens,[ref]$errors)
+    $pathFunction=$devAst.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Set-BuildSearchPath'},$true)
+    Check ([bool]$pathFunction) 'Build PATH repair helper is missing'
+    . ([scriptblock]::Create($pathFunction.Extent.Text))
+    $savedPath=$env:PATH
+    try {
+        $assemblerDirectory=Join-Path $fixture 'assembler'; New-Item -ItemType Directory $assemblerDirectory | Out-Null
+        $assembler=Join-Path $assemblerDirectory 'nasm.exe'; [IO.File]::WriteAllText($assembler,'fixture')
+        $env:PATH='C:\fixture-user-tools'
+        Set-BuildSearchPath $assembler
+        $systemDirectory=Join-Path $env:SystemRoot 'System32'
+        Check ((Get-Command where.exe -ErrorAction Stop).Source -ieq (Join-Path $systemDirectory 'where.exe')) 'Build PATH did not restore where.exe'
+        Check ((Get-Command findstr.exe -ErrorAction Stop).Source -ieq (Join-Path $systemDirectory 'findstr.exe')) 'Build PATH did not restore findstr.exe'
+        Check ((Get-Command nasm.exe -ErrorAction Stop).Source -ieq $assembler) 'Build PATH did not restore pinned NASM'
+        Check ($env:PATH -like '*C:\fixture-user-tools*') 'Build PATH discarded caller tools'
+        $repaired=$env:PATH
+        Set-BuildSearchPath $assembler
+        Check ($env:PATH -eq $repaired) 'Repeated build PATH preparation accumulated duplicate entries'
+        $env:PATH='C:\fixture-developer-tools'
+        Set-BuildSearchPath $assembler
+        Check ((Get-Command nasm.exe -ErrorAction Stop).Source -ieq $assembler -and $env:PATH -like '*C:\fixture-developer-tools*') 'Build PATH repair failed after developer-shell replacement'
+    } finally { $env:PATH=$savedPath }
+    'PASS: build PATH restores Windows utilities and pinned NASM before/after developer-shell replacement.'
     'Dependency contract passed: four architecture selections, exact URLs, offline cache reuse and failure isolation.'
 } finally {
     $resolved=[IO.Path]::GetFullPath($fixture)

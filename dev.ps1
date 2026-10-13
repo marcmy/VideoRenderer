@@ -29,6 +29,17 @@ function Fetch-State {
     Run-Git @('fetch','origin')
     Run-Git @('fetch','upstream','--no-tags','master')
 }
+function Set-BuildSearchPath([string]$NasmExecutable) {
+    # Developer shells can replace PATH from an older __VSCMD_PREINIT_PATH.
+    # Keep Windows batch utilities and the pinned assembler available locally.
+    $systemDirectory=Join-Path $env:SystemRoot 'System32'
+    $required=@((Split-Path -Parent $NasmExecutable),$systemDirectory,$env:SystemRoot,(Join-Path $systemDirectory 'WindowsPowerShell\v1.0'))
+    $seen=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $entries=@(foreach ($entry in ($required+@($env:PATH -split ';'))) {
+        if (-not [string]::IsNullOrWhiteSpace($entry) -and $seen.Add($entry)) { $entry }
+    })
+    $env:PATH=$entries -join ';'
+}
 function Prepare-Tools {
     $directory=Join-Path $repoRoot '_tools\nasm'
     $executable=Join-Path $directory 'nasm-3.01\nasm.exe'
@@ -39,21 +50,27 @@ function Prepare-Tools {
         if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ine 'e0ba5157007abc7b1a65118a96657a961ddf55f7e3f632ee035366dfce039ca4') { throw 'NASM checksum mismatch' }
         Expand-Archive -LiteralPath $archive -DestinationPath $directory -Force
     }
-    $env:PATH=(Split-Path $executable)+';'+$env:PATH
+    Set-BuildSearchPath $executable
 }
 function Build-Renderer {
     Prepare-Tools
+    $nasmExecutable=Join-Path $repoRoot '_tools\nasm\nasm-3.01\nasm.exe'
     $vswhere=Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     $vs=(& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
     if (-not $vs) { throw 'Visual Studio C++ tools were not found.' }
     Import-Module (Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
-    Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+    $previousPreinitPath=$env:__VSCMD_PREINIT_PATH
+    try {
+        $env:__VSCMD_PREINIT_PATH=$env:PATH
+        Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+    } finally { $env:__VSCMD_PREINIT_PATH=$previousPreinitPath }
+    Set-BuildSearchPath $nasmExecutable
     Set-Location -LiteralPath $repoRoot
     & (Join-Path $repoRoot 'tools\Dev\Version.ps1') -Flavor $Flavor -Generate | Out-Null
     $architectures=if ($Architecture -eq 'both') {@('x86','x64')} else {@($Architecture)}
     foreach ($arch in $architectures) {
         $platform=$arch
-        & msbuild MpcVideoRenderer.sln /nologo /m /nr:false /p:Configuration=Release "/p:Platform=$platform" /v:minimal
+        & msbuild MpcVideoRenderer.sln /nologo /m /nr:false /p:Configuration=Release "/p:Platform=$platform" "/p:NasmPath=$nasmExecutable" /v:minimal
         if ($LASTEXITCODE -ne 0) { throw "$arch renderer build failed." }
     }
     $metadata=Get-Content '_bin\source-version.json' -Raw | ConvertFrom-Json
