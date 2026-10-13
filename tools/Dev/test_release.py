@@ -1,0 +1,99 @@
+"""Offline publication safety and package contracts; no GitHub writes or GPU work."""
+import json
+import shutil
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+from unittest.mock import patch
+import dependencies
+import release
+
+
+class PublicationTests(unittest.TestCase):
+    def test_partial_draft_resumes_by_id_without_replacing_verified_asset(self):
+        with tempfile.TemporaryDirectory(prefix='mpcvr-release-test-') as directory:
+            files={name:Path(directory)/name for name in ['existing.zip','missing.zip']}
+            for name,path in files.items(): path.write_bytes(name.encode())
+            draft={'id':123,'draft':True,'assets':[{'name':'existing.zip','size':files['existing.zip'].stat().st_size,
+                    'digest':'sha256:'+dependencies.digest(files['existing.zip'])}]}
+            with patch.object(dependencies.subprocess,'run') as call:
+                dependencies.upload_missing('owner/repo',draft,files)
+            self.assertEqual(call.call_count,1)
+            self.assertIn('/releases/123/assets?name=missing.zip',call.call_args.args[0][4])
+            self.assertIn('--input',call.call_args.args[0])
+
+    def test_conflicting_or_published_incomplete_assets_fail_before_upload(self):
+        with tempfile.TemporaryDirectory(prefix='mpcvr-release-test-') as directory:
+            path=Path(directory)/'a.zip'; path.write_bytes(b'verified')
+            for draft in [
+                {'id':1,'draft':True,'assets':[{'name':'a.zip','size':8,'digest':'sha256:'+'0'*64}]},
+                {'id':1,'draft':True,'assets':[{'name':'unknown.zip','size':8,'digest':'sha256:'+'0'*64}]},
+                {'id':1,'draft':False,'assets':[]}]:
+                with patch.object(dependencies.subprocess,'run') as call, self.assertRaises(ValueError):
+                    dependencies.upload_missing('owner/repo',draft,{'a.zip':path})
+                call.assert_not_called()
+
+    def test_draft_lookup_survives_tag_endpoint_omission(self):
+        pages=[[{'id':3,'tag_name':'version','draft':True},{'id':2,'tag_name':'version','draft':True}]]
+        with patch.object(dependencies.subprocess,'check_output',return_value=json.dumps(pages).encode()):
+            self.assertEqual(dependencies.find_release('owner/repo','version')['id'],2)
+        pages[0].append({'id':4,'tag_name':'version','draft':False})
+        with patch.object(dependencies.subprocess,'check_output',return_value=json.dumps(pages).encode()):
+            self.assertEqual(dependencies.find_release('owner/repo','version')['id'],4)
+
+    def test_outdated_source_never_creates_release(self):
+        with patch.object(release,'verify_package',return_value={'commit':'old'}), \
+             patch.object(release,'gh',return_value='{"sha":"new"}'), \
+             patch.object(dependencies,'find_release') as find:
+            release.publish('unused')
+        find.assert_not_called()
+
+
+class PackageTests(unittest.TestCase):
+    def test_single_architecture_and_full_setup_integrity(self):
+        with tempfile.TemporaryDirectory(prefix='mpcvr-release-test-') as directory:
+            root=Path(directory)/'source'; root.mkdir()
+            for name in ['distrib','tools/MaxineSetup','tools/MaxineRuntimeInstaller','tools/RifeRuntimeInstaller','tools/KLiteMaxineUpdater']:
+                shutil.copytree(release.ROOT/name,root/name,ignore=shutil.ignore_patterns('__pycache__','*.exe','*.zip'))
+            for name in ['Readme.md','history.txt','LICENSE.txt','dependencies.lock.json']:
+                shutil.copyfile(release.ROOT/name,root/name)
+            for arch,name in [('x86','MpcVideoRenderer.ax'),('x64','MpcVideoRenderer64.ax')]:
+                target=root/f'_bin/Filter_{arch}'; target.mkdir(parents=True)
+                (target/name).write_bytes(('fixture '+arch).encode())
+            version={'commit':'a'*40,'sourceDigest':'b'*64,'flavor':'local','dirty':False}
+            version_path=root/'version.json'; version_path.write_text(json.dumps(version))
+            with patch.object(release,'ROOT',root), \
+                 patch.object(dependencies,'git',return_value=('a'*40).encode()), \
+                 patch.object(dependencies,'check_lock'):
+                # Source-version query is isolated; fixture binaries never execute.
+                with patch.object(release.subprocess,'check_output',return_value=json.dumps(version).encode()):
+                    release.package(version_path,'x64',Path(directory)/'x64')
+                    release.package(version_path,'both',Path(directory)/'both')
+            single=Path(directory)/'x64'
+            self.assertFalse((single/'MPCVR-Setup.zip').exists())
+            with zipfile.ZipFile(single/'MPCVR-Portable.zip') as archive:
+                self.assertIn('Install_MPCVR_64.cmd',archive.namelist())
+                self.assertNotIn('Install_MPCVR_32.cmd',archive.namelist())
+            full=Path(directory)/'both'
+            self.assertEqual(set(p.name for p in full.iterdir()),set(release.ASSETS))
+            release.verify_package(full,'a'*40)
+            with self.assertRaises(ValueError): release.verify_package(single,release=True)
+            # An altered embedded setup payload must fail even if its outer ZIP is rehashed.
+            with zipfile.ZipFile(full/'MPCVR-Setup.zip') as archive:
+                entries={name:archive.read(name) for name in archive.namelist()}
+            entries['payload/DependencyDownloads.psm1']+=b'changed'
+            (full/'MPCVR-Setup.zip').write_bytes(release.archive_bytes(entries))
+            (full/'SHA256SUMS.txt').write_text(''.join(dependencies.digest(full/n)+'  '+n+'\n' for n in release.ASSETS[:2]))
+            with self.assertRaisesRegex(ValueError,'payload checksum'): release.verify_package(full)
+
+    def test_existing_artifact_is_never_overwritten(self):
+        with tempfile.TemporaryDirectory(prefix='mpcvr-release-test-') as directory:
+            target=Path(directory)/'artifact.zip'
+            release.write_immutable(target,b'first')
+            release.write_immutable(target,b'first')
+            with self.assertRaises(FileExistsError): release.write_immutable(target,b'second')
+            self.assertEqual(target.read_bytes(),b'first')
+
+
+if __name__=='__main__': unittest.main()

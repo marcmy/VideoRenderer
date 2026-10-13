@@ -1,14 +1,7 @@
 name: Test K-Lite updater
 
+# Historical diagnostics; normal CI uses the comprehensive reusable validation.
 on:
-  push:
-    paths:
-      - tools/KLiteMaxineUpdater/**
-      - .github/workflows/test-klite-updater.yml
-  pull_request:
-    paths:
-      - tools/KLiteMaxineUpdater/**
-      - .github/workflows/test-klite-updater.yml
   workflow_dispatch:
 
 permissions:

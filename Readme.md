@@ -8,11 +8,11 @@ This fork adds a dedicated **NVIDIA Maxine** control panel, a tested five-DLL Ma
 
 Go to the [latest release](https://github.com/marcmy/VideoRenderer/releases/latest) and download:
 
-- **`MPCVR-Maxine-RIFE-Setup.zip`** for the normal one-click K-Lite installation
-- **`MpcVideoRenderer-Maxine.zip`** only for manual or portable installation
+- **`MPCVR-Setup.zip`** for the normal one-click K-Lite installation
+- **`MPCVR-Portable.zip`** only for manual or portable installation
 - **`SHA256SUMS.txt`** to verify the two public ZIP files
 
-For most people, `MPCVR-Maxine-RIFE-Setup.zip` is the only ZIP they need.
+For most people, `MPCVR-Setup.zip` is the only ZIP they need.
 
 ## Requirements
 
@@ -33,7 +33,7 @@ Maxine processing is implemented in the 64-bit renderer. The setup still updates
 ## One-click setup with K-Lite
 
 1. Install [K-Lite Codec Pack](https://codecguide.com/download_kl.htm) with **MPC-HC** and **MPC Video Renderer** selected.
-2. Download **`MPCVR-Maxine-RIFE-Setup.zip`** from the [latest release](https://github.com/marcmy/VideoRenderer/releases/latest).
+2. Download **`MPCVR-Setup.zip`** from the [latest release](https://github.com/marcmy/VideoRenderer/releases/latest).
 3. Extract the ZIP completely. Do not run the installer from inside the compressed archive.
 4. Close every open MPC-HC window.
 5. Run **`Install-MPCVR-Maxine.cmd`**.
@@ -294,9 +294,9 @@ The shortcut downloads the latest custom renderer, verifies its SHA-256 hash, an
 
 ## Manual or portable installation
 
-`MpcVideoRenderer-Maxine.zip` contains the renderer files only. It is intended for advanced users who already know where their player loads MPC Video Renderer from.
+`MPCVR-Portable.zip` contains the renderer files only. It is intended for advanced users who already know where their player loads MPC Video Renderer from.
 
-The manual ZIP does not perform the complete K-Lite setup and does not install the Maxine runtime or environment variable. Normal K-Lite users should use `MPCVR-Maxine-RIFE-Setup.zip` instead.
+The manual ZIP does not perform the complete K-Lite setup and does not install the Maxine runtime or environment variable. Normal K-Lite users should use `MPCVR-Setup.zip` instead.
 
 ## Key renderer features
 
@@ -322,7 +322,7 @@ Confirm that MPC-HC is actually loading this fork's renderer. Open **View > Rend
 
 ### Maxine runtime could not be loaded
 
-Run `MPCVR-Maxine-RIFE-Setup.zip` again, close and reopen MPC-HC, and verify that Ctrl+J reports a runtime path under:
+Run `MPCVR-Setup.zip` again, close and reopen MPC-HC, and verify that Ctrl+J reports a runtime path under:
 
 `%LOCALAPPDATA%\MPCVR Maxine Runtime\nvvfx\libs`
 
@@ -348,15 +348,17 @@ Reduce Denoise or Deblur strength first. High and Ultra cleanup levels can remov
 
 ## Building from source
 
-The repository includes `build_mpcvr.cmd` and GitHub Actions workflows for x86/x64 builds and release packaging. A normal local build requires the Visual Studio toolchain and the repository submodules.
+Use `./dev.ps1 build` for a quick local x64 build and `./dev.ps1 build -Architecture both` for x86/x64 validation. `build_mpcvr.cmd` remains available for upstream compatibility. Builds require Visual Studio C++ tools and the pinned repository submodules; the helper caches checksum-verified NASM.
 
 Release automation produces an immutable Maxine release containing:
 
-- `MPCVR-Maxine-RIFE-Setup.zip`
-- `MpcVideoRenderer-Maxine.zip`
+- `MPCVR-Setup.zip`
+- `MPCVR-Portable.zip`
 - `SHA256SUMS.txt`
 
-A small legacy renderer checksum may remain temporarily so updater shortcuts installed by older releases continue to function.
+The installer embeds exact immutable dependency pins from [VideoRenderer-Dependencies](https://github.com/marcmy/VideoRenderer-Dependencies/releases). Normal releases do not rebuild or republish those large components. Run the new setup once to migrate updater shortcuts installed by older releases.
+
+Public versions identify both merged upstream and fork revisions, for example `0.10.9.2605 + Maxine/RIFE r2850`. Numeric Windows FileVersion remains `0.10.9.2850` for updater compatibility. Local/test builds also identify their exact source tree. See [the development workflow](docs/development/workflow.md) for sync, build, test, bundle, publication and verification commands.
 
 ## Upstream project
 

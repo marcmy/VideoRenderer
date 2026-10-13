@@ -28,7 +28,7 @@
 
 std::wstring GetVersionStr()
 {
-	std::wstring version = _CRT_WIDE(VERSION_STR);
+	std::wstring version = _CRT_WIDE(VERSION_DISPLAY);
 #if VER_RELEASE != 1
 	if (strcmp(BRANCH_STR, "master") != 0) {
 		version += std::format(L".{}", _CRT_WIDE(BRANCH_STR));

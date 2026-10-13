@@ -46,6 +46,10 @@ $requiredPayloadNames = @(
     'RIFE-runtime-release.json',
     'PAYLOAD-SHA256SUMS.txt'
 )
+$thinSetup = Test-Path -LiteralPath (Join-Path $payloadRoot 'dependencies.lock.json') -PathType Leaf
+if ($thinSetup) {
+    $requiredPayloadNames = @($requiredPayloadNames | Where-Object { $_ -notin @('MPCVR-Maxine-Runtime.zip','MPCVR-RIFE-Common.zip','MPCVR-RIFE-Models.zip','RIFE-runtime-manifest.json','RIFE-runtime-SHA256SUMS.txt','RIFE-runtime-release.json') }) + @('dependencies.lock.json','DependencyDownloads.psm1')
+}
 
 function Complete-Run {
     param([int]$ExitCode)
@@ -191,15 +195,18 @@ catch {
 '@
     $previousScript = $env:MPCVR_SETUP_STEP_SCRIPT
     $previousParameters = $env:MPCVR_SETUP_STEP_PARAMS_B64
+    $previousModulePath = $env:PSModulePath
     try {
         $env:MPCVR_SETUP_STEP_SCRIPT = $ScriptPath
         $env:MPCVR_SETUP_STEP_PARAMS_B64 = $parameterBase64
+        $env:PSModulePath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules'
         & $powerShellExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -Command $launcher
         $stepExitCode = $LASTEXITCODE
     }
     finally {
         $env:MPCVR_SETUP_STEP_SCRIPT = $previousScript
         $env:MPCVR_SETUP_STEP_PARAMS_B64 = $previousParameters
+        $env:PSModulePath = $previousModulePath
     }
     if ($stepExitCode -ne 0) {
         throw "$Name failed with exit code $stepExitCode."
@@ -373,6 +380,37 @@ try {
     Write-Host 'Verified all declared Maxine + RIFE setup payload hashes.' -ForegroundColor Green
     Import-Module $rifeManifestModule -Force
 
+    if ($thinSetup) {
+        Import-Module (Join-Path $payloadRoot 'DependencyDownloads.psm1') -Force
+        $dependencyLock=Read-MPCVRDependencyLock -Path (Join-Path $payloadRoot 'dependencies.lock.json')
+        if ($ValidateOnly) {
+            # Offline validation never queries a live GPU or downloads large files.
+            if ($GpuInventoryJson) {
+                $inventory=@(Get-RifeGpuInventory -GpuInventoryJson $GpuInventoryJson)
+                [void](Get-RifeArchitectureKeysForInventory -GpuInventory $inventory)
+            }
+            Invoke-SetupStep -Name 'Validating the renderer package...' -ScriptPath $rendererUpdater -Parameters @{PackageArchive=$rendererArchive;ChecksumFile=$payloadChecksums;ValidateOnly=$true;NoPause=$true}
+            Write-Host 'Lightweight setup pins, payload and renderer validation passed.' -ForegroundColor Green
+            Complete-Run -ExitCode 0
+        }
+        if ($PSVersionTable.PSEdition -eq 'Desktop') { [Net.ServicePointManager]::SecurityProtocol=[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 }
+        $inventory=@(Get-RifeGpuInventory -GpuInventoryJson $GpuInventoryJson)
+        $keys=@(Get-RifeArchitectureKeysForInventory -GpuInventory $inventory)
+        $tempRoot=Join-Path ([IO.Path]::GetTempPath()) ('MPCVR-Maxine-RIFE-Setup-'+[guid]::NewGuid().ToString('N'))
+        $stagedPayload=Join-Path $tempRoot 'payload'
+        New-Item -ItemType Directory -Force -Path $stagedPayload | Out-Null
+        Copy-Item -LiteralPath $payloadRoot -Destination $tempRoot -Recurse -Force
+        Resolve-MPCVRDependencies -Lock $dependencyLock -Destination $stagedPayload -ArchitectureKeys $keys
+        $payloadRoot=$stagedPayload
+        $payloadChecksums=Join-Path $payloadRoot 'PAYLOAD-SHA256SUMS.txt'
+        $maxineRuntimeArchive=Join-Path $payloadRoot 'MPCVR-Maxine-Runtime.zip'
+        $rifeModelArchive=Join-Path $payloadRoot 'MPCVR-RIFE-Models.zip'
+        $rifeRuntimeManifest=Join-Path $payloadRoot 'RIFE-runtime-manifest.json'
+        $rifeRuntimeChecksums=Join-Path $payloadRoot 'RIFE-runtime-SHA256SUMS.txt'
+        $rifeRuntimeSource=Join-Path $payloadRoot 'RIFE-runtime-release.json'
+        Assert-PayloadHashes
+    }
+
     $gpuInventory = @(Get-RifeGpuInventory -GpuInventoryJson $GpuInventoryJson)
     $architectureKeys = @(Get-RifeArchitectureKeysForInventory -GpuInventory $gpuInventory)
     if ($architectureKeys.Count -eq 0) {
@@ -424,7 +462,7 @@ try {
             [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     }
 
-    $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("MPCVR-Maxine-RIFE-Setup-{0}" -f [guid]::NewGuid().ToString('N'))
+    if (-not $tempRoot) { $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("MPCVR-Maxine-RIFE-Setup-{0}" -f [guid]::NewGuid().ToString('N')) }
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
     $stagedMaxineArchive = Join-Path $tempRoot 'MPCVR-Maxine-Runtime.zip'

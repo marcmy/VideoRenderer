@@ -1,32 +1,17 @@
-# MPCVR Maxine + RIFE Setup
+# MPCVR Setup
 
-`MPCVR-Maxine-RIFE-Setup.zip` is the recommended download for K-Lite Codec Pack users.
+Download **MPCVR-Setup.zip**, extract it, close MPC-HC, and run `Install-MPCVR-Maxine-RIFE.cmd`.
 
-After extracting the ZIP, close MPC-HC and run:
+The small ZIP includes the exact x86/x64 renderer and installation scripts. Before installation it detects the NVIDIA GPU, resolves `dependencies.lock.json`, and downloads the required Maxine runtime, RIFE models, common TensorRT/CUDA runtime, and only the applicable SM75/SM86/SM89/SM120 architecture packs. All dependency URLs use exact immutable releases in `marcmy/VideoRenderer-Dependencies`; sizes and SHA-256 hashes are checked before use.
 
-`Install-MPCVR-Maxine-RIFE.cmd`
+Verified downloads are cached under `%LOCALAPPDATA%\MPCVideoRenderer\downloads`. Unchanged dependencies are reused. Existing RIFE engine caches remain subject to their existing version/compatibility checks; this installer does not evict them.
 
-The one-click setup uses built-in Windows PowerShell 5.1 and performs four steps:
+Setup installs the Maxine runtime and its NVIDIA notices, the RIFE runtime and models, the K-Lite restore/update shortcut, and finally the custom renderer using the existing transactional installers. It preserves their backup/rollback behavior and performs runtime preflight afterward. RIFE models include 4.4, 4.6, 4.15 Lite, 4.25 and 4.25 Lite; the current default remains 4.25. NVIDIA components retain their separate license terms.
 
-1. Installs the verified five-DLL NVIDIA Maxine VideoSuperRes runtime under `%LOCALAPPDATA%\MPCVR Maxine Runtime\nvvfx\libs` and sets the current user's `NV_VIDEO_EFFECTS_PATH`.
-2. Detects the installed NVIDIA GPU compute capability, downloads only the matching RIFE TensorRT architecture pack from the exact immutable GitHub release, verifies it, and transactionally installs the RIFE runtime plus selectable 4.4, 4.6, 4.15 Lite, 4.25, and 4.25 Lite models under `%LOCALAPPDATA%\MPCVideoRenderer\RIFE`. RIFE 4.25 is the default for new settings.
-3. Installs the `Restore MPC-VR Maxine + RIFE` desktop shortcut for use after future K-Lite updates.
-4. Requests administrator permission and transactionally installs the custom 32-bit and 64-bit MPC Video Renderer files into K-Lite.
+**MPCVR-Portable.zip** contains renderer files for manual installation. **SHA256SUMS.txt** verifies both downloads. There is no per-renderer runtime prerelease and no duplicate renderer ZIP alias.
 
-Every declared file in `payload\PAYLOAD-SHA256SUMS.txt` is verified before any installer is allowed to change the system. Setup then runs the RIFE preflight, verifies the five Maxine runtime DLLs, and checks the user `NV_VIDEO_EFFECTS_PATH` value before reporting success.
+Run this setup once to migrate restore/update shortcuts installed by older builds. Their local scripts cannot be updated remotely. The current updater prefers the small setup so future dependency changes are reconciled as well, and supports portable/legacy filenames as fallbacks. Old bundled setups pin historical runtime URLs; deleting those releases breaks fresh installs from those old setups. Use the current setup instead.
 
-On first playback with each model/builder mode, TensorRT may build a GPU-specific engine under `%LOCALAPPDATA%\MPCVideoRenderer\RIFE\cache`. Press `Ctrl+J` in MPC-HC to confirm the loaded Maxine runtime, `RIFE runtime: ready`, and the selected RIFE model.
+`-ValidateOnly -NoPause` checks the lightweight setup offline without querying a live GPU, downloading dependencies, or changing an installation. Optional `-GpuInventoryJson` fixtures validate architecture selection. The same installer retains compatibility with full bundled payloads.
 
-The TensorRT runtime supports NVIDIA Turing (compute capability 7.5), Ampere (8.6), Ada (8.9), and Blackwell (12.0). Architecture packs are no longer embedded in the setup ZIP. The installer detects all NVIDIA adapters and downloads only the union of packs required by the machine, so installation requires Internet access for the architecture-specific fetch.
-
-`payload\THIRD-PARTY-NOTICES.txt` indexes the Maxine, CUDA, TensorRT, and RIFE model notice/license files bundled with the setup. Release assembly fails if any required notice class is missing.
-
-## Release assets
-
-Normal releases expose:
-
-- `MPCVR-Maxine-RIFE-Setup.zip` for K-Lite users
-- `MpcVideoRenderer-Maxine-RIFE.zip` for manual or portable installation
-- `SHA256SUMS.txt` covering the public setup and renderer ZIPs
-
-The architecture-specific RIFE packs live in a pinned companion prerelease and are downloaded automatically after GPU detection; normal users do not need to choose one. `MpcVideoRenderer-Maxine.zip` remains temporarily as a byte-identical renderer alias so older installed restore shortcuts continue to work. Its legacy `.sha256` asset also remains temporarily for older updater scripts. The redundant `MPCVR-Maxine-Setup.zip` setup alias is no longer published.
+A first install needs Internet access. Later installs can reuse all verified cache entries. Fully offline historical packages and diagnostic artifacts have been preserved locally; normal renderer updates do not generate another gigabyte-scale offline package.

@@ -1,0 +1,245 @@
+{
+  "schemaVersion": 1,
+  "repository": "marcmy/VideoRenderer-Dependencies",
+  "components": {
+    "rife-runtime": {
+      "releaseTag": "mpcvr-deps-rife-runtime-19735f6f657da67e",
+      "manifestSha256": "039e4a175b66f41812770b183d823413ea2aa2df077e417eb1c8c45fd77405fc",
+      "manifestUrl": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-19735f6f657da67e/rife-runtime.json",
+      "manifest": {
+        "component": "rife-runtime",
+        "recipeVersion": 1,
+        "buildRecipe": {
+          "Download pinned CUDA 13.4.1 build components": "shell: pwsh\n        run: |\n          $ErrorActionPreference = 'Stop'\n          New-Item -ItemType Directory -Force -Path $env:CUDA_ROOT | Out-Null\n          New-Item -ItemType Directory -Force -Path $env:NVIDIA_DOWNLOAD_CACHE | Out-Null\n\n          function Add-CudaArchive([string]$name, [string]$relativePath, [string]$sha256) {\n              $zip = Join-Path $env:NVIDIA_DOWNLOAD_CACHE \"$name.zip\"\n              $extract = Join-Path $env:RUNNER_TEMP \"$name-extract\"\n              $url = \"https://developer.download.nvidia.com/compute/cuda/redist/$relativePath\"\n              if (-not (Test-Path -LiteralPath $zip -PathType Leaf)) {\n                  Write-Host \"Downloading $url\"\n                  & curl.exe --fail --location --retry 3 --output $zip $url\n                  if ($LASTEXITCODE -ne 0) { throw \"curl failed for $name\" }\n              }\n              else {\n                  Write-Host \"Using cached $name archive\"\n              }\n\n              $actual = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()\n              if ($actual -ne $sha256) {\n                  Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue\n                  throw \"$name SHA-256 mismatch: $actual\"\n              }\n\n              Remove-Item -Recurse -Force $extract -ErrorAction SilentlyContinue\n              Expand-Archive -Path $zip -DestinationPath $extract\n              $root = Get-ChildItem -Path $extract -Directory | Select-Object -First 1\n              if (-not $root) { throw \"$name archive did not contain a root directory\" }\n              Copy-Item -Path (Join-Path $root.FullName '*') -Destination $env:CUDA_ROOT -Recurse -Force\n          }\n\n          Add-CudaArchive 'cuda_nvcc' `\n            'cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-13.4.59-archive.zip' `\n            '06a4fe6ec543030c5e5a7b85493cda90612015d9fff2a54ed0227162c937ea46'\n          Add-CudaArchive 'cuda_crt' `\n            'cuda_crt/windows-x86_64/cuda_crt-windows-x86_64-13.4.59-archive.zip' `\n            'f969a0e3b086a48f940563cd1b965cb5197fd9540c79cc952b1abfa479f9ede7'\n          Add-CudaArchive 'libnvvm' `\n            'libnvvm/windows-x86_64/libnvvm-windows-x86_64-13.4.59-archive.zip' `\n            'a7a07bcc21cc05bce83eedebcbcd9b9f5418c58316b0fa28a57cb2c548b29841'\n          Add-CudaArchive 'cuda_cudart' `\n            'cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-13.4.49-archive.zip' `\n            'e6663f3d3e8949eedc2d5ab92c7c5b9fa3f2a222086d91c42bfc5a38bf2b0225'\n          Add-CudaArchive 'cuda_cccl' `\n            'cccl/windows-x86_64/cccl-windows-x86_64-13.3.4.2.1-archive.zip' `\n            'ea3ebdd98d4d98819cc26b66bc5a0931004ed35ff18eea8b93e0bd2c8bfa5d7c'\n\n          $nvcc = Join-Path $env:CUDA_ROOT 'bin\\nvcc.exe'\n          if (-not (Test-Path $nvcc)) { throw \"nvcc not found at $nvcc\" }\n          & $nvcc --version\n          \"CUDAToolkit_ROOT=$env:CUDA_ROOT\" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8\n          \"$env:CUDA_ROOT\\bin\" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8",
+          "Download TensorRT 11.3.0.99 for CUDA 13.4": "shell: pwsh\n        run: |\n          $ErrorActionPreference = 'Stop'\n          New-Item -ItemType Directory -Force -Path $env:NVIDIA_DOWNLOAD_CACHE | Out-Null\n          $url = 'https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/11.3.0/zip/TensorRT-Enterprise-11.3.0.99-Windows-amd64-cuda-13.4-Release-external.zip'\n          if (-not (Test-Path -LiteralPath $env:TENSORRT_ARCHIVE -PathType Leaf)) {\n              & curl.exe --fail --location --retry 3 --output $env:TENSORRT_ARCHIVE $url\n              if ($LASTEXITCODE -ne 0) { throw 'TensorRT download failed' }\n          }\n          else {\n              Write-Host 'Using cached TensorRT archive'\n          }\n\n          $actual = (Get-FileHash -Algorithm SHA256 $env:TENSORRT_ARCHIVE).Hash.ToLowerInvariant()\n          if ($actual -ne $env:TENSORRT_EXPECTED_SHA256) {\n              Remove-Item -LiteralPath $env:TENSORRT_ARCHIVE -Force -ErrorAction SilentlyContinue\n              throw \"TensorRT SHA-256 mismatch: $actual\"\n          }\n\n          Remove-Item -Recurse -Force $env:TENSORRT_EXTRACT -ErrorAction SilentlyContinue\n          Expand-Archive -Path $env:TENSORRT_ARCHIVE -DestinationPath $env:TENSORRT_EXTRACT\n          $root = Get-ChildItem -Path $env:TENSORRT_EXTRACT -Directory | Where-Object Name -Like 'TensorRT-*' | Select-Object -First 1\n          if (-not $root) { throw 'TensorRT root directory was not found after extraction' }\n          \"TENSORRT_ROOT=$($root.FullName)\" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8\n          \"TENSORRT_DOWNLOAD_SHA256=$actual\" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8\n          Get-ChildItem (Join-Path $root.FullName 'lib') -Filter 'nvinfer*.dll' | Select-Object -First 8 -ExpandProperty Name",
+          "Configure and build runtime": "shell: pwsh\n        run: |\n          $ErrorActionPreference = 'Stop'\n          $vs = $env:VS_INSTALL\n          Import-Module (Join-Path $vs 'Common7\\Tools\\Microsoft.VisualStudio.DevShell.dll')\n          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'\n\n          cmake -S tools/RifeTensorRTRuntime -B $env:BUILD_DIR -G Ninja `\n            -DCMAKE_BUILD_TYPE=Release `\n            \"-DCMAKE_CUDA_COMPILER=$env:CUDA_ROOT\\bin\\nvcc.exe\" `\n            \"-DCUDAToolkit_ROOT=$env:CUDA_ROOT\" `\n            \"-DTENSORRT_ROOT=$env:TENSORRT_ROOT\"\n          if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed' }\n\n          cmake --build $env:BUILD_DIR --parallel\n          if ($LASTEXITCODE -ne 0) { throw 'RIFE runtime build failed' }",
+          "pins": [
+            "      CUDA_COMPILER_VERSION: 13.4.59",
+            "      CUDA_LICENSE_SHA256: e2c71babfd18a8e69542dd7e9ca018f9caa438094001a58e6bc4d8c999bf0d07",
+            "      CUDA_RUNTIME_VERSION: 13.4.49",
+            "      CUDA_VERSION: 13.4.1",
+            "      TENSORRT_EXPECTED_SHA256: 8ffd112d7bab97bc81eed818358b85df8c317bcdfc3cd3c731c220df7ca737eb",
+            "      TENSORRT_SLA_SHA256: eea91074c3bb4db31015e9c4bece1a1ff7db3ca59bdc3ad0d5b3c344aeb5cba4",
+            "      TENSORRT_VERSION: 11.3.0.99"
+          ]
+        },
+        "toolchain": {
+          "cuda": "13.4.1",
+          "tensorrt": "11.3.0.99",
+          "architectures": [
+            "sm75",
+            "sm86",
+            "sm89",
+            "sm120"
+          ]
+        },
+        "inputs": {
+          "Source/RifeCudaOutputApi.h": "5c416bee77c61f01e587074418ceb8a8e38631c7",
+          "Source/RifeRuntimeApi.h": "c2b875dfa366f55d0b5e7cf9b8aa71211e29c490",
+          "tools/RifeTensorRTRuntime/CMakeLists.txt": "5eb1b43a977d4586e9380b12209dfd3c7b63f761",
+          "tools/RifeTensorRTRuntime/D3D11InteropLock.h": "4e81bae03303b2123ad629086b89ff19a147fdd9",
+          "tools/RifeTensorRTRuntime/EngineCacheFile.h": "c0c6e988d5ea7707ad01cbda1683ea631dcbcd6f",
+          "tools/RifeTensorRTRuntime/EngineProfile.h": "cca81da5dbe2520e672632aa89eeb9798a9cf639",
+          "tools/RifeTensorRTRuntime/FeatureReuseEngine.h": "9aef178450faa724e9a89e5bc53d4a4f54fefb4a",
+          "tools/RifeTensorRTRuntime/PackedInputReuse.h": "ea7c71c7fcf4562c428b7d7857137b2d8ae252a4",
+          "tools/RifeTensorRTRuntime/RifeInputTimestep.h": "b99d8ef851ebab01a6bac3bf39a1464c774db37f",
+          "tools/RifeTensorRTRuntime/RifeKernels.cu": "2b160448171a8d0dce15726d68591b34823c757d",
+          "tools/RifeTensorRTRuntime/RifeKernels.h": "fdab51d1bc9fc9192ddb7be9539661c9dc5cd3b0",
+          "tools/RifeTensorRTRuntime/RifeRequestCompatibility.h": "b849514198fcce0ecbef1945999070ac85c20976",
+          "tools/RifeTensorRTRuntime/RifeTensorRTRuntime.cpp": "8520b899e44ac67fe6a321f5e12a74a04243262f",
+          "tools/RifeTensorRTRuntime/RuntimeCreation.h": "0e47a5682445cf2b52755eb02b0e385834ce790d"
+        },
+        "sourceFingerprint": "19735f6f657da67e2af547e478a80fb98b820d7e287d820faab5ee88584916f7",
+        "releaseTag": "mpcvr-deps-rife-runtime-19735f6f657da67e",
+        "schemaVersion": 1,
+        "sourceRepository": "marcmy/VideoRenderer",
+        "sourceCommit": "bea5902b1a98488fce1cfc9df9480d388a6bc2af",
+        "provenance": {
+          "rendererRelease": "maxine-rife-1322-1-bea5902b",
+          "runtimeRelease": "maxine-rife-1322-1-bea5902b-rife-runtime",
+          "repackaged": false
+        },
+        "compatibility": {
+          "platform": "windows-x64",
+          "gpuVendor": "NVIDIA",
+          "runtimeAbi": 2,
+          "architectures": [
+            "sm75",
+            "sm86",
+            "sm89",
+            "sm120"
+          ]
+        },
+        "files": {
+          "MPCVR-RIFE-Common.zip": {
+            "sha256": "b7dad82efc66a8f606fc234fd4255ac1822879cb29c6899343260fcea8572274",
+            "bytes": 422215279,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-19735f6f657da67e/MPCVR-RIFE-Common.zip"
+          },
+          "runtime-manifest.json": {
+            "sha256": "d2ce870881e98dfab11f851d093363b748e8a061f0096c4a3ca36c07bab2900b",
+            "bytes": 725,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-19735f6f657da67e/runtime-manifest.json"
+          },
+          "SHA256SUMS.txt": {
+            "sha256": "04ec934a5e87064f5d41a76f1ba9d486fc701122516cfd7b9807f62e761e695e",
+            "bytes": 438,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-19735f6f657da67e/SHA256SUMS.txt"
+          },
+          "TensorRT-SLA.html": {
+            "sha256": "eea91074c3bb4db31015e9c4bece1a1ff7db3ca59bdc3ad0d5b3c344aeb5cba4",
+            "bytes": 60634,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-19735f6f657da67e/TensorRT-SLA.html"
+          },
+          "CUDA-LICENSE.txt": {
+            "sha256": "e2c71babfd18a8e69542dd7e9ca018f9caa438094001a58e6bc4d8c999bf0d07",
+            "bytes": 63021,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-19735f6f657da67e/CUDA-LICENSE.txt"
+          },
+          "MPCVR-RIFE-sm75.zip": {
+            "sha256": "97a812871fb784fe2213702bcd2a3ae5a11c04346e48ae1123ad080d2dab7ba3",
+            "bytes": 95523650,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-19735f6f657da67e/MPCVR-RIFE-sm75.zip"
+          },
+          "MPCVR-RIFE-sm86.zip": {
+            "sha256": "47d36d82e753c9deb0dd23a6063a8ee6a47b9a58ed7992a0ed9474a87bec9880",
+            "bytes": 154877527,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-19735f6f657da67e/MPCVR-RIFE-sm86.zip"
+          },
+          "MPCVR-RIFE-sm89.zip": {
+            "sha256": "4dd4e950444e8fafb9f7cc530ed9c23e2753a2529f1b7f66c1d2a6f8573ce583",
+            "bytes": 163633064,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-19735f6f657da67e/MPCVR-RIFE-sm89.zip"
+          },
+          "MPCVR-RIFE-sm120.zip": {
+            "sha256": "84dfb0ebbe58c41eb67d98922b1f50b5e467ee4447454aad45931dccc9a56fdd",
+            "bytes": 241114373,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-19735f6f657da67e/MPCVR-RIFE-sm120.zip"
+          }
+        }
+      }
+    },
+    "rife-models": {
+      "releaseTag": "mpcvr-deps-rife-models-cc46eaca0cda87fa",
+      "manifestSha256": "41d44754cc33e61f3ada6829dc9c1e4689e9ed9f0e6d2145a0af88ebea5b49f4",
+      "manifestUrl": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-models-cc46eaca0cda87fa/rife-models.json",
+      "manifest": {
+        "component": "rife-models",
+        "recipeVersion": 1,
+        "buildRecipe": {
+          "Install model preparation dependencies": "run: python -m pip install --upgrade \"nvidia-modelopt[onnx]\" py7zr",
+          "Download and verify pinned RIFE sources and license": "shell: bash\n        run: |\n          set -euo pipefail\n          mkdir -p _rife-model/output/LICENSES\n\n          curl --fail --location --retry 3 \\\n            --output _rife-model/rife_v8.7z \\\n            https://github.com/AmusementClub/vs-mlrt/releases/download/model-20220923/rife_v8.7z\n          echo \"$RIFE_LEGACY_SOURCE_SHA256  _rife-model/rife_v8.7z\" | sha256sum --check --strict\n          test \"$(stat -c%s _rife-model/rife_v8.7z)\" = \"$RIFE_LEGACY_SOURCE_BYTES\"\n\n          curl --fail --location --retry 3 \\\n            --output _rife-model/rife_v4.15_lite.7z \\\n            https://github.com/AmusementClub/vs-mlrt/releases/download/external-models/rife_v4.15_lite.7z\n          echo \"$RIFE_415_LITE_SOURCE_SHA256  _rife-model/rife_v4.15_lite.7z\" | sha256sum --check --strict\n          test \"$(stat -c%s _rife-model/rife_v4.15_lite.7z)\" = \"$RIFE_415_LITE_SOURCE_BYTES\"\n\n          curl --fail --location --retry 3 \\\n            --output _rife-model/rife_v4.25.7z \\\n            https://github.com/AmusementClub/vs-mlrt/releases/download/external-models/rife_v4.25.7z\n          echo \"$RIFE_425_SOURCE_SHA256  _rife-model/rife_v4.25.7z\" | sha256sum --check --strict\n          test \"$(stat -c%s _rife-model/rife_v4.25.7z)\" = \"$RIFE_425_SOURCE_BYTES\"\n\n          curl --fail --location --retry 3 \\\n            --output _rife-model/rife_v4.25_lite.7z \\\n            https://github.com/AmusementClub/vs-mlrt/releases/download/external-models/rife_v4.25_lite.7z\n          echo \"$RIFE_425_LITE_SOURCE_SHA256  _rife-model/rife_v4.25_lite.7z\" | sha256sum --check --strict\n          test \"$(stat -c%s _rife-model/rife_v4.25_lite.7z)\" = \"$RIFE_425_LITE_SOURCE_BYTES\"\n\n          curl --fail --location --retry 3 \\\n            --output _rife-model/output/LICENSES/RIFE-model-license.txt \\\n            \"https://raw.githubusercontent.com/hzwer/Practical-RIFE/$RIFE_LICENSE_COMMIT/LICENSE\"\n          echo \"$RIFE_LICENSE_SHA256  _rife-model/output/LICENSES/RIFE-model-license.txt\" | sha256sum --check --strict",
+          "Convert RIFE variants to mixed FP16": "shell: bash\n        run: |\n          set -euo pipefail\n          python tools/RifeTensorRTRuntime/prepare_model.py \\\n            --model 4.4 _rife-model/rife_v8.7z _rife-model/output/rife_v4.4.onnx\n          python tools/RifeTensorRTRuntime/prepare_model.py \\\n            --model 4.6 _rife-model/rife_v8.7z _rife-model/output/rife_v4.6.onnx\n          python tools/RifeTensorRTRuntime/prepare_model.py \\\n            --model 4.15-lite _rife-model/rife_v4.15_lite.7z _rife-model/output/rife_v4.15_lite.onnx\n          python tools/RifeTensorRTRuntime/prepare_model.py \\\n            --model 4.25 _rife-model/rife_v4.25.7z _rife-model/output/rife_v4.25.onnx\n          python tools/RifeTensorRTRuntime/prepare_model.py \\\n            --model 4.25-lite _rife-model/rife_v4.25_lite.7z _rife-model/output/rife_v4.25_lite.onnx\n          python tools/RifeTensorRTRuntime/prepare_model.py \\\n            --write-manifest _rife-model/output \\\n            --source-archive 4.4=_rife-model/rife_v8.7z \\\n            --source-archive 4.6=_rife-model/rife_v8.7z \\\n            --source-archive 4.15-lite=_rife-model/rife_v4.15_lite.7z \\\n            --source-archive 4.25=_rife-model/rife_v4.25.7z \\\n            --source-archive 4.25-lite=_rife-model/rife_v4.25_lite.7z",
+          "Prepare and verify reusable encoder stages": "run: |\n          python -m pip install onnxruntime\n          python tools/RifeTensorRTRuntime/prepare_feature_models.py --models _rife-model/output --output _rife-model/output --verify",
+          "pins": [
+            "      RIFE_415_LITE_SOURCE_BYTES: 9710109",
+            "      RIFE_415_LITE_SOURCE_RELEASE: external-models",
+            "      RIFE_415_LITE_SOURCE_SHA256: 9c894bccb7dbd5bd0ff9d99616360285628230de81374181b97a69124f73d1a9",
+            "      RIFE_425_LITE_SOURCE_BYTES: 20936472",
+            "      RIFE_425_LITE_SOURCE_RELEASE: external-models",
+            "      RIFE_425_LITE_SOURCE_SHA256: 7d53e29fff5e67345b19f4ce97dfd1e34b490eedc752df2236904fda1a13842c",
+            "      RIFE_425_SOURCE_BYTES: 21026388",
+            "      RIFE_425_SOURCE_RELEASE: external-models",
+            "      RIFE_425_SOURCE_SHA256: 172fe975c1775134bb87108e4ec6d1a89e861cc5d3be2ac23bf08afe5ed626b8",
+            "      RIFE_LEGACY_SOURCE_BYTES: 195245748",
+            "      RIFE_LEGACY_SOURCE_RELEASE: model-20220923",
+            "      RIFE_LEGACY_SOURCE_SHA256: 1a18614e72164c61d60861199fc8be6b0003110f747646b3dafb9acd632f6ef7",
+            "      RIFE_LICENSE_COMMIT: bbfd2ea90910789a860ea3e2b32a240cd577b75e",
+            "      RIFE_LICENSE_SHA256: 7932fb49341512b959b1744a6d9cbb39e5a1ec89da438a34d0454d5d8df9fecd"
+          ]
+        },
+        "toolchain": {},
+        "inputs": {
+          "tools/RifeRuntimeInstaller/model-manifest.schema.json": "fb4bba40d8e212c10ce1000b576e862c62cc192d",
+          "tools/RifeTensorRTRuntime/prepare_feature_models.py": "befd1b6b8f88141059795e55f79511e1010254dd",
+          "tools/RifeTensorRTRuntime/prepare_model.py": "2de01556ecf74f0fa6f649512d269ea455a04e67"
+        },
+        "sourceFingerprint": "cc46eaca0cda87fa19f7d48a113b1da94186ddbc7ce32e387351b455c1b92d94",
+        "releaseTag": "mpcvr-deps-rife-models-cc46eaca0cda87fa",
+        "schemaVersion": 1,
+        "sourceRepository": "marcmy/VideoRenderer",
+        "sourceCommit": "bea5902b1a98488fce1cfc9df9480d388a6bc2af",
+        "provenance": {
+          "rendererRelease": "maxine-rife-1322-1-bea5902b",
+          "runtimeRelease": "maxine-rife-1322-1-bea5902b-rife-runtime",
+          "repackaged": false
+        },
+        "compatibility": {
+          "platform": "windows-x64",
+          "gpuVendor": "NVIDIA",
+          "runtimeAbi": 2,
+          "architectures": [
+            "sm75",
+            "sm86",
+            "sm89",
+            "sm120"
+          ]
+        },
+        "files": {
+          "MPCVR-RIFE-Models.zip": {
+            "sha256": "34e47e6afd6b41aaefe67ea739008c8bc93d173835c34c300691c88c84bc40bb",
+            "bytes": 71093316,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-models-cc46eaca0cda87fa/MPCVR-RIFE-Models.zip"
+          },
+          "RIFE-model-license.txt": {
+            "sha256": "7932fb49341512b959b1744a6d9cbb39e5a1ec89da438a34d0454d5d8df9fecd",
+            "bytes": 1062,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-models-cc46eaca0cda87fa/RIFE-model-license.txt"
+          },
+          "model-manifest.json": {
+            "sha256": "d582fdcf3afa2ffe90c60945bd5cecac9aabc25355cb997c6414241ede78a6ed",
+            "bytes": 2484,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-models-cc46eaca0cda87fa/model-manifest.json"
+          }
+        }
+      }
+    },
+    "maxine": {
+      "releaseTag": "mpcvr-deps-maxine-0406b82d25661207",
+      "manifestSha256": "66c5142c25e2e663246e2238bb3e78365686073277d41dab93bb27d77e236f6b",
+      "manifestUrl": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-maxine-0406b82d25661207/maxine.json",
+      "manifest": {
+        "component": "maxine",
+        "recipeVersion": 1,
+        "buildRecipe": {},
+        "toolchain": {},
+        "inputs": {
+          "tools/MaxineRuntimeInstaller/Build-MPCVRMaxineRuntime.py": "fb620ac4895428032172fd0e5b584391471e4855"
+        },
+        "sourceFingerprint": "0406b82d25661207a2506ab20db7e9d2e68d4264c2247eee3c54bf76c7ef339b",
+        "releaseTag": "mpcvr-deps-maxine-0406b82d25661207",
+        "schemaVersion": 1,
+        "sourceRepository": "marcmy/VideoRenderer",
+        "sourceCommit": "bea5902b1a98488fce1cfc9df9480d388a6bc2af",
+        "provenance": {
+          "rendererRelease": "maxine-rife-1322-1-bea5902b",
+          "runtimeRelease": "maxine-rife-1322-1-bea5902b-rife-runtime",
+          "repackaged": false
+        },
+        "compatibility": {
+          "platform": "windows-x64",
+          "gpuVendor": "NVIDIA",
+          "runtimeAbi": 2,
+          "architectures": [
+            "sm75",
+            "sm86",
+            "sm89",
+            "sm120"
+          ]
+        },
+        "files": {
+          "MPCVR-Maxine-Runtime.zip": {
+            "sha256": "debae64aecfb196d30c5e3cb5f679bd4c19a542181196053c0063eee805efb35",
+            "bytes": 435729219,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-maxine-0406b82d25661207/MPCVR-Maxine-Runtime.zip"
+          },
+          "Maxine-SDK-License.pdf": {
+            "sha256": "3749955ea638199e317d87261512dc9baa6d4d4be424f21a1f9b609e54154703",
+            "bytes": 547595,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-maxine-0406b82d25661207/Maxine-SDK-License.pdf"
+          }
+        }
+      }
+    }
+  }
+}

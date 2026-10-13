@@ -2,16 +2,14 @@ name: Build RIFE model bundle
 
 on:
   workflow_call:
+    inputs:
+      source_ref:
+        type: string
+        default: master
+      source_repository:
+        type: string
+        default: marcmy/VideoRenderer
   workflow_dispatch:
-  push:
-    branches:
-      - feature/rife-tensorrt-interpolation
-      - feature/rife-model-variants
-    paths:
-      - .github/workflows/rife-model.yml
-      - tools/RifeTensorRTRuntime/prepare_model.py
-      - tools/RifeTensorRTRuntime/prepare_feature_models.py
-      - tools/RifeRuntimeInstaller/model-manifest.schema.json
 
 permissions:
   contents: read
@@ -38,6 +36,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.source_repository || 'marcmy/VideoRenderer' }}
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v7

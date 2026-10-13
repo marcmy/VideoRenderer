@@ -1,20 +1,7 @@
 name: Validate Maxine setup
 
 on:
-  push:
-    paths:
-      - 'tools/MaxineRuntimeInstaller/**'
-      - 'tools/KLiteMaxineUpdater/**'
-      - 'tools/MaxineSetup/**'
-      - '.github/workflows/validate-maxine-runtime-installer.yml'
-      - '.github/workflows/main.yml'
-  pull_request:
-    paths:
-      - 'tools/MaxineRuntimeInstaller/**'
-      - 'tools/KLiteMaxineUpdater/**'
-      - 'tools/MaxineSetup/**'
-      - '.github/workflows/validate-maxine-runtime-installer.yml'
-      - '.github/workflows/main.yml'
+  workflow_call:
   workflow_dispatch:
 
 permissions:

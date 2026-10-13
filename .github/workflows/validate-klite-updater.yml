@@ -1,17 +1,8 @@
 name: Validate K-Lite updater
 
 on:
+  workflow_call:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'tools/KLiteMaxineUpdater/**'
-      - '.github/workflows/validate-klite-updater.yml'
-  push:
-    branches:
-      - master
-    paths:
-      - 'tools/KLiteMaxineUpdater/**'
-      - '.github/workflows/validate-klite-updater.yml'
 
 permissions:
   contents: read

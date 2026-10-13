@@ -25,3 +25,15 @@ tools/*-test/*.lib
 tools/*-test/RIFE/
 tools/*-test/*-runtime/
 tools/*-test/out/
+
+# Durable local development commands use these output locations.
+/_artifacts/
+/_tools/
+/_preserved/
+
+# Preserved private diagnostics and generated dialog output; never publish them.
+tools/rife-cache-test/prepare-regression.py
+tools/rife-working-resolution-test/DialogTest.exe.manifest
+tools/rife-precision-test/.gitignore
+tools/rife-svp-scene-test/.gitignore
+tools/rife-working-resolution-test/.gitignore

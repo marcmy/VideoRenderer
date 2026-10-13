@@ -115,10 +115,19 @@ IF /I "%VERRELEASE%" == "1" (
 
 CALL :SubDetectSevenzipPath
 IF DEFINED SEVENZIP (
-    IF EXIST "_bin\%PCKG_NAME%.zip" DEL "_bin\%PCKG_NAME%.zip"
+    REM Preserve upstream's builder while distinguishing every local source tree.
+    FOR /F "tokens=3" %%A IN ('FINDSTR /L /C:"define REV_IS_LOCAL" "revision.h"') DO SET "IS_LOCAL=%%A"
+    IF "!IS_LOCAL!"=="1" (
+      FOR /F "tokens=3" %%A IN ('FINDSTR /L /C:"define REV_SOURCE_ID" "revision.h"') DO SET "BUILD_SOURCE=%%~A"
+      SET "PCKG_NAME=!PCKG_NAME!_!BUILD_SOURCE!"
+    )
+    IF EXIST "_bin\!PCKG_NAME!.zip" (
+      CALL :SubMsg "ERROR" "Archive already exists; preserved without overwrite. Use dev.ps1 for verified bundles."
+      EXIT /B 1
+    )
 
-    TITLE Creating archive %PCKG_NAME%.zip...
-    START "7z" /B /WAIT "%SEVENZIP%" a -tzip -mx9 "_bin\%PCKG_NAME%.zip" ^
+    TITLE Creating archive !PCKG_NAME!.zip...
+    START "7z" /B /WAIT "%SEVENZIP%" a -tzip -mx9 "_bin\!PCKG_NAME!.zip" ^
 .\_bin\Filter_x86%SUFFIX%\%PROJECT%.ax ^
 .\_bin\Filter_x64%SUFFIX%\%PROJECT%64.ax ^
 .\distrib\Install_MPCVR_32.cmd ^
@@ -129,9 +138,8 @@ IF DEFINED SEVENZIP (
 .\Readme.md ^
 .\history.txt ^
 .\LICENSE.txt
-    IF %ERRORLEVEL% NEQ 0 CALL :SubMsg "ERROR" "Unable to create %PCKG_NAME%.zip!"
-    EXIT /B %ERRORLEVEL%
-    CALL :SubMsg "INFO" "%PCKG_NAME%.zip successfully created"
+    IF !ERRORLEVEL! NEQ 0 CALL :SubMsg "ERROR" "Unable to create !PCKG_NAME!.zip"
+    EXIT /B !ERRORLEVEL!
 )
 
 TITLE Compiling %TITLE% [FINISHED]
