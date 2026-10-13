@@ -1,18 +1,7 @@
 name: Validate RIFE runtime installer
 
 on:
-  push:
-    paths:
-      - 'tools/RifeRuntimeInstaller/**'
-      - 'tools/MaxineSetup/**'
-      - '.github/workflows/rife-runtime.yml'
-      - '.github/workflows/validate-rife-runtime-installer.yml'
-  pull_request:
-    paths:
-      - 'tools/RifeRuntimeInstaller/**'
-      - 'tools/MaxineSetup/**'
-      - '.github/workflows/rife-runtime.yml'
-      - '.github/workflows/validate-rife-runtime-installer.yml'
+  workflow_call:
   workflow_dispatch:
 
 permissions:

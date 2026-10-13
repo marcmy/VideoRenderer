@@ -24,7 +24,7 @@
 
 ## Normal development lifecycle
 
-- Start with `./dev.ps1 status -Fetch`: verify origin is marcmy/VideoRenderer,
+- Start with `./dev.ps1 status` (fetches unless `-Offline`): verify origin is marcmy/VideoRenderer,
   upstream is Aleksoid1978/VideoRenderer, and inspect divergence and all local work.
 - Fast-forward clean local source from origin when safe. Never merge blindly into
   dirty source. Preserve intentional edits before integration, then verify the
@@ -48,12 +48,24 @@
   must agree with it; Actions run numbers are execution IDs, not software versions.
 - Keep upstream major/minor/build compatibility and the fork's first-parent
   revision base. A synchronization with no source change must not publish a release.
+- Public names use `upstream.version.json`'s actual merged upstream history count
+  plus the fork revision: `v0.10.9.2605-maxine-rife.2850`, for example. Record the
+  upstream SHA in the same integration commit. Never use history.txt as its revision.
+- Local builds default to local flavor. Official release builds require clean,
+  committed source and both x86/x64 binaries. Preserve numeric Windows FileVersion
+  compatibility while exposing both components and exact SHAs in product metadata.
 - Local/test builds include commit and dirty-source fingerprints in visible
   product metadata, provenance manifests and unique artifact names. Never reuse
   an output directory for a different source identity.
 - Reuse unchanged, pinned and checksum-verified runtime/model dependencies.
   Preserve NVIDIA notices, architecture detection, transactional installation,
-  rollback and previously installed updater shortcut compatibility.
+  rollback and supported updater compatibility. Old shortcuts require running the
+  new setup once to learn `MPCVR-Portable.zip`; do not claim they migrate remotely.
+- Large dependencies belong in `marcmy/VideoRenderer-Dependencies`, independently
+  published and never overwritten. Do not create per-renderer runtime prereleases.
+- Never delete historical releases or their tags without explicit user approval
+  of a concrete inventory/compatibility plan. New releases are verified before any
+  latest promotion; publication must not delete their predecessor.
 - Use `dev.ps1` and the documented commands in `docs/development/workflow.md`.
   Put transient outputs in `_artifacts`; preserve older diagnostic history.
 

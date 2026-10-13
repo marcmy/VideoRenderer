@@ -1,0 +1,99 @@
+# Install as .github/workflows/publish.yml in marcmy/VideoRenderer-Dependencies.
+# This repository's own GITHUB_TOKEN publishes here; no cross-repository PAT.
+name: Publish immutable application dependencies
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: Changed dependency only
+        type: choice
+        options: [rife-runtime, rife-models, maxine]
+        required: true
+      source_ref:
+        description: Exact committed VideoRenderer source SHA
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: dependency-publishing
+  cancel-in-progress: false
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      needed: ${{ steps.plan.outputs.needed }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: marcmy/VideoRenderer
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMPONENT: ${{ inputs.component }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          [[ "$SOURCE_REF" =~ ^[a-f0-9]{40}$ ]] || exit 1
+          python tools/Dev/dependencies.py plan --directory plan
+          python -c 'import json,os; p=json.load(open("plan/plan.json")); needed=p["components"][os.environ["COMPONENT"]]["manifest"] is None; open(os.environ["GITHUB_OUTPUT"],"a").write("needed="+str(needed).lower()+"\n")'
+  runtime:
+    needs: plan
+    if: needs.plan.outputs.needed == 'true' && inputs.component == 'rife-runtime'
+    uses: marcmy/VideoRenderer/.github/workflows/rife-runtime.yml@master
+    with:
+      source_repository: marcmy/VideoRenderer
+      source_ref: ${{ inputs.source_ref }}
+  models:
+    needs: plan
+    if: needs.plan.outputs.needed == 'true' && inputs.component == 'rife-models'
+    uses: marcmy/VideoRenderer/.github/workflows/rife-model.yml@master
+    with:
+      source_repository: marcmy/VideoRenderer
+      source_ref: ${{ inputs.source_ref }}
+  maxine:
+    needs: plan
+    if: needs.plan.outputs.needed == 'true' && inputs.component == 'maxine'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: marcmy/VideoRenderer
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: |
+          python tools/MaxineRuntimeInstaller/Build-MPCVRMaxineRuntime.py --output component
+          curl --fail --location https://developer.nvidia.com/downloads/maxine-sdk-license --output component/Maxine-SDK-License.pdf
+          echo '3749955ea638199e317d87261512dc9baa6d4d4be424f21a1f9b609e54154703  component/Maxine-SDK-License.pdf' | sha256sum --check --strict
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mpcvr-maxine-runtime-bundle
+          path: |
+            component/MPCVR-Maxine-Runtime.zip
+            component/Maxine-SDK-License.pdf
+          compression-level: 0
+  publish:
+    needs: [plan, runtime, models, maxine]
+    if: always() && needs.plan.outputs.needed == 'true' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: marcmy/VideoRenderer
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+          path: component
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          COMPONENT: ${{ inputs.component }}
+        run: |
+          python tools/Dev/dependencies.py prepare-component --component "$COMPONENT" --directory component
+          python tools/Dev/dependencies.py publish-seed --component "$COMPONENT" --directory component

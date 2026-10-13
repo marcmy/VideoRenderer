@@ -14,7 +14,9 @@ $ProgressPreference = 'SilentlyContinue'
 Import-Module (Join-Path $PSScriptRoot 'KLiteRendererInstall.psm1') -Force
 
 $releaseBaseUrl = 'https://github.com/marcmy/VideoRenderer/releases/latest/download'
-$primaryAssetName = 'MpcVideoRenderer-Maxine-RIFE.zip'
+$setupAssetName = 'MPCVR-Setup.zip'
+$primaryAssetName = 'MPCVR-Portable.zip'
+$previousAssetName = 'MpcVideoRenderer-Maxine-RIFE.zip'
 $legacyAssetName = 'MpcVideoRenderer-Maxine.zip'
 $checksumListName = 'SHA256SUMS.txt'
 
@@ -206,8 +208,16 @@ try {
     }
     else {
         Write-Host 'Downloading the latest custom Maxine + RIFE build...'
-        try {
-            $selectedAssetName = $primaryAssetName
+        # Resolve latest once. Archive and sums must come from the same release,
+        # even if a new release is promoted while this updater is downloading.
+        $releaseRequest=@{Uri='https://api.github.com/repos/marcmy/VideoRenderer/releases/latest';UseBasicParsing=$true}
+        $release=([string](Invoke-WebRequest @releaseRequest).Content) | ConvertFrom-Json
+        if ([string]::IsNullOrWhiteSpace([string]$release.tag_name)) { throw 'Latest renderer release has no source tag.' }
+        $releaseBaseUrl='https://github.com/marcmy/VideoRenderer/releases/download/'+[Uri]::EscapeDataString([string]$release.tag_name)
+        $downloaded=$false
+        foreach ($candidate in @($setupAssetName,$primaryAssetName,$previousAssetName,$legacyAssetName)) {
+          try {
+            $selectedAssetName = $candidate
             $archivePath = Join-Path $tempRoot $selectedAssetName
             $archiveRequest = @{
                 Uri = "$releaseBaseUrl/$selectedAssetName"
@@ -217,20 +227,13 @@ try {
                 $archiveRequest.UseBasicParsing = $true
             }
             Invoke-WebRequest @archiveRequest
+            $downloaded=$true
+            break
+          } catch {
+            Write-Host "Renderer asset $candidate was unavailable; checking the next supported filename." -ForegroundColor Yellow
+          }
         }
-        catch {
-            Write-Host 'The Maxine + RIFE renderer asset was unavailable; trying the legacy Maxine renderer asset.' -ForegroundColor Yellow
-            $selectedAssetName = $legacyAssetName
-            $archivePath = Join-Path $tempRoot $selectedAssetName
-            $archiveRequest = @{
-                Uri = "$releaseBaseUrl/$selectedAssetName"
-                OutFile = $archivePath
-            }
-            if ($PSVersionTable.PSEdition -eq 'Desktop') {
-                $archiveRequest.UseBasicParsing = $true
-            }
-            Invoke-WebRequest @archiveRequest
-        }
+        if (-not $downloaded) { throw 'No supported renderer asset could be downloaded.' }
 
         try {
             $checksumRequest = @{
@@ -263,6 +266,21 @@ try {
     }
 
     Expand-Archive -LiteralPath $archivePath -DestinationPath $extractPath -Force
+
+    if ($selectedAssetName -eq $setupAssetName) {
+        # A restore/update also reconciles independently versioned dependencies.
+        # Setup calls us with its local renderer archive, so delegation cannot recurse.
+        $setupScript=Join-Path $extractPath 'Install-MPCVR-Maxine-RIFE.ps1'
+        if (-not (Test-Path -LiteralPath $setupScript -PathType Leaf)) { throw 'Verified setup is missing its installer.' }
+        $hostExecutable=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $previousModulePath=$env:PSModulePath
+        try {
+            $env:PSModulePath=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules'
+            & $hostExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $setupScript -NoPause
+            if ($LASTEXITCODE -ne 0) { throw 'The verified setup could not complete the update; component rollback diagnostics are shown above.' }
+        } finally { $env:PSModulePath=$previousModulePath }
+        Complete-Run -ExitCode 0
+    }
 
     $sources = @{}
     foreach ($fileName in $targets.Keys) {

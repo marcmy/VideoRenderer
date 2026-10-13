@@ -144,6 +144,9 @@ BEGIN
             VALUE "ProductVersion", VERSION_DISPLAY
             VALUE "PrivateBuild", REV_SOURCE_ID
             VALUE "SourceCommit", REV_COMMIT
+            VALUE "Comments", "Fork source " REV_COMMIT "; upstream source " REV_UPSTREAM_COMMIT
+            VALUE "UpstreamVersion", REV_UPSTREAM_VERSION
+            VALUE "UpstreamCommit", REV_UPSTREAM_COMMIT
         END
     END
     BLOCK "VarFileInfo"

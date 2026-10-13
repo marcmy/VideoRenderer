@@ -1,12 +1,8 @@
 name: Probe RIFE TensorRT runtime libraries
 
+# Historical diagnostics; normal CI uses the comprehensive reusable validation.
 on:
-  push:
-    branches:
-      - feature/rife-tensorrt-interpolation
-      - feature/rife-model-variants
-    paths:
-      - .github/workflows/rife-runtime-libs-probe.yml
+  workflow_dispatch:
 
 permissions:
   contents: read

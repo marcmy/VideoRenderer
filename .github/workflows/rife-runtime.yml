@@ -2,16 +2,14 @@ name: Build RIFE TensorRT runtime
 
 on:
   workflow_call:
+    inputs:
+      source_ref:
+        type: string
+        default: master
+      source_repository:
+        type: string
+        default: marcmy/VideoRenderer
   workflow_dispatch:
-  push:
-    branches:
-      - feature/rife-tensorrt-interpolation
-      - feature/rife-model-variants
-    paths:
-      - .github/workflows/rife-runtime.yml
-      - tools/RifeTensorRTRuntime/**
-      - tools/RifeRuntimeInstaller/**
-      - Source/RifeRuntimeApi.h
 
 permissions:
   contents: read
@@ -39,6 +37,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.source_repository || 'marcmy/VideoRenderer' }}
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 0
 
       - name: Cache pinned NVIDIA SDK archives
         uses: actions/cache@v6

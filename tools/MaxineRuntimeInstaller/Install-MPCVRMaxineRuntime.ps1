@@ -194,14 +194,17 @@ try {
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
     if ([string]::IsNullOrWhiteSpace($RuntimeArchive)) {
-        Write-Host 'Downloading the MPC-VR Maxine runtime bundle...'
-        try {
-            Invoke-WebRequest -UseBasicParsing -Uri "$releaseBaseUrl/$assetName" -OutFile $downloadedArchive
-            Invoke-WebRequest -UseBasicParsing -Uri "$releaseBaseUrl/$checksumName" -OutFile $downloadedChecksum
-        }
-        catch {
-            throw 'The Maxine runtime bundle is not available in the latest VideoRenderer release yet.'
-        }
+        $lockPath=Join-Path $PSScriptRoot 'dependencies.lock.json'
+        $downloadModule=Join-Path $PSScriptRoot 'DependencyDownloads.psm1'
+        if (-not (Test-Path -LiteralPath $lockPath)) { $lockPath=Join-Path $PSScriptRoot '..\..\dependencies.lock.json' }
+        if (-not (Test-Path -LiteralPath $downloadModule)) { $downloadModule=Join-Path $PSScriptRoot '..\MaxineSetup\DependencyDownloads.psm1' }
+        if (-not (Test-Path -LiteralPath $lockPath) -or -not (Test-Path -LiteralPath $downloadModule)) { throw 'Use the current MPCVR-Setup.zip or provide a local checksum-verified RuntimeArchive; this script needs its pinned dependency manifest.' }
+        Import-Module $downloadModule -Force
+        $lock=Read-MPCVRDependencyLock -Path $lockPath
+        $entry=$lock.components.PSObject.Properties['maxine'].Value.manifest.files.PSObject.Properties[$assetName].Value
+        $cached=Get-MPCVRVerifiedDownload -Entry $entry -CacheRoot (Join-Path $env:LOCALAPPDATA 'MPCVideoRenderer\downloads')
+        Copy-Item -LiteralPath $cached -Destination $downloadedArchive
+        ('{0}  {1}' -f $entry.sha256,$assetName) | Set-Content -LiteralPath $downloadedChecksum -Encoding ASCII
     }
     else {
         $resolvedArchive = (Resolve-Path -LiteralPath $RuntimeArchive).Path
