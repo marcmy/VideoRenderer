@@ -65,7 +65,10 @@
   published and never overwritten. Do not create per-renderer runtime prereleases.
 - Never delete historical releases or their tags without explicit user approval
   of a concrete inventory/compatibility plan. New releases are verified before any
-  latest promotion; publication must not delete their predecessor.
+  latest promotion. Preserve predecessors by default. Only explicitly approved
+  `MPCVR_KEEP_ONE_RELEASE=true` retention may remove an older verified renderer
+  release after replacement verification, recovery archival and source/latest guards.
+  Its CI recovery packages expire after 90 days; download them for permanent retention.
 - Use `dev.ps1` and the documented commands in `docs/development/workflow.md`.
   Put transient outputs in `_artifacts`; preserve older diagnostic history.
 
