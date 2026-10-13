@@ -16,6 +16,27 @@ assert process.index('cudaOutput->Export(', process.index('if (cudaOutput && !en
 assert native < process.index('return ResizeShaderPass(*pInputTexture', native)
 assert 'if (!rifeSourcePreparation)' in process[:process.index('if (m_pFrameInterpolationTexture')]
 
+# Preserve source VSR when no final upscale can run. Use the same eligibility
+# policy as final presentation, with content geometry and the real video rect.
+# Successful disable returns S_FALSE, so restoration must track SUCCEEDED.
+source_request = bridge[bridge.index('void CDX11VideoProcessor::UpdateRifeVsrSourceRequest('):bridge.index('bool CDX11VideoProcessor::GetRifeVsrProbeDecoderInput(')]
+assert 'GetRifeVsrInputProbeMode' not in source_request
+assert 'if (rifeSourcePreparation)' in source_request
+assert 'GetRifeContentSize()' in source_request
+assert 'CanUseRifeVideoProcessorUpscale(requested, maxineSelected, rgbSdr,' in source_request
+assert 'm_videoRect.Width()' in source_request and 'm_videoRect.Height()' in source_request
+assert 'GetRifeSurfaceFormat() == DXGI_FORMAT_B8G8R8A8_UNORM' in source_request
+assert 'm_VendorId == PCIV_NVIDIA && m_bVPScaling && m_bVPUseSuperRes' in source_request
+assert 'm_iMaxineOperation != MAXINE_OPERATION_Disabled' in source_request
+assert '!SourceIsHDR() && !m_bVPUseRTXVideoHDR' in source_request
+disable, restore = source_request.split('} else if (m_bRifeVsrSourceDisabled)', 1)
+assert 'SUCCEEDED(m_D3D11VP.SetSuperRes(SUPERRES_Disable))' in disable
+assert 'm_bVPUseSuperRes =' not in disable
+assert 'm_D3D11VP.SetSuperRes(preset)' in restore
+assert 'm_iVPSuperRes : SUPERRES_Disable' in restore
+assert 'm_bRifeVsrSourceDisabled = false' in restore
+assert 'if (!m_pFrameInterpolationTexture) UpdateRifeVsrSourceRequest(rifeSourcePreparation)' in process[:process.index('if (m_pFrameInterpolationTexture &&')]
+
 native = bridge[bridge.index('bool CDX11VideoProcessor::TryRifeVideoProcessorUpscale('):bridge.index('DXGI_FORMAT CDX11VideoProcessor::GetRifeSurfaceFormat')]
 assert 'm_iMaxineOperation != MAXINE_OPERATION_Disabled' in native
 assert 'input.desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM' in native

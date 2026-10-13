@@ -115,7 +115,8 @@ private:
 	// Local diagnostic builds only; registry selection is ignored in normal builds.
 	DWORD m_RifeVsrInputProbeMode = 0;
 	ULONGLONG m_RifeVsrInputProbeReadTick = 0;
-	bool m_bRifeVsrProbeSourceDisabled = false;
+	// Source preparation suppresses VSR without clearing the final-upscale request.
+	bool m_bRifeVsrSourceDisabled = false;
 	CSize m_RifeUpscaleOutputSize;
 	int m_RifeUpscaleSuperRes = SUPERRES_Disable;
 	bool m_bRifeUpscaleAttempted = false;
@@ -502,7 +503,7 @@ private:
 	HRESULT Process(ID3D11Texture2D* pRenderTarget, const CRect& srcRect, const CRect& dstRect, const bool second,
 		const bool rifeSourcePreparation = false);
 	DWORD GetRifeVsrInputProbeMode();
-	void UpdateRifeVsrProbeSourceRequest(bool rifeSourcePreparation);
+	void UpdateRifeVsrSourceRequest(bool rifeSourcePreparation);
 	bool GetRifeVsrProbeDecoderInput(CComPtr<ID3D11Texture2D>& texture,
 		CComPtr<IMediaSample>& sample, UINT& arraySlice);
 

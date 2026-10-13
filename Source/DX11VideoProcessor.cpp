@@ -4504,7 +4504,7 @@ void CDX11VideoProcessor::DrawSubtitles(ID3D11Texture2D* pRenderTarget)
 HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect& srcRect, const CRect& dstRect,
 		const bool second, const bool rifeSourcePreparation)
 {
-	if (!m_pFrameInterpolationTexture) UpdateRifeVsrProbeSourceRequest(rifeSourcePreparation);
+	if (!m_pFrameInterpolationTexture) UpdateRifeVsrSourceRequest(rifeSourcePreparation);
 	m_bMaxineAmountPending = false;
 	m_bMaxineAmountBaselineOriented = false;
 	m_MaxineAmountExpectedTexture = nullptr;

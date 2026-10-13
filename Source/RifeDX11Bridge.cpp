@@ -28,21 +28,32 @@ DWORD CDX11VideoProcessor::GetRifeVsrInputProbeMode()
 #endif
 }
 
-void CDX11VideoProcessor::UpdateRifeVsrProbeSourceRequest(const bool rifeSourcePreparation)
+void CDX11VideoProcessor::UpdateRifeVsrSourceRequest(const bool rifeSourcePreparation)
 {
-    const bool suppress = GetRifeVsrInputProbeMode() && rifeSourcePreparation
-        && m_VendorId == PCIV_NVIDIA && m_bVPScaling && m_bVPUseSuperRes
-        && m_iMaxineOperation == MAXINE_OPERATION_Disabled
-        && !SourceIsHDR() && !m_bVPUseRTXVideoHDR;
+    bool suppress = false;
+    if (rifeSourcePreparation) {
+        // Disable the source request only when the final RIFE path is eligible
+        // to own VSR. At 1:1 size, downscaling, or unsupported precision/HDR,
+        // that path is skipped; retain the working source request instead.
+        const auto content = GetRifeContentSize();
+        const bool requested = m_VendorId == PCIV_NVIDIA && m_bVPScaling && m_bVPUseSuperRes;
+        const bool maxineSelected = m_iMaxineOperation != MAXINE_OPERATION_Disabled;
+        const bool rgbSdr = GetRifeSurfaceFormat() == DXGI_FORMAT_B8G8R8A8_UNORM
+            && !SourceIsHDR() && !m_bVPUseRTXVideoHDR;
+        suppress = CanUseRifeVideoProcessorUpscale(requested, maxineSelected, rgbSdr,
+            {static_cast<uint32_t>(std::max<LONG>(0, content.cx)), static_cast<uint32_t>(std::max<LONG>(0, content.cy))},
+            {static_cast<uint32_t>(std::max<LONG>(0, m_videoRect.Width())), static_cast<uint32_t>(std::max<LONG>(0, m_videoRect.Height()))});
+    }
     if (suppress) {
-        // Disable even after VP reinitialization. Keep the accepted user request
-        // flag: it still enables the independent post-RIFE comparison processor.
-        m_bRifeVsrProbeSourceDisabled = m_D3D11VP.SetSuperRes(SUPERRES_Disable) == S_OK;
-    } else if (m_bRifeVsrProbeSourceDisabled) {
+        // S_FALSE means the extension was accepted with enhancement disabled.
+        // Retain the requested final-upscale flag and track successful disable
+        // so ordinary source rendering can restore the selected VSR preset.
+        m_bRifeVsrSourceDisabled = SUCCEEDED(m_D3D11VP.SetSuperRes(SUPERRES_Disable));
+    } else if (m_bRifeVsrSourceDisabled) {
         const int preset = m_bVPScaling && m_iMaxineOperation == MAXINE_OPERATION_Disabled
             ? m_iVPSuperRes : SUPERRES_Disable;
         m_bVPUseSuperRes = m_D3D11VP.SetSuperRes(preset) == S_OK;
-        m_bRifeVsrProbeSourceDisabled = false;
+        m_bRifeVsrSourceDisabled = false;
     }
 }
 
@@ -80,7 +91,7 @@ bool CDX11VideoProcessor::TryRifeVideoProcessorUpscale(Tex2D_t& input,
     CComPtr<IMediaSample> decodedOwner;
     UINT decodedSlice = 0;
     if (probeMode) {
-        if (!m_bRifeVsrProbeSourceDisabled) {
+        if (!m_bRifeVsrSourceDisabled) {
             m_strRifeUpscaleStatus = L"input probe waiting for source VSR suppression";
             return false;
         }

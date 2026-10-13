@@ -5,6 +5,14 @@
 
 int main()
 {
+    // 2849 suppressed source VSR even when final presentation skipped its VP.
+    // A source request must remain available for 1:1 and downscaled playback.
+    assert(!CanUseRifeVideoProcessorUpscale(true, false, true, {1920, 1080}, {1920, 1080}));
+    assert(!CanUseRifeVideoProcessorUpscale(true, false, true, {1920, 1080}, {1694, 953}));
+    assert(!CanUseRifeVideoProcessorUpscale(true, false, true, {1920, 1080}, {2560, 1080}));
+    assert(CanUseRifeVideoProcessorUpscale(true, false, true, {1280, 720}, {1920, 1080}));
+    assert(CanUseRifeVideoProcessorUpscale(true, false, true, {1920, 1080}, {2560, 1440}));
+
     // Exact reported clip: preserve RIFE's content and padding, but restore
     // the encoded proportions for the driver input. Final display size is
     // independent of the declared source aspect and the NV12 input size.
