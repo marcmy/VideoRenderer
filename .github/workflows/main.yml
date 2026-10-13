@@ -73,4 +73,13 @@ jobs:
       - name: Verify and publish this source revision, then guard latest promotion
         env:
           GH_TOKEN: ${{ github.token }}
+          MPCVR_KEEP_ONE_RELEASE: ${{ vars.MPCVR_KEEP_ONE_RELEASE }}
         run: python tools/Dev/release.py publish --directory release
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: previous-renderer-recovery
+          path: _artifacts/release-retention/
+          compression-level: 0
+          if-no-files-found: ignore
+          retention-days: 90

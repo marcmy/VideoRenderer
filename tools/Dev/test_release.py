@@ -1,5 +1,6 @@
 """Offline publication safety and package contracts; no GitHub writes or GPU work."""
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -11,6 +12,50 @@ import release
 
 
 class PublicationTests(unittest.TestCase):
+    def test_retention_is_disabled_without_explicit_policy(self):
+        with patch.dict(os.environ,{},clear=True), patch.object(release,'gh') as call:
+            release.retain_one({})
+        call.assert_not_called()
+
+    def test_retention_preserves_current_legacy_and_unreviewed_sources(self):
+        current={'releaseTag':'v0.10.9.2605-maxine-rife.2854','commit':'new','revision':2854}
+        older='v0.10.9.2605-maxine-rife.2853'
+        entries=[{'id':2,'tag_name':current['releaseTag'],'draft':False,'prerelease':False},
+                 {'id':1,'tag_name':older,'draft':False,'prerelease':False},
+                 {'id':3,'tag_name':'maxine-rife-1322','draft':False,'prerelease':False},
+                 {'id':4,'tag_name':'v0.10.9.2605-maxine-rife.2852','draft':True,'prerelease':False}]
+        def response(*args):
+            endpoint=args[1]
+            if endpoint.endswith('/releases/latest'): return json.dumps({'id':2,'tag_name':current['releaseTag']})
+            if endpoint.endswith('/releases'): return json.dumps([entries])
+            if '/git/ref/tags/' in endpoint: return json.dumps({'ref':'refs/tags/'+older})
+            if endpoint.endswith('/commits/master'): return json.dumps({'sha':'new'})
+            raise AssertionError(endpoint)
+        with tempfile.TemporaryDirectory(prefix='mpcvr-release-test-') as directory, \
+             patch.dict(os.environ,{'MPCVR_KEEP_ONE_RELEASE':'true'}), patch.object(release,'ROOT',Path(directory)), \
+             patch.object(release,'gh',side_effect=response), \
+             patch.object(release,'published',return_value={'commit':'old','revision':2853}) as verify, \
+             patch.object(release.subprocess,'run') as call:
+            call.return_value.returncode=0
+            release.retain_one(current)
+            self.assertEqual(verify.call_count,1)
+            deletes=[c.args[0] for c in call.call_args_list if 'DELETE' in c.args[0]]
+            self.assertEqual(len(deletes),2)
+            self.assertTrue(any(c[-1].endswith('/releases/1') for c in deletes))
+            self.assertTrue((Path(directory)/'_artifacts/release-retention'/older/'recovery.json').exists())
+        # A source advance during verification must prevent all destructive calls.
+        def moved(*args):
+            if args[1].endswith('/commits/master'): return '{"sha":"advanced"}'
+            return response(*args)
+        with tempfile.TemporaryDirectory(prefix='mpcvr-release-test-') as directory, \
+             patch.dict(os.environ,{'MPCVR_KEEP_ONE_RELEASE':'true'}), patch.object(release,'ROOT',Path(directory)), \
+             patch.object(release,'gh',side_effect=moved), \
+             patch.object(release,'published',return_value={'commit':'old','revision':2853}), \
+             patch.object(release.subprocess,'run') as call:
+            call.return_value.returncode=0
+            with self.assertRaisesRegex(ValueError,'Master advanced'): release.retain_one(current)
+            self.assertFalse(any('DELETE' in c.args[0] for c in call.call_args_list))
+
     def test_creation_uses_api_response_even_when_list_is_not_updated(self):
         draft={'id':123,'draft':True,'assets':[]}
         with patch.object(dependencies.subprocess,'check_output',return_value=json.dumps(draft).encode()) as call:

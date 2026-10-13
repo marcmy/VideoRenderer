@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import urllib.request
 import zipfile
@@ -142,6 +143,32 @@ def published(tag=None, expected_commit=None, directory=None):
     return version
 
 
+def retain_one(version):
+    """Explicitly approved policy only; never applies to legacy or dependency tags."""
+    if os.environ.get('MPCVR_KEEP_ONE_RELEASE')!='true': return
+    latest=json.loads(gh('api',f'repos/{REPO}/releases/latest'))
+    if latest['tag_name']!=version['releaseTag']: raise ValueError('Replacement is not the verified latest release')
+    pages=json.loads(gh('api',f'repos/{REPO}/releases','--paginate','--slurp'))
+    for entry in [r for page in pages for r in page]:
+        tag=entry['tag_name']
+        if tag==version['releaseTag'] or entry['draft'] or entry['prerelease'] or not re.fullmatch(r'v\d+\.\d+\.\d+\.\d+-maxine-rife\.\d+',tag): continue
+        archive=ROOT/'_artifacts/release-retention'/tag
+        previous=published(tag,directory=archive)
+        if previous['revision']>=version['revision']: raise ValueError('Ambiguous release order; preserve both versions for review')
+        # Preserve non-ancestor sources rather than removing experimental history.
+        ancestry=subprocess.run(['git','-C',str(ROOT),'merge-base','--is-ancestor',previous['commit'],version['commit']],capture_output=True)
+        if ancestry.returncode: continue
+        ref=json.loads(gh('api',f'repos/{REPO}/git/ref/tags/'+tag))
+        dependencies.write_json(archive/'recovery.json',{'replacement':version,'release':entry,'tagRef':ref,'previousVersion':previous})
+        if json.loads(gh('api',f'repos/{REPO}/commits/master'))['sha']!=version['commit']:
+            raise ValueError('Master advanced; keep previous releases')
+        if json.loads(gh('api',f'repos/{REPO}/releases/latest'))['id']!=latest['id']:
+            raise ValueError('Latest changed; keep previous releases')
+        subprocess.run(['gh','api','--method','DELETE',f'repos/{REPO}/releases/{entry["id"]}'],check=True)
+        subprocess.run(['gh','api','--method','DELETE',f'repos/{REPO}/git/refs/tags/'+tag],check=True)
+        print('Approved retention removed the previous verified renderer release: '+tag)
+
+
 def publish(directory):
     version=verify_package(directory, release=True)
     current=json.loads(gh('api',f'repos/{REPO}/commits/master'))['sha']
@@ -154,6 +181,7 @@ def publish(directory):
             published(tag, version['commit'])
             if json.loads(gh('api',f'repos/{REPO}/commits/master'))['sha']==version['commit']:
                 subprocess.run(['gh','release','edit',tag,'--repo',REPO,'--latest'],check=True)
+                retain_one(version)
             print('Existing verified source release reused; no version change or asset overwrite.'); return
     else:
         notes=(f'**Recommended: MPCVR-Setup.zip** — installs the renderer and restore/update shortcuts, detects the NVIDIA GPU, and fetches only checksum-verified, pinned dependencies.\n\n'
@@ -173,6 +201,7 @@ def publish(directory):
     published(tag,version['commit'])
     if json.loads(gh('api',f'repos/{REPO}/commits/master'))['sha']==version['commit']:
         subprocess.run(['gh','release','edit',tag,'--repo',REPO,'--latest'],check=True)
+        retain_one(version)
 
 
 if __name__=='__main__':
