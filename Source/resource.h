@@ -14,6 +14,7 @@
 #define IDF_HLSL_ST2084                 501
 #define IDF_HLSL_HLG                    502
 #define IDF_HLSL_HDR_TONE_MAPPING       503
+#define IDF_HLSL_HDR_TONE_MAPPING_SPLINE 504
 #define IDF_PS_9_CONVERT_COLOR          610
 #define IDF_PS_9_CONVERT_YUY2           613
 #define IDF_PS_9_CONVERT_BIPLANAR       616
@@ -21,6 +22,8 @@
 #define IDF_PS_9_CONVERT_PLANAR_YV      620
 #define IDF_PS_9_FIXCONVERT_PQ_TO_SDR   630
 #define IDF_PS_9_FIXCONVERT_HLG_TO_SDR  631
+#define IDF_PS_9_FIXCONVERT_PQ_TO_SDR_TM 634
+#define IDF_PS_9_FIXCONVERT_HLG_TO_SDR_TM 635
 #define IDF_PS_9_FIX_YCGCO              632
 #define IDF_PS_9_FIX_BT2020             633
 #define IDF_PS_9_INTERP_MITCHELL4_X     640
@@ -61,6 +64,8 @@
 #define IDF_PS_11_FIXCONVERT_HLG_TO_SDR 831
 #define IDF_PS_11_FIX_YCGCO             832
 #define IDF_PS_11_FIX_BT2020            833
+#define IDF_PS_11_CONVERT_PQ_TO_SDR_TM  834
+#define IDF_PS_11_FIXCONVERT_PQ_TO_SDR_TM 839
 #define IDF_PS_11_CONVERT_HLG_TO_PQ     835
 #define IDF_PS_11_CONVERT_BITMAP_TO_PQ  836
 #define IDF_PS_11_CONVERT_BITMAP_TO_PQ1 837
@@ -92,7 +97,8 @@
 #define IDF_PS_11_FINAL_PASS             880
 #define IDF_PS_11_FINAL_PASS_10          881
 #define IDF_PS_11_HDR10_TONEMAP         882
-#define IDF_PS_11_TEST                   900
+#define IDF_PS_11_FIXCONVERT_HLG_TO_SDR_TM 888
+#define IDF_PS_11_TEST                  900
 #define IDC_EDIT1                       1001
 #define IDC_EDIT2                       1002
 #define IDC_EDIT_DISPLAYMAX             1003
@@ -208,6 +214,8 @@
 #define IDC_STATIC_MAXINE_STRENGTH       1124
 #define IDC_MAXINE_AMOUNT                1125
 #define IDC_STATIC_MAXINE_AMOUNT         1126
+#define IDC_STATIC_SDRTM                1066
+#define IDC_COMBO_SDRTM                 1067
 
 // Next default values for new objects
 // 
@@ -215,7 +223,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        109
 #define _APS_NEXT_COMMAND_VALUE         40001
-#define _APS_NEXT_CONTROL_VALUE         1129
+#define _APS_NEXT_CONTROL_VALUE         1134
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

@@ -13,6 +13,7 @@ int wmain(int argc, wchar_t** argv)
     const auto* resourceTemplate = static_cast<const DLGTEMPLATE*>(LockResource(LoadResource(module, resource)));
     assert(resourceTemplate);
     Settings_t settings;
+    assert(settings.iSdrToneMappingType == SDRTM_Metadata);
     assert(settings.iRifeSceneDetection == RIFE_SCENE_SVPflow1);
     assert(settings.iRifeProcessingResolution == RIFE_RESOLUTION_Source);
     assert(settings.iRifeProcessingLimit == 720);
@@ -77,7 +78,24 @@ int wmain(int argc, wchar_t** argv)
         MapWindowPoints(nullptr, dialog, reinterpret_cast<POINT*>(&rect), 2);
         assert(rect.left >= 0 && rect.top >= 0 && rect.right <= client.right && rect.bottom <= client.bottom);
     }
+    const HRSRC mainResource = FindResourceW(module, MAKEINTRESOURCEW(IDD_MAINPROPPAGE), RT_DIALOG);
+    assert(mainResource);
+    const auto* mainTemplate = static_cast<const DLGTEMPLATE*>(LockResource(LoadResource(module, mainResource)));
+    const HWND mainPage = CreateDialogIndirectParamW(module, mainTemplate, dialog,
+        [](HWND, UINT, WPARAM, LPARAM) -> INT_PTR { return FALSE; }, 0);
+    assert(mainPage && !IsWindowVisible(mainPage));
+    for (const int id : {IDC_COMBO_SDRTM, IDC_STATIC_SDRTM, IDC_CHECK19,
+            IDC_BUTTON_MAXINE, IDC_BUTTON_FRAMEINTERPOLATION}) {
+        assert(GetDlgItem(mainPage, id));
+    }
+    RECT method = {}, nits = {}, swap = {}, rtx = {};
+    assert(GetWindowRect(GetDlgItem(mainPage, IDC_COMBO_SDRTM), &method));
+    assert(GetWindowRect(GetDlgItem(mainPage, IDC_EDIT1), &nits));
+    assert(GetWindowRect(GetDlgItem(mainPage, IDC_COMBO4), &swap));
+    assert(GetWindowRect(GetDlgItem(mainPage, IDC_CHECK19), &rtx));
+    assert(method.top >= nits.bottom && method.bottom <= swap.top && method.top >= rtx.bottom);
+    DestroyWindow(mainPage);
     DestroyWindow(dialog);
     FreeLibrary(module);
-    std::cout << "Compiled dialog: selections, defaults, saved-value mapping, limit enablement and bounds passed\n";
+    std::cout << "Compiled dialog: selections, defaults, saved-value mapping, limit enablement, bounds and HDR/RTX control layout passed\n";
 }
