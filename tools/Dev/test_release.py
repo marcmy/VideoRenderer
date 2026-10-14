@@ -1,6 +1,7 @@
 """Offline publication safety and package contracts; no GitHub writes or GPU work."""
 import json
 import base64
+import hashlib
 import os
 import shutil
 import subprocess
@@ -157,11 +158,11 @@ class DependencyApprovalTests(unittest.TestCase):
                 call.assert_not_called()
 
     def test_grant_pins_every_checkout_and_builder_with_guarded_file_update(self):
-        current={'sha':'existing-workflow-blob','content':base64.b64encode(b'previous workflow').decode()}
+        current={'sha':'existing-workflow-blob','content':base64.b64encode(self.template.replace('__APPROVED_SOURCE_REF__',self.approved).encode()).decode()}
         with patch.object(dependencies.subprocess,'run') as write, \
              patch.object(dependencies.subprocess,'check_output',side_effect=[
-                 (self.candidate+'\n').encode(),b'',b'[]',b'{"sha":"main-snapshot"}',
-                 json.dumps(current).encode(),b'{"commit":{"sha":"approved-config"}}']) as read:
+                 (self.candidate+'\n').encode(),b'',b'{"sha":"main-snapshot"}',
+                 json.dumps(current).encode(),b'[]',b'{"commit":{"sha":"approved-config"}}']) as read:
             write.return_value.returncode=0
             tag=dependencies.approve_workflow(self.candidate)
         self.assertEqual(write.call_count,2) # Source existence, then immutable tag POST.
@@ -178,37 +179,40 @@ class DependencyApprovalTests(unittest.TestCase):
         self.assertLess(rendered.index('approve-source'),rendered.index('dependencies.py plan'))
         self.assertIn("github.ref == 'refs/heads/main'",rendered)
         self.assertEqual(rendered.count('persist-credentials: false'),3)
-        self.assertEqual(tag,'dependency-source-'+self.candidate)
+        self.assertEqual(tag,'dependency-source-'+self.candidate+'-'+hashlib.sha256(rendered.encode()).hexdigest()[:16])
         self.assertEqual(json.loads(write.call_args.kwargs['input']),
                          {'ref':'refs/tags/'+tag,'sha':'approved-config'})
 
     def test_matching_grant_is_no_op_and_conflicting_update_fails(self):
         rendered=self.template.replace('__APPROVED_SOURCE_REF__',self.candidate)
         current={'sha':'existing-blob','content':base64.b64encode(rendered.encode()).decode()}
-        refs=[{'ref':'refs/tags/dependency-source-'+self.candidate,
+        tag='dependency-source-'+self.candidate+'-'+hashlib.sha256(rendered.encode()).hexdigest()[:16]
+        refs=[{'ref':'refs/tags/'+tag,
                'object':{'type':'commit','sha':'approved-config'}}]
         with patch.object(dependencies.subprocess,'run') as write, \
              patch.object(dependencies.subprocess,'check_output',side_effect=[
-                 (self.candidate+'\n').encode(),b'',json.dumps(refs).encode(),json.dumps(current).encode()]):
-            self.assertEqual(dependencies.approve_workflow(self.candidate),'dependency-source-'+self.candidate)
+                 (self.candidate+'\n').encode(),b'',b'{"sha":"main-snapshot"}',json.dumps(current).encode(),
+                 json.dumps(refs).encode(),json.dumps(current).encode()]):
+            self.assertEqual(dependencies.approve_workflow(self.candidate),tag)
         self.assertEqual(write.call_count,1) # Read-only source existence check only.
-        current['content']=base64.b64encode(b'previous workflow').decode()
+        previous={'sha':'existing-blob','content':base64.b64encode(self.template.replace('__APPROVED_SOURCE_REF__',self.approved).encode()).decode()}
         with patch.object(dependencies.subprocess,'run') as write, \
              patch.object(dependencies.subprocess,'check_output',side_effect=[
-                 (self.candidate+'\n').encode(),b'',b'[]',b'{"sha":"main-snapshot"}',
-                 json.dumps(current).encode(),subprocess.CalledProcessError(1,['gh'])]), \
+                 (self.candidate+'\n').encode(),b'',b'{"sha":"main-snapshot"}',
+                 json.dumps(previous).encode(),b'[]',subprocess.CalledProcessError(1,['gh'])]), \
              self.assertRaises(subprocess.CalledProcessError):
             dependencies.approve_workflow(self.candidate)
         self.assertEqual(write.call_count,1) # No tag after a conflicting workflow update.
         with patch.object(dependencies.subprocess,'run') as write, \
              patch.object(dependencies.subprocess,'check_output',side_effect=[
-                 (self.candidate+'\n').encode(),b'',json.dumps(refs).encode(),json.dumps(current).encode()]), \
+                 (self.candidate+'\n').encode(),b'',b'{"sha":"main-snapshot"}',json.dumps(current).encode(),
+                 json.dumps(refs).encode(),json.dumps(previous).encode()]), \
              self.assertRaisesRegex(ValueError,'never replace'):
             dependencies.approve_workflow(self.candidate)
         self.assertEqual(write.call_count,1) # Never retarget a conflicting approval tag.
 
     def test_concurrent_approval_cannot_change_dispatch_configuration(self):
-        tag='dependency-source-'+self.candidate
+        tag='dependency-source-'+self.candidate+'-'+'c'*16
         mutable_main={'source':self.candidate}
         def approve(_):
             # Another maintainer completes approval B between A's approval and dispatch.
@@ -221,6 +225,24 @@ class DependencyApprovalTests(unittest.TestCase):
         self.assertEqual(args[args.index('--ref')+1],tag)
         self.assertIn('source_ref='+self.candidate,args)
         self.assertNotEqual(mutable_main['source'],self.candidate)
+
+    def test_action_updates_survive_source_approval_without_copying_other_controls(self):
+        old='3d3c42e5aac5ba805825da76410c181273ba90b1'
+        updated=self.template.replace(old,'e'*40).replace('contents: read','contents: write')
+        updated=updated.replace('ref: __APPROVED_SOURCE_REF__','ref: ${{ inputs.source_ref }}')
+        rendered=dependencies.preserve_action_pins(self.template,updated)
+        self.assertEqual(rendered.count('actions/checkout@'+'e'*40),3)
+        self.assertNotIn('ref: ${{ inputs.source_ref }}',rendered)
+        self.assertEqual(rendered.count('contents: write'),1)
+        self.assertNotEqual(hashlib.sha256(rendered.encode()).hexdigest(),hashlib.sha256(self.template.encode()).hexdigest())
+
+    def test_floating_missing_or_inconsistent_action_pins_are_rejected(self):
+        old='3d3c42e5aac5ba805825da76410c181273ba90b1'
+        bad=[self.template.replace(old,'v7'),self.template.replace('actions/download-artifact','actions/unknown'),
+             self.template.replace(old,'e'*40,1)]
+        for current in bad:
+            with self.subTest(current=current[:60]), self.assertRaises(ValueError):
+                dependencies.preserve_action_pins(self.template,current)
 
     def test_unknown_component_never_approves_or_dispatches(self):
         with patch.object(dependencies,'approve_workflow') as approve, \
