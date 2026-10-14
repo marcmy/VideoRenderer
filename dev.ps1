@@ -157,9 +157,7 @@ try {
             if ((& git status --porcelain).Count) { throw 'Dependency publishing requires a committed source revision.' }
             Fetch-State
             $sha=(& git rev-parse HEAD).Trim()
-            Run-Python @('tools/Dev/dependencies.py','approve-workflow','--source-ref',$sha)
-            & gh workflow run publish.yml --repo marcmy/VideoRenderer-Dependencies --ref main -f "component=$Component" -f "source_ref=$sha"
-            if ($LASTEXITCODE -ne 0) { throw 'Dependency workflow dispatch failed.' }
+            Run-Python @('tools/Dev/dependencies.py','approve-workflow','--source-ref',$sha,'--component',$Component)
             Write-Host 'Dependency publishing dispatched separately. After validation, refresh the lock with dependencies.py plan and lock, review and publish the source update.'
         }
     }

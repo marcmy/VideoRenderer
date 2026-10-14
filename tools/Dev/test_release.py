@@ -160,10 +160,12 @@ class DependencyApprovalTests(unittest.TestCase):
         current={'sha':'existing-workflow-blob','content':base64.b64encode(b'previous workflow').decode()}
         with patch.object(dependencies.subprocess,'run') as write, \
              patch.object(dependencies.subprocess,'check_output',side_effect=[
-                 (self.candidate+'\n').encode(),b'',json.dumps(current).encode()]):
-            dependencies.approve_workflow(self.candidate)
-        self.assertEqual(write.call_count,2) # Source existence, then guarded workflow PUT.
-        body=json.loads(write.call_args.kwargs['input'])
+                 (self.candidate+'\n').encode(),b'',b'[]',b'{"sha":"main-snapshot"}',
+                 json.dumps(current).encode(),b'{"commit":{"sha":"approved-config"}}']) as read:
+            write.return_value.returncode=0
+            tag=dependencies.approve_workflow(self.candidate)
+        self.assertEqual(write.call_count,2) # Source existence, then immutable tag POST.
+        body=json.loads(read.call_args.kwargs['input'])
         rendered=base64.b64decode(body['content']).decode()
         self.assertEqual(body['sha'],current['sha'])
         self.assertEqual(body['branch'],'main')
@@ -176,21 +178,55 @@ class DependencyApprovalTests(unittest.TestCase):
         self.assertLess(rendered.index('approve-source'),rendered.index('dependencies.py plan'))
         self.assertIn("github.ref == 'refs/heads/main'",rendered)
         self.assertEqual(rendered.count('persist-credentials: false'),3)
+        self.assertEqual(tag,'dependency-source-'+self.candidate)
+        self.assertEqual(json.loads(write.call_args.kwargs['input']),
+                         {'ref':'refs/tags/'+tag,'sha':'approved-config'})
 
     def test_matching_grant_is_no_op_and_conflicting_update_fails(self):
         rendered=self.template.replace('__APPROVED_SOURCE_REF__',self.candidate)
         current={'sha':'existing-blob','content':base64.b64encode(rendered.encode()).decode()}
+        refs=[{'ref':'refs/tags/dependency-source-'+self.candidate,
+               'object':{'type':'commit','sha':'approved-config'}}]
         with patch.object(dependencies.subprocess,'run') as write, \
              patch.object(dependencies.subprocess,'check_output',side_effect=[
-                 (self.candidate+'\n').encode(),b'',json.dumps(current).encode()]):
-            dependencies.approve_workflow(self.candidate)
+                 (self.candidate+'\n').encode(),b'',json.dumps(refs).encode(),json.dumps(current).encode()]):
+            self.assertEqual(dependencies.approve_workflow(self.candidate),'dependency-source-'+self.candidate)
         self.assertEqual(write.call_count,1) # Read-only source existence check only.
         current['content']=base64.b64encode(b'previous workflow').decode()
-        with patch.object(dependencies.subprocess,'run',side_effect=[None,subprocess.CalledProcessError(1,['gh'])]), \
+        with patch.object(dependencies.subprocess,'run') as write, \
              patch.object(dependencies.subprocess,'check_output',side_effect=[
-                 (self.candidate+'\n').encode(),b'',json.dumps(current).encode()]), \
+                 (self.candidate+'\n').encode(),b'',b'[]',b'{"sha":"main-snapshot"}',
+                 json.dumps(current).encode(),subprocess.CalledProcessError(1,['gh'])]), \
              self.assertRaises(subprocess.CalledProcessError):
             dependencies.approve_workflow(self.candidate)
+        self.assertEqual(write.call_count,1) # No tag after a conflicting workflow update.
+        with patch.object(dependencies.subprocess,'run') as write, \
+             patch.object(dependencies.subprocess,'check_output',side_effect=[
+                 (self.candidate+'\n').encode(),b'',json.dumps(refs).encode(),json.dumps(current).encode()]), \
+             self.assertRaisesRegex(ValueError,'never replace'):
+            dependencies.approve_workflow(self.candidate)
+        self.assertEqual(write.call_count,1) # Never retarget a conflicting approval tag.
+
+    def test_concurrent_approval_cannot_change_dispatch_configuration(self):
+        tag='dependency-source-'+self.candidate
+        mutable_main={'source':self.candidate}
+        def approve(_):
+            # Another maintainer completes approval B between A's approval and dispatch.
+            mutable_main['source']='b'*40
+            return tag
+        with patch.object(dependencies,'approve_workflow',side_effect=approve), \
+             patch.object(dependencies.subprocess,'run') as call:
+            dependencies.dispatch_dependency(self.candidate,'maxine')
+        args=call.call_args.args[0]
+        self.assertEqual(args[args.index('--ref')+1],tag)
+        self.assertIn('source_ref='+self.candidate,args)
+        self.assertNotEqual(mutable_main['source'],self.candidate)
+
+    def test_unknown_component_never_approves_or_dispatches(self):
+        with patch.object(dependencies,'approve_workflow') as approve, \
+             patch.object(dependencies.subprocess,'run') as call, self.assertRaises(ValueError):
+            dependencies.dispatch_dependency(self.candidate,'unknown')
+        approve.assert_not_called();call.assert_not_called()
 
     def test_dirty_or_unpushed_source_never_changes_workflow(self):
         with patch.object(dependencies.subprocess,'check_output',side_effect=[

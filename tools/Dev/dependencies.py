@@ -64,16 +64,45 @@ def approve_workflow(source_ref):
         raise ValueError('Dependency workflow template is missing its source grant')
     content = template.replace('__APPROVED_SOURCE_REF__', source_ref)
     endpoint = f'repos/{REPO}/contents/.github/workflows/publish.yml'
-    current = json.loads(subprocess.check_output(['gh','api',endpoint+'?ref=main']))
-    if base64.b64decode(current['content']).decode() == content:
-        print('Dependency workflow already approves source '+source_ref)
-        return
-    body = {'message':'Approve dependency source and builder recipes '+source_ref,
-            'content':base64.b64encode(content.encode()).decode(),
-            'sha':current['sha'],'branch':'main'}
-    subprocess.run(['gh','api','--method','PUT',endpoint,'--input','-'],
-                   input=json.dumps(body).encode(),check=True,stdout=subprocess.DEVNULL)
-    print('Dependency workflow source grant committed: '+source_ref)
+    tag = 'dependency-source-' + source_ref
+
+    def verify_existing_grant():
+        refs = json.loads(subprocess.check_output(['gh','api',f'repos/{REPO}/git/matching-refs/tags/{tag}']))
+        exact = [ref for ref in refs if ref['ref'] == 'refs/tags/' + tag]
+        if not exact: return False
+        if len(exact) != 1 or exact[0]['object']['type'] != 'commit':
+            raise ValueError('Conflicting dependency source approval tag')
+        existing = json.loads(subprocess.check_output(['gh','api',endpoint+'?ref='+exact[0]['object']['sha']]))
+        if base64.b64decode(existing['content']).decode() != content:
+            raise ValueError('Existing dependency source grant has different workflow content; never replace it')
+        return True
+
+    if verify_existing_grant():
+        print('Reusing dependency source approval: '+tag)
+        return tag
+    # Read a fixed configuration snapshot so even the no-change path cannot race main.
+    approved_commit = json.loads(subprocess.check_output(['gh','api',f'repos/{REPO}/commits/main']))['sha']
+    current = json.loads(subprocess.check_output(['gh','api',endpoint+'?ref='+approved_commit]))
+    if base64.b64decode(current['content']).decode() != content:
+        body = {'message':'Approve dependency source and builder recipes '+source_ref,
+                'content':base64.b64encode(content.encode()).decode(),
+                'sha':current['sha'],'branch':'main'}
+        result = json.loads(subprocess.check_output(['gh','api','--method','PUT',endpoint,'--input','-'],
+                                                   input=json.dumps(body).encode()))
+        approved_commit = result['commit']['sha']
+    body = {'ref':'refs/tags/'+tag,'sha':approved_commit}
+    result = subprocess.run(['gh','api','--method','POST',f'repos/{REPO}/git/refs','--input','-'],
+                            input=json.dumps(body).encode(),capture_output=True)
+    if result.returncode and not verify_existing_grant():
+        raise subprocess.CalledProcessError(result.returncode,result.args,output=result.stdout,stderr=result.stderr)
+    print('Dependency source approval pinned: '+tag)
+    return tag
+
+def dispatch_dependency(source_ref, component):
+    if component not in RECIPES: raise ValueError('Unknown dependency component')
+    tag = approve_workflow(source_ref)
+    subprocess.run(['gh','workflow','run','publish.yml','--repo',REPO,'--ref',tag,
+                    '-f','component='+component,'-f','source_ref='+source_ref],check=True)
 
 def digest(path):
     result = hashlib.sha256()
@@ -400,7 +429,7 @@ def main():
     p=commands.add_parser('prepare-component');p.add_argument('--component',choices=RECIPES,required=True);p.add_argument('--directory',required=True)
     p=commands.add_parser('plan');p.add_argument('--directory',required=True);p.add_argument('--github-output')
     p=commands.add_parser('approve-source');p.add_argument('--source-ref',required=True);p.add_argument('--approved-ref',required=True)
-    p=commands.add_parser('approve-workflow');p.add_argument('--source-ref',required=True)
+    p=commands.add_parser('approve-workflow');p.add_argument('--source-ref',required=True);p.add_argument('--component',choices=RECIPES)
     commands.add_parser('keys')
     args=parser.parse_args()
     if args.command=='bootstrap':bootstrap(args.setup,args.checksums,args.output)
@@ -414,7 +443,9 @@ def main():
     elif args.command=='prepare-component':prepare_component(args.component,args.directory)
     elif args.command=='plan':plan(args.directory,args.github_output)
     elif args.command=='approve-source':print(approve_publish_source(args.source_ref,args.approved_ref))
-    elif args.command=='approve-workflow':approve_workflow(args.source_ref)
+    elif args.command=='approve-workflow':
+        if args.component:dispatch_dependency(args.source_ref,args.component)
+        else:approve_workflow(args.source_ref)
     else:print(json.dumps({component:recipe(component) for component in RECIPES},indent=2))
 
 if __name__=='__main__':main()
