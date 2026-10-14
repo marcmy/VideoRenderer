@@ -49,6 +49,22 @@ def approve_publish_source(source_ref, approved_ref):
         raise ValueError('Requested dependency source does not match the workflow-approved commit')
     return head
 
+ACTION_REFERENCE = re.compile(r'(?m)^([ \t]*(?:- )?uses: *)(actions/[a-z0-9_-]+)@([^\s#]+)([^\r\n]*)$')
+
+def preserve_action_pins(template, current):
+    """Keep reviewed dependency-repository action pins; retain the source template's controls."""
+    expected = {match[1] for match in ACTION_REFERENCE.findall(template)}
+    pins = {}
+    for _, name, revision, comment in ACTION_REFERENCE.findall(current):
+        if name not in expected or not re.fullmatch(r'[0-9a-f]{40}', revision):
+            raise ValueError('Dependency repository actions must use known full SHA pins before approval')
+        if name in pins and pins[name][0] != revision:
+            raise ValueError('Inconsistent dependency action pins: ' + name)
+        pins[name] = (revision, comment)
+    if set(pins) != expected:
+        raise ValueError('Dependency workflow action set differs from its reviewed template')
+    return ACTION_REFERENCE.sub(lambda match: match[1] + match[2] + '@' + ''.join(pins[match[2]]), template)
+
 def approve_workflow(source_ref):
     """Maintainer operation: commit one reviewed source/recipe grant, then dispatch.
 
@@ -62,9 +78,13 @@ def approve_workflow(source_ref):
     template = (ROOT/'tools/Dev/DependencyRepository.yml').read_text()
     if '__APPROVED_SOURCE_REF__' not in template:
         raise ValueError('Dependency workflow template is missing its source grant')
-    content = template.replace('__APPROVED_SOURCE_REF__', source_ref)
     endpoint = f'repos/{REPO}/contents/.github/workflows/publish.yml'
-    tag = 'dependency-source-' + source_ref
+    approved_commit = json.loads(subprocess.check_output(['gh','api',f'repos/{REPO}/commits/main']))['sha']
+    current = json.loads(subprocess.check_output(['gh','api',endpoint+'?ref='+approved_commit]))
+    content = preserve_action_pins(template,base64.b64decode(current['content']).decode()).replace('__APPROVED_SOURCE_REF__',source_ref)
+    # Action maintenance can approve a new configuration for the same source,
+    # without moving the older approval tag or invalidating running requests.
+    tag = 'dependency-source-' + source_ref + '-' + hashlib.sha256(content.encode()).hexdigest()[:16]
 
     def verify_existing_grant():
         refs = json.loads(subprocess.check_output(['gh','api',f'repos/{REPO}/git/matching-refs/tags/{tag}']))
@@ -80,9 +100,6 @@ def approve_workflow(source_ref):
     if verify_existing_grant():
         print('Reusing dependency source approval: '+tag)
         return tag
-    # Read a fixed configuration snapshot so even the no-change path cannot race main.
-    approved_commit = json.loads(subprocess.check_output(['gh','api',f'repos/{REPO}/commits/main']))['sha']
-    current = json.loads(subprocess.check_output(['gh','api',endpoint+'?ref='+approved_commit]))
     if base64.b64decode(current['content']).decode() != content:
         body = {'message':'Approve dependency source and builder recipes '+source_ref,
                 'content':base64.b64encode(content.encode()).decode(),

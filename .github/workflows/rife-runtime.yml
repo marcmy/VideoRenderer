@@ -36,7 +36,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: ${{ inputs.source_repository || 'marcmy/VideoRenderer' }}
           ref: ${{ inputs.source_ref || github.sha }}
@@ -44,7 +44,7 @@ jobs:
           persist-credentials: false
 
       - name: Cache pinned NVIDIA SDK archives
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ github.workspace }}\_rife-download-cache
           key: rife-nvidia-sdk-windows-cuda-13.4.1-tensorrt-11.3.0.99-${{ github.repository }}-${{ github.ref }}-v1
@@ -305,7 +305,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload runtime artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: mpcvr-rife-runtime-bundle
           path: ${{ github.workspace }}\_rife-runtime-bundle\
