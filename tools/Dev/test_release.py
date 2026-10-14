@@ -1,7 +1,9 @@
 """Offline publication safety and package contracts; no GitHub writes or GPU work."""
 import json
+import base64
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -110,6 +112,134 @@ class PublicationTests(unittest.TestCase):
              patch.object(dependencies,'find_release') as find:
             release.publish('unused')
         find.assert_not_called()
+
+
+class DependencyApprovalTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture=tempfile.TemporaryDirectory(prefix='mpcvr-source-approval-test-')
+        self.addCleanup(self.fixture.cleanup)
+        self.root=Path(self.fixture.name)
+        self.template=(dependencies.ROOT/'tools/Dev/DependencyRepository.yml').read_text()
+        self.run_git('init','-q','-b','master')
+        self.run_git('config','user.email','fixture@example.invalid')
+        self.run_git('config','user.name','Offline approval fixture')
+        target=self.root/'tools/Dev';target.mkdir(parents=True)
+        (target/'DependencyRepository.yml').write_text(self.template)
+        self.run_git('add','.')
+        self.run_git('commit','-qm','Reviewed base')
+        self.approved=self.run_git('rev-parse','HEAD').strip()
+        self.run_git('checkout','-qb','reviewed-recipe')
+        self.run_git('commit','-qm','Candidate recipe','--allow-empty')
+        self.candidate=self.run_git('rev-parse','HEAD').strip()
+        root_patch=patch.object(dependencies,'ROOT',self.root)
+        root_patch.start();self.addCleanup(root_patch.stop)
+
+    def run_git(self,*args):
+        return subprocess.check_output(['git','-C',str(self.root),*args],stderr=subprocess.STDOUT).decode()
+
+    def test_review_branch_requires_exact_independent_source_grant(self):
+        # A valid SHA on a pushed review branch cannot authorize itself through dispatch.
+        with self.assertRaisesRegex(ValueError,'workflow-approved'):
+            dependencies.approve_publish_source(self.candidate,self.approved)
+        with self.assertRaisesRegex(ValueError,'workflow-approved'):
+            dependencies.approve_publish_source(self.approved,self.approved)
+        # After an independent grant, the same review-branch build is legitimate.
+        self.assertEqual(dependencies.approve_publish_source(self.candidate,self.candidate),self.candidate)
+
+    def test_alias_shell_and_multiline_refs_fail_before_git(self):
+        invalid=['master','HEAD^','a'*39,'A'*40,self.approved+'\n',
+                 self.approved+'; touch marker','refs/pull/1/head','']
+        for value in invalid:
+            for supplied,granted in [(value,self.approved),(self.approved,value)]:
+                with self.subTest(supplied=supplied,granted=granted), \
+                     patch.object(dependencies,'git') as call, self.assertRaises(ValueError):
+                    dependencies.approve_publish_source(supplied,granted)
+                call.assert_not_called()
+
+    def test_grant_pins_every_checkout_and_builder_with_guarded_file_update(self):
+        current={'sha':'existing-workflow-blob','content':base64.b64encode(b'previous workflow').decode()}
+        with patch.object(dependencies.subprocess,'run') as write, \
+             patch.object(dependencies.subprocess,'check_output',side_effect=[
+                 (self.candidate+'\n').encode(),b'',b'[]',b'{"sha":"main-snapshot"}',
+                 json.dumps(current).encode(),b'{"commit":{"sha":"approved-config"}}']) as read:
+            write.return_value.returncode=0
+            tag=dependencies.approve_workflow(self.candidate)
+        self.assertEqual(write.call_count,2) # Source existence, then immutable tag POST.
+        body=json.loads(read.call_args.kwargs['input'])
+        rendered=base64.b64decode(body['content']).decode()
+        self.assertEqual(body['sha'],current['sha'])
+        self.assertEqual(body['branch'],'main')
+        self.assertNotIn('__APPROVED_SOURCE_REF__',rendered)
+        self.assertNotIn('ref: ${{ inputs.source_ref }}',rendered)
+        self.assertNotIn('source_ref: ${{ inputs.source_ref }}',rendered)
+        self.assertEqual(rendered.count('ref: '+self.candidate),5)
+        self.assertIn('rife-runtime.yml@'+self.candidate,rendered)
+        self.assertIn('rife-model.yml@'+self.candidate,rendered)
+        self.assertLess(rendered.index('approve-source'),rendered.index('dependencies.py plan'))
+        self.assertIn("github.ref == 'refs/heads/main'",rendered)
+        self.assertEqual(rendered.count('persist-credentials: false'),3)
+        self.assertEqual(tag,'dependency-source-'+self.candidate)
+        self.assertEqual(json.loads(write.call_args.kwargs['input']),
+                         {'ref':'refs/tags/'+tag,'sha':'approved-config'})
+
+    def test_matching_grant_is_no_op_and_conflicting_update_fails(self):
+        rendered=self.template.replace('__APPROVED_SOURCE_REF__',self.candidate)
+        current={'sha':'existing-blob','content':base64.b64encode(rendered.encode()).decode()}
+        refs=[{'ref':'refs/tags/dependency-source-'+self.candidate,
+               'object':{'type':'commit','sha':'approved-config'}}]
+        with patch.object(dependencies.subprocess,'run') as write, \
+             patch.object(dependencies.subprocess,'check_output',side_effect=[
+                 (self.candidate+'\n').encode(),b'',json.dumps(refs).encode(),json.dumps(current).encode()]):
+            self.assertEqual(dependencies.approve_workflow(self.candidate),'dependency-source-'+self.candidate)
+        self.assertEqual(write.call_count,1) # Read-only source existence check only.
+        current['content']=base64.b64encode(b'previous workflow').decode()
+        with patch.object(dependencies.subprocess,'run') as write, \
+             patch.object(dependencies.subprocess,'check_output',side_effect=[
+                 (self.candidate+'\n').encode(),b'',b'[]',b'{"sha":"main-snapshot"}',
+                 json.dumps(current).encode(),subprocess.CalledProcessError(1,['gh'])]), \
+             self.assertRaises(subprocess.CalledProcessError):
+            dependencies.approve_workflow(self.candidate)
+        self.assertEqual(write.call_count,1) # No tag after a conflicting workflow update.
+        with patch.object(dependencies.subprocess,'run') as write, \
+             patch.object(dependencies.subprocess,'check_output',side_effect=[
+                 (self.candidate+'\n').encode(),b'',json.dumps(refs).encode(),json.dumps(current).encode()]), \
+             self.assertRaisesRegex(ValueError,'never replace'):
+            dependencies.approve_workflow(self.candidate)
+        self.assertEqual(write.call_count,1) # Never retarget a conflicting approval tag.
+
+    def test_concurrent_approval_cannot_change_dispatch_configuration(self):
+        tag='dependency-source-'+self.candidate
+        mutable_main={'source':self.candidate}
+        def approve(_):
+            # Another maintainer completes approval B between A's approval and dispatch.
+            mutable_main['source']='b'*40
+            return tag
+        with patch.object(dependencies,'approve_workflow',side_effect=approve), \
+             patch.object(dependencies.subprocess,'run') as call:
+            dependencies.dispatch_dependency(self.candidate,'maxine')
+        args=call.call_args.args[0]
+        self.assertEqual(args[args.index('--ref')+1],tag)
+        self.assertIn('source_ref='+self.candidate,args)
+        self.assertNotEqual(mutable_main['source'],self.candidate)
+
+    def test_unknown_component_never_approves_or_dispatches(self):
+        with patch.object(dependencies,'approve_workflow') as approve, \
+             patch.object(dependencies.subprocess,'run') as call, self.assertRaises(ValueError):
+            dependencies.dispatch_dependency(self.candidate,'unknown')
+        approve.assert_not_called();call.assert_not_called()
+
+    def test_dirty_or_unpushed_source_never_changes_workflow(self):
+        with patch.object(dependencies.subprocess,'check_output',side_effect=[
+                 (self.candidate+'\n').encode(),b' M source.cpp']), \
+             patch.object(dependencies.subprocess,'run') as write, self.assertRaisesRegex(ValueError,'clean'):
+            dependencies.approve_workflow(self.candidate)
+        write.assert_not_called()
+        with patch.object(dependencies.subprocess,'check_output',side_effect=[
+                 (self.candidate+'\n').encode(),b'']), \
+             patch.object(dependencies.subprocess,'run',side_effect=subprocess.CalledProcessError(1,['gh'])) as write, \
+             self.assertRaises(subprocess.CalledProcessError):
+            dependencies.approve_workflow(self.candidate)
+        self.assertEqual(write.call_count,1)
 
 
 class PackageTests(unittest.TestCase):

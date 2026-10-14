@@ -41,12 +41,13 @@ jobs:
           repository: ${{ inputs.source_repository || 'marcmy/VideoRenderer' }}
           ref: ${{ inputs.source_ref || github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Cache pinned NVIDIA SDK archives
         uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}\_rife-download-cache
-          key: rife-nvidia-sdk-windows-cuda-13.4.1-tensorrt-11.3.0.99-v1
+          key: rife-nvidia-sdk-windows-cuda-13.4.1-tensorrt-11.3.0.99-${{ github.repository }}-${{ github.ref }}-v1
 
       - name: Enter Visual Studio x64 developer shell
         shell: pwsh
