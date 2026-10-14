@@ -20,7 +20,7 @@ Run from the primary directory in Windows PowerShell 5.1 or PowerShell 7:
 | `./dev.ps1 bundle` | Build a portable x64 test bundle under `_artifacts/<source-id>/x64`; existing different artifacts are not overwritten. Add `-Architecture both` to include the full lightweight setup. |
 | `./dev.ps1 publish` | Validate clean committed master, push normally, and let CI publish the source revision. |
 | `./dev.ps1 verify` | Download only the small public assets and verify their source, versions, labels, hashes and pins. |
-| `./dev.ps1 dependencies -Component rife-runtime` | Separately publish a changed dependency; also accepts `rife-models` or `maxine`. |
+| `./dev.ps1 dependencies -Component rife-runtime` | Explicitly approve the reviewed committed source/recipe in dependency workflow configuration, then separately publish it; also accepts `rife-models` or `maxine`. Experiments use branch-context builders. |
 
 Visual Studio C++ tools and the pinned Git submodules are required. Initialize missing submodules with `git submodule update --init --recursive`. NASM is downloaded once with its pinned SHA-256 and cached under `_tools`. Build preparation restores Windows utility paths before and after developer-shell initialization and passes NASM's absolute path to MSBuild; it does not change the system/user PATH settings. Native build outputs reuse `_bin`. Tests do not install the renderer or evict TensorRT caches. The retained reusable installer CI fixtures additionally cover temporary installation, failure/rollback, architecture rejection and idempotence under both PowerShell hosts. The updater checksum test intentionally supplies an invalid hash and reports PASS only when the package is rejected before execution.
 

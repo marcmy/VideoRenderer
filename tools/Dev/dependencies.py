@@ -3,6 +3,7 @@
 Standard library only. Renderer changes never change these component keys.
 """
 import argparse
+import base64
 import hashlib
 import json
 import re
@@ -38,6 +39,41 @@ RECIPES = {
 
 def git(*args):
     return subprocess.check_output(['git','-C',str(ROOT),'-c',f'safe.directory={ROOT.as_posix()}',*args])
+
+def approve_publish_source(source_ref, approved_ref):
+    """Match dispatch data to a literal SHA approved in the trusted workflow."""
+    if not all(re.fullmatch(r'[0-9a-f]{40}', value) for value in (source_ref, approved_ref)):
+        raise ValueError('Dependency publication requires exact lowercase 40-character commit SHAs')
+    head = git('rev-parse', 'HEAD').decode().strip()
+    if source_ref != approved_ref or head != approved_ref:
+        raise ValueError('Requested dependency source does not match the workflow-approved commit')
+    return head
+
+def approve_workflow(source_ref):
+    """Maintainer operation: commit one reviewed source/recipe grant, then dispatch.
+
+    Workflow dispatchers cannot change this grant with an input. Updating it
+    requires workflow-file write authority in the dependency repository.
+    """
+    approve_publish_source(source_ref, source_ref)
+    if git('status', '--porcelain').strip():
+        raise ValueError('Workflow approval requires clean committed source')
+    subprocess.run(['gh','api',f'repos/{SOURCE_REPO}/commits/{source_ref}','--silent'],check=True)
+    template = (ROOT/'tools/Dev/DependencyRepository.yml').read_text()
+    if '__APPROVED_SOURCE_REF__' not in template:
+        raise ValueError('Dependency workflow template is missing its source grant')
+    content = template.replace('__APPROVED_SOURCE_REF__', source_ref)
+    endpoint = f'repos/{REPO}/contents/.github/workflows/publish.yml'
+    current = json.loads(subprocess.check_output(['gh','api',endpoint+'?ref=main']))
+    if base64.b64decode(current['content']).decode() == content:
+        print('Dependency workflow already approves source '+source_ref)
+        return
+    body = {'message':'Approve dependency source and builder recipes '+source_ref,
+            'content':base64.b64encode(content.encode()).decode(),
+            'sha':current['sha'],'branch':'main'}
+    subprocess.run(['gh','api','--method','PUT',endpoint,'--input','-'],
+                   input=json.dumps(body).encode(),check=True,stdout=subprocess.DEVNULL)
+    print('Dependency workflow source grant committed: '+source_ref)
 
 def digest(path):
     result = hashlib.sha256()
@@ -363,6 +399,8 @@ def main():
     p=commands.add_parser('check');p.add_argument('--lock',required=True);p.add_argument('--published',action='store_true');p.add_argument('--directory',default='_artifacts/dependency-verification')
     p=commands.add_parser('prepare-component');p.add_argument('--component',choices=RECIPES,required=True);p.add_argument('--directory',required=True)
     p=commands.add_parser('plan');p.add_argument('--directory',required=True);p.add_argument('--github-output')
+    p=commands.add_parser('approve-source');p.add_argument('--source-ref',required=True);p.add_argument('--approved-ref',required=True)
+    p=commands.add_parser('approve-workflow');p.add_argument('--source-ref',required=True)
     commands.add_parser('keys')
     args=parser.parse_args()
     if args.command=='bootstrap':bootstrap(args.setup,args.checksums,args.output)
@@ -375,6 +413,8 @@ def main():
         else:check_lock(value);print('Pinned dependency recipes and manifest hashes verified.')
     elif args.command=='prepare-component':prepare_component(args.component,args.directory)
     elif args.command=='plan':plan(args.directory,args.github_output)
+    elif args.command=='approve-source':print(approve_publish_source(args.source_ref,args.approved_ref))
+    elif args.command=='approve-workflow':approve_workflow(args.source_ref)
     else:print(json.dumps({component:recipe(component) for component in RECIPES},indent=2))
 
 if __name__=='__main__':main()
