@@ -89,4 +89,4 @@ jobs:
           path: _artifacts/release-retention/
           compression-level: 0
           if-no-files-found: ignore
-          retention-days: 90
+          retention-days: 30
