@@ -86,6 +86,7 @@ function Build-Renderer {
 function Test-Renderer {
     Prepare-Tools
     Run-Python @('tools/Dev/test_release.py')
+    Run-Python @('tools/Dev/test_upstream_merge.py')
     foreach ($hostName in @('powershell.exe','pwsh.exe')) {
         & $hostName -NoLogo -NoProfile -ExecutionPolicy Bypass -File tools/Dev/Test-Version.ps1
         if ($LASTEXITCODE -ne 0) { throw "$hostName version tests failed." }

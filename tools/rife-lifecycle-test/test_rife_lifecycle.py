@@ -3,8 +3,8 @@ from pathlib import Path
 
 repo = Path(__file__).resolve().parents[2]
 
-renderer = (repo / "Source" / "VideoRenderer.cpp").read_text(encoding="utf-8")
-legacy_renderer = (repo / "Source" / "VideoRendererLegacy.inl").read_text(encoding="utf-8")
+renderer = (repo / "Source" / "RifeVideoRenderer.inl").read_text(encoding="utf-8")
+legacy_renderer = (repo / "Source" / "VideoRenderer.cpp").read_text(encoding="utf-8")
 dx11_header = (repo / "Source" / "DX11VideoProcessor.h").read_text(encoding="utf-8")
 dx11_processor = (repo / "Source" / "DX11VideoProcessor.cpp").read_text(encoding="utf-8")
 rife_pipeline = (repo / "Source" / "RifePlaybackPipeline.cpp").read_text(encoding="utf-8")

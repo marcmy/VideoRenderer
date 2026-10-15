@@ -82,6 +82,12 @@
 
 ## Upstream synchronization
 
+- Keep upstream-owned implementations in their original source/header paths.
+  RIFE settings and playback additions belong in `Source/RifeVideoRenderer.inl`,
+  included by `VideoRenderer.cpp`; declarations remain explicit in the original
+  headers. Do not replace upstream files with migration wrappers or use macro
+  injection to add class members. `dev.ps1 test` checks real three-way merges
+  for unrelated changes and verifies overlapping edits still require review.
 - Fetch upstream and origin before changing source. GitHub Actions cannot update
   the desktop; reconcile the authoritative checkout when Codex next operates here.
 - Unknown conflicts must leave master untouched and create a reviewable proposal;

@@ -170,6 +170,9 @@
     <ClInclude Include="DX11VideoProcessor.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="RifeVideoRenderer.inl">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="FrameInterpolationScheduler.h">
       <Filter>Header Files</Filter>
     </ClInclude>
