@@ -3,6 +3,7 @@ from pathlib import Path
 
 repo = Path(__file__).resolve().parents[2]
 source = (repo / "Source" / "VideoRenderer.cpp").read_text(encoding="utf-8")
+source += (repo / "Source" / "RifeVideoRenderer.inl").read_text(encoding="utf-8")
 
 submit_marker = "rifeSubmitted = m_RifePipeline->SubmitSample("
 start_marker = "\n\tif (rifeSubmitted) {\n"

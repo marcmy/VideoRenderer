@@ -44,6 +44,8 @@ Release promotion is serialized and checks that the source is still fork master 
 
 The upstream job performs a normal merge, both builds and regressions, then a guarded fast-forward push. It explicitly dispatches `main.yml` because a push using Actions' GITHUB_TOKEN does not itself start a normal push workflow. Unknown conflicts leave master untouched, save conflict artifacts and propose an upstream review PR. The repository must allow Actions to create PRs; otherwise the preserved branch/artifact provides the manual review path. No-op synchronization does not build, bump or release.
 
+Upstream implementations stay under their original filenames (`VideoRenderer.cpp`, `VideoRenderer.h`, `DX11VideoProcessor.h`). RIFE settings and playback overrides are kept in `RifeVideoRenderer.inl`, included by the renderer translation unit, with explicit declarations in the original headers. This preserves normal three-way merge context instead of making every upstream edit compete with a replacement wrapper. `tools/Dev/test_upstream_merge.py`, included in `dev.ps1 test`, exercises unrelated edits through Git's real merger and checks that all fork source survives; incompatible edits must still conflict. Keep future fork changes localized rather than adding automatic ours/theirs selection or source-specific conflict handlers.
+
 Heavy TensorRT/CUDA and model jobs are manual/reusable dependency builders, not prerequisites for every renderer change. Comprehensive installer workflows are reusable checks called once by normal CI; the redundant parser-only and library-probe workflows remain manual historical diagnostics. The pinned Trivy/Syft supply-chain checks remain active.
 
 ## Compatibility and cleanup

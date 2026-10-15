@@ -8,7 +8,7 @@ from test_rife_lifecycle import function_body
 repo = Path(__file__).resolve().parents[2]
 bridge = (repo / "Source/RifeDX11Bridge.cpp").read_text(encoding="utf-8")
 dx11 = (repo / "Source/DX11VideoProcessor.cpp").read_text(encoding="utf-8")
-renderer = (repo / "Source/VideoRendererLegacy.inl").read_text(encoding="utf-8")
+renderer = (repo / "Source/VideoRenderer.cpp").read_text(encoding="utf-8")
 
 wait = function_body(renderer, "bool CMpcVideoRenderer::WaitForFrameInterpolationTime(")
 assert "m_RendererLock" not in wait and "m_InterfaceLock" not in wait

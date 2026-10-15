@@ -4,15 +4,14 @@ from pathlib import Path
 repo = Path(__file__).resolve().parents[2]
 
 dx11_header = (repo / "Source" / "DX11VideoProcessor.h").read_text(encoding="utf-8")
-dx11_legacy_header = (repo / "Source" / "DX11VideoProcessorLegacyBody.h").read_text(encoding="utf-8")
 rife_bridge = (repo / "Source" / "RifeDX11Bridge.cpp").read_text(encoding="utf-8")
 rife_pipeline = (repo / "Source" / "RifePlaybackPipeline.cpp").read_text(encoding="utf-8")
 rife_api = (repo / "Source" / "RifeRuntimeApi.h").read_text(encoding="utf-8")
 rife_loader = (repo / "Source" / "RifeFrameInterpolation.cpp").read_text(encoding="utf-8")
 runtime = (repo / "tools" / "RifeTensorRTRuntime" / "RifeTensorRTRuntime.cpp").read_text(encoding="utf-8")
 dx11_processor = (repo / "Source" / "DX11VideoProcessor.cpp").read_text(encoding="utf-8")
-renderer_header = (repo / "Source" / "VideoRendererLegacy.h").read_text(encoding="utf-8")
-renderer_legacy = (repo / "Source" / "VideoRendererLegacy.inl").read_text(encoding="utf-8")
+renderer_header = (repo / "Source" / "VideoRenderer.h").read_text(encoding="utf-8")
+renderer_legacy = (repo / "Source" / "VideoRenderer.cpp").read_text(encoding="utf-8")
 
 
 assert "GetRifeContentSize()" in dx11_header, (
@@ -21,7 +20,7 @@ assert "GetRifeContentSize()" in dx11_header, (
 
 frame_size_start = dx11_header.find("CSize GetRifeFrameSize(")
 assert frame_size_start != -1, "GetRifeFrameSize() was not found"
-frame_size_end = dx11_header.find("\\\nprivate:", frame_size_start)
+frame_size_end = dx11_header.find("\nprivate:", frame_size_start)
 assert frame_size_end != -1, "GetRifeFrameSize() declaration block end was not found"
 frame_size_block = dx11_header[frame_size_start:frame_size_end]
 assert "m_windowRect" not in frame_size_block, (
@@ -46,10 +45,10 @@ assert "Process(target, m_srcRect, contentRect, false, true)" in prepare_body, (
     "RIFE source preparation must explicitly select the source-sized processing path"
 )
 
-assert "m_TexRifeConvertOutput" in dx11_legacy_header, (
+assert "m_TexRifeConvertOutput" in dx11_header, (
     "RIFE must have a dedicated conversion intermediate that cannot inherit window-sized allocation"
 )
-assert "m_TexsRifePostScale" in dx11_legacy_header, (
+assert "m_TexsRifePostScale" in dx11_header, (
     "RIFE must have dedicated post-scale intermediates that cannot inherit m_windowRect dimensions"
 )
 

@@ -150,6 +150,7 @@
     <ClInclude Include="resource.h" />
     <ClInclude Include="RifeFrameInterpolation.h" />
     <ClInclude Include="RifePlaybackPipeline.h" />
+    <ClInclude Include="RifeVideoRenderer.inl" />
     <ClInclude Include="RifeImageSceneDetector.h" />
     <ClInclude Include="RifePresentationPreparation.h" />
     <ClInclude Include="RifeRateRules.h" />
