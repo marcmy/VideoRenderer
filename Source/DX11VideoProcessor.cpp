@@ -2494,7 +2494,7 @@ HRESULT CDX11VideoProcessor::InitializeD3D11VP(const FmtConvParams_t& params, co
 		return hr;
 	}
 
-	auto rtxHDR = m_bVPRTXVideoHDR && m_bHdrPassthroughSupport && m_bHdrPassthrough && m_iTexFormat != TEXFMT_8INT && !SourceIsHDR();
+	auto rtxHDR = m_bVPRTXVideoHDR && m_bHdrPassthroughSupport && (m_bHdrPassthrough || m_bHdrLocalToneMapping) && m_iTexFormat != TEXFMT_8INT && !SourceIsHDR();
 	m_bVPUseRTXVideoHDR = (m_D3D11VP.SetRTXVideoHDR(rtxHDR) == S_OK);
 
 	// Keep RTX VSR configured, but suppress it while Maxine is selected.
@@ -6026,7 +6026,7 @@ void CDX11VideoProcessor::UpdateStatsStatic()
 		if (SourceIsHDR() || m_bVPUseRTXVideoHDR) {
 			m_strStatsHDR.assign(L"\nHDR processing: ");
 			if (m_bHdrPassthroughSupport && (m_bHdrPassthrough || m_bHdrLocalToneMapping)) {
-				if (m_bHdrPassthrough) {
+				if (m_bHdrPassthrough || m_bVPUseRTXVideoHDR) {
 					m_strStatsHDR.append(L"Passthrough");
 				} else if (m_bHdrLocalToneMapping) {
 					m_strStatsHDR.append(L"Local tone mapping:");

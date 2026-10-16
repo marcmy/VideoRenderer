@@ -415,7 +415,7 @@ void CVRMainPPage::EnableControls()
 #ifdef _WIN64
 		GetDlgItem(IDC_BUTTON_MAXINE).EnableWindow(bEnable);
 		GetDlgItem(IDC_BUTTON_FRAMEINTERPOLATION).EnableWindow(bEnable);
-		GetDlgItem(IDC_CHECK19).EnableWindow(bEnable && m_SetsPP.bHdrPassthrough);
+		GetDlgItem(IDC_CHECK19).EnableWindow(bEnable && (m_SetsPP.bHdrPassthrough || m_SetsPP.bHdrLocalToneMapping));
 #endif
 	}
 
@@ -759,7 +759,7 @@ INT_PTR CVRMainPPage::OnReceiveMessage(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 					m_SetsPP.iTexFormat = lValue;
 					SetDirty();
 #ifdef _WIN64
-					GetDlgItem(IDC_CHECK19).EnableWindow(m_SetsPP.bUseD3D11 && m_SetsPP.bHdrPassthrough && m_SetsPP.iTexFormat != TEXFMT_8INT);
+					GetDlgItem(IDC_CHECK19).EnableWindow(m_SetsPP.bUseD3D11 && (m_SetsPP.bHdrPassthrough || m_SetsPP.bHdrLocalToneMapping) && m_SetsPP.iTexFormat != TEXFMT_8INT);
 #endif
 				}
 				return (LRESULT)1;

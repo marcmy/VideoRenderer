@@ -6,6 +6,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write
   actions: write
 concurrency:
   group: upstream-sync
@@ -43,17 +44,21 @@ jobs:
             New-Item -ItemType Directory -Force _artifacts/upstream-conflict | Out-Null
             git diff --binary | Out-File _artifacts/upstream-conflict/conflicts.patch -Encoding utf8
             git diff --name-only --diff-filter=U | Out-File _artifacts/upstream-conflict/files.txt -Encoding utf8
+            git ls-files -u | Out-File _artifacts/upstream-conflict/unmerged-stages.txt -Encoding utf8
             "$original`n$upstream" | Out-File _artifacts/upstream-conflict/source-commits.txt -Encoding ascii
+            $files=@(Get-Content _artifacts/upstream-conflict/files.txt | Where-Object { $_ })
             git merge --abort
-            $branch='upstream-review/'+$upstream.Substring(0,12)
-            git push origin "upstream/master:refs/heads/$branch"
-            if ($LASTEXITCODE -ne 0) { throw 'Conflict saved, but review branch publication failed.' }
-            $existing=gh pr list --repo marcmy/VideoRenderer --base master --head $branch --json number --jq 'length'
-            if ($existing -eq '0') {
-              gh pr create --repo marcmy/VideoRenderer --base master --head $branch --title "Resolve upstream integration $($upstream.Substring(0,12))" --body 'The automatic merge encountered unknown conflicts. Master and the current renderer release remain unchanged. Review the conflict artifact on the Sync upstream run, resolve the merge normally, and let renderer CI validate the final result.'
-              if ($LASTEXITCODE -ne 0) { throw 'Enable Actions permission to create pull requests; conflict artifact and review branch are preserved.' }
+            $title="Upstream merge needs review: $($upstream.Substring(0,12))"
+            $fileList=($files | ForEach-Object { "- ``$_``" }) -join "`n"
+            $runUrl="$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            $body="The scheduled three-way merge needs manual resolution. The verified fork master and its release were not changed.`n`nFork commit: $original`nUpstream commit: $upstream`n`nConflicting files:`n$fileList`n`n[Sync run and downloadable conflict artifact]($runUrl)`n`nResolve against the current fork master, preserve fork functionality, run both architecture builds and regressions, and submit a reviewable integration PR."
+            $existing=@(gh issue list --repo marcmy/VideoRenderer --state open --limit 200 --json number,title | ConvertFrom-Json | Where-Object { $_.title -eq $title })
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot check existing upstream integration issues; conflict artifacts are preserved.' }
+            if ($existing.Count -eq 0) {
+              gh issue create --repo marcmy/VideoRenderer --title $title --body $body
+              if ($LASTEXITCODE -ne 0) { throw 'Could not create the upstream integration issue; conflict artifacts are preserved.' }
             }
-            throw 'Unknown upstream conflicts require review; master was not modified.'
+            throw 'Unknown upstream conflict requires review; the issue and CI conflict artifact identify the required integration.'
           }
           ./tools/Dev/Version.ps1 -RecordUpstream $upstream
           git add upstream.version.json
