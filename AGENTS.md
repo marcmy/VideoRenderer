@@ -94,3 +94,6 @@
   do not accumulate commit-specific, hard-coded conflict handlers.
 - GitHub sync and release jobs must reject stale heads and preserve normal push
   semantics. No force pushes or automatic conflict-marker commits to master.
+- Use `git merge -Xrenormalize` for upstream integration. The scoped text rule
+  for `Source/VideoRenderer.cpp` normalizes CRLF upstream history against the LF
+  fork without suppressing overlapping code conflicts or changing binary assets.

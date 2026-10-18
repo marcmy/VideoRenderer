@@ -124,7 +124,7 @@ try {
             Run-Git @('merge','--ff-only','origin/master')
             $pending=[int](& git rev-list --count HEAD..upstream/master)
             if ($pending) {
-                Run-Git @('merge','--no-ff','--no-commit','upstream/master')
+                Run-Git @('merge','-Xrenormalize','--no-ff','--no-commit','upstream/master')
                 & tools/Dev/Version.ps1 -RecordUpstream upstream/master
                 Run-Git @('add','upstream.version.json')
                 Run-Git @('commit','-m','Merge upstream VideoRenderer and record its source revision')

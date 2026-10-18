@@ -46,6 +46,8 @@ The upstream job performs a normal merge, both builds and regressions, then a gu
 
 Upstream implementations stay under their original filenames (`VideoRenderer.cpp`, `VideoRenderer.h`, `DX11VideoProcessor.h`). RIFE settings and playback overrides are kept in `RifeVideoRenderer.inl`, included by the renderer translation unit, with explicit declarations in the original headers. This preserves normal three-way merge context instead of making every upstream edit compete with a replacement wrapper. `tools/Dev/test_upstream_merge.py`, included in `dev.ps1 test`, exercises unrelated edits through Git's real merger and checks that all fork source survives; incompatible edits must still conflict. Keep future fork changes localized rather than adding automatic ours/theirs selection or source-specific conflict handlers.
 
+Upstream synchronization uses `git merge -Xrenormalize` and a scoped LF text rule for `Source/VideoRenderer.cpp`. This lets Git compare CRLF upstream history with the fork's LF source without a whole-file conflict. Overlapping code edits still require review; runtime packages and license checksums are not normalized. The merge regression tests exercise unrelated and overlapping edits in an isolated Git fixture with mixed line endings.
+
 Heavy TensorRT/CUDA and model jobs are manual/reusable dependency builders, not prerequisites for every renderer change. Comprehensive installer workflows are reusable checks called once by normal CI; the redundant parser-only and library-probe workflows remain manual historical diagnostics. The pinned Trivy/Syft supply-chain checks remain active.
 
 ## Compatibility and cleanup

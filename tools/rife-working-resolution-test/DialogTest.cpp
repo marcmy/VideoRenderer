@@ -13,6 +13,14 @@ int wmain(int argc, wchar_t** argv)
     const auto* resourceTemplate = static_cast<const DLGTEMPLATE*>(LockResource(LoadResource(module, resource)));
     assert(resourceTemplate);
     Settings_t settings;
+    assert(!settings.bHdrLocalMeasurePeak);
+    Settings_t defaults;
+    defaults.bHdrLocalMeasurePeak = true;
+    defaults.iRifeMode = RIFE_MODE_Movie4x;
+    defaults.iMaxineAmount = 60;
+    defaults.SetMainPageDefault();
+    assert(!defaults.bHdrLocalMeasurePeak);
+    assert(defaults.iRifeMode == RIFE_MODE_Movie4x && defaults.iMaxineAmount == 60);
     assert(settings.iSdrToneMappingType == SDRTM_Metadata);
     assert(settings.iRifeSceneDetection == RIFE_SCENE_SVPflow1);
     assert(settings.iRifeProcessingResolution == RIFE_RESOLUTION_Source);
@@ -84,7 +92,7 @@ int wmain(int argc, wchar_t** argv)
     const HWND mainPage = CreateDialogIndirectParamW(module, mainTemplate, dialog,
         [](HWND, UINT, WPARAM, LPARAM) -> INT_PTR { return FALSE; }, 0);
     assert(mainPage && !IsWindowVisible(mainPage));
-    for (const int id : {IDC_COMBO_SDRTM, IDC_STATIC_SDRTM, IDC_CHECK19,
+    for (const int id : {IDC_COMBO_SDRTM, IDC_STATIC_SDRTM, IDC_CHECK19, IDC_CHECK20,
             IDC_BUTTON_MAXINE, IDC_BUTTON_FRAMEINTERPOLATION}) {
         assert(GetDlgItem(mainPage, id));
     }
@@ -94,6 +102,19 @@ int wmain(int argc, wchar_t** argv)
     assert(GetWindowRect(GetDlgItem(mainPage, IDC_COMBO4), &swap));
     assert(GetWindowRect(GetDlgItem(mainPage, IDC_CHECK19), &rtx));
     assert(method.top >= nits.bottom && method.bottom <= swap.top && method.top >= rtx.bottom);
+    RECT measured = {}, hdrMode = {}, windowsHdr = {}, mainClient = {};
+    assert(GetWindowRect(GetDlgItem(mainPage, IDC_CHECK20), &measured));
+    assert(GetWindowRect(GetDlgItem(mainPage, IDC_COMBO10), &hdrMode));
+    assert(GetWindowRect(GetDlgItem(mainPage, IDC_COMBO7), &windowsHdr));
+    assert(measured.top >= hdrMode.bottom && measured.bottom <= windowsHdr.top);
+    GetClientRect(mainPage, &mainClient);
+    for (const int id : {IDC_CHECK20, IDC_COMBO7, IDC_SLIDER1, IDC_CHECK19, IDC_EDIT1,
+            IDC_SLIDER2, IDC_COMBO_SDRTM, IDC_COMBO4, IDC_CHECK16, IDC_BUTTON1, IDC_EDIT2}) {
+        RECT rect = {};
+        assert(GetWindowRect(GetDlgItem(mainPage, id), &rect));
+        MapWindowPoints(nullptr, mainPage, reinterpret_cast<POINT*>(&rect), 2);
+        assert(rect.left >= 0 && rect.top >= 0 && rect.right <= mainClient.right && rect.bottom <= mainClient.bottom);
+    }
     DestroyWindow(mainPage);
     DestroyWindow(dialog);
     FreeLibrary(module);
