@@ -497,6 +497,8 @@ try {
 
     if ($reuseRife) {
         Write-Host '2/4 RIFE runtime and models are current and verified; skipping installation.' -ForegroundColor Green
+        # Clearing engine caches must not turn a healthy runtime into a reinstall.
+        New-Item -ItemType Directory -Path (Join-Path $rifeInstallRoot 'cache') -Force | Out-Null
     }
     else {
         $rifeBundleRoot = Join-Path $tempRoot 'rife-runtime'

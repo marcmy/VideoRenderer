@@ -76,9 +76,9 @@ try {
     $maxineFiles['sdk/bin/models/vsr.bin']='fixture Maxine model'
     New-ReuseArchive 'maxine' 'MPCVR-Maxine-Runtime.zip' $maxineFiles
     New-ReuseArchive 'rife-runtime' 'MPCVR-RIFE-Common.zip' @{'MPCVRRifeRuntime64.dll'='runtime';'nvinfer_11.dll'='TensorRT';'LICENSES/CUDA.txt'='license'}
-    New-ReuseArchive 'rife-runtime' 'MPCVR-RIFE-sm75.zip' @{'builder-sm75.dll'='sm75'}
-    New-ReuseArchive 'rife-runtime' 'MPCVR-RIFE-sm86.zip' @{'builder-sm86.dll'='sm86'}
-    New-ReuseArchive 'rife-models' 'MPCVR-RIFE-Models.zip' @{'rife_v4.6.onnx'='model';'rife.features.onnx'='encoder';'model-manifest.json'='package metadata'}
+    New-ReuseArchive 'rife-runtime' 'MPCVR-RIFE-sm75.zip' @{'nvinfer_builder_resource_sm75_11.dll'='sm75'}
+    New-ReuseArchive 'rife-runtime' 'MPCVR-RIFE-sm86.zip' @{'nvinfer_builder_resource_sm86_11.dll'='sm86'}
+    New-ReuseArchive 'rife-models' 'MPCVR-RIFE-Models.zip' @{'rife_v4.6.onnx'='model';'rife.features.onnx'='encoder';'model-manifest.json'='{"schemaVersion":3,"models":[{"model":"RIFE 4.6","file":"rife_v4.6.onnx"}]}'}
     $maxineRoot=Join-Path $fixture 'Maxine'; $rifeRoot=Join-Path $fixture 'RIFE'
     Check (-not (Test-MPCVRInstalledDependency -Lock $reuseLock -Component maxine -InstallRoot $maxineRoot -ArchitectureKeys @('sm75') -CacheRoot $reuseCache)) 'Missing Maxine was considered installed'
     foreach ($file in $maxineFiles.GetEnumerator()) {
@@ -86,14 +86,38 @@ try {
         New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
         [IO.File]::WriteAllText($target,$file.Value)
     }
-    foreach ($file in @{'runtime/MPCVRRifeRuntime64.dll'='runtime';'runtime/nvinfer_11.dll'='TensorRT';'runtime/LICENSES/CUDA.txt'='license';'runtime/builder-sm75.dll'='sm75';'models/rife_v4.6.onnx'='model';'models/rife.features.onnx'='encoder';'installed-manifest.json'='{"schemaVersion":2}'}.GetEnumerator()) {
+    foreach ($file in @{'runtime/MPCVRRifeRuntime64.dll'='runtime';'runtime/nvinfer_11.dll'='TensorRT';'runtime/LICENSES/CUDA.txt'='license';'runtime/nvinfer_builder_resource_sm75_11.dll'='sm75';'models/rife_v4.6.onnx'='model';'models/rife.features.onnx'='encoder'}.GetEnumerator()) {
         $target=Join-Path $rifeRoot $file.Key
         New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
         [IO.File]::WriteAllText($target,$file.Value)
     }
+    $installedMetadata=@{
+        schemaVersion=2;runtimeAbi=2;tensorRtVersion='11.3.0';tensorRtMajorMinor='11.3';cudaVersion='13.4';cudaRuntimeVersion='13.4'
+        commonRuntimeArchiveSha256=$reuseLock.components.PSObject.Properties['rife-runtime'].Value.manifest.files.PSObject.Properties['MPCVR-RIFE-Common.zip'].Value.sha256
+        architectures=@(@{key='sm75';archive='MPCVR-RIFE-sm75.zip';sha256=$reuseLock.components.PSObject.Properties['rife-runtime'].Value.manifest.files.PSObject.Properties['MPCVR-RIFE-sm75.zip'].Value.sha256;builderResource='nvinfer_builder_resource_sm75_11.dll'})
+        models=@(@{model='RIFE 4.6';modelFile='models/rife_v4.6.onnx';modelSha256=(Get-FileHash (Join-Path $rifeRoot 'models/rife_v4.6.onnx') -Algorithm SHA256).Hash.ToLowerInvariant()})
+    }
+    $installedMetadataPath=Join-Path $rifeRoot 'installed-manifest.json'
+    $installedMetadata | ConvertTo-Json -Depth 8 | Set-Content $installedMetadataPath
     $reuseArgs=@{Lock=$reuseLock;ArchitectureKeys=@('sm75');CacheRoot=$reuseCache}
     Check (Test-MPCVRInstalledDependency @reuseArgs -Component maxine -InstallRoot $maxineRoot) 'Existing Maxine was not adopted from the pinned cached archive'
     Check (Test-MPCVRInstalledDependency @reuseArgs -Component rife -InstallRoot $rifeRoot) 'Existing RIFE was not adopted from the pinned cached archives'
+    $validMetadata=[IO.File]::ReadAllText($installedMetadataPath)
+    foreach ($invalid in @('invalid JSON','{"schemaVersion":2}',($validMetadata.Replace('"runtimeAbi":  2','"runtimeAbi":  1').Replace('"runtimeAbi": 2','"runtimeAbi": 1')))) {
+        [IO.File]::WriteAllText($installedMetadataPath,$invalid)
+        Check (-not (Test-MPCVRInstalledDependency @reuseArgs -Component rife -InstallRoot $rifeRoot)) 'Invalid legacy RIFE metadata was adopted instead of repaired'
+    }
+    foreach ($field in @('architectures','models','commonRuntimeArchiveSha256')) {
+        $invalid=$validMetadata | ConvertFrom-Json
+        switch ($field) {
+            'architectures' { $invalid.architectures[0].builderResource='wrong.dll' }
+            'models' { $invalid.models[0].modelSha256='0'*64 }
+            'commonRuntimeArchiveSha256' { $invalid.commonRuntimeArchiveSha256='0'*64 }
+        }
+        $invalid | ConvertTo-Json -Depth 8 | Set-Content $installedMetadataPath
+        Check (-not (Test-MPCVRInstalledDependency @reuseArgs -Component rife -InstallRoot $rifeRoot)) "Invalid legacy $field metadata was adopted"
+    }
+    [IO.File]::WriteAllText($installedMetadataPath,$validMetadata)
     Save-MPCVRInstalledDependency @reuseArgs -Component maxine -InstallRoot $maxineRoot
     Save-MPCVRInstalledDependency @reuseArgs -Component rife -InstallRoot $rifeRoot
     $noCache=Join-Path $fixture 'no-download-cache'
@@ -133,6 +157,9 @@ try {
     Copy-Item $maxineRoot (Join-Path $profile 'MPCVR Maxine Runtime') -Recurse
     New-Item -ItemType Directory (Join-Path $profile 'MPCVideoRenderer') | Out-Null
     Copy-Item $rifeRoot (Join-Path $profile 'MPCVideoRenderer/RIFE') -Recurse
+    $profileCache=[IO.Path]::GetFullPath((Join-Path $profile 'MPCVideoRenderer/RIFE/cache'))
+    if (-not $profileCache.StartsWith([IO.Path]::GetFullPath($fixture)+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)) { throw 'Fixture cache path escapes test root' }
+    Remove-Item -LiteralPath $profileCache -Recurse -Force
     $coordinator=Join-Path $fixture 'coordinator'; $coordinatorPayload=Join-Path $coordinator 'payload'
     New-Item -ItemType Directory $coordinatorPayload -Force | Out-Null
     foreach ($name in @('Install-MPCVRMaxineRuntime.ps1','Install-MPCVRRifeRuntime.ps1','Test-MPCVRRifePreflight.ps1','Install-KLiteMPCVRUpdater.ps1','Update-KLiteMPCVR.ps1','KLiteRendererInstall.psm1','MpcVideoRenderer-Maxine-RIFE.zip')) {
@@ -179,6 +206,7 @@ exit $LASTEXITCODE
     Check ($LASTEXITCODE -eq 0) 'Setup did not skip current dependencies before downloading/staging them'
     $steps=@(Get-Content $stepsPath)
     Check ($steps.Count -eq 3 -and $steps[0] -like '3/4 *' -and $steps[1] -like '4/4 *' -and $steps[2] -like 'Running RIFE post-install preflight*') 'Reuse skipped renderer/updater installation or post-install checks'
+    Check (Test-Path -LiteralPath $profileCache -PathType Container) 'Setup failed to repair a missing empty cache directory during RIFE reuse'
     'PASS: installed dependency reuse, cached legacy adoption, independent components, corruption and GPU/pin changes.'
     # Exercise the real updater's download/checksum/delegation path with local
     # fixture responses and a harmless setup script. No live player or install.

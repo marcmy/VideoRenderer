@@ -103,6 +103,7 @@ function Get-MPCVRInstalledDependencyInventory {
     # can prove the expected file hashes. No network or DLL loading here.
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $files=@{}
+    $expectedModels=@()
     foreach ($componentName in $components) {
         $manifest=$Lock.components.PSObject.Properties[$componentName].Value.manifest
         $archives=switch ($componentName) {
@@ -118,6 +119,14 @@ function Get-MPCVRInstalledDependencyInventory {
                 (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash -ine $entry.sha256) { return $null }
             $archive=[IO.Compression.ZipFile]::OpenRead($archivePath)
             try {
+                if ($componentName -eq 'rife-models') {
+                    $modelMetadata=$archive.GetEntry('model-manifest.json')
+                    if (-not $modelMetadata) { return $null }
+                    $reader=New-Object IO.StreamReader ($modelMetadata.Open())
+                    try { $modelManifest=$reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
+                    if ($modelManifest.schemaVersion -ne 3 -or @($modelManifest.models).Count -eq 0) { return $null }
+                    $expectedModels=@($modelManifest.models)
+                }
                 $prefix=''
                 if ($componentName -eq 'maxine') {
                     $candidates=@($archive.Entries | Where-Object { $_.Name -ieq 'NVCVImage.dll' })
@@ -156,6 +165,24 @@ function Get-MPCVRInstalledDependencyInventory {
     if ($Component -eq 'rife') {
         $installedManifest=Join-Path $InstallRoot 'installed-manifest.json'
         if (-not (Test-Path -LiteralPath $installedManifest -PathType Leaf)) { return $null }
+        $metadata=Get-Content -LiteralPath $installedManifest -Raw | ConvertFrom-Json
+        $runtimePin=$Lock.components.PSObject.Properties['rife-runtime'].Value.manifest
+        if ($metadata.schemaVersion -ne 2 -or $metadata.runtimeAbi -ne $runtimePin.compatibility.runtimeAbi -or
+            [string]$metadata.tensorRtVersion -notmatch '^\d+\.\d+(\.\d+){0,2}$' -or
+            $metadata.commonRuntimeArchiveSha256 -ine $runtimePin.files.PSObject.Properties['MPCVR-RIFE-Common.zip'].Value.sha256) { return $null }
+        foreach ($key in $keys) {
+            $selected=@($metadata.architectures | Where-Object { $_.key -eq $key })
+            $archiveName="MPCVR-RIFE-$key.zip"
+            if ($selected.Count -ne 1 -or $selected[0].archive -ne $archiveName -or
+                $selected[0].sha256 -ine $runtimePin.files.PSObject.Properties[$archiveName].Value.sha256 -or
+                $selected[0].builderResource -ne "nvinfer_builder_resource_${key}_11.dll") { return $null }
+        }
+        if (@($metadata.models).Count -ne $expectedModels.Count) { return $null }
+        foreach ($expected in $expectedModels) {
+            $modelFile='models/'+$expected.file
+            $selected=@($metadata.models | Where-Object { $_.model -eq $expected.model -and $_.modelFile -eq $modelFile })
+            if ($selected.Count -ne 1 -or -not $files.ContainsKey($modelFile) -or $selected[0].modelSha256 -ine $files[$modelFile].sha256) { return $null }
+        }
         $files['installed-manifest.json']=[pscustomobject]@{
             path='installed-manifest.json';bytes=(Get-Item -LiteralPath $installedManifest).Length
             sha256=(Get-FileHash -LiteralPath $installedManifest -Algorithm SHA256).Hash.ToLowerInvariant()
