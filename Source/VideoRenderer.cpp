@@ -91,6 +91,7 @@ void ForgetRifeSettings(const CMpcVideoRenderer* renderer);
 #define OPT_HdrPassthrough                 L"HdrPassthrough"
 #define OPT_HdrLocaLToneMapping            L"HdrLocalToneMapping"
 #define OPT_HdrLocaLToneMappingType        L"HdrLocalToneMappingType"
+#define OPT_HdrLocalMeasurePeak            L"HdrLocalMeasurePeak"
 #define OPT_HdrDisplayNits                 L"HdrDisplayNits"
 #define OPT_HdrToggleDisplay               L"HdrToggleDisplay"
 #define OPT_HdrOsdBrightness               L"HdrOsdBrightness"
@@ -383,7 +384,10 @@ CMpcVideoRenderer::CMpcVideoRenderer(LPUNKNOWN pUnk, HRESULT* phr)
 			m_Sets.bHdrLocalToneMapping = !!dw;
 		}
 		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_HdrLocaLToneMappingType, dw)) {
-			m_Sets.iHdrLocalToneMappingType = discard<int>(dw, 1, 1, 5);
+			m_Sets.iHdrLocalToneMappingType = discard<int>(dw, 1, 1, 7);
+		}
+		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_HdrLocalMeasurePeak, dw)) {
+			m_Sets.bHdrLocalMeasurePeak = !!dw;
 		}
 		if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_HdrDisplayNits, dw)) {
 			m_Sets.iHdrDisplayMaxNits = discard<int>(dw, HDR_NITS_DEF, HDR_NITS_MIN, HDR_NITS_MAX);
@@ -1964,6 +1968,7 @@ STDMETHODIMP CMpcVideoRenderer::SaveSettingsLegacy()
 		key.SetDWORDValue(OPT_HdrPassthrough,      m_Sets.bHdrPassthrough);
 		key.SetDWORDValue(OPT_HdrLocaLToneMapping, m_Sets.bHdrLocalToneMapping);
 		key.SetDWORDValue(OPT_HdrLocaLToneMappingType, m_Sets.iHdrLocalToneMappingType);
+		key.SetDWORDValue(OPT_HdrLocalMeasurePeak, m_Sets.bHdrLocalMeasurePeak);
 		key.SetDWORDValue(OPT_HdrDisplayNits,      m_Sets.iHdrDisplayMaxNits);
 		key.SetDWORDValue(OPT_HdrToggleDisplay,    m_Sets.iHdrToggleDisplay);
 		key.SetDWORDValue(OPT_HdrOsdBrightness,    m_Sets.iHdrOsdBrightness);

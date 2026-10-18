@@ -39,7 +39,7 @@ jobs:
             'No upstream changes; no merge, version bump or release.' | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
             exit 0
           }
-          git merge --no-ff --no-commit upstream/master
+          git merge -Xrenormalize --no-ff --no-commit upstream/master
           if ($LASTEXITCODE -ne 0) {
             New-Item -ItemType Directory -Force _artifacts/upstream-conflict | Out-Null
             git diff --binary | Out-File _artifacts/upstream-conflict/conflicts.patch -Encoding utf8

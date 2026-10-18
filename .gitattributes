@@ -1,5 +1,7 @@
 # Preserve the exact bytes covered by the runtime notice checksum.
 tools/RifeRuntimeInstaller/licenses/TensorRT-SLA.html -text -whitespace
+# Upstream uses CRLF here; the fork uses LF. Normalize all three merge stages.
+Source/VideoRenderer.cpp text eol=lf
 external/SVPflow1/** -text -whitespace
 # These existing documents use CRLF; a carriage return is not trailing whitespace.
 Readme.md whitespace=cr-at-eol

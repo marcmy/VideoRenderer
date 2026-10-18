@@ -3,7 +3,8 @@
 The former migration wrappers caused delete/modify conflicts even when upstream
 changed an unrelated declaration. Use Git's real three-way file merger to catch
 that regression, and ensure genuinely overlapping edits still require review.
-No checkout, index, branch, network, or renderer state is modified.
+Only disposable Git fixtures are modified; the application checkout, index,
+branches, network and renderer state are untouched.
 """
 import json
 import subprocess
@@ -36,6 +37,50 @@ def merge(ours, base, theirs):
 
 
 class UpstreamMergeTests(unittest.TestCase):
+    def test_mixed_line_endings_merge_without_hiding_overlapping_edits(self):
+        # Reproduce the CRLF upstream / LF fork history from VideoRenderer.cpp.
+        # Exercise the real repository attributes and both upstream-sync commands.
+        for overlap in (False, True):
+            with self.subTest(overlap=overlap), tempfile.TemporaryDirectory(prefix='mpcvr-merge-eol-') as directory:
+                fixture = Path(directory)
+                def git(*args, check=True):
+                    return subprocess.run(['git', '-C', directory, *args], check=check, capture_output=True)
+                git('init', '-b', 'master')
+                git('config', 'user.name', 'Merge fixture')
+                git('config', 'user.email', 'fixture@example.invalid')
+                git('config', 'core.autocrlf', 'false')
+                git('config', 'commit.gpgsign', 'false')
+                source = fixture / 'Source/VideoRenderer.cpp'
+                source.parent.mkdir()
+                base = ''.join(f'line {i}\n' for i in range(80))
+                source.write_bytes(base.replace('\n', '\r\n').encode())
+                git('add', '.')
+                git('commit', '-m', 'CRLF upstream base')
+                git('switch', '-c', 'upstream')
+                theirs = base.replace('line 50\n', 'upstream update\n')
+                source.write_bytes(theirs.replace('\n', '\r\n').encode())
+                git('add', '.')
+                git('commit', '-m', 'Upstream edit')
+                git('switch', 'master')
+                fork_line = 50 if overlap else 5
+                ours = base.replace(f'line {fork_line}\n', 'fork integration\n')
+                source.write_bytes(ours.encode())
+                (fixture / '.gitattributes').write_bytes((ROOT / '.gitattributes').read_bytes())
+                git('add', '.')
+                git('commit', '-m', 'LF fork integration and normalization policy')
+                result = git('merge', '-Xrenormalize', '--no-ff', '--no-commit', 'upstream', check=False)
+                merged = source.read_text()
+                if overlap:
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn('<<<<<<<', merged)
+                    self.assertIn('fork integration', merged)
+                    self.assertIn('upstream update', merged)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(merged, ours.replace('line 50\n', 'upstream update\n'))
+        for path in ('dev.ps1', '.github/workflows/sync-upstream.yml'):
+            self.assertIn('renormalize', (ROOT / path).read_text(), path)
+
     def test_unrelated_upstream_edits_preserve_all_fork_source(self):
         for path, anchor in PROBES.items():
             with self.subTest(path=path):
