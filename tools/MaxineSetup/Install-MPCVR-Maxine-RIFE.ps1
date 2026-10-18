@@ -374,6 +374,10 @@ if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
 
 $tempRoot = $null
 $exitCode = 0
+$reuseMaxine = $false
+$reuseRife = $false
+$maxineInstallRoot = Join-Path $env:LOCALAPPDATA 'MPCVR Maxine Runtime'
+$rifeInstallRoot = Join-Path $env:LOCALAPPDATA 'MPCVideoRenderer\RIFE'
 try {
     Assert-PayloadHashes
 
@@ -396,11 +400,20 @@ try {
         if ($PSVersionTable.PSEdition -eq 'Desktop') { [Net.ServicePointManager]::SecurityProtocol=[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 }
         $inventory=@(Get-RifeGpuInventory -GpuInventoryJson $GpuInventoryJson)
         $keys=@(Get-RifeArchitectureKeysForInventory -GpuInventory $inventory)
+        Write-Host 'Checking installed dependency versions and file hashes...'
+        $reuseMaxine=Test-MPCVRInstalledDependency -Lock $dependencyLock -Component maxine -InstallRoot $maxineInstallRoot -ArchitectureKeys $keys
+        if ($reuseMaxine) {
+            try { [void](Assert-MaxinePreflight) } catch { $reuseMaxine=$false }
+        }
+        $reuseRife=Test-MPCVRInstalledDependency -Lock $dependencyLock -Component rife -InstallRoot $rifeInstallRoot -ArchitectureKeys $keys
+        $neededComponents=@()
+        if (-not $reuseMaxine) { $neededComponents+='maxine' }
+        if (-not $reuseRife) { $neededComponents+=@('rife-runtime','rife-models') }
         $tempRoot=Join-Path ([IO.Path]::GetTempPath()) ('MPCVR-Maxine-RIFE-Setup-'+[guid]::NewGuid().ToString('N'))
         $stagedPayload=Join-Path $tempRoot 'payload'
         New-Item -ItemType Directory -Force -Path $stagedPayload | Out-Null
         Copy-Item -LiteralPath $payloadRoot -Destination $tempRoot -Recurse -Force
-        Resolve-MPCVRDependencies -Lock $dependencyLock -Destination $stagedPayload -ArchitectureKeys $keys
+        Resolve-MPCVRDependencies -Lock $dependencyLock -Destination $stagedPayload -ArchitectureKeys $keys -Components $neededComponents
         $payloadRoot=$stagedPayload
         $payloadChecksums=Join-Path $payloadRoot 'PAYLOAD-SHA256SUMS.txt'
         $maxineRuntimeArchive=Join-Path $payloadRoot 'MPCVR-Maxine-Runtime.zip'
@@ -416,7 +429,7 @@ try {
     if ($architectureKeys.Count -eq 0) {
         throw 'No RIFE architecture packs were selected.'
     }
-    [void](Assert-RifeRuntimeDownloadContract -ArchitectureKeys $architectureKeys)
+    if (-not $reuseRife) { [void](Assert-RifeRuntimeDownloadContract -ArchitectureKeys $architectureKeys) }
     $normalizedGpuInventoryJson = $gpuInventory | ConvertTo-Json -Compress
     Write-Host ('Detected NVIDIA GPUs: {0}' -f (($gpuInventory | ForEach-Object { '{0} (CC {1})' -f $_.Name, $_.ComputeCapability }) -join '; '))
     Write-Host ('RIFE architecture packs: {0}' -f ($architectureKeys -join ', '))
@@ -465,32 +478,40 @@ try {
     if (-not $tempRoot) { $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("MPCVR-Maxine-RIFE-Setup-{0}" -f [guid]::NewGuid().ToString('N')) }
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
-    $stagedMaxineArchive = Join-Path $tempRoot 'MPCVR-Maxine-Runtime.zip'
-    Copy-Item -LiteralPath $maxineRuntimeArchive -Destination $stagedMaxineArchive
-    $maxineHash = Get-ExpectedHash -ChecksumPath $payloadChecksums -FileName 'MPCVR-Maxine-Runtime.zip'
-    "$maxineHash  MPCVR-Maxine-Runtime.zip" | Set-Content -LiteralPath "$stagedMaxineArchive.sha256" -Encoding ASCII
-
-    $rifeBundleRoot = Join-Path $tempRoot 'rife-runtime'
-    New-RifeRuntimeBundle -Destination $rifeBundleRoot -ArchitectureKeys $architectureKeys
-
-    Invoke-SetupStep `
-        -Name '1/4 Installing NVIDIA Maxine runtime...' `
-        -ScriptPath $maxineRuntimeInstaller `
-        -Parameters @{
-            RuntimeArchive = $stagedMaxineArchive
-            NoPause = $true
-        }
-
-    $rifeInstallParameters = @{
-        RuntimeBundleRoot = $rifeBundleRoot
-        ModelArchive = $rifeModelArchive
-        NoPause = $true
-        GpuInventoryJson = $normalizedGpuInventoryJson
+    if ($reuseMaxine) {
+        Write-Host '1/4 Maxine is current and verified; skipping runtime installation.' -ForegroundColor Green
     }
-    Invoke-SetupStep `
-        -Name '2/4 Installing RIFE TensorRT runtime and models...' `
-        -ScriptPath $rifeRuntimeInstaller `
-        -Parameters $rifeInstallParameters
+    else {
+        $stagedMaxineArchive = Join-Path $tempRoot 'MPCVR-Maxine-Runtime.zip'
+        Copy-Item -LiteralPath $maxineRuntimeArchive -Destination $stagedMaxineArchive
+        $maxineHash = Get-ExpectedHash -ChecksumPath $payloadChecksums -FileName 'MPCVR-Maxine-Runtime.zip'
+        "$maxineHash  MPCVR-Maxine-Runtime.zip" | Set-Content -LiteralPath "$stagedMaxineArchive.sha256" -Encoding ASCII
+        Invoke-SetupStep `
+            -Name '1/4 Installing NVIDIA Maxine runtime...' `
+            -ScriptPath $maxineRuntimeInstaller `
+            -Parameters @{
+                RuntimeArchive = $stagedMaxineArchive
+                NoPause = $true
+            }
+    }
+
+    if ($reuseRife) {
+        Write-Host '2/4 RIFE runtime and models are current and verified; skipping installation.' -ForegroundColor Green
+    }
+    else {
+        $rifeBundleRoot = Join-Path $tempRoot 'rife-runtime'
+        New-RifeRuntimeBundle -Destination $rifeBundleRoot -ArchitectureKeys $architectureKeys
+        $rifeInstallParameters = @{
+            RuntimeBundleRoot = $rifeBundleRoot
+            ModelArchive = $rifeModelArchive
+            NoPause = $true
+            GpuInventoryJson = $normalizedGpuInventoryJson
+        }
+        Invoke-SetupStep `
+            -Name '2/4 Installing RIFE TensorRT runtime and models...' `
+            -ScriptPath $rifeRuntimeInstaller `
+            -Parameters $rifeInstallParameters
+    }
 
     Invoke-SetupStep `
         -Name '3/4 Installing K-Lite restore shortcut...' `
@@ -506,13 +527,16 @@ try {
             NoPause = $true
         }
 
-    $rifeInstallRoot = Join-Path $env:LOCALAPPDATA 'MPCVideoRenderer\RIFE'
     $rifePreflightParameters = @{
         InstallRoot = $rifeInstallRoot
         GpuInventoryJson = $normalizedGpuInventoryJson
     }
     Invoke-SetupStep -Name 'Running RIFE post-install preflight...' -ScriptPath $rifePreflight -Parameters $rifePreflightParameters
     $maxineRuntimePath = Assert-MaxinePreflight
+    if ($thinSetup) {
+        Save-MPCVRInstalledDependency -Lock $dependencyLock -Component maxine -InstallRoot $maxineInstallRoot -ArchitectureKeys $architectureKeys
+        Save-MPCVRInstalledDependency -Lock $dependencyLock -Component rife -InstallRoot $rifeInstallRoot -ArchitectureKeys $architectureKeys
+    }
 
     Write-Host
     Write-Host 'MPCVR Maxine + RIFE Setup completed successfully.' -ForegroundColor Green

@@ -47,6 +47,139 @@ try {
         Check ($packs.Count -eq 1 -and $packs[0].Name -eq "MPCVR-RIFE-$architecture.zip") 'GPU selection downloaded an unrelated architecture'
         Check (Test-Path -LiteralPath (Join-Path $destination 'PAYLOAD-SHA256SUMS.txt')) 'Resolved payload lacks its verified staging inventory'
     }
+    $selection=Join-Path $fixture 'maxine-only'
+    Resolve-MPCVRDependencies -Lock $small -Destination $selection -ArchitectureKeys @('sm75') -CacheRoot $cache -Components @('maxine')
+    Check ((Test-Path (Join-Path $selection 'MPCVR-Maxine-Runtime.zip')) -and -not (Test-Path (Join-Path $selection 'MPCVR-RIFE-Models.zip')) -and -not (Test-Path (Join-Path $selection 'MPCVR-RIFE-Common.zip'))) 'Resolving Maxine also fetched current RIFE components'
+    $selection=Join-Path $fixture 'none-needed'
+    Resolve-MPCVRDependencies -Lock $small -Destination $selection -ArchitectureKeys @('sm75') -CacheRoot (Join-Path $fixture 'empty-cache') -Components @()
+    Check (@(Get-ChildItem $selection -Filter '*.zip').Count -eq 0) 'Resolving no components fetched an archive'
+    # Repeated setup must leave intact dependencies and engine caches alone.
+    # Tiny ZIPs exercise the real archive-to-install mapping without loading DLLs.
+    $reuseLock=Get-Content $lockPath -Raw | ConvertFrom-Json
+    $reuseCache=Join-Path $fixture 'reuse-cache'; New-Item -ItemType Directory $reuseCache | Out-Null
+    function New-ReuseArchive($Component,$Name,$Files) {
+        $source=Join-Path $fixture ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory $source | Out-Null
+        foreach ($file in $Files.GetEnumerator()) {
+            $target=Join-Path $source $file.Key
+            New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+            [IO.File]::WriteAllText($target,$file.Value)
+        }
+        $zip=$source+'.zip'; Compress-Archive -Path (Join-Path $source '*') -DestinationPath $zip
+        $hash=(Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+        Copy-Item $zip (Join-Path $reuseCache $hash)
+        $asset=$reuseLock.components.PSObject.Properties[$Component].Value.manifest.files.PSObject.Properties[$Name].Value
+        $asset.sha256=$hash; $asset.bytes=(Get-Item $zip).Length
+    }
+    $maxineFiles=@{}
+    foreach ($name in @('NVCVImage.dll','NVVideoEffects.dll','nvngxruntime.dll','nvngx_vsr.dll','nvVFXVideoSuperRes.dll')) { $maxineFiles["sdk/bin/$name"]="fixture $name" }
+    $maxineFiles['sdk/bin/models/vsr.bin']='fixture Maxine model'
+    New-ReuseArchive 'maxine' 'MPCVR-Maxine-Runtime.zip' $maxineFiles
+    New-ReuseArchive 'rife-runtime' 'MPCVR-RIFE-Common.zip' @{'MPCVRRifeRuntime64.dll'='runtime';'nvinfer_11.dll'='TensorRT';'LICENSES/CUDA.txt'='license'}
+    New-ReuseArchive 'rife-runtime' 'MPCVR-RIFE-sm75.zip' @{'builder-sm75.dll'='sm75'}
+    New-ReuseArchive 'rife-runtime' 'MPCVR-RIFE-sm86.zip' @{'builder-sm86.dll'='sm86'}
+    New-ReuseArchive 'rife-models' 'MPCVR-RIFE-Models.zip' @{'rife_v4.6.onnx'='model';'rife.features.onnx'='encoder';'model-manifest.json'='package metadata'}
+    $maxineRoot=Join-Path $fixture 'Maxine'; $rifeRoot=Join-Path $fixture 'RIFE'
+    Check (-not (Test-MPCVRInstalledDependency -Lock $reuseLock -Component maxine -InstallRoot $maxineRoot -ArchitectureKeys @('sm75') -CacheRoot $reuseCache)) 'Missing Maxine was considered installed'
+    foreach ($file in $maxineFiles.GetEnumerator()) {
+        $target=Join-Path $maxineRoot ('nvvfx/libs/'+$file.Key.Substring('sdk/bin/'.Length))
+        New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+        [IO.File]::WriteAllText($target,$file.Value)
+    }
+    foreach ($file in @{'runtime/MPCVRRifeRuntime64.dll'='runtime';'runtime/nvinfer_11.dll'='TensorRT';'runtime/LICENSES/CUDA.txt'='license';'runtime/builder-sm75.dll'='sm75';'models/rife_v4.6.onnx'='model';'models/rife.features.onnx'='encoder';'installed-manifest.json'='{"schemaVersion":2}'}.GetEnumerator()) {
+        $target=Join-Path $rifeRoot $file.Key
+        New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+        [IO.File]::WriteAllText($target,$file.Value)
+    }
+    $reuseArgs=@{Lock=$reuseLock;ArchitectureKeys=@('sm75');CacheRoot=$reuseCache}
+    Check (Test-MPCVRInstalledDependency @reuseArgs -Component maxine -InstallRoot $maxineRoot) 'Existing Maxine was not adopted from the pinned cached archive'
+    Check (Test-MPCVRInstalledDependency @reuseArgs -Component rife -InstallRoot $rifeRoot) 'Existing RIFE was not adopted from the pinned cached archives'
+    Save-MPCVRInstalledDependency @reuseArgs -Component maxine -InstallRoot $maxineRoot
+    Save-MPCVRInstalledDependency @reuseArgs -Component rife -InstallRoot $rifeRoot
+    $noCache=Join-Path $fixture 'no-download-cache'
+    $reuseArgs.CacheRoot=$noCache
+    $engine=Join-Path $rifeRoot 'cache/engine.plan'; New-Item -ItemType Directory (Split-Path $engine) | Out-Null
+    [IO.File]::WriteAllText($engine,'user engine cache')
+    $before=(Get-Item (Join-Path $rifeRoot 'runtime/nvinfer_11.dll')).LastWriteTimeUtc
+    Check (Test-MPCVRInstalledDependency @reuseArgs -Component maxine -InstallRoot $maxineRoot) 'Unchanged Maxine needed the download cache after recording installation'
+    Check (Test-MPCVRInstalledDependency @reuseArgs -Component rife -InstallRoot $rifeRoot) 'Unchanged RIFE needed the download cache after recording installation'
+    Check ((Get-Item (Join-Path $rifeRoot 'runtime/nvinfer_11.dll')).LastWriteTimeUtc -eq $before -and [IO.File]::ReadAllText($engine) -eq 'user engine cache') 'Reuse changed installed binaries or engine caches'
+    [IO.File]::WriteAllText((Join-Path $rifeRoot 'models/rife_v4.6.onnx'),'wrong') # same byte count
+    Check (-not (Test-MPCVRInstalledDependency @reuseArgs -Component rife -InstallRoot $rifeRoot)) 'Same-size model corruption was accepted'
+    [IO.File]::WriteAllText((Join-Path $rifeRoot 'models/rife_v4.6.onnx'),'model')
+    Remove-Item -LiteralPath (Join-Path $maxineRoot 'nvvfx/libs/NVCVImage.dll')
+    Check (-not (Test-MPCVRInstalledDependency @reuseArgs -Component maxine -InstallRoot $maxineRoot)) 'Missing Maxine DLL was accepted'
+    Check (Test-MPCVRInstalledDependency @reuseArgs -Component rife -InstallRoot $rifeRoot) 'Damaged Maxine invalidated independent RIFE state'
+    $reuseArgs.ArchitectureKeys=@('sm86')
+    Check (-not (Test-MPCVRInstalledDependency @reuseArgs -Component rife -InstallRoot $rifeRoot)) 'A newly selected GPU pack was considered installed'
+    $reuseArgs.ArchitectureKeys=@('sm75')
+    $modelsPin=$reuseLock.components.PSObject.Properties['rife-models'].Value
+    $savedPin=$modelsPin.manifestSha256; $modelsPin.manifestSha256='0'*64
+    Check (-not (Test-MPCVRInstalledDependency @reuseArgs -Component rife -InstallRoot $rifeRoot)) 'A changed model pin reused the old installation'
+    $modelsPin.manifestSha256=$savedPin
+    # Corrupt receipts fail closed, including paths outside the install root.
+    $receiptPath=Join-Path $rifeRoot 'dependency-receipt.json'
+    $savedReceipt=[IO.File]::ReadAllText($receiptPath)
+    $receipt=$savedReceipt | ConvertFrom-Json; $receipt.files[0].path='../outside.dll'
+    $receipt | ConvertTo-Json -Depth 12 | Set-Content $receiptPath
+    Check (-not (Test-MPCVRInstalledDependency @reuseArgs -Component rife -InstallRoot $rifeRoot)) 'An escaping receipt path was accepted'
+    [IO.File]::WriteAllText($receiptPath,'invalid JSON')
+    Check (-not (Test-MPCVRInstalledDependency @reuseArgs -Component rife -InstallRoot $rifeRoot)) 'A malformed receipt was accepted'
+    [IO.File]::WriteAllText($receiptPath,$savedReceipt)
+    # Run the actual setup coordinator against an isolated profile. External
+    # install/elevation/preflight boundaries are stubs; selection and hashing are real.
+    [IO.File]::WriteAllText((Join-Path $maxineRoot 'nvvfx/libs/NVCVImage.dll'),'fixture NVCVImage.dll')
+    $profile=Join-Path $fixture 'setup-profile'; New-Item -ItemType Directory $profile | Out-Null
+    Copy-Item $maxineRoot (Join-Path $profile 'MPCVR Maxine Runtime') -Recurse
+    New-Item -ItemType Directory (Join-Path $profile 'MPCVideoRenderer') | Out-Null
+    Copy-Item $rifeRoot (Join-Path $profile 'MPCVideoRenderer/RIFE') -Recurse
+    $coordinator=Join-Path $fixture 'coordinator'; $coordinatorPayload=Join-Path $coordinator 'payload'
+    New-Item -ItemType Directory $coordinatorPayload -Force | Out-Null
+    foreach ($name in @('Install-MPCVRMaxineRuntime.ps1','Install-MPCVRRifeRuntime.ps1','Test-MPCVRRifePreflight.ps1','Install-KLiteMPCVRUpdater.ps1','Update-KLiteMPCVR.ps1','KLiteRendererInstall.psm1','MpcVideoRenderer-Maxine-RIFE.zip')) {
+        [IO.File]::WriteAllText((Join-Path $coordinatorPayload $name),'unused boundary fixture')
+    }
+    Copy-Item (Join-Path $PSScriptRoot '../MaxineSetup/DependencyDownloads.psm1') $coordinatorPayload
+    Copy-Item (Join-Path $PSScriptRoot '../RifeRuntimeInstaller/RifeRuntimeManifest.psm1') $coordinatorPayload
+    $reuseLock | ConvertTo-Json -Depth 40 | Set-Content (Join-Path $coordinatorPayload 'dependencies.lock.json')
+    Get-ChildItem $coordinatorPayload -File | ForEach-Object {
+        '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),$_.Name
+    } | Set-Content (Join-Path $coordinatorPayload 'PAYLOAD-SHA256SUMS.txt') -Encoding ASCII
+    $coordinatorSource=Get-Content (Join-Path $PSScriptRoot '../MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1') -Raw
+    $tokens=$null; $errors=$null
+    $coordinatorAst=[Management.Automation.Language.Parser]::ParseInput($coordinatorSource,[ref]$tokens,[ref]$errors)
+    $boundaries=@{
+        'Invoke-SetupStep'=@'
+function Invoke-SetupStep {
+    param($Name,$ScriptPath,$Parameters)
+    if ($Name -notmatch '^(3/4 |4/4 |Running RIFE post-install preflight)') { throw "Unexpected runtime reinstall: $Name" }
+    Add-Content -LiteralPath $env:MPCVR_SETUP_TEST_STEPS -Value $Name
+}
+'@
+        'Assert-MaxinePreflight'='function Assert-MaxinePreflight { return (Join-Path $env:LOCALAPPDATA "MPCVR Maxine Runtime/nvvfx/libs") }'
+    }
+    $replacements=@($coordinatorAst.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @('Invoke-SetupStep','Assert-MaxinePreflight')},$true) | Sort-Object {$_.Extent.StartOffset} -Descending)
+    foreach ($node in $replacements) {
+        $coordinatorSource=$coordinatorSource.Substring(0,$node.Extent.StartOffset)+$boundaries[$node.Name]+$coordinatorSource.Substring($node.Extent.EndOffset)
+    }
+    $coordinatorPath=Join-Path $coordinator 'Install-MPCVR-Maxine-RIFE.ps1'
+    $coordinatorSource | Set-Content $coordinatorPath -Encoding UTF8
+    $runner=Join-Path $fixture 'run-coordinator.ps1'
+    @'
+param($Setup,$Profile,$Steps)
+$env:LOCALAPPDATA=$Profile
+$env:MPCVR_SETUP_TEST_STEPS=$Steps
+function global:Get-Process { param($Name,$ErrorAction) return $null }
+function global:Invoke-WebRequest { throw 'A current installation attempted a network download.' }
+& $Setup -NoPause -GpuInventoryJson '[{"Name":"fixture GPU","ComputeCapability":"7.5"}]'
+exit $LASTEXITCODE
+'@ | Set-Content $runner -Encoding UTF8
+    $hostExecutable=if ($PSVersionTable.PSEdition -eq 'Core') {(Get-Command pwsh.exe).Source} else {Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'}
+    $stepsPath=Join-Path $fixture 'setup-steps.txt'
+    & $hostExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $runner -Setup $coordinatorPath -Profile $profile -Steps $stepsPath
+    Check ($LASTEXITCODE -eq 0) 'Setup did not skip current dependencies before downloading/staging them'
+    $steps=@(Get-Content $stepsPath)
+    Check ($steps.Count -eq 3 -and $steps[0] -like '3/4 *' -and $steps[1] -like '4/4 *' -and $steps[2] -like 'Running RIFE post-install preflight*') 'Reuse skipped renderer/updater installation or post-install checks'
+    'PASS: installed dependency reuse, cached legacy adoption, independent components, corruption and GPU/pin changes.'
     # Exercise the real updater's download/checksum/delegation path with local
     # fixture responses and a harmless setup script. No live player or install.
     $setupRoot=Join-Path $fixture 'setup'; New-Item -ItemType Directory $setupRoot | Out-Null
