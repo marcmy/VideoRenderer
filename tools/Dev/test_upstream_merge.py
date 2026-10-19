@@ -7,6 +7,7 @@ Only disposable Git fixtures are modified; the application checkout, index,
 branches, network and renderer state are untouched.
 """
 import json
+import re
 import subprocess
 import tempfile
 import unittest
@@ -15,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UPSTREAM = json.loads((ROOT / 'upstream.version.json').read_text())['commit']
 PROBES = {
+    'Readme.md': '## Minimum system requirements',
     'Source/DX11VideoProcessor.h': '\tbool Initialized();',
     'Source/VideoRenderer.h': '\tvoid UpdateDisplayInfo();',
     'Source/VideoRenderer.cpp': 'static const wchar_t g_szClassName[] = L"VRWindow";',
@@ -37,6 +39,26 @@ def merge(ours, base, theirs):
 
 
 class UpstreamMergeTests(unittest.TestCase):
+    def test_upstream_resource_allocation_is_independent_of_fork_controls(self):
+        path = 'Source/resource.h'
+        base = upstream_source(path)
+        ours = (ROOT / path).read_text()
+        counter = re.search(r'(#define _APS_NEXT_CONTROL_VALUE\s+)(\d+)', base)
+        self.assertIsNotNone(counter)
+        next_id = int(counter[2])
+        theirs = base[:counter.start()] + counter[1] + str(next_id + 1) + base[counter.end():]
+        theirs = theirs.replace('// Next default values', f'#define IDC_NEW_UPSTREAM_CONTROL {next_id}\n\n// Next default values')
+        status, merged = merge(ours, base, theirs)
+        self.assertEqual(status, 0, 'Upstream resource allocation conflicts with fork-owned IDs')
+        self.assertIn(f'IDC_NEW_UPSTREAM_CONTROL {next_id}', merged)
+        private = (ROOT / 'Source/ForkResource.h').read_text()
+        private_ids = dict(re.findall(r'^#define\s+((?:IDC|IDD|IDF)_\w+)\s+(\d+)\s*$', private, re.M))
+        upstream_ids = set(re.findall(r'^#define\s+(?:IDC|IDD|IDF)_\w+\s+(\d+)\s*$', theirs, re.M))
+        self.assertGreater(len(private_ids), 50)
+        self.assertEqual(len(set(private_ids.values())), len(private_ids))
+        self.assertFalse(set(private_ids.values()) & upstream_ids)
+        self.assertTrue(all(20000 <= int(value) < 32768 for value in private_ids.values()))
+
     def test_mixed_line_endings_merge_without_hiding_overlapping_edits(self):
         # Reproduce the CRLF upstream / LF fork history from VideoRenderer.cpp.
         # Exercise the real repository attributes and both upstream-sync commands.

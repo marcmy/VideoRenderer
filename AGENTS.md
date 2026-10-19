@@ -82,6 +82,13 @@
 
 ## Upstream synchronization
 
+- Keep root `Readme.md` upstream-owned. Fork download/setup documentation lives
+  in `.github/README.md` (the GitHub landing page); packaging includes both guides.
+- Private Maxine/RIFE resource symbols live in `Source/ForkResource.h`, using
+  IDs 20000-32767. Do not change upstream's resource-editor allocation counters
+  or put private IDs back in `resource.h`. Shared main-dialog changes still need
+  semantic review; do not hide those conflicts with an ours/theirs handler.
+
 - Keep upstream-owned implementations in their original source/header paths.
   RIFE settings and playback additions belong in `Source/RifeVideoRenderer.inl`,
   included by `VideoRenderer.cpp`; declarations remain explicit in the original
