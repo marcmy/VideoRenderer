@@ -59,6 +59,8 @@ def package(version_path, architecture, output):
         files[path.name] = path.read_bytes()
     for name in ['Readme.md','history.txt','LICENSE.txt','dependencies.lock.json']:
         files[name] = (ROOT/name).read_bytes()
+    files['Readme-Upstream.md'] = files['Readme.md']
+    files['Readme.md'] = (ROOT/'.github/README.md').read_bytes()
     version['architectures'] = arches
     version['binaryHashes'] = {name:hashlib.sha256(data).hexdigest() for name,data in files.items() if name.endswith('.ax')}
     files['source-version.json'] = (json.dumps(version,indent=2)+'\n').encode()

@@ -1,0 +1,77 @@
+// Private Maxine/RIFE resources. Keep upstream resource.h allocation independent.
+#ifndef MPCVR_FORK_RESOURCE_H
+#define MPCVR_FORK_RESOURCE_H
+
+#define IDD_MAXINESETTINGS                     20000
+#define IDD_FRAMEINTERPOLATION                 20001
+#define IDD_RIFE_RATE_RULE                     20002
+#define IDF_PS_11_MAXINE_AMOUNT                20003
+#define IDF_PS_11_MAXINE_MIX                   20004
+#define IDC_BUTTON_MAXINE                      20005
+#define IDC_MAXINE_OPERATION                   20006
+#define IDC_MAXINE_SOURCE_MODE                 20007
+#define IDC_MAXINE_QUALITY                     20008
+#define IDC_MAXINE_SCALE                       20009
+#define IDC_MAXINE_SOURCE_LIMIT                20010
+#define IDC_MAXINE_DENOISE                     20011
+#define IDC_MAXINE_DEBLUR                      20012
+#define IDC_MAXINE_PIPELINE                    20013
+#define IDC_MAXINE_GPU                         20014
+#define IDC_MAXINE_AUTO_BITRATE                20015
+#define IDC_STATIC_MAXINE_QUALITY              20016
+#define IDC_STATIC_MAXINE_SCALE                20017
+#define IDC_STATIC_MAXINE_PIPELINE             20018
+#define IDC_STATIC_MAXINE_AUTO_BITRATE         20019
+#define IDC_BUTTON_MAXINE_DEFAULTS             20020
+#define IDC_MAXINE_OVERSAMPLE                  20021
+#define IDC_STATIC_MAXINE_OVERSAMPLE           20022
+#define IDC_BUTTON_FRAMEINTERPOLATION          20023
+#define IDC_FRUC_MODE                          20024
+#define IDC_FRUC_SOURCE_LIMIT                  20025
+#define IDC_FRUC_MAX_OUTPUT                    20026
+#define IDC_FRUC_GPU                           20027
+#define IDC_FRUC_FALLBACK                      20028
+#define IDC_BUTTON_FRUC_DEFAULTS               20029
+#define IDC_RIFE_MODE                          IDC_FRUC_MODE
+#define IDC_RIFE_CUSTOM_FPS                    IDC_FRUC_SOURCE_LIMIT
+#define IDC_RIFE_GPU_THREADS                   IDC_FRUC_MAX_OUTPUT
+#define IDC_RIFE_GPU                           IDC_FRUC_GPU
+#define IDC_RIFE_PERFORMANCE_BOOST             IDC_FRUC_FALLBACK
+#define IDC_BUTTON_RIFE_DEFAULTS               IDC_BUTTON_FRUC_DEFAULTS
+#define IDC_RIFE_SCENE_DETECTION               20030
+#define IDC_RIFE_SCENE_PROCESSING              20031
+#define IDC_RIFE_DUPLICATE_REMOVAL             20032
+#define IDC_RIFE_PRESERVE_PRECISION            20033
+#define IDC_RIFE_FEATURE_REUSE                 20034
+#define IDC_RIFE_MODEL                         20035
+#define IDC_STATIC_RIFE_CUSTOM_FPS             20036
+#define IDC_RIFE_RULES_ENABLED                 20037
+#define IDC_RIFE_RULES_LIST                    20038
+#define IDC_RIFE_RULE_ADD                      20039
+#define IDC_RIFE_RULE_EDIT                     20040
+#define IDC_RIFE_RULE_REMOVE                   20041
+#define IDC_RIFE_RULE_EXAMPLE                  20042
+#define IDC_RIFE_RULE_ENABLED                  20043
+#define IDC_RIFE_RULE_OFF                      20044
+#define IDC_RIFE_RULE_MIN_LONG                 20045
+#define IDC_RIFE_RULE_MAX_LONG                 20046
+#define IDC_RIFE_RULE_MIN_SHORT                20047
+#define IDC_RIFE_RULE_MAX_SHORT                20048
+#define IDC_RIFE_RULE_MIN_FPS                  20049
+#define IDC_RIFE_RULE_MAX_FPS                  20050
+#define IDC_RIFE_RULE_MAX_MULTIPLIER           20051
+#define IDC_RIFE_RULE_MAX_OUTPUT_FPS           20052
+#define IDC_RIFE_RULE_UP                       20053
+#define IDC_RIFE_RULE_DOWN                     20054
+#define IDC_RIFE_SCENE_THRESHOLD               20055
+#define IDC_STATIC_RIFE_SCENE_THRESHOLD        20056
+#define IDC_RIFE_PROCESSING_RESOLUTION         20057
+#define IDC_RIFE_PROCESSING_LIMIT              20058
+#define IDC_STATIC_RIFE_PROCESSING_LIMIT       20059
+#define IDC_DETAILED_STATS                     20060
+#define IDC_MAXINE_STRENGTH                    20061
+#define IDC_STATIC_MAXINE_STRENGTH             20062
+#define IDC_MAXINE_AMOUNT                      20063
+#define IDC_STATIC_MAXINE_AMOUNT               20064
+
+#endif

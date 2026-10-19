@@ -1,5 +1,13 @@
 # Development and releases
 
+Root `Readme.md` and the allocation counters in `Source/resource.h` follow
+upstream. The fork's GitHub landing guide is `.github/README.md`; packages
+include it as `Readme.md` alongside `Readme-Upstream.md`. Private Maxine/RIFE
+resource IDs live in `Source/ForkResource.h` in the 20000-32767 range, independent
+of upstream's resource editor. Shared dialog layout changes still require
+semantic review when both sides edit the same controls; sync must preserve the
+conflict artifact and stop instead of guessing.
+
 ## One local checkout
 
 Use `C:\Users\marcm\src\VideoRenderer`. The Codex project marks it Primary. A chat created by the old handoff can still have a different default cwd: specify this working directory explicitly. The older Documents checkout and synchronization worktrees retain their histories, dirty snapshots, private diagnostics and ignored artifacts. They are preserved historical locations, not routine development checkouts. See the [inventory](workspace-inventory-2026-10-13.md).

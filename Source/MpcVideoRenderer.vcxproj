@@ -148,6 +148,7 @@
     <ClInclude Include="PropPage.h" />
     <ClInclude Include="renbase2.h" />
     <ClInclude Include="resource.h" />
+    <ClInclude Include="ForkResource.h" />
     <ClInclude Include="RifeFrameInterpolation.h" />
     <ClInclude Include="RifePlaybackPipeline.h" />
     <ClInclude Include="RifeVideoRenderer.inl" />

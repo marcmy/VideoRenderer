@@ -272,6 +272,8 @@ class PackageTests(unittest.TestCase):
                 shutil.copytree(release.ROOT/name,root/name,ignore=shutil.ignore_patterns('__pycache__','*.exe','*.zip'))
             for name in ['Readme.md','history.txt','LICENSE.txt','dependencies.lock.json']:
                 shutil.copyfile(release.ROOT/name,root/name)
+            (root/'.github').mkdir()
+            (root/'.github/README.md').write_bytes(b'Fork download and setup guide\n')
             for arch,name in [('x86','MpcVideoRenderer.ax'),('x64','MpcVideoRenderer64.ax')]:
                 target=root/f'_bin/Filter_{arch}'; target.mkdir(parents=True)
                 (target/name).write_bytes(('fixture '+arch).encode())
@@ -287,6 +289,8 @@ class PackageTests(unittest.TestCase):
             single=Path(directory)/'x64'
             self.assertFalse((single/'MPCVR-Setup.zip').exists())
             with zipfile.ZipFile(single/'MPCVR-Portable.zip') as archive:
+                self.assertEqual(archive.read('Readme.md'), b'Fork download and setup guide\n')
+                self.assertEqual(archive.read('Readme-Upstream.md'), (root/'Readme.md').read_bytes())
                 self.assertIn('Install_MPCVR_64.cmd',archive.namelist())
                 self.assertNotIn('Install_MPCVR_32.cmd',archive.namelist())
             full=Path(directory)/'both'
