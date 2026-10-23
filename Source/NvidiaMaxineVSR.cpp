@@ -16,10 +16,12 @@
 
 #include <d3d11_4.h>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <format>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -309,6 +311,13 @@ struct CNvidiaMaxineVSR::Impl
 	PFN_NvCV_GetErrorStringFromCode NvCV_GetErrorStringFromCode = nullptr;
 
 	NvVFX_Handle effect = nullptr;
+	// Only model loading runs on this worker. The effect, CUDA context and GPU
+	// images remain owned here until the worker has completed and been joined.
+	std::thread modelLoadThread;
+	std::atomic<bool> modelLoadDone{false};
+	NvCV_Status modelLoadResult = NVCV_SUCCESS;
+	double backgroundModelMs = 0.0;
+	bool modelReady = false;
 	CUstream stream = nullptr;
 	CUcontext primaryCudaContext = nullptr;
 	CUdevice primaryCudaDevice = -1;
@@ -325,6 +334,28 @@ struct CNvidiaMaxineVSR::Impl
 	double lastGraphicsInputWaitMs = 0.0;
 	bool graphicsInputWaitUsed = false;
 	bool cudaInputUsed = false;
+	// Local startup probe: retain the slow call after playback has recovered.
+	// These are CPU wall times, including blocking SDK/driver calls, not GPU events.
+	enum class CallStage { Setup, Prepare, Graphics, Queue, Map, Upload, Run, Download, Finish, Count };
+	struct CallTiming {
+		std::array<double, static_cast<size_t>(CallStage::Count)> stages = {};
+		double totalMs = 0.0;
+		double runtimeMs = 0.0;
+		double modelMs = 0.0;
+		uint64_t number = 0;
+		UINT inputWidth = 0, inputHeight = 0, outputWidth = 0, outputHeight = 0;
+		bool paused = false;
+		bool cuda = false;
+		bool success = false;
+		bool loading = false;
+	};
+	CallTiming slowestCall;
+	uint64_t processCalls = 0;
+	uint64_t modelLoads = 0;
+	uint64_t bufferResizes = 0;
+	double currentRuntimeMs = 0.0;
+	double currentModelMs = 0.0;
+	double resetTimeMs = 0.0;
 	CRollingTimingWindow<128> graphicsInputWaitTiming;
 	CRollingTimingWindow<128> gpuTiming;
 	unsigned gpuTimingPendingPolls = 0;
@@ -954,6 +985,7 @@ struct CNvidiaMaxineVSR::Impl
 
 	bool AllocateGpuImages()
 	{
+		++bufferResizes;
 		ReleaseGpuImages();
 		PrimaryCudaContextScope cudaContext(*this);
 		if (!cudaContext.IsValid()) {
@@ -983,6 +1015,10 @@ struct CNvidiaMaxineVSR::Impl
 
 	void ResetEffect()
 	{
+		// Never destroy an effect, its images, context or DLLs while Load uses it.
+		if (modelLoadThread.joinable()) modelLoadThread.join();
+		modelLoadDone.store(false, std::memory_order_relaxed);
+		modelReady = false;
 		runFailure.Clear();
 		{
 			PrimaryCudaContextScope cudaContext(*this);
@@ -1231,13 +1267,34 @@ struct CNvidiaMaxineVSR::Impl
 	bool EnsureEffect(ID3D11Texture2D* input, ID3D11Texture2D* output, unsigned requestedMode,
 			int requestedGPU, MaxineRunBinding& runBinding)
 	{
+		if (modelLoadThread.joinable()) {
+			// Do not wait under the renderer lock. The caller draws the current
+			// source image through the normal resize path during initialization.
+			if (!modelLoadDone.load(std::memory_order_acquire)) {
+				status = L"Model loading in background; normal resize";
+				return false;
+			}
+			modelLoadThread.join();
+			if (modelLoadResult != NVCV_SUCCESS) {
+				SetError(L"NvVFX_Load(background)", modelLoadResult);
+				ResetEffect();
+				failed = true;
+				return false;
+			}
+			modelReady = true;
+		}
+
 		if (requestedGPU != selectedGPU) {
 			UnloadRuntime();
 			runtimeAttempted = false;
 			selectedGPU = requestedGPU;
 		}
 
-		if (!LoadRuntime()) {
+		const auto runtimeStarted = std::chrono::steady_clock::now();
+		const bool runtimeLoaded = LoadRuntime();
+		currentRuntimeMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - runtimeStarted).count();
+		if (!runtimeLoaded) {
 			return false;
 		}
 
@@ -1383,7 +1440,48 @@ struct CNvidiaMaxineVSR::Impl
 			}
 		}
 
+		quality = requestedMode;
+		effectAdapterLuid = inputAdapterLuid;
+		effectAdapterLuidValid = inputAdapterLuidValid;
+		++modelLoads;
+		if (streamUsesPrimaryContext) {
+			// Load uses only the bound CUDA images. Do not retain registrations
+			// of presentation textures while other effects/normal resizing use them.
+			ReleaseD3DImages();
+			modelLoadDone.store(false, std::memory_order_relaxed);
+			backgroundModelMs = 0.0;
+			modelReady = false;
+			try {
+				modelLoadThread = std::thread([this] {
+					const auto started = std::chrono::steady_clock::now();
+					try {
+						// CUDA current contexts are thread-local. Activate the same
+						// retained primary context used by subsequent effect runs.
+						PrimaryCudaContextScope cudaContext(*this);
+						modelLoadResult = cudaContext.IsValid() ? NvVFX_Load(effect) : -1;
+					} catch (...) {
+						modelLoadResult = -1;
+					}
+					backgroundModelMs = std::chrono::duration<double, std::milli>(
+						std::chrono::steady_clock::now() - started).count();
+					modelLoadDone.store(true, std::memory_order_release);
+				});
+			} catch (const std::exception&) {
+				status = L"Could not start Maxine model loader";
+				ResetEffect();
+				failed = true;
+				return false;
+			}
+			status = L"Model loading in background; normal resize";
+			return false;
+		}
+
+		// Legacy SDK-owned streams have no retained context to activate on a
+		// worker. Preserve their original synchronous initialization behavior.
+		const auto modelStarted = std::chrono::steady_clock::now();
 		code = NvVFX_Load(effect);
+		currentModelMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - modelStarted).count();
 		if (code != NVCV_SUCCESS) {
 			SetError(L"NvVFX_Load", code);
 			ResetEffect();
@@ -1391,9 +1489,7 @@ struct CNvidiaMaxineVSR::Impl
 			return false;
 		}
 
-		quality = requestedMode;
-		effectAdapterLuid = inputAdapterLuid;
-		effectAdapterLuidValid = inputAdapterLuidValid;
+		modelReady = true;
 		status = std::format(L"Active, quality {}", quality);
 		return true;
 	}
@@ -1426,16 +1522,38 @@ bool CNvidiaMaxineVSR::Process(
 	bool throttleGpuQueue,
 	bool waitForD3DInput,
 	const MpcvrRifeCudaOutput* cudaInput,
-	int strengthPercent)
+	int strengthPercent,
+	bool paused)
 {
 #ifdef _WIN64
 	const auto started = std::chrono::steady_clock::now();
+	Impl::CallTiming call;
+	call.number = ++m_impl->processCalls;
+	call.paused = paused;
+	call.cuda = cudaInput != nullptr;
+	auto stage = Impl::CallStage::Setup;
+	auto stageStarted = started;
+	auto Stage = [&](Impl::CallStage next) {
+		const auto now = std::chrono::steady_clock::now();
+		call.stages[static_cast<size_t>(stage)] += std::chrono::duration<double, std::milli>(now - stageStarted).count();
+		stageStarted = now;
+		stage = next;
+	};
+	m_impl->currentRuntimeMs = 0.0;
+	m_impl->currentModelMs = 0.0;
 	m_impl->lastGraphicsInputWaitMs = 0.0;
 	m_impl->graphicsInputWaitUsed = false;
 	m_impl->cudaInputUsed = false;
 	auto Finish = [&](bool result) {
+		Stage(Impl::CallStage::Count);
 		m_impl->lastProcessTimeMs = std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - started).count();
+		call.totalMs = m_impl->lastProcessTimeMs;
+		call.runtimeMs = m_impl->currentRuntimeMs;
+		call.modelMs = m_impl->currentModelMs;
+		call.success = result;
+		call.loading = IsModelLoading();
+		if (call.totalMs > m_impl->slowestCall.totalMs) m_impl->slowestCall = call;
 		return result;
 	};
 
@@ -1450,6 +1568,10 @@ bool CNvidiaMaxineVSR::Process(
 	D3D11_TEXTURE2D_DESC outputDesc = {};
 	pInputTexture->GetDesc(&inputDesc);
 	pOutputTexture->GetDesc(&outputDesc);
+	call.inputWidth = inputDesc.Width;
+	call.inputHeight = inputDesc.Height;
+	call.outputWidth = outputDesc.Width;
+	call.outputHeight = outputDesc.Height;
 	MaxineRunBinding runBinding{
 		{inputDesc.Width, inputDesc.Height}, {outputDesc.Width, outputDesc.Height}, mode, gpuIndex, 0};
 
@@ -1467,6 +1589,7 @@ bool CNvidiaMaxineVSR::Process(
 	if (!m_impl->EnsureEffect(pInputTexture, pOutputTexture, mode, gpuIndex, runBinding)) {
 		return Finish(false);
 	}
+	Stage(Impl::CallStage::Prepare);
 
 	Impl::PrimaryCudaContextScope cudaContext(*m_impl);
 	if (!cudaContext.IsValid()) {
@@ -1517,6 +1640,7 @@ bool CNvidiaMaxineVSR::Process(
 		borrowedInput.bufferBytes = 0;
 	}
 
+	Stage(Impl::CallStage::Graphics);
 	if (waitForD3DInput && !cudaInput) {
 		m_impl->graphicsInputWaitUsed = true;
 		const auto waitStarted = std::chrono::steady_clock::now();
@@ -1541,6 +1665,7 @@ bool CNvidiaMaxineVSR::Process(
 	// preemption of already-running kernels. Keep at most one Maxine pass in
 	// flight so the next high-priority RIFE launch gets a scheduling boundary
 	// before another VSR pass is submitted.
+	Stage(Impl::CallStage::Queue);
 	m_impl->lastGpuQueueThrottleWaitMs = 0.0;
 	if (throttleGpuQueue && m_impl->stream && m_impl->CuStreamSynchronize) {
 		const auto throttleStart = std::chrono::steady_clock::now();
@@ -1552,6 +1677,7 @@ bool CNvidiaMaxineVSR::Process(
 			return Finish(false);
 		}
 	}
+	Stage(Impl::CallStage::Map);
 	const bool gpuTimingStarted = m_impl->BeginGpuTiming();
 
 	bool inputMapped = false;
@@ -1577,6 +1703,7 @@ bool CNvidiaMaxineVSR::Process(
 			code = m_impl->NvCVImage_MapResource(&m_impl->d3dOutput, m_impl->stream);
 		}
 	}
+	Stage(Impl::CallStage::Upload);
 	if (code == NVCV_SUCCESS) {
 		outputMapped = true;
 		if (!cudaInput) {
@@ -1584,15 +1711,18 @@ bool CNvidiaMaxineVSR::Process(
 			code = m_impl->NvCVImage_Transfer(&m_impl->d3dInput, &m_impl->gpuInput, 1.0f, m_impl->stream, nullptr);
 		}
 	}
+	Stage(Impl::CallStage::Run);
 	if (code == NVCV_SUCCESS) {
 		failedOperation = L"NvVFX_Run";
 		code = m_impl->NvVFX_Run(m_impl->effect, 0);
 	}
+	Stage(Impl::CallStage::Download);
 	if (code == NVCV_SUCCESS) {
 		failedOperation = L"NvCVImage_Transfer(output)";
 		code = m_impl->NvCVImage_Transfer(&m_impl->gpuOutput, &m_impl->d3dOutput, 1.0f, m_impl->stream, nullptr);
 	}
 
+	Stage(Impl::CallStage::Finish);
 	NvCV_Status unmapCode = NVCV_SUCCESS;
 	const wchar_t* unmapOperation = nullptr;
 	{
@@ -1659,6 +1789,16 @@ bool CNvidiaMaxineVSR::Process(
 	UNREFERENCED_PARAMETER(waitForD3DInput);
 	UNREFERENCED_PARAMETER(cudaInput);
 	UNREFERENCED_PARAMETER(strengthPercent);
+	UNREFERENCED_PARAMETER(paused);
+	return false;
+#endif
+}
+
+bool CNvidiaMaxineVSR::IsModelLoading() const noexcept
+{
+#ifdef _WIN64
+	return m_impl->modelLoadThread.joinable();
+#else
 	return false;
 #endif
 }
@@ -1666,7 +1806,7 @@ bool CNvidiaMaxineVSR::Process(
 bool CNvidiaMaxineVSR::CanUseCudaInput() const noexcept
 {
 #ifdef _WIN64
-	return m_impl->effect && !m_impl->failed && m_impl->streamUsesPrimaryContext
+	return m_impl->modelReady && m_impl->effect && !m_impl->failed && m_impl->streamUsesPrimaryContext
 		&& m_impl->CuPointerGetAttribute && m_impl->CuStreamSynchronize
 		&& ((m_impl->sdkVersion >> 24) & 0xff) == 1
 		&& (((m_impl->sdkVersion >> 16) & 0xff) == 2 || ((m_impl->sdkVersion >> 16) & 0xff) == 3);
@@ -1678,6 +1818,12 @@ bool CNvidiaMaxineVSR::CanUseCudaInput() const noexcept
 void CNvidiaMaxineVSR::Reset()
 {
 #ifdef _WIN64
+	const auto resetStarted = std::chrono::steady_clock::now();
+	const double previousResetMs = m_impl->processCalls ? 0.0 : m_impl->resetTimeMs;
+	m_impl->slowestCall = {};
+	m_impl->processCalls = 0;
+	m_impl->modelLoads = 0;
+	m_impl->bufferResizes = 0;
 	const bool runtimeLoadFailed = m_impl->runtimeAttempted && !m_impl->hNvVideoEffects;
 	const std::wstring runtimeError = runtimeLoadFailed ? m_impl->status : std::wstring();
 
@@ -1689,7 +1835,10 @@ void CNvidiaMaxineVSR::Reset()
 	m_impl->failed = false;
 	m_impl->runFailure.Clear();
 	m_impl->lastProcessTimeMs = 0.0;
-	if (m_impl->effect) {
+	if (IsModelLoading()) {
+		m_impl->status = L"Model loading in background; normal resize";
+	}
+	else if (m_impl->effect) {
 		m_impl->status = std::format(L"Ready, mode {}", m_impl->quality);
 	}
 	else if (m_impl->hNvVideoEffects) {
@@ -1701,6 +1850,8 @@ void CNvidiaMaxineVSR::Reset()
 	else {
 		m_impl->status = L"Disabled";
 	}
+	m_impl->resetTimeMs = (std::max)(previousResetMs, std::chrono::duration<double, std::milli>(
+		std::chrono::steady_clock::now() - resetStarted).count());
 #else
 	m_impl->status = L"Requires a 64-bit build";
 #endif
@@ -1759,6 +1910,29 @@ std::wstring CNvidiaMaxineVSR::GetGraphicsInputWaitDiagnostics() const
 	}
 	const auto timing = m_impl->graphicsInputWaitTiming.GetSummary();
 	return std::format(L"graphics wait {:.2f} avg/{:.2f} p95 ms", timing.averageMs, timing.p95Ms);
+#else
+	return L"unavailable";
+#endif
+}
+
+std::wstring CNvidiaMaxineVSR::GetStartupDiagnostics() const
+{
+#ifdef _WIN64
+	const auto& call = m_impl->slowestCall;
+	if (!call.number) return L"no calls";
+	const auto& s = call.stages;
+	return std::format(
+		L"peak {:.1f} ms (#{} {}, {}, {})"
+		L"\nMaxine setup : reset {:.1f}, DLL {:.1f}, model {:.1f} ms ({}); loads {}, buffers {}; {}x{} -> {}x{}"
+		L"\nMaxine stall : setup {:.1f}, prep {:.1f}, gfx {:.1f}, queue {:.1f}, map {:.1f}, in {:.1f}, run {:.1f}, out {:.1f}, end {:.1f} ms",
+		call.totalMs, call.number, call.paused ? L"paused" : L"playing",
+		call.cuda ? L"CUDA input" : L"D3D input", call.success ? L"OK" : call.loading ? L"loading" : L"failed",
+		m_impl->resetTimeMs, call.runtimeMs,
+		m_impl->modelLoadDone.load(std::memory_order_acquire) ? m_impl->backgroundModelMs : call.modelMs,
+		IsModelLoading() ? L"loading" : m_impl->modelLoadDone.load(std::memory_order_acquire) ? L"background" : L"synchronous",
+		m_impl->modelLoads, m_impl->bufferResizes,
+		call.inputWidth, call.inputHeight, call.outputWidth, call.outputHeight,
+		s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7], s[8]);
 #else
 	return L"unavailable";
 #endif

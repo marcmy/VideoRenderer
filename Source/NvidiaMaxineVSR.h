@@ -32,9 +32,11 @@ public:
 		bool throttleGpuQueue = false,
 		bool waitForD3DInput = false,
 		const MpcvrRifeCudaOutput* cudaInput = nullptr,
-		int strengthPercent = 100);
+		int strengthPercent = 100,
+		bool paused = false);
 
 	void Reset();
+	bool IsModelLoading() const noexcept;
 	bool CanUseCudaInput() const noexcept;
 	const std::wstring& GetStatus() const;
 	const std::wstring& GetRuntimeInfo() const;
@@ -42,6 +44,7 @@ public:
 	double GetAverageGpuProcessTimeMs() const;
 	std::wstring GetGpuTimingDiagnostics() const;
 	std::wstring GetGraphicsInputWaitDiagnostics() const;
+	std::wstring GetStartupDiagnostics() const;
 	std::wstring GetStrengthDiagnostics() const;
 
 private:

@@ -4211,7 +4211,12 @@ bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, c
 		if (!pEffect->Process(m_pDeviceContext, pMaxineResult->pTexture,
 				pOutput->pTexture, mode, m_iMaxineGPU, releaseD3DImagesAfterRun,
 				throttleMaxineForRife, waitForMaxineD3DInput, pendingCudaInput,
-				pass == MaxinePass::Upscale ? m_iMaxineStrength : 100)) {
+				pass == MaxinePass::Upscale ? m_iMaxineStrength : 100,
+				m_pFilter->m_filterState == State_Paused)) {
+			if (pEffect->IsModelLoading()) {
+				m_strMaxineVSRStatus = pEffect->GetStatus();
+				return false;
+			}
 			m_strMaxineVSRStatus = std::format(L"{} failed: {} ({}x{} -> {}x{}, mode {})",
 				passName, pEffect->GetStatus(), currentSize.cx, currentSize.cy,
 				outputSize.cx, outputSize.cy, mode);
@@ -6282,6 +6287,7 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 			str += std::format(L"\nMaxine sync  : {}, {}",
 				MaxinePlaybackInputWait ? L"every frame" : L"paused only",
 				timingEffect.GetGraphicsInputWaitDiagnostics());
+			str += std::format(L"\nMaxine startup: {}", timingEffect.GetStartupDiagnostics());
 			str += std::format(L"\nMaxine config: quality {}, denoise {}, deblur {}, GPU {}",
 				MaxineQualityToString(m_iMaxineQuality), MaxineFilterToString(m_iMaxineDenoise),
 				MaxineFilterToString(m_iMaxineDeblur), gpuLabel);
