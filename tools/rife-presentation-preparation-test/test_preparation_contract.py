@@ -25,6 +25,12 @@ assert early < prepare < deadline < draw
 assert "frame.generation == m_FrameInterpolationPresenterGeneration.load()" in present[early:prepare]
 assert "if (!obsolete)" in present[early:prepare]
 assert "+ preparationTicks" in present
+assert present.count("RifePresentationSuperseded(") == 2, (
+    "preparation and final presentation must use the same original/synthetic catch-up policy"
+)
+assert "if (frame.synthetic &&" not in present, (
+    "obsolete original frames must not bypass catch-up protection after Maxine startup stalls"
+)
 
 prepare = function_body(bridge, "bool CDX11VideoProcessor::PrepareRifePresentationSource(")
 assert "m_RifePreparedMaxineKey.Clear();" in prepare

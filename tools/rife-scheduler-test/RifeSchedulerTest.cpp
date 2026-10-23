@@ -1,5 +1,6 @@
 #include "../../Source/FrameInterpolationScheduler.h"
 #include "../../Source/RifeInferenceTiming.h"
+#include "../../Source/RifePresentationPreparation.h"
 
 #include <algorithm>
 #include <cmath>
@@ -32,6 +33,44 @@ void CheckNear(double actual, double expected, double epsilon, std::string_view 
 constexpr FrameRate Rate(uint32_t numerator, uint32_t denominator = 1)
 {
     return {numerator, denominator};
+}
+
+void TestPresentationRecoveryAfterStartupStall()
+{
+    constexpr uint64_t generation = 7;
+    constexpr int64_t graphStart = 50'000'000;
+    constexpr int64_t now = graphStart + 20'000'000; // Two seconds spent in first-image setup.
+    Check(RifePresentationSuperseded(generation, 0, generation, 333667, graphStart + 333667, now),
+        "an obsolete original-source frame must be replaceable after a startup stall");
+    Check(RifePresentationSuperseded(generation, 111222, generation, 222444, graphStart + 222444, now),
+        "obsolete synthetic frames must remain replaceable");
+    Check(!RifePresentationSuperseded(generation, 0, generation + 1, 333667, graphStart + 333667, now),
+        "a new seek/file generation cannot supersede a frame in the old generation");
+    Check(!RifePresentationSuperseded(generation, 0, generation, 20'000'001, now + 1, now),
+        "a future frame cannot cause the currently available image to be dropped");
+    Check(!RifePresentationSuperseded(generation, 333667, generation, 333667, graphStart + 333667, now),
+        "duplicate timestamps do not establish a newer image");
+    Check(!RifePresentationSuperseded(generation, 333667, generation, 0, graphStart, now),
+        "reordered timestamps must not make the presenter move backward");
+
+    // Recovery must select the newest due frame instead of replaying a backlog
+    // in a burst, while preserving the newest image if the queue ends there.
+    for (const int64_t interval : {416667LL, 333667LL, 166833LL, 111222LL, 41666LL}) {
+        for (const int64_t stall : {0LL, 1'000'000LL, 20'000'000LL, 50'000'000LL}) {
+            const int64_t clock = graphStart + stall;
+            size_t keep = 0;
+            while (keep + 1 < 160 && RifePresentationSuperseded(generation,
+                    static_cast<int64_t>(keep) * interval, generation,
+                    static_cast<int64_t>(keep + 1) * interval,
+                    graphStart + static_cast<int64_t>(keep + 1) * interval, clock)) {
+                ++keep;
+            }
+            Check(static_cast<int64_t>(keep) * interval <= stall,
+                "recovery must not render a future frame early");
+            Check(keep == 159 || static_cast<int64_t>(keep + 1) * interval > stall,
+                "recovery must consume all superseded frames but retain the newest due image");
+        }
+    }
 }
 
 void Test24To120()
@@ -1885,6 +1924,7 @@ int main()
     TestMovieTwoAndHalfTimes();
     TestToScreenUsesPreciseDisplayRate();
     TestExactEndpointIsReturnedAsSource();
+    TestPresentationRecoveryAfterStartupStall();
     TestNonGridEndpointRemainsExcluded();
     TestResetReanchorsTimeline();
     TestLongRunDoesNotAccumulateRoundedPeriodDrift();

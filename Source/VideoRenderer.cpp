@@ -24,6 +24,7 @@
 #include <unordered_set>
 #include "VideoRenderer.h"
 #include "RifePlaybackPipeline.h"
+#include "RifePresentationPreparation.h"
 
 namespace {
 void ForgetRifeSettings(const CMpcVideoRenderer* renderer);
@@ -960,14 +961,15 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 				CAutoLock cRendererLock(&m_RendererLock);
 				if (!m_bStopFrameInterpolationPresenter.load()
 						&& frame.generation == m_FrameInterpolationPresenterGeneration.load() && m_VideoProcessor) {
-					// Do not spend Maxine time on an already-obsolete synthetic frame.
+					// Do not enhance an obsolete original or synthetic frame.
 					bool obsolete = false;
 					REFERENCE_TIME clockTime = 0;
-					if (frame.synthetic && SUCCEEDED(frame.clock->GetTime(&clockTime))) {
+					if (SUCCEEDED(frame.clock->GetTime(&clockTime))) {
 						std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
 						if (!m_FrameInterpolationPresenterQueue.empty()) {
 							const auto& next = m_FrameInterpolationPresenterQueue.front();
-							obsolete = next.generation == frame.generation && next.graphStart + next.streamTime <= clockTime;
+							obsolete = RifePresentationSuperseded(frame.generation, frame.streamTime,
+								next.generation, next.streamTime, next.graphStart + next.streamTime, clockTime);
 						}
 					}
 					if (!obsolete) m_VideoProcessor->PrepareRifePresentationSource(frame.sourceSurface, frame.streamTime);
@@ -996,7 +998,7 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 			}
 		}
 		bool rendered = false;
-		bool staleSynthetic = false;
+		bool staleFrame = false;
 		const auto renderStart = GetPreciseTick();
 		{
 			// Only serialize with D3D11 work. Never acquire m_InterfaceLock on
@@ -1007,23 +1009,23 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 					&& frame.generation == m_FrameInterpolationPresenterGeneration.load()
 					&& m_VideoProcessor) {
 				// The renderer lock can be held long enough for more presentation
-				// frames to become due. Replaying an old synthetic frame after that
+				// frames to become due. Replaying an old frame after that
 				// stall causes a visible catch-up burst (and short-term FPS above the
-				// target). If a newer queued frame is already due, discard only the
-				// obsolete synthetic frame and let the presenter catch up immediately.
-				if (frame.synthetic && frame.clock) {
+				// target). If a strictly newer queued frame is already due, discard
+				// this obsolete frame, including original-source fallbacks.
+				if (frame.clock) {
 					REFERENCE_TIME currentTime = 0;
 					if (SUCCEEDED(frame.clock->GetTime(&currentTime))) {
 						std::lock_guard<std::mutex> lock(m_FrameInterpolationPresenterMutex);
 						if (!m_FrameInterpolationPresenterQueue.empty()) {
 							const auto& next = m_FrameInterpolationPresenterQueue.front();
-							staleSynthetic = next.generation == frame.generation
-								&& next.graphStart + next.streamTime <= currentTime;
+							staleFrame = RifePresentationSuperseded(frame.generation, frame.streamTime,
+								next.generation, next.streamTime, next.graphStart + next.streamTime, currentTime);
 						}
 					}
 				}
 
-				if (!staleSynthetic) {
+				if (!staleFrame) {
 					const HRESULT hr = m_VideoProcessor->RenderFrameInterpolationSource(
 						frame.sourceSurface, frame.streamTime);
 					rendered = hr == S_OK;
@@ -1037,7 +1039,7 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 				m_VideoProcessor->ReleaseFrameInterpolationSource(frame.sourceSurface);
 			}
 		}
-		if (staleSynthetic) {
+		if (staleFrame) {
 			m_FrameInterpolationPresenterStaleDrops.fetch_add(1, std::memory_order_relaxed);
 		}
 		const auto renderTicks = GetPreciseTick() - renderStart + preparationTicks;
@@ -1050,7 +1052,7 @@ void CMpcVideoRenderer::FrameInterpolationPresenter()
 					observedRenderMax, renderUs, std::memory_order_relaxed)) {
 		}
 
-		if (!rendered && !staleSynthetic && due && !m_bStopFrameInterpolationPresenter.load()) {
+		if (!rendered && !staleFrame && due && !m_bStopFrameInterpolationPresenter.load()) {
 			DLog(L"Frame-interpolation source presentation was skipped");
 		}
 	}
@@ -1091,14 +1093,15 @@ HRESULT CMpcVideoRenderer::ReceiveLegacy(IMediaSample* pSample)
 
 			m_bInReceive = TRUE;
 		}
-		Ready();
-	}
-
-	if (m_State == State_Paused) {
 		m_bInReceive = FALSE;
 
 		CAutoLock cRendererLock(&m_RendererLock);
-		DoRenderSample(m_pMediaSample);
+		// Heavy first-image setup must finish before the graph starts audio.
+		// Revalidate under the renderer lock after releasing the interface lock.
+		if (m_State == State_Paused && !m_bFlushing && m_pMediaSample) {
+			DoRenderSample(m_pMediaSample);
+			Ready();
+		}
 	}
 
 	REFERENCE_TIME interpolationTime = INVALID_TIME;

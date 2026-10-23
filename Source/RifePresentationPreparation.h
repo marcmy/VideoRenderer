@@ -4,6 +4,15 @@
 #include <cmath>
 #include <cstdint>
 
+// An original frame can be just as obsolete as a synthetic one after a stall.
+// Only discard it when a strictly newer frame from this segment is ready now.
+inline bool RifePresentationSuperseded(const uint64_t generation, const int64_t time,
+    const uint64_t nextGeneration, const int64_t nextTime,
+    const int64_t nextDeadline, const int64_t now)
+{
+    return generation == nextGeneration && nextTime > time && nextDeadline <= now;
+}
+
 // One frame may be enhanced in advance. Keep the lead within one output
 // interval and 16 ms so preparation cannot run an unbounded GPU queue ahead.
 inline int64_t RifePresentationPreparationLead(const int64_t frameInterval,

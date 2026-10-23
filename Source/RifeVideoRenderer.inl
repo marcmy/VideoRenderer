@@ -272,9 +272,8 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 		return hr == VFW_E_SAMPLE_REJECTED ? NOERROR : hr;
 	}
 
-	// Preserve the base renderer's paused-search behavior verbatim. RIFE only
-	// owns continuously running playback; frame stepping and paused redraws stay
-	// on MPCVR's mature synchronous path.
+	// RIFE only owns running playback. Finish paused preroll (including Maxine
+	// model initialization) before Ready() lets the graph start audio playback.
 	if (m_State == State_Paused) {
 		m_bInReceive = FALSE;
 		{
@@ -284,12 +283,12 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 			}
 			m_bInReceive = TRUE;
 		}
-		Ready();
-	}
-	if (m_State == State_Paused) {
 		m_bInReceive = FALSE;
 		CAutoLock cRendererLock(&m_RendererLock);
-		DoRenderSample(m_pMediaSample);
+		if (m_State == State_Paused && !m_bFlushing && m_pMediaSample) {
+			DoRenderSample(m_pMediaSample);
+			Ready();
+		}
 	}
 
 	bool rifeSubmitted = false;
