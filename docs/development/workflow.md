@@ -34,6 +34,26 @@ Visual Studio C++ tools and the pinned Git submodules are required. Initialize m
 
 Routine confirmed changes can use normal commits on canonical master. Larger changes should use a review branch/PR, with CI passing before integration. No commit-tree/update-ref publishing, permanent clones, or mass source transplants are needed. After publication, fast-forward the primary checkout to the published master SHA, retain intentional edits, and run `verify`. GitHub Actions cannot update the desktop itself.
 
+## RIFE throughput comparisons
+
+Compare **GPU threads: 1** and **2** using the same clip segment, model, processing
+size, precision, feature reuse, scene detector, presentation size and requested
+rate. Run RIFE alone first, then repeat with identical Maxine settings. Keep other
+GPU workloads idle and capture statistics without an OCR overlay disrupting playback.
+Measure delivered FPS, late/stale-drop changes over the same interval, presentation
+lateness and RIFE/Maxine timing p95. Record the actual adaptive target as well:
+a changed cap or an already-satisfied request can conceal a throughput difference.
+Alternate the order and repeat before choosing a default; inference-only synth-cap
+does not measure the whole pipeline. These comparisons require explicit GPU/player
+test authorization, separate from `dev.ps1 test`, which does not run CUDA inference.
+
+Direct CUDA output lazily acquires a worker's pooled D3D output only if that route
+is unavailable or fails. Existing cached/registered textures remain valid for
+fallback; this change avoids unnecessary pool growth rather than reclaiming live
+registrations. The runtime ABI tests inject CUDA, allocation and inference failures
+without NVIDIA hardware. Maxine synchronization and prepare-ahead defaults are
+unchanged; revisiting them requires new delivery/correctness evidence.
+
 ## Versions
 
 The upstream component follows upstream's actual convention: `git rev-list --count <merged-upstream-SHA>`, with major/minor/build read from that upstream tree. `upstream.version.json` pins the actual merged SHA so moved remote refs do not relabel old builds. Sync writes the pin in the same merge commit. Manual integrations should run `tools/Dev/Version.ps1 -RecordUpstream <SHA>` before committing the merge.

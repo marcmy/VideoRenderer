@@ -20,8 +20,9 @@
 
 #include "stdafx.h"
 
-// A/B builds opt in through a local compiler definition; production defaults
-// retain the verified paused-seek fix without adding a playback barrier.
+// The verified D3D input path waits during playback and paused seeks. A/B
+// builds can override playback waiting; paused waits remain mandatory.
+// Direct CUDA input bypasses this D3D ownership transition.
 #ifndef MPCVR_TEST_MAXINE_PLAYBACK_WAIT
 #define MPCVR_TEST_MAXINE_PLAYBACK_WAIT 1
 #endif

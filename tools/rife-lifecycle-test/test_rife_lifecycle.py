@@ -51,7 +51,7 @@ assert "AcquireRifePresentationSurface" in dx11_header and "AcquireRifePresentat
     "generated RIFE frames need a presentation surface whose retirement query owns texture reuse"
 )
 generate_rife = function_body(rife_pipeline, "bool GenerateRife(")
-assert "runtime->Interpolate(contextIndex, first, second," in generate_rife
+assert "InterpolateRifeOutput(*runtime, contextIndex, first, second," in generate_rife
 assert "outputTexture" not in generate_rife, (
     "parallel RIFE inference must write into a context-owned texture instead of the shared scene-blend texture"
 )
@@ -112,7 +112,7 @@ assert "first.inferenceAsFirst" in process_pair and "second.inferenceAsSecond" i
 assert "second.inferenceAsFirst" in process_pair, (
     "single-context mode must fall back to the one staged input copy"
 )
-assert "AcquireInferenceOutput" in process_pair and "result.generated" in process_pair, (
+assert "AcquireInferenceOutput" in generate_rife and "result.generated" in process_pair, (
     "parallel pair workers must use pre-staged CUDA inputs and retain results until ordered presentation"
 )
 assert "workerState.retainedInputFirst = job.first" in process_pair and "workerState.retainedInputSecond = job.second" in process_pair, (
@@ -120,6 +120,9 @@ assert "workerState.retainedInputFirst = job.first" in process_pair and "workerS
 )
 assert "workerState.retainedInputRuntime = job.runtime" in process_pair and "DrainRetainedInputs(workerState)" in process_pair, (
     "switching runtime instances must drain the old context before releasing its retained source slots"
+)
+assert "if (runtimeInvoked) retainDeferredInputs();" in process_pair, (
+    "an output allocation failure before runtime invocation must preserve the previous pair's deferred CUDA inputs"
 )
 assert "DrainAllRetainedInputs();" in rife_pipeline, (
     "pipeline reset/runtime changes must drain deferred input ownership before reusing the source pool"

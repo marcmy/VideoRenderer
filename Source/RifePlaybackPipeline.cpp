@@ -1407,25 +1407,25 @@ struct CRifePlaybackPipeline::Impl
     bool GenerateRife(
         const std::shared_ptr<CRifeFrameInterpolation>& runtime,
         const uint32_t contextIndex,
+        InferenceWorkerState& workerState,
+        ID3D11Device* device,
+        size_t& outputIndex,
         ID3D11Texture2D* first,
         ID3D11Texture2D* second,
         float timestep,
-        ID3D11Texture2D* output,
+        ID3D11Texture2D*& output,
         const std::optional<bool> copiesReadyAtWorkerStart,
         const uint64_t inputPairId,
-        std::shared_ptr<RifeCudaOutputLease>& cudaOutput)
+        std::shared_ptr<RifeCudaOutputLease>& cudaOutput,
+        bool& runtimeInvoked)
     {
-        if (!runtime || !first || !second || !output) {
+        runtimeInvoked = false;
+        if (!runtime || !first || !second) {
             return false;
         }
         D3D11_TEXTURE2D_DESC desc = {};
         second->GetDesc(&desc);
-        D3D11_TEXTURE2D_DESC outputDesc = {};
-        output->GetDesc(&outputDesc);
-        if (outputDesc.Width != desc.Width
-                || outputDesc.Height != desc.Height
-                || outputDesc.Format != desc.Format || !RifeSupportedSurfaceFormat(desc.Format)
-                || outputDesc.SampleDesc.Count != 1) {
+        if (!RifeSupportedSurfaceFormat(desc.Format)) {
             return false;
         }
 
@@ -1437,14 +1437,17 @@ struct CRifePlaybackPipeline::Impl
                     observedMax, active, std::memory_order_relaxed)) {
         }
         const auto runtimeStart = std::chrono::steady_clock::now();
-        bool ok = false;
-        if (cudaOutput) {
-            ok = cudaOutput->Interpolate(contextIndex, first, second, timestep, stats, inputPairId);
-            if (!ok) cudaOutput.reset();
-        }
-        if (!cudaOutput) {
-            ok = runtime->Interpolate(contextIndex, first, second, output, timestep, stats, inputPairId);
-        }
+        const bool ok = InterpolateRifeOutput(*runtime, contextIndex, first, second,
+            timestep, stats, inputPairId, cudaOutput, output, runtimeInvoked, [&]() -> ID3D11Texture2D* {
+                auto* fallback = AcquireInferenceOutput(workerState, device,
+                    desc.Width, desc.Height, outputIndex++, desc.Format);
+                if (!fallback) return nullptr;
+                D3D11_TEXTURE2D_DESC outputDesc = {};
+                fallback->GetDesc(&outputDesc);
+                return outputDesc.Width == desc.Width && outputDesc.Height == desc.Height
+                    && outputDesc.Format == desc.Format && outputDesc.SampleDesc.Count == 1
+                    ? fallback : nullptr;
+            });
         const auto runtimeEnd = std::chrono::steady_clock::now();
         const auto runtimeUs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
             runtimeEnd - runtimeStart).count());
@@ -1632,15 +1635,6 @@ struct CRifePlaybackPipeline::Impl
                 continue;
             }
 
-            ID3D11Texture2D* generated = AcquireInferenceOutput(
-                workerState, device, job.width, job.height, outputIndex++, TextureFormat(second.texture));
-            if (!generated) {
-                result.inferenceFailed = true;
-                inferenceFallbackFrames.fetch_add(1, std::memory_order_relaxed);
-                PublishTargetResult(job, targetIndex, std::move(result));
-                continue;
-            }
-
             bool nvofStarted = false;
             std::unique_lock<std::mutex> nvofLock;
             if (!sceneDecisionReady) {
@@ -1681,15 +1675,20 @@ struct CRifePlaybackPipeline::Impl
             }
 
             auto cudaOutput = second.cudaOutputEligible ? job.runtime->AcquireCudaOutput() : nullptr;
+            ID3D11Texture2D* generated = nullptr;
+            bool runtimeInvoked = false;
             const bool generatedOk = GenerateRife(job.runtime, job.contextIndex,
+                workerState, device, outputIndex,
                 firstInference, secondInference,
                 static_cast<float>(target.timestep), generated,
-                copiesReadyAtWorkerStart, job.inputPairId, cudaOutput);
+                copiesReadyAtWorkerStart, job.inputPairId, cudaOutput, runtimeInvoked);
             // GenerateRife() first retires any deferred input release left by
             // the previous request on this same context. Only now is it safe to
             // let those old source-pool slots go; retain this pair until the
             // context advances again.
-            retainDeferredInputs();
+            // Allocation can now fail without invoking either runtime route.
+            // In that case the old pair still owns deferred CUDA input release.
+            if (runtimeInvoked) retainDeferredInputs();
 
             if (nvofStarted) {
                 CNvidiaSceneChangeDetector::Metrics metrics;

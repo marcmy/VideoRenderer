@@ -113,3 +113,27 @@ private:
     std::shared_ptr<CRifeFrameInterpolation> m_owner;
     MpcvrRifeCudaOutput m_image;
 };
+
+// The direct CUDA route must not depend on allocating a D3D output. Keep the
+// failed lease release ahead of fallback acquisition and runtime submission.
+template<class AcquireD3DOutput>
+bool InterpolateRifeOutput(CRifeFrameInterpolation& runtime, uint32_t contextIndex,
+    ID3D11Texture2D* first, ID3D11Texture2D* second, float timestep,
+    MpcvrRifeStats& stats, uint64_t inputPairId,
+    std::shared_ptr<RifeCudaOutputLease>& cudaOutput, ID3D11Texture2D*& output,
+    bool& runtimeInvoked, AcquireD3DOutput&& acquireD3DOutput)
+{
+    output = nullptr;
+    runtimeInvoked = false;
+    if (cudaOutput) {
+        runtimeInvoked = true;
+        if (cudaOutput->Interpolate(contextIndex, first, second, timestep, stats, inputPairId)) {
+            return true;
+        }
+        cudaOutput.reset();
+    }
+    output = acquireD3DOutput();
+    if (!output) return false;
+    runtimeInvoked = true;
+    return runtime.Interpolate(contextIndex, first, second, output, timestep, stats, inputPairId);
+}
