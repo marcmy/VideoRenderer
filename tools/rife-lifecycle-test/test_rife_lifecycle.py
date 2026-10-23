@@ -167,8 +167,8 @@ legacy_receive = function_body(legacy_renderer, "CMpcVideoRenderer::ReceiveLegac
 for name, body in (("RIFE", receive), ("ordinary", legacy_receive)):
     paused_draw = body.index("DoRenderSample(m_pMediaSample)")
     paused_ready = body.index("Ready();")
-    assert paused_draw < paused_ready, (
-        f"{name} preroll must finish the first image/Maxine initialization before signaling graph readiness"
+    assert paused_ready < paused_draw, (
+        f"{name} paused readiness must not wait for drawing or enhancement initialization"
     )
     assert "m_State == State_Paused && !m_bFlushing && m_pMediaSample" in body[:paused_ready], (
         f"{name} preroll must not draw or signal readiness for a sample invalidated by Run/Stop/flush"

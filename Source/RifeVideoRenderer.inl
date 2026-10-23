@@ -272,8 +272,8 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 		return hr == VFW_E_SAMPLE_REJECTED ? NOERROR : hr;
 	}
 
-	// RIFE only owns running playback. Finish paused preroll (including Maxine
-	// model initialization) before Ready() lets the graph start audio playback.
+	// RIFE only owns running playback. Preserve early paused-sample readiness;
+	// Maxine model loading now runs independently of the first draw.
 	if (m_State == State_Paused) {
 		m_bInReceive = FALSE;
 		{
@@ -286,8 +286,8 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 		m_bInReceive = FALSE;
 		CAutoLock cRendererLock(&m_RendererLock);
 		if (m_State == State_Paused && !m_bFlushing && m_pMediaSample) {
-			DoRenderSample(m_pMediaSample);
 			Ready();
+			DoRenderSample(m_pMediaSample);
 		}
 	}
 

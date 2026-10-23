@@ -1096,11 +1096,11 @@ HRESULT CMpcVideoRenderer::ReceiveLegacy(IMediaSample* pSample)
 		m_bInReceive = FALSE;
 
 		CAutoLock cRendererLock(&m_RendererLock);
-		// Heavy first-image setup must finish before the graph starts audio.
-		// Revalidate under the renderer lock after releasing the interface lock.
+		// Revalidate the sample, then preserve readiness before paused drawing.
+		// Maxine model loading no longer needs a graph-readiness barrier.
 		if (m_State == State_Paused && !m_bFlushing && m_pMediaSample) {
-			DoRenderSample(m_pMediaSample);
 			Ready();
+			DoRenderSample(m_pMediaSample);
 		}
 	}
 
