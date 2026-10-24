@@ -1156,15 +1156,15 @@ HRESULT CDX11VideoProcessor::InitHdrMeasure()
 
 	// the histogram, one counter per bin
 	if (SUCCEEDED(hr)) {
-		const std::vector<UINT> zeros(kHdrHistBins, 0);
+		const UINT zeros[kHdrHistBins] = {};
 		const D3D11_BUFFER_DESC desc = {
-			.ByteWidth = kHdrHistBins * sizeof(UINT),
+			.ByteWidth = sizeof(zeros),
 			.Usage = D3D11_USAGE_DEFAULT,
 			.BindFlags = D3D11_BIND_UNORDERED_ACCESS,
 			.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED,
 			.StructureByteStride = sizeof(UINT),
 		};
-		const D3D11_SUBRESOURCE_DATA init = { zeros.data(), 0, 0 };
+		const D3D11_SUBRESOURCE_DATA init = { zeros, 0, 0 };
 		hr = m_pDevice->CreateBuffer(&desc, &init, &m_pHdrHistBuffer);
 	}
 	if (SUCCEEDED(hr)) {
@@ -1177,15 +1177,15 @@ HRESULT CDX11VideoProcessor::InitHdrMeasure()
 
 	// the smoothed result and the window of frame peaks (see the layout in cs_hdr_resolve.hlsl)
 	if (SUCCEEDED(hr)) {
-		const std::vector<float> zeros((kHdrStateHead + kHdrWindowFrames) * 4, 0.0f);
+		const float zeros[(kHdrStateHead + kHdrWindowFrames) * 4] = {};
 		const D3D11_BUFFER_DESC desc = {
-			.ByteWidth = static_cast<UINT>(zeros.size() * sizeof(float)),
+			.ByteWidth = sizeof(zeros),
 			.Usage = D3D11_USAGE_DEFAULT,
 			.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE,
 			.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED,
 			.StructureByteStride = 4 * sizeof(float),
 		};
-		const D3D11_SUBRESOURCE_DATA init = { zeros.data(), 0, 0 };
+		const D3D11_SUBRESOURCE_DATA init = { zeros, 0, 0 };
 		hr = m_pDevice->CreateBuffer(&desc, &init, &m_pHdrStateBuffer);
 	}
 	if (SUCCEEDED(hr)) {
@@ -3458,18 +3458,16 @@ HRESULT CDX11VideoProcessor::CopySample(IMediaSample* pSample)
 					m_DoviMaxMasteringLuminance = static_cast<UINT>(PqToLinearNits(m_Dovi.msd.ColorMetadata.source_max_pq / 4095.f));
 					m_DoviMinMasteringLuminance = static_cast<UINT>(PqToLinearNits(m_Dovi.msd.ColorMetadata.source_min_pq / 4095.f) * 10000.0f);
 
-					if (size == sizeof(MediaSideDataDOVIMetadata)) {
-						for (uint32_t i = 0; i < LAV_DOVI_MAX_EXTENSIONS; ++i) {
-							if (pDOVIMetadata->Extensions[i].level == 6) {
-								auto& Level6 = pDOVIMetadata->Extensions[i].Level6;
+					for (uint32_t i = 0; i < LAV_DOVI_MAX_EXTENSIONS; ++i) {
+						if (pDOVIMetadata->Extensions[i].level == 6) {
+							auto& Level6 = pDOVIMetadata->Extensions[i].Level6;
 
-								m_DoviMaxMasteringLuminance = Level6.max_luminance;
-								m_DoviMinMasteringLuminance = Level6.min_luminance;
-								m_DoviMaxContentLightLevel = Level6.max_cll;
-								m_DoviMaxFrameAverageLightLevel = Level6.max_fall;
+							m_DoviMaxMasteringLuminance = Level6.max_luminance;
+							m_DoviMinMasteringLuminance = Level6.min_luminance;
+							m_DoviMaxContentLightLevel = Level6.max_cll;
+							m_DoviMaxFrameAverageLightLevel = Level6.max_fall;
 
-								break;
-							}
+							break;
 						}
 					}
 				}
