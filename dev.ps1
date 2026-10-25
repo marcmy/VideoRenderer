@@ -78,7 +78,9 @@ function Build-Renderer {
         $name=if ($arch -eq 'x64') {'MpcVideoRenderer64.ax'} else {'MpcVideoRenderer.ax'}
         $path=Join-Path $repoRoot "_bin\Filter_$arch\$name"
         $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($path)
-        if ($version.FileVersion -ne $metadata.version -or $version.ProductVersion -ne $metadata.productVersion) { throw "Compiled version disagrees with source metadata: $path" }
+        if ($version.FileVersion -ne $metadata.version -or $version.ProductVersion -ne $metadata.productVersion) {
+            throw "Compiled version disagrees with source metadata: $path`nFileVersion: compiled '$($version.FileVersion)' vs expected '$($metadata.version)'`nProductVersion: compiled '$($version.ProductVersion)' vs expected '$($metadata.productVersion)'"
+        }
         if (-not $version.Comments.Contains($metadata.commit) -or -not $version.Comments.Contains($metadata.upstreamCommit)) { throw "Compiled source provenance is missing: $path" }
         Write-Host "$name : $($version.ProductVersion)"
     }
