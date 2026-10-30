@@ -192,7 +192,7 @@ def publish(directory):
                f'Fork source: `{version["commit"]}`. Merged upstream: `{version["upstreamCommit"]}`.\n\n'
                'Immutable runtime/model packages: https://github.com/marcmy/VideoRenderer-Dependencies/releases. Exact tags, sizes, hashes, licenses and compatibility are embedded in dependencies.lock.json. No moving dependency URLs.\n\n'
                '**Upgrade note:** updater shortcuts installed before this release recognize only the old ZIP names. Run this setup once to update those scripts. Old offline setups remain tied to their historical runtime URLs.\n\n'
-               'Verify downloads with SHA256SUMS.txt. NVIDIA runtime components retain their separate license terms. Previous releases are preserved unless explicitly approved retention is enabled; its recovery artifacts remain available for 90 days.\n')
+               'Verify downloads with SHA256SUMS.txt. NVIDIA runtime components retain their separate license terms. Previous releases are preserved unless explicitly approved retention is enabled; its recovery artifacts remain available for 30 days.\n')
         release=dependencies.create_draft(REPO,tag,version['commit'],version['releaseName'],notes)
     dependencies.upload_missing(REPO, release, {name:Path(directory)/name for name in ASSETS})
     # Verify server digests before publishing, and confirm source is still current.

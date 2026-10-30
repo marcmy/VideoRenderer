@@ -68,7 +68,7 @@
   latest promotion. Preserve predecessors by default. Only explicitly approved
   `MPCVR_KEEP_ONE_RELEASE=true` retention may remove an older verified renderer
   release after replacement verification, recovery archival and source/latest guards.
-  Its CI recovery packages expire after 90 days; download them for permanent retention.
+  Its CI recovery packages expire after 30 days; download them for permanent retention.
 - Use `dev.ps1` and the documented commands in `docs/development/workflow.md`.
   Put transient outputs in `_artifacts`; preserve older diagnostic history.
 
