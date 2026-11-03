@@ -22,13 +22,13 @@ jobs:
       CUDA_VERSION: 13.4.1
       CUDA_COMPILER_VERSION: 13.4.59
       CUDA_RUNTIME_VERSION: 13.4.49
-      TENSORRT_VERSION: 11.3.0.99
+      TENSORRT_VERSION: 11.4.0.106
       TENSORRT_SLA_SHA256: eea91074c3bb4db31015e9c4bece1a1ff7db3ca59bdc3ad0d5b3c344aeb5cba4
       CUDA_LICENSE_SHA256: e2c71babfd18a8e69542dd7e9ca018f9caa438094001a58e6bc4d8c999bf0d07
       NVIDIA_DOWNLOAD_CACHE: ${{ github.workspace }}\_rife-download-cache
       CUDA_ROOT: ${{ github.workspace }}\_rife-deps\cuda-13.4
-      TENSORRT_ARCHIVE: ${{ github.workspace }}\_rife-download-cache\TensorRT-11.3.0.99.zip
-      TENSORRT_EXPECTED_SHA256: 8ffd112d7bab97bc81eed818358b85df8c317bcdfc3cd3c731c220df7ca737eb
+      TENSORRT_ARCHIVE: ${{ github.workspace }}\_rife-download-cache\TensorRT-11.4.0.106.zip
+      TENSORRT_EXPECTED_SHA256: b6fd86301ad803492adf7a06de29ce45e3968d29637a1437d0fb0994f412c980
       TENSORRT_EXTRACT: ${{ github.workspace }}\_rife-deps\tensorrt
       BUILD_DIR: ${{ github.workspace }}\_rife-runtime-build
       PACKAGE_DIR: ${{ github.workspace }}\_rife-runtime-package
@@ -47,7 +47,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ github.workspace }}\_rife-download-cache
-          key: rife-nvidia-sdk-windows-cuda-13.4.1-tensorrt-11.3.0.99-${{ github.repository }}-${{ github.ref }}-v1
+          key: rife-nvidia-sdk-windows-cuda-13.4.1-tensorrt-11.4.0.106-${{ github.repository }}-${{ github.ref }}-v1
 
       - name: Enter Visual Studio x64 developer shell
         shell: pwsh
@@ -119,12 +119,12 @@ jobs:
           "CUDAToolkit_ROOT=$env:CUDA_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "$env:CUDA_ROOT\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
-      - name: Download TensorRT 11.3.0.99 for CUDA 13.4
+      - name: Download TensorRT 11.4.0.106 for CUDA 13.4
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path $env:NVIDIA_DOWNLOAD_CACHE | Out-Null
-          $url = 'https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/11.3.0/zip/TensorRT-Enterprise-11.3.0.99-Windows-amd64-cuda-13.4-Release-external.zip'
+          $url = 'https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/11.4.0/zip/TensorRT-Enterprise-11.4.0.106-Windows-amd64-cuda-13.4-Release-external.zip'
           if (-not (Test-Path -LiteralPath $env:TENSORRT_ARCHIVE -PathType Leaf)) {
               & curl.exe --fail --location --retry 3 --output $env:TENSORRT_ARCHIVE $url
               if ($LASTEXITCODE -ne 0) { throw 'TensorRT download failed' }

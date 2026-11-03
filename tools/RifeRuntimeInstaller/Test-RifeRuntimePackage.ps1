@@ -61,7 +61,7 @@ function Assert-Manifest {
     if ([string]$Manifest.cudaRuntimeVersion -ne '13.4.49') {
         throw "runtime-manifest.json has unexpected cudaRuntimeVersion '$($Manifest.cudaRuntimeVersion)'"
     }
-    if ([string]$Manifest.tensorRtVersion -ne '11.3.0.99') {
+    if ([string]$Manifest.tensorRtVersion -ne '11.4.0.106') {
         throw "runtime-manifest.json has unexpected tensorRtVersion '$($Manifest.tensorRtVersion)'"
     }
     if ([int]$Manifest.runtimeAbi -ne 2) {

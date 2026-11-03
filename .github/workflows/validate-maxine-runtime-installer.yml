@@ -202,7 +202,7 @@ jobs:
             schemaVersion = 1
             cudaVersion = '13.4.1'
             cudaRuntimeVersion = '13.4.49'
-            tensorRtVersion = '11.3.0.99'
+            tensorRtVersion = '11.4.0.106'
             runtimeAbi = 2
             architectures = @(
               [pscustomobject]@{ computeCapability = '7.5'; key = 'sm75'; builderResource = 'nvinfer_builder_resource_sm75_11.dll' },

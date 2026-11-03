@@ -22,7 +22,7 @@ BASELINE = 'bea5902b1a98488fce1cfc9df9480d388a6bc2af'
 RECIPES = {
     'rife-runtime': {
         'recipeVersion': 1,
-        'toolchain': {'cuda': '13.4.1', 'tensorrt': '11.3.0.99', 'architectures': ['sm75','sm86','sm89','sm120']},
+        'toolchain': {'cuda': '13.4.1', 'tensorrt': '11.4.0.106', 'architectures': ['sm75','sm86','sm89','sm120']},
         'paths': ['Source/RifeRuntimeApi.h','Source/RifeCudaOutputApi.h',
                   'tools/RifeTensorRTRuntime/CMakeLists.txt'],
         'codeDirectory': 'tools/RifeTensorRTRuntime',
@@ -139,7 +139,7 @@ def recipe(component):
         workflow = ROOT / ('.github/workflows/rife-runtime.yml' if component == 'rife-runtime' else '.github/workflows/rife-model.yml')
         text = workflow.read_text()
         names = {'rife-runtime':['Download pinned CUDA 13.4.1 build components',
-                                'Download TensorRT 11.3.0.99 for CUDA 13.4','Configure and build runtime'],
+                                'Download TensorRT 11.4.0.106 for CUDA 13.4','Configure and build runtime'],
                  'rife-models':['Install model preparation dependencies',
                                'Download and verify pinned RIFE sources and license',
                                'Convert RIFE variants to mixed FP16','Prepare and verify reusable encoder stages']}[component]
