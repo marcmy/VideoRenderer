@@ -24,6 +24,7 @@ $targets = [ordered]@{
     'MpcVideoRenderer.ax' = 'C:\Program Files (x86)\K-Lite Codec Pack\Filters\MPCVR\MpcVideoRenderer.ax'
     'MpcVideoRenderer64.ax' = 'C:\Program Files (x86)\K-Lite Codec Pack\MPC-HC64\MPCVR\MpcVideoRenderer64.ax'
 }
+$requiredTargets = @('MpcVideoRenderer64.ax')
 
 function Test-IsWindowsPlatform {
     $isWindowsVariable = Get-Variable -Name IsWindows -ErrorAction SilentlyContinue
@@ -189,10 +190,13 @@ try {
         Write-Host 'MPC-HC has closed. Continuing installation...' -ForegroundColor Green
     }
 
-    foreach ($destination in $targets.Values) {
-        $destinationDirectory = Get-TargetDirectory -TargetPath $destination
+    # Only the 64-bit renderer is required. K-Lite installed with 64-bit
+    # components alone has no Filters\MPCVR; that optional target is skipped
+    # when the renderer files are selected.
+    foreach ($fileName in $requiredTargets) {
+        $destinationDirectory = Get-TargetDirectory -TargetPath $targets[$fileName]
         if (-not (Test-Path -LiteralPath $destinationDirectory -PathType Container)) {
-            throw "K-Lite destination directory was not found: $destinationDirectory"
+            throw "K-Lite destination directory was not found: $destinationDirectory. Install K-Lite Codec Pack with MPC-HC (64-bit) and MPC Video Renderer selected."
         }
     }
 
@@ -292,7 +296,7 @@ try {
         $sources[$fileName] = $source
     }
 
-    $installTargets = Select-KLiteRendererTargets -Targets $targets -Required @('MpcVideoRenderer64.ax')
+    $installTargets = Select-KLiteRendererTargets -Targets $targets -Required $requiredTargets
     foreach ($fileName in @($installTargets.Keys | Sort-Object)) {
         Write-Host "Installing $fileName..."
     }
