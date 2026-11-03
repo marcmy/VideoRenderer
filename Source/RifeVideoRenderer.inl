@@ -293,7 +293,11 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 
 	bool rifeSubmitted = false;
 	REFERENCE_TIME rifeFrameDuration = 0;
-	if (m_State == State_Running && m_VideoProcessor->Type() == VP_DX11) {
+	// A pending frame step (MPC-HC steps one frame after every seek while
+	// paused) is completed only by DoRenderSample(). The RIFE presenter never
+	// calls it, so a stepped sample must take the synchronous path below or the
+	// graph keeps running instead of returning to pause.
+	if (m_State == State_Running && m_VideoProcessor->Type() == VP_DX11 && !m_Stepping) {
 		// BeginFlush enters with interface/renderer locks held and waits for
 		// m_bInReceive to clear. Advertise Receive as inactive before entering
 		// that lock order, then revalidate the graph state inside it.
@@ -306,21 +310,25 @@ HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
 			m_bInReceive = TRUE;
 
 			CAutoLock cRendererLock(&m_RendererLock);
-			if (!m_RifePipeline) {
-				m_RifePipeline = std::make_unique<CRifePlaybackPipeline>(this);
-			}
+			// A step requested while waiting for the locks also needs the
+			// synchronous renderer.
+			if (!m_Stepping) {
+				if (!m_RifePipeline) {
+					m_RifePipeline = std::make_unique<CRifePlaybackPipeline>(this);
+				}
 
-			auto* dx11 = static_cast<CDX11VideoProcessor*>(m_VideoProcessor.get());
-			const uint64_t generation = m_FrameInterpolationPresenterGeneration.load(std::memory_order_acquire);
-			const FrameRate displayRate = ResolveDisplayRate(m_DisplayConfig);
-			rifeFrameDuration = m_FrameStats.GetAverageFrameDuration();
-			rifeSubmitted = m_RifePipeline->SubmitSample(
-				dx11,
-				m_pMediaSample,
-				m_Sets,
-				generation,
-				displayRate,
-				rifeFrameDuration);
+				auto* dx11 = static_cast<CDX11VideoProcessor*>(m_VideoProcessor.get());
+				const uint64_t generation = m_FrameInterpolationPresenterGeneration.load(std::memory_order_acquire);
+				const FrameRate displayRate = ResolveDisplayRate(m_DisplayConfig);
+				rifeFrameDuration = m_FrameStats.GetAverageFrameDuration();
+				rifeSubmitted = m_RifePipeline->SubmitSample(
+					dx11,
+					m_pMediaSample,
+					m_Sets,
+					generation,
+					displayRate,
+					rifeFrameDuration);
+			}
 		}
 	}
 

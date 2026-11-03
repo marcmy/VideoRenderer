@@ -200,4 +200,22 @@ assert "RifeSettingsChanged(adjusted, m_Sets)" in set_settings and "m_RifePipeli
     "a RIFE settings change must still discard the learned cap"
 )
 
+# MPC-HC frame-steps one sample after every seek while paused. Only
+# DoRenderSample() completes the step, so RIFE must not take that sample.
+rife_receive = function_body(renderer, "HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)")
+submit_index = rife_receive.find("m_RifePipeline->SubmitSample(")
+assert submit_index != -1, "RIFE Receive no longer submits samples"
+assert "m_State == State_Running && m_VideoProcessor->Type() == VP_DX11 && !m_Stepping" in rife_receive, (
+    "RIFE must leave a frame-stepped sample to the synchronous renderer"
+)
+assert "if (!m_Stepping) {" in rife_receive[:submit_index], (
+    "a frame step requested while Receive waits for its locks must also bypass RIFE"
+)
+synchronous = rife_receive.find("Render(m_pMediaSample);", submit_index)
+assert synchronous != -1, "stepped samples have no synchronous render path"
+do_render = function_body(legacy_renderer, "HRESULT CMpcVideoRenderer::DoRenderSample(IMediaSample* pSample)")
+assert "m_Stepping && !(--m_Stepping)" in do_render and "EC_STEP_COMPLETE" in do_render, (
+    "DoRenderSample must still complete frame steps"
+)
+
 print("RIFE lifecycle/source-contract test passed")
