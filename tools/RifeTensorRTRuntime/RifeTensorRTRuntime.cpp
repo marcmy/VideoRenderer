@@ -1037,8 +1037,8 @@ private:
         const int minH = static_cast<int>(bounds.minHeight);
         const int maxW = static_cast<int>(bounds.maxWidth);
         const int maxH = static_cast<int>(bounds.maxHeight);
-        const int optW = static_cast<int>(m_paddedWidth);
-        const int optH = static_cast<int>(m_paddedHeight);
+        const int optW = static_cast<int>(bounds.optWidth);
+        const int optH = static_cast<int>(bounds.optHeight);
         const nvinfer1::Dims4 minDims{1, 11, minH, minW};
         const nvinfer1::Dims4 optDims{1, 11, optH, optW};
         const nvinfer1::Dims4 maxDims{1, 11, maxH, maxW};

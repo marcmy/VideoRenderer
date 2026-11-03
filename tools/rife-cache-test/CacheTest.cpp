@@ -66,9 +66,13 @@ void CreationCases() {
     FakeRuntime::throwing = 0;
 }
 void ProfileCases() {
-    Check(RifeEngineProfileCacheSuffix(1920, 1088, false) == "_dynamic_max3840x2176", "normal cache key changed");
+    // Plans named without an optimization point were tuned for whichever size
+    // built them first; the fixed-point namespace never reuses or replaces them.
+    Check(RifeEngineProfileCacheSuffix(1920, 1088, false) == "_dynamic_max3840x2176_opt1920x1088", "normal cache key changed");
+    Check(RifeEngineProfileCacheSuffix(480, 384, false) == RifeEngineProfileCacheSuffix(1280, 736, false),
+        "normal plan stopped being shared across resolutions");
     Check(RifeEngineProfileCacheSuffix(1920, 1088, true) == "_1920x1088_static", "boost cache key changed");
-    Check(RifeEngineProfileCacheSuffix(64, 128, false) == "_dynamic_max3840x2176_min64x128", "small profile reused an incompatible cache");
+    Check(RifeEngineProfileCacheSuffix(64, 128, false) == "_dynamic_max3840x2176_opt1920x1088_min64x128", "small profile reused an incompatible cache");
     Check(RifeEngineProfileCacheSuffix(64, 128, true) == "_64x128_static", "small boost key changed");
     for (uint32_t width : {32u, 64u, 96u, 128u, 256u, 1920u, 3840u, 4320u}) {
         for (uint32_t height : {32u, 64u, 96u, 128u, 256u, 1088u, 2176u, 4320u}) {
@@ -77,8 +81,14 @@ void ProfileCases() {
                 Check(profile.minWidth <= width && profile.minHeight <= height
                     && profile.maxWidth >= width && profile.maxHeight >= height,
                     "current dimensions lie outside the optimization profile");
+                Check(profile.minWidth <= profile.optWidth && profile.optWidth <= profile.maxWidth
+                    && profile.minHeight <= profile.optHeight && profile.optHeight <= profile.maxHeight,
+                    "optimization point lies outside the profile");
                 if (boost) Check(profile.minWidth == width && profile.maxWidth == width
-                    && profile.minHeight == height && profile.maxHeight == height, "boost stopped using fixed dimensions");
+                    && profile.minHeight == height && profile.maxHeight == height
+                    && profile.optWidth == width && profile.optHeight == height, "boost stopped using fixed dimensions");
+                else Check(profile.optWidth == kRifeDynamicOptWidth && profile.optHeight == kRifeDynamicOptHeight,
+                    "normal plan optimization point depends on the source size");
             }
         }
     }

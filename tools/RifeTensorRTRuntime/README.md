@@ -121,7 +121,7 @@ Serialized TensorRT engines are stored below the cache directory supplied by MPC
 - dynamic profile range
 - normal dynamic plan or Performance Boost fixed-resolution plan
 
-Normal mode uses one dynamic profile covering source sizes up to at least padded 4K dimensions, with the current size as the optimization point. Performance Boost uses a fixed profile for the current padded resolution and therefore keeps a separate cached engine per resolution. Cached throughput testing showed this original fixed-shape path is consistently faster than the shared dynamic plan. The later TensorRT level-5 Boost experiment remains disabled because it benchmarked substantially slower.
+Normal mode uses one dynamic profile covering source sizes up to at least padded 4K dimensions, with a fixed padded 1920x1088 optimization point recorded in the cache name (`_opt1920x1088`). Earlier normal plans used whichever size first built them as the optimization point; those files keep their old names and are neither reused nor replaced. On an RTX 2070 SUPER with RIFE 4.6 at 1920x1088, a plan first built for 384x480 measured 13.55 ms, the fixed-point plan 12.18 ms, and a fixed-shape Boost plan 12.09 ms; the fixed point was also faster at 1280x736 and 3840x2176 and slower only at very small sizes (2.28 ms instead of 1.66 ms at 384x480). Performance Boost uses a fixed profile for the current padded resolution and therefore keeps a separate cached engine per resolution. The TensorRT level-5 builder experiment remains disabled because it benchmarked substantially slower (17.3 ms for the 1080p dynamic plan).
 
 Normal inputs with a padded dimension below 128 use a separate profile whose
 minimum includes the requested size. Its cache suffix records the reduced minima;
