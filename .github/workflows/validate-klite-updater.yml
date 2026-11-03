@@ -149,6 +149,40 @@ jobs:
               throw 'Repeated install changed renderer hashes.'
           }
 
+          # 64-bit-only K-Lite: no x86 renderer. Only the x64 file is replaced.
+          $x64OnlyRoot = Join-Path $Root 'x64-only'
+          New-Item -ItemType Directory -Path $x64OnlyRoot -Force | Out-Null
+          $x64OnlyTargets = [ordered]@{
+              'MpcVideoRenderer.ax' = (Join-Path $x64OnlyRoot 'MpcVideoRenderer.ax')
+              'MpcVideoRenderer64.ax' = (Join-Path $x64OnlyRoot 'MpcVideoRenderer64.ax')
+          }
+          Set-Content -LiteralPath $x64OnlyTargets['MpcVideoRenderer64.ax'] -Value 'old-x64' -Encoding ASCII
+          $selected = Select-KLiteRendererTargets -Targets $x64OnlyTargets -Required @('MpcVideoRenderer64.ax')
+          if ($selected.Count -ne 1 -or -not $selected.ContainsKey('MpcVideoRenderer64.ax')) {
+              throw 'A 64-bit-only K-Lite installation did not select exactly the x64 renderer.'
+          }
+          $x64OnlyInstall = @(Install-KLiteRendererFiles -Sources $sources -Targets $selected)
+          if ($x64OnlyInstall.Count -ne 1 -or
+              (Get-Hash $x64OnlyTargets['MpcVideoRenderer64.ax']) -ne (Get-Hash $sources['MpcVideoRenderer64.ax'])) {
+              throw '64-bit-only K-Lite installation did not receive the x64 renderer.'
+          }
+          if (Test-Path -LiteralPath $x64OnlyTargets['MpcVideoRenderer.ax']) {
+              throw 'Installer created an x86 renderer that K-Lite did not install.'
+          }
+
+          Remove-Item -LiteralPath $x64OnlyTargets['MpcVideoRenderer64.ax'] -Force
+          Set-Content -LiteralPath $x64OnlyTargets['MpcVideoRenderer.ax'] -Value 'old-x86' -Encoding ASCII
+          $rejected = $false
+          try {
+              [void](Select-KLiteRendererTargets -Targets $x64OnlyTargets -Required @('MpcVideoRenderer64.ax'))
+          }
+          catch {
+              $rejected = $_.Exception.Message -like '*Required K-Lite renderer was not found*'
+          }
+          if (-not $rejected) {
+              throw 'A K-Lite installation without the x64 renderer was not rejected.'
+          }
+
           $leftovers = @(Get-ChildItem -LiteralPath $Root -Recurse -File -Filter '*.mpcvr-backup-*' -ErrorAction SilentlyContinue)
           if ($leftovers.Count -ne 0) {
               throw "Transactional installer left $($leftovers.Count) backup file(s) behind."

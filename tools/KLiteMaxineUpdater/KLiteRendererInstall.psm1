@@ -93,4 +93,36 @@ function Install-KLiteRendererFiles {
     }
 }
 
-Export-ModuleMember -Function 'Install-KLiteRendererFiles'
+function Select-KLiteRendererTargets {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [Collections.IDictionary]$Targets,
+        [Parameter(Mandatory = $true)]
+        [string[]]$Required
+    )
+
+    # K-Lite can be installed with only the 64-bit MPC-HC and filters. Replace
+    # the renderer files that installation actually has; a missing optional
+    # target is not a reason to leave the required one on the stock build.
+    $selected = @{}
+    foreach ($fileName in @($Targets.Keys)) {
+        $destination = [string]$Targets[$fileName]
+        if (Test-Path -LiteralPath $destination -PathType Leaf) {
+            $selected[$fileName] = $destination
+        }
+        elseif ($Required -contains $fileName) {
+            throw "Required K-Lite renderer was not found: $destination. Install K-Lite Codec Pack with MPC-HC (64-bit) and MPC Video Renderer selected."
+        }
+        else {
+            Write-Host "Skipping $fileName because this K-Lite installation does not include it ($destination)."
+        }
+    }
+
+    if ($selected.Count -eq 0) {
+        throw 'No K-Lite renderer files were found to replace.'
+    }
+    return $selected
+}
+
+Export-ModuleMember -Function 'Install-KLiteRendererFiles', 'Select-KLiteRendererTargets'
