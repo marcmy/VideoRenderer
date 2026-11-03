@@ -132,6 +132,7 @@ if ($ValidateOnly) {
 
     [void](Get-PowerShellExecutable)
     [void](Get-Command Install-KLiteRendererFiles -CommandType Function -ErrorAction Stop)
+    [void](Get-Command Select-KLiteRendererTargets -CommandType Function -ErrorAction Stop)
     if (-not [string]::IsNullOrWhiteSpace($PackageArchive)) {
         $resolvedArchive = (Resolve-Path -LiteralPath $PackageArchive).Path
         $resolvedChecksum = (Resolve-Path -LiteralPath $ChecksumFile).Path
@@ -291,9 +292,8 @@ try {
         $sources[$fileName] = $source
     }
 
-    $installTargets = @{}
-    foreach ($fileName in $targets.Keys) {
-        $installTargets[$fileName] = $targets[$fileName]
+    $installTargets = Select-KLiteRendererTargets -Targets $targets -Required @('MpcVideoRenderer64.ax')
+    foreach ($fileName in @($installTargets.Keys | Sort-Object)) {
         Write-Host "Installing $fileName..."
     }
     $installedFiles = @(Install-KLiteRendererFiles -Sources $sources -Targets $installTargets)
