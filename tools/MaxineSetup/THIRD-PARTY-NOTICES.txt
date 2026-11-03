@@ -18,7 +18,7 @@ Source: https://developer.download.nvidia.com/compute/cuda/redist/
 License source: https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/LICENSE.txt
 Bundled notice: CUDA-LICENSE.txt
 
-NVIDIA TensorRT 11.3.0.99 for CUDA 13.4
+NVIDIA TensorRT 11.4.0.106 for CUDA 13.4
 Source: https://developer.nvidia.com/tensorrt
 License source: https://docs.nvidia.com/deeplearning/tensorrt/latest/reference/sla.html
 Pinned repository snapshot: tools/RifeRuntimeInstaller/licenses/TensorRT-SLA.html

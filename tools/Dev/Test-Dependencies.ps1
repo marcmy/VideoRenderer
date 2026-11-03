@@ -92,7 +92,7 @@ try {
         [IO.File]::WriteAllText($target,$file.Value)
     }
     $installedMetadata=@{
-        schemaVersion=2;runtimeAbi=2;tensorRtVersion='11.3.0';tensorRtMajorMinor='11.3';cudaVersion='13.4';cudaRuntimeVersion='13.4'
+        schemaVersion=2;runtimeAbi=2;tensorRtVersion='11.4.0';tensorRtMajorMinor='11.4';cudaVersion='13.4';cudaRuntimeVersion='13.4'
         commonRuntimeArchiveSha256=$reuseLock.components.PSObject.Properties['rife-runtime'].Value.manifest.files.PSObject.Properties['MPCVR-RIFE-Common.zip'].Value.sha256
         architectures=@(@{key='sm75';archive='MPCVR-RIFE-sm75.zip';sha256=$reuseLock.components.PSObject.Properties['rife-runtime'].Value.manifest.files.PSObject.Properties['MPCVR-RIFE-sm75.zip'].Value.sha256;builderResource='nvinfer_builder_resource_sm75_11.dll'})
         models=@(@{model='RIFE 4.6';modelFile='models/rife_v4.6.onnx';modelSha256=(Get-FileHash (Join-Path $rifeRoot 'models/rife_v4.6.onnx') -Algorithm SHA256).Hash.ToLowerInvariant()})
