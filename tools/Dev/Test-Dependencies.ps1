@@ -232,6 +232,7 @@ function Test-Path {
     param([Parameter(ParameterSetName='Path',Position=0)][string[]]$Path,
           [Parameter(ParameterSetName='LiteralPath')][Alias('PSPath')][string[]]$LiteralPath,
           [Microsoft.PowerShell.Commands.TestPathType]$PathType='Any')
+    if ($env:MPCVR_FIXTURE_KLITE_X64_ONLY -and $LiteralPath -like 'C:\Program Files (x86)\K-Lite Codec Pack\Filters\MPCVR*') { return $false }
     if ($LiteralPath -like 'C:\Program Files (x86)\K-Lite Codec Pack*') { return $true }
     return Microsoft.PowerShell.Management\Test-Path @PSBoundParameters
 }
@@ -260,6 +261,15 @@ exit $LASTEXITCODE
     & $hostExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $routingFixture -Root $fixture -Updater $updater
     Check ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $marker)) "Updater did not delegate a verified, pinned setup (host $hostExecutable, exit $LASTEXITCODE)"
     Remove-Item -LiteralPath $marker -Force
+    # K-Lite installed with only 64-bit components has no Filters\MPCVR.
+    $env:MPCVR_FIXTURE_KLITE_X64_ONLY='1'
+    try {
+        & $hostExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $routingFixture -Root $fixture -Updater $updater
+        $x64OnlyExit=$LASTEXITCODE
+    } finally { Remove-Item Env:MPCVR_FIXTURE_KLITE_X64_ONLY -ErrorAction SilentlyContinue }
+    Check ($x64OnlyExit -eq 0 -and (Test-Path -LiteralPath $marker)) "Updater refused a 64-bit-only K-Lite installation (host $hostExecutable, exit $x64OnlyExit)"
+    Remove-Item -LiteralPath $marker -Force
+    'PASS: updater delegates setup on a 64-bit-only K-Lite installation.'
     ('0'*64+'  MPCVR-Setup.zip') | Set-Content -LiteralPath (Join-Path $fixture 'SHA256SUMS.txt') -Encoding ASCII
     $previousNativePreference=$ErrorActionPreference
     try {
