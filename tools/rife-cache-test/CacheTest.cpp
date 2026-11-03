@@ -74,6 +74,23 @@ void ProfileCases() {
     Check(RifeEngineProfileCacheSuffix(1920, 1088, true) == "_1920x1088_static", "boost cache key changed");
     Check(RifeEngineProfileCacheSuffix(64, 128, false) == "_dynamic_max3840x2176_opt1920x1088_min64x128", "small profile reused an incompatible cache");
     Check(RifeEngineProfileCacheSuffix(64, 128, true) == "_64x128_static", "small boost key changed");
+
+    // RIFE 4.25 Lite pads to 128 pixels and rejects OPT 1920x1088, so the
+    // normal plan falls back to a 128-aligned point. Existing 1088 plans keep
+    // their names because that point is still tried first.
+    const auto normal = GetRifeEngineProfileCandidates(1920, 1152, false);
+    Check(normal.size() == 2, "normal plan lost its 128-aligned fallback");
+    Check(RifeEngineProfileCacheSuffix(normal[0], false) == "_dynamic_max3840x2176_opt1920x1088"
+        && RifeEngineProfileCacheSuffix(normal[1], false) == "_dynamic_max3840x2176_opt1920x1152",
+        "normal plan candidates changed order or cache names");
+    for (const auto& candidate : normal) {
+        Check(candidate.minWidth <= 1920 && candidate.minHeight <= 1152 && candidate.maxWidth >= 1920 && candidate.maxHeight >= 1152,
+            "fallback profile excludes the current size");
+    }
+    Check(normal[1].optWidth % 128 == 0 && normal[1].optHeight % 128 == 0, "fallback is not 128-aligned");
+    const auto boostCandidates = GetRifeEngineProfileCandidates(1920, 1152, true);
+    Check(boostCandidates.size() == 1 && RifeEngineProfileCacheSuffix(boostCandidates[0], true) == "_1920x1152_static",
+        "boost gained an optimization-point fallback");
     for (uint32_t width : {32u, 64u, 96u, 128u, 256u, 1920u, 3840u, 4320u}) {
         for (uint32_t height : {32u, 64u, 96u, 128u, 256u, 1088u, 2176u, 4320u}) {
             for (bool boost : {false, true}) {

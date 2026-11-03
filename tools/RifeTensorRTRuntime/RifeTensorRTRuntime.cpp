@@ -989,12 +989,22 @@ private:
         const auto modelHash = Sha256Hex(model);
         if (modelHash.empty()) return false;
 
-        const std::string cacheKey = BuildCacheKey(modelHash);
-        const auto planPath = m_cachePath / std::filesystem::path(std::wstring(cacheKey.begin(), cacheKey.end()) + L".plan");
-        auto plan = ReadFile(planPath);
-        if (!plan.empty() && DeserializeEngine(plan)) {
-            m_engineBytes = plan.size();
-            return ConfigureEngineContract();
+        // Performance Boost deliberately uses the original fixed-shape plan for
+        // the current padded resolution. Cached A/B throughput testing against
+        // the shared dynamic plan shows the fixed profile is consistently
+        // faster while avoiding the slower level-5 builder experiment.
+        const auto candidates = GetRifeEngineProfileCandidates(m_paddedWidth, m_paddedHeight, m_performanceBoost);
+        const auto planPathFor = [&](const RifeEngineProfile& profile) {
+            const std::string cacheKey = BuildCacheKey(modelHash, profile);
+            return m_cachePath / std::filesystem::path(std::wstring(cacheKey.begin(), cacheKey.end()) + L".plan");
+        };
+        for (const auto& candidate : candidates) {
+            auto plan = ReadFile(planPathFor(candidate));
+            if (!plan.empty() && DeserializeEngine(plan)) {
+                m_engineProfile = candidate;
+                m_engineBytes = plan.size();
+                return ConfigureEngineContract();
+            }
         }
 
         TrtPtr<nvinfer1::IBuilder> builder(nvinfer1::createInferBuilder(g_logger));
@@ -1006,8 +1016,7 @@ private:
 #endif
         TrtPtr<nvinfer1::INetworkDefinition> network(builder->createNetworkV2(networkFlags));
         TrtPtr<nvonnxparser::IParser> parser(nvonnxparser::createParser(*network, g_logger));
-        TrtPtr<nvinfer1::IBuilderConfig> config(builder->createBuilderConfig());
-        if (!network || !parser || !config) return false;
+        if (!network || !parser) return false;
 
         if (!parser->parse(model.data(), model.size())) return false;
         if (network->getNbInputs() != 1 || network->getNbOutputs() != 1) return false;
@@ -1025,43 +1034,40 @@ private:
         input->setAllowedFormats(linearFormatMask);
         output->setAllowedFormats(linearFormatMask);
 
-        nvinfer1::IOptimizationProfile* profile = builder->createOptimizationProfile();
-        if (!profile) return false;
+        for (const auto& candidate : candidates) {
+            TrtPtr<nvinfer1::IBuilderConfig> config(builder->createBuilderConfig());
+            nvinfer1::IOptimizationProfile* profile = builder->createOptimizationProfile();
+            if (!config || !profile) return false;
 
-        // Performance Boost deliberately uses the original fixed-shape plan for
-        // the current padded resolution. Cached A/B throughput testing against
-        // the shared dynamic plan shows the fixed profile is consistently
-        // faster while avoiding the slower level-5 builder experiment.
-        const auto bounds = GetRifeEngineProfile(m_paddedWidth, m_paddedHeight, m_performanceBoost);
-        const int minW = static_cast<int>(bounds.minWidth);
-        const int minH = static_cast<int>(bounds.minHeight);
-        const int maxW = static_cast<int>(bounds.maxWidth);
-        const int maxH = static_cast<int>(bounds.maxHeight);
-        const int optW = static_cast<int>(bounds.optWidth);
-        const int optH = static_cast<int>(bounds.optHeight);
-        const nvinfer1::Dims4 minDims{1, 11, minH, minW};
-        const nvinfer1::Dims4 optDims{1, 11, optH, optW};
-        const nvinfer1::Dims4 maxDims{1, 11, maxH, maxW};
-        if (!profile->setDimensions(input->getName(), nvinfer1::OptProfileSelector::kMIN, minDims) ||
-            !profile->setDimensions(input->getName(), nvinfer1::OptProfileSelector::kOPT, optDims) ||
-            !profile->setDimensions(input->getName(), nvinfer1::OptProfileSelector::kMAX, maxDims)) {
-            return false;
+            const nvinfer1::Dims4 minDims{1, 11, static_cast<int>(candidate.minHeight), static_cast<int>(candidate.minWidth)};
+            const nvinfer1::Dims4 optDims{1, 11, static_cast<int>(candidate.optHeight), static_cast<int>(candidate.optWidth)};
+            const nvinfer1::Dims4 maxDims{1, 11, static_cast<int>(candidate.maxHeight), static_cast<int>(candidate.maxWidth)};
+            if (!profile->setDimensions(input->getName(), nvinfer1::OptProfileSelector::kMIN, minDims) ||
+                !profile->setDimensions(input->getName(), nvinfer1::OptProfileSelector::kOPT, optDims) ||
+                !profile->setDimensions(input->getName(), nvinfer1::OptProfileSelector::kMAX, maxDims)) {
+                return false;
+            }
+            if (config->addOptimizationProfile(profile) < 0) return false;
+
+            config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, size_t{2} << 30);
+
+            // A model's shape constraints can reject an optimization point
+            // (RIFE 4.25 Lite pads internally to 128 pixels); try the next one.
+            TrtPtr<nvinfer1::IHostMemory> serialized(builder->buildSerializedNetwork(*network, *config));
+            if (!serialized) continue;
+            const auto planPath = planPathFor(candidate);
+            if (!WriteFileAtomically(planPath, serialized->data(), serialized->size())) {
+                ReportEngineCacheSaveFailure(planPath);
+            }
+
+            std::vector<uint8_t> bytes(serialized->size());
+            std::memcpy(bytes.data(), serialized->data(), serialized->size());
+            if (!DeserializeEngine(bytes)) return false;
+            m_engineProfile = candidate;
+            m_engineBytes = bytes.size();
+            return ConfigureEngineContract();
         }
-        if (config->addOptimizationProfile(profile) < 0) return false;
-
-        config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, size_t{2} << 30);
-
-        TrtPtr<nvinfer1::IHostMemory> serialized(builder->buildSerializedNetwork(*network, *config));
-        if (!serialized) return false;
-        if (!WriteFileAtomically(planPath, serialized->data(), serialized->size())) {
-            ReportEngineCacheSaveFailure(planPath);
-        }
-
-        std::vector<uint8_t> bytes(serialized->size());
-        std::memcpy(bytes.data(), serialized->data(), serialized->size());
-        if (!DeserializeEngine(bytes)) return false;
-        m_engineBytes = bytes.size();
-        return ConfigureEngineContract();
+        return false;
     }
 
     bool DeserializeEngine(const std::vector<uint8_t>& plan)
@@ -1198,7 +1204,7 @@ private:
         return true;
     }
 
-    std::string BuildCacheKey(const std::string& modelHash) const
+    std::string BuildCacheKey(const std::string& modelHash, const RifeEngineProfile& profile) const
     {
         std::ostringstream out;
         out << "rife46_" << modelHash.substr(0, 16)
@@ -1206,8 +1212,14 @@ private:
             << "_trt" << NV_TENSORRT_MAJOR << '_' << NV_TENSORRT_MINOR
             << "_cc" << m_computeMajor << m_computeMinor
             << '_' << Sanitize(m_gpuName);
-        out << RifeEngineProfileCacheSuffix(m_paddedWidth, m_paddedHeight, m_performanceBoost);
+        out << RifeEngineProfileCacheSuffix(profile, m_performanceBoost);
         return out.str();
+    }
+
+    // Key of the plan actually loaded or built; feature-stage plans extend it.
+    std::string BuildCacheKey(const std::string& modelHash) const
+    {
+        return BuildCacheKey(modelHash, m_engineProfile);
     }
 
     ID3D11Device* m_device = nullptr;
@@ -1219,6 +1231,7 @@ private:
     uint32_t m_paddedHeight = 0;
     uint32_t m_contextCount = 0;
     bool m_performanceBoost = false;
+    RifeEngineProfile m_engineProfile{};
     bool m_inputIsFp16 = false;
     bool m_outputIsFp16 = false;
     std::filesystem::path m_modelPath;
