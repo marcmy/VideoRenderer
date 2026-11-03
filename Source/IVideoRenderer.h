@@ -186,6 +186,25 @@ constexpr inline int RIFE_GPU_THREADS_DEF = 2;
 constexpr inline int RIFE_GPU_THREADS_MIN = 1;
 constexpr inline int RIFE_GPU_THREADS_MAX = 3;
 
+// Optional SDR-to-SDR perceptual enhancement (Direct3D 11, SDR sources only).
+enum :int {
+	SDR_ENHANCE_Off = 0,
+	SDR_ENHANCE_On,
+	SDR_ENHANCE_Split, // A/B: unprocessed left half, enhanced right half
+	SDR_ENHANCE_COUNT
+};
+
+constexpr inline int SDR_ENHANCE_CONTRAST_MIN = -50;
+constexpr inline int SDR_ENHANCE_CONTRAST_MAX = 50;
+constexpr inline int SDR_ENHANCE_CONTRAST_DEF = 15;
+constexpr inline int SDR_ENHANCE_PIVOT_MIN = 5;
+constexpr inline int SDR_ENHANCE_PIVOT_MAX = 95;
+constexpr inline int SDR_ENHANCE_PIVOT_DEF = 20;
+constexpr inline int SDR_ENHANCE_VIBRANCE_MIN = -50;
+constexpr inline int SDR_ENHANCE_VIBRANCE_MAX = 100;
+constexpr inline int SDR_ENHANCE_VIBRANCE_DEF = 25;
+constexpr inline int SDR_ENHANCE_SKIN_DEF = 50;
+
 enum :int {
 	CHROMA_Nearest = 0,
 	CHROMA_Bilinear,
@@ -334,6 +353,12 @@ struct Settings_t {
 	int iRifeProcessingLimit; // Maximum short edge in pixels, preserving aspect.
 	bool bRifePreservePrecision;
 	bool bRifeFeatureReuse;
+	// SDR enhancement, appended to preserve the existing layout. Percentages.
+	int iSdrEnhanceMode;
+	int iSdrEnhanceContrast;
+	int iSdrEnhancePivot;
+	int iSdrEnhanceVibrance;
+	int iSdrEnhanceSkinProtection;
 
 	Settings_t() {
 		SetDefault();
@@ -433,6 +458,16 @@ struct Settings_t {
 		iRifeDuplicateRemoval           = RIFE_DUPLICATES_Keep;
 		rifeRules                       = {};
 		bDetailedStats                  = false;
+
+		SetSdrEnhanceDefault();
+	}
+
+	void SetSdrEnhanceDefault() {
+		iSdrEnhanceMode                 = SDR_ENHANCE_Off;
+		iSdrEnhanceContrast             = SDR_ENHANCE_CONTRAST_DEF;
+		iSdrEnhancePivot                = SDR_ENHANCE_PIVOT_DEF;
+		iSdrEnhanceVibrance             = SDR_ENHANCE_VIBRANCE_DEF;
+		iSdrEnhanceSkinProtection       = SDR_ENHANCE_SKIN_DEF;
 	}
 };
 

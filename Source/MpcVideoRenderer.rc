@@ -75,6 +75,7 @@ BEGIN
     COMBOBOX        IDC_COMBO8,101,111,64,30,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     PUSHBUTTON      "Maxine settings...",IDC_BUTTON_MAXINE,10,132,72,16
     PUSHBUTTON      "Frame interpolation...",IDC_BUTTON_FRAMEINTERPOLATION,87,132,78,16
+    PUSHBUTTON      "SDR enhancement...",IDC_BUTTON_SDR_ENHANCE,10,269,78,13
     GROUPBOX        "Shader video processor",IDC_STATIC,5,159,162,107
     LTEXT           "Chroma upsampling:",IDC_STATIC,10,173,72,8
     COMBOBOX        IDC_COMBO5,83,171,76,30,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
@@ -217,6 +218,32 @@ BEGIN
     CONTROL         "Detailed statistics (Ctrl+J)",IDC_DETAILED_STATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,64,446,142,10
     DEFPUSHBUTTON   "OK",IDOK,217,443,48,16
     PUSHBUTTON      "Cancel",IDCANCEL,273,443,48,16
+END
+
+IDD_SDRENHANCE DIALOGEX 0, 0, 262, 172
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "SDR enhancement (prototype)"
+FONT 9, "Segoe UI", 400, 0, 0x0
+BEGIN
+    GROUPBOX        "Perceptual enhancement for SDR video",IDC_STATIC,7,7,248,134
+    LTEXT           "Mode:",IDC_STATIC,16,22,62,8
+    COMBOBOX        IDC_SDR_ENHANCE_MODE,82,20,164,60,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Contrast:",IDC_STATIC,16,41,62,8
+    EDITTEXT        IDC_SDR_ENHANCE_CONTRAST,82,39,32,13,ES_AUTOHSCROLL
+    LTEXT           "%: -50 to 50, tone curve on lightness",IDC_STATIC,118,41,128,8
+    LTEXT           "Contrast pivot:",IDC_STATIC,16,60,62,8
+    EDITTEXT        IDC_SDR_ENHANCE_PIVOT,82,58,32,13,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%: 5 to 95, lightness held fixed",IDC_STATIC,118,60,128,8
+    LTEXT           "Vibrance:",IDC_STATIC,16,79,62,8
+    EDITTEXT        IDC_SDR_ENHANCE_VIBRANCE,82,77,32,13,ES_AUTOHSCROLL
+    LTEXT           "%: -50 to 100, favours muted colours",IDC_STATIC,118,79,128,8
+    LTEXT           "Skin protection:",IDC_STATIC,16,98,62,8
+    EDITTEXT        IDC_SDR_ENHANCE_SKIN,82,96,32,13,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%: 0 to 100, limits vibrance on skin",IDC_STATIC,118,98,128,8
+    LTEXT           "Direct3D 11, SDR sources only; HDR output and HDR-to-SDR conversion are unchanged. With frame interpolation it runs once per source frame, before interpolation.",IDC_STATIC,16,114,230,24
+    PUSHBUTTON      "Defaults",IDC_BUTTON_SDR_ENHANCE_DEFAULTS,7,149,48,16
+    DEFPUSHBUTTON   "OK",IDOK,151,149,48,16
+    PUSHBUTTON      "Cancel",IDCANCEL,207,149,48,16
 END
 
 IDD_RIFE_RATE_RULE DIALOGEX 0, 0, 292, 181

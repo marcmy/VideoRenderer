@@ -159,6 +159,9 @@
     <FxCompile Include="d3d11\ps_maxine_mix.hlsl">
       <Filter>d3d11</Filter>
     </FxCompile>
+    <FxCompile Include="d3d11\ps_sdr_enhance.hlsl">
+      <Filter>d3d11</Filter>
+    </FxCompile>
     <FxCompile Include="d3d11\ps_hdr10_tonemap.hlsl">
       <Filter>d3d11</Filter>
     </FxCompile>

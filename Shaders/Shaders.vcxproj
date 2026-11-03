@@ -27,6 +27,10 @@
       <ShaderModel>4.0</ShaderModel>
       <ShaderType>Pixel</ShaderType>
     </FxCompile>
+    <FxCompile Include="d3d11\ps_sdr_enhance.hlsl">
+      <ShaderModel>4.0</ShaderModel>
+      <ShaderType>Pixel</ShaderType>
+    </FxCompile>
     <None Include="convert\colorspace_gamut_conversion.hlsl">
       <FileType>Document</FileType>
     </None>

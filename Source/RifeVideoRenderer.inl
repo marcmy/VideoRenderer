@@ -38,6 +38,11 @@ constexpr LPCWSTR OPT_RifeSceneProcessing   = L"RifeSceneProcessing";
 constexpr LPCWSTR OPT_RifeDuplicateRemoval  = L"RifeDuplicateRemoval";
 constexpr LPCWSTR OPT_RifeRateRules          = L"RifeRateRules";
 constexpr LPCWSTR OPT_DetailedStatistics     = L"DetailedStatistics";
+constexpr LPCWSTR OPT_SdrEnhanceMode         = L"SdrEnhanceMode";
+constexpr LPCWSTR OPT_SdrEnhanceContrast     = L"SdrEnhanceContrast";
+constexpr LPCWSTR OPT_SdrEnhancePivot        = L"SdrEnhancePivot";
+constexpr LPCWSTR OPT_SdrEnhanceVibrance     = L"SdrEnhanceVibrance";
+constexpr LPCWSTR OPT_SdrEnhanceSkin         = L"SdrEnhanceSkinProtection";
 
 std::mutex g_rifeSettingsMutex;
 std::unordered_set<const CMpcVideoRenderer*> g_rifeSettingsLoaded;
@@ -65,6 +70,32 @@ bool RifeSettingsChanged(const Settings_t& a, const Settings_t& b)
 		|| a.iRifeSceneProcessing != b.iRifeSceneProcessing
 		|| a.iRifeDuplicateRemoval != b.iRifeDuplicateRemoval
 		|| a.rifeRules != b.rifeRules;
+}
+
+void ClampSdrEnhanceSettings(Settings_t& settings)
+{
+	if (settings.iSdrEnhanceMode < 0 || settings.iSdrEnhanceMode >= SDR_ENHANCE_COUNT) {
+		settings.iSdrEnhanceMode = SDR_ENHANCE_Off;
+	}
+	settings.iSdrEnhanceContrast = std::clamp(settings.iSdrEnhanceContrast,
+		SDR_ENHANCE_CONTRAST_MIN, SDR_ENHANCE_CONTRAST_MAX);
+	settings.iSdrEnhancePivot = std::clamp(settings.iSdrEnhancePivot,
+		SDR_ENHANCE_PIVOT_MIN, SDR_ENHANCE_PIVOT_MAX);
+	settings.iSdrEnhanceVibrance = std::clamp(settings.iSdrEnhanceVibrance,
+		SDR_ENHANCE_VIBRANCE_MIN, SDR_ENHANCE_VIBRANCE_MAX);
+	settings.iSdrEnhanceSkinProtection = std::clamp(settings.iSdrEnhanceSkinProtection, 0, 100);
+}
+
+void LoadSdrEnhanceSettings(CRegKey& key, Settings_t& settings)
+{
+	// Signed percentages are stored as two's-complement DWORDs.
+	DWORD dw = 0;
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_SdrEnhanceMode, dw)) settings.iSdrEnhanceMode = static_cast<int>(dw);
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_SdrEnhanceContrast, dw)) settings.iSdrEnhanceContrast = static_cast<int>(dw);
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_SdrEnhancePivot, dw)) settings.iSdrEnhancePivot = static_cast<int>(dw);
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_SdrEnhanceVibrance, dw)) settings.iSdrEnhanceVibrance = static_cast<int>(dw);
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_SdrEnhanceSkin, dw)) settings.iSdrEnhanceSkinProtection = static_cast<int>(dw);
+	ClampSdrEnhanceSettings(settings);
 }
 
 void LoadRifeSettings(Settings_t& settings)
@@ -124,6 +155,7 @@ void LoadRifeSettings(Settings_t& settings)
 	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_DetailedStatistics, dw)) {
 		settings.bDetailedStats = !!dw;
 	}
+	LoadSdrEnhanceSettings(key, settings);
 	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeSceneDetection, dw)) {
 		settings.iRifeSceneDetection = dw < RIFE_SCENE_COUNT ? static_cast<int>(dw) : RIFE_SCENE_SVPflow1;
 	}
@@ -195,6 +227,7 @@ STDMETHODIMP_(void) CMpcVideoRenderer::SetSettings(const Settings_t& settings)
 		? settings.iRifeProcessingResolution : RIFE_RESOLUTION_Source;
 	adjusted.iRifeProcessingLimit = std::clamp(settings.iRifeProcessingLimit,
 		RifeProcessingLimitMin, RifeProcessingLimitMax);
+	ClampSdrEnhanceSettings(adjusted);
 	if (adjusted.iRifeMode != RIFE_MODE_Disabled) {
 		// RIFE owns production frame synthesis once enabled. Keep the old
 		// NvOFFRUC values only as migration data; never let both paths run.
@@ -231,6 +264,11 @@ STDMETHODIMP CMpcVideoRenderer::SaveSettings()
 		key.SetDWORDValue(OPT_RifeFeatureReuse, m_Sets.bRifeFeatureReuse ? 1u : 0u);
 		key.SetDWORDValue(OPT_RifePerformanceBoost, m_Sets.bRifePerformanceBoost ? 1u : 0u);
 		key.SetDWORDValue(OPT_DetailedStatistics,   m_Sets.bDetailedStats ? 1u : 0u);
+		key.SetDWORDValue(OPT_SdrEnhanceMode,       static_cast<DWORD>(m_Sets.iSdrEnhanceMode));
+		key.SetDWORDValue(OPT_SdrEnhanceContrast,   static_cast<DWORD>(m_Sets.iSdrEnhanceContrast));
+		key.SetDWORDValue(OPT_SdrEnhancePivot,      static_cast<DWORD>(m_Sets.iSdrEnhancePivot));
+		key.SetDWORDValue(OPT_SdrEnhanceVibrance,   static_cast<DWORD>(m_Sets.iSdrEnhanceVibrance));
+		key.SetDWORDValue(OPT_SdrEnhanceSkin,       static_cast<DWORD>(m_Sets.iSdrEnhanceSkinProtection));
 		key.SetDWORDValue(OPT_RifeSceneDetection,   static_cast<DWORD>(m_Sets.iRifeSceneDetection));
 		key.SetDWORDValue(OPT_RifeProcessingResolution, static_cast<DWORD>(m_Sets.iRifeProcessingResolution));
 		key.SetDWORDValue(OPT_RifeProcessingLimit, static_cast<DWORD>(m_Sets.iRifeProcessingLimit));

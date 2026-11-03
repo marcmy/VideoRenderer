@@ -50,6 +50,7 @@ public:
 private:
 	bool ShowMaxineSettings();
 	bool ShowFrameInterpolationSettings();
+	bool ShowSdrEnhanceSettings();
 	void SetControls();
 	void EnableControls();
 

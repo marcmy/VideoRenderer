@@ -73,5 +73,14 @@
 #define IDC_STATIC_MAXINE_STRENGTH             20062
 #define IDC_MAXINE_AMOUNT                      20063
 #define IDC_STATIC_MAXINE_AMOUNT               20064
+#define IDF_PS_11_SDR_ENHANCE                  20065
+#define IDD_SDRENHANCE                         20066
+#define IDC_BUTTON_SDR_ENHANCE                 20067
+#define IDC_SDR_ENHANCE_MODE                   20068
+#define IDC_SDR_ENHANCE_CONTRAST               20069
+#define IDC_SDR_ENHANCE_PIVOT                  20070
+#define IDC_SDR_ENHANCE_VIBRANCE               20071
+#define IDC_SDR_ENHANCE_SKIN                   20072
+#define IDC_BUTTON_SDR_ENHANCE_DEFAULTS        20073
 
 #endif

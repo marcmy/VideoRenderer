@@ -39,6 +39,7 @@
 #include "D3DUtil/D3D11Geometry.h"
 #include "VideoProcessor.h"
 #include "RollingTimingWindow.h"
+#include "GpuPassTimer.h"
 #include "SubPic/DX11SubPic.h"
 
 #include <array>
@@ -90,6 +91,19 @@ private:
 	bool m_bMaxineAmountBaselineOriented = false;
 	CComPtr<ID3D11PixelShader> m_pPSMaxineAmount, m_pPSMaxineMix;
 	CComPtr<ID3D11Buffer> m_pMaxineAmountConstants;
+	// Optional SDR-to-SDR enhancement: one post-scale step, so it runs once
+	// per source image (before RIFE/NvOFFRUC when interpolating) and never
+	// again when an interpolated or prepared frame is presented.
+	int m_iSdrEnhanceMode = SDR_ENHANCE_Off;
+	int m_iSdrEnhanceContrast = SDR_ENHANCE_CONTRAST_DEF;
+	int m_iSdrEnhancePivot = SDR_ENHANCE_PIVOT_DEF;
+	int m_iSdrEnhanceVibrance = SDR_ENHANCE_VIBRANCE_DEF;
+	int m_iSdrEnhanceSkinProtection = SDR_ENHANCE_SKIN_DEF;
+	CComPtr<ID3D11PixelShader> m_pPSSdrEnhance;
+	CComPtr<ID3D11Buffer> m_pSdrEnhanceConstants;
+	CGpuPassTimer m_SdrEnhanceTimer;
+	CSize m_SdrEnhanceSize;
+	bool m_bSdrEnhanceBeforeInterpolation = false;
 	// Regular D3D11 staging target for the fully processed source frame.
 	// Maxine must finish before the NvOFFRUC keyed-mutex input transaction
 	// begins, otherwise the two CUDA/D3D11 interop stacks can serialize.
@@ -431,6 +445,14 @@ private:
 	void ReleaseSwapChain();
 
 	UINT GetPostScaleSteps();
+	// HDR sources, RTX Video HDR and HDR-to-SDR conversion never use it.
+	bool SdrEnhanceActive() const { return m_pPSSdrEnhance && !SourceIsHDR() && !m_bVPUseRTXVideoHDR; }
+	// The enhancement needs a float input and dithered output to avoid banding.
+	DXGI_FORMAT GetPostScaleTexFormat(DXGI_FORMAT format) const {
+		return SdrEnhanceActive() ? DXGI_FORMAT_R16G16B16A16_FLOAT : format;
+	}
+	void UpdateSdrEnhanceShader();
+	HRESULT SdrEnhancePass(const Tex2D_t& Tex, ID3D11Texture2D* pRenderTarget, const CRect& rect, bool rifeSourcePreparation);
 
 	HRESULT CreatePShaderFromResource(ID3D11PixelShader** ppPixelShader, UINT resid);
 	void SetShaderConvertColorParams();

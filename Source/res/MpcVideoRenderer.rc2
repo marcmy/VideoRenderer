@@ -103,6 +103,7 @@ IDF_PS_11_INTERP_LANCZOS3_Y     FILE                    "..\\_bin\\shaders\\ps_r
 IDF_PS_11_INTERP_JINC2          FILE                    "..\\_bin\\shaders\\ps_resize_onepass_jinc2.cso"
 IDF_PS_11_MAXINE_AMOUNT         FILE                    "..\\_bin\\shaders\\ps_maxine_amount.cso"
 IDF_PS_11_MAXINE_MIX            FILE                    "..\\_bin\\shaders\\ps_maxine_mix.cso"
+IDF_PS_11_SDR_ENHANCE           FILE                    "..\\_bin\\shaders\\ps_sdr_enhance.cso"
 IDF_PS_11_CONVOL_BOX_X          FILE                    "..\\_bin\\shaders\\ps_downscaler_box_x.cso"
 IDF_PS_11_CONVOL_BOX_Y          FILE                    "..\\_bin\\shaders\\ps_downscaler_box_y.cso"
 IDF_PS_11_CONVOL_BILINEAR_X     FILE                    "..\\_bin\\shaders\\ps_downscaler_bilinear_x.cso"

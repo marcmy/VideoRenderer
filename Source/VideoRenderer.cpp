@@ -28,6 +28,7 @@
 
 namespace {
 void ForgetRifeSettings(const CMpcVideoRenderer* renderer);
+void EnsureRifeSettingsLoaded(CMpcVideoRenderer* renderer, Settings_t& settings);
 }
 
 #include <atomic>
@@ -422,6 +423,10 @@ CMpcVideoRenderer::CMpcVideoRenderer(LPUNKNOWN pUnk, HRESULT* phr)
 			m_Sets.iSDRDisplayNits = discard<int>(dw, SDR_NITS_DEF, SDR_NITS_MIN, SDR_NITS_MAX);
 		}
 	}
+
+	// Load the fork's settings (RIFE, SDR enhancement) before the video
+	// processor is created from m_Sets, or each new graph starts without them.
+	EnsureRifeSettingsLoaded(this, m_Sets);
 
 	if (!IsWindows10OrGreater()) {
 		m_Sets.bHdrPassthrough = false;
