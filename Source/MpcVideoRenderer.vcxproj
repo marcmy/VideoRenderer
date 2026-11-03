@@ -99,6 +99,7 @@
     <ClCompile Include="RifePlaybackPipeline.cpp" />
     <ClCompile Include="RifeSceneBlender.cpp" />
     <ClCompile Include="RifeSettingsDialog.cpp" />
+    <ClCompile Include="SdrEnhanceDialog.cpp" />
     <ClCompile Include="SettingsDialogTheme.cpp" />
     <ClCompile Include="Shaders.cpp" />
     <ClCompile Include="stdafx.cpp">
@@ -161,6 +162,8 @@
     <ClInclude Include="RifeRuntimeCachePolicy.h" />
     <ClInclude Include="RifeSceneBlender.h" />
     <ClInclude Include="RifeSettingsDialog.h" />
+    <ClInclude Include="SdrEnhanceDialog.h" />
+    <ClInclude Include="GpuPassTimer.h" />
     <ClInclude Include="SettingsDialogTheme.h" />
     <ClInclude Include="Shaders.h" />
     <ClInclude Include="stdafx.h" />

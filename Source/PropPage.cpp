@@ -24,6 +24,7 @@
 #include "DisplayConfig.h"
 #include "PropPage.h"
 #include "RifeSettingsDialog.h"
+#include "SdrEnhanceDialog.h"
 #include "SettingsDialogTheme.h"
 
 void SetCursor(HWND hWnd, LPCWSTR lpCursorName)
@@ -419,6 +420,7 @@ void CVRMainPPage::EnableControls()
 		GetDlgItem(IDC_BUTTON_FRAMEINTERPOLATION).EnableWindow(bEnable);
 		GetDlgItem(IDC_CHECK19).EnableWindow(bEnable && (m_SetsPP.bHdrPassthrough || m_SetsPP.bHdrLocalToneMapping));
 #endif
+		GetDlgItem(IDC_BUTTON_SDR_ENHANCE).EnableWindow(bEnable);
 	}
 
 	GetDlgItem(IDC_STATIC_SDRTM).EnableWindow(m_SetsPP.bConvertToSdr);
@@ -453,6 +455,11 @@ bool CVRMainPPage::ShowMaxineSettings()
 bool CVRMainPPage::ShowFrameInterpolationSettings()
 {
 	return ShowRifeFrameInterpolationSettings(m_hWnd, g_hInst, m_SetsPP);
+}
+
+bool CVRMainPPage::ShowSdrEnhanceSettings()
+{
+	return ::ShowSdrEnhanceSettings(m_hWnd, g_hInst, m_SetsPP);
 }
 
 HRESULT CVRMainPPage::OnConnect(IUnknown *pUnk)
@@ -637,6 +644,10 @@ HRESULT CVRMainPPage::OnActivate()
 		L"Opens the dedicated NVIDIA Maxine settings window.\n"
 		L"Maxine is available in the 64-bit Direct3D 11 renderer.");
 
+	AddHint(IDC_BUTTON_SDR_ENHANCE,
+		L"Optional tone curve and vibrance for SDR video on SDR displays (Direct3D 11).\n"
+		L"Includes an A/B split view; Off leaves the output unchanged.");
+
 	AddHint(IDC_BUTTON_FRAMEINTERPOLATION,
 		L"Configures RIFE frame interpolation through the optional NVIDIA TensorRT runtime.\n"
 		L"The normal renderer remains available when the RIFE runtime is not installed.");
@@ -761,6 +772,11 @@ INT_PTR CVRMainPPage::OnReceiveMessage(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 
 			if (nID == IDC_BUTTON_FRAMEINTERPOLATION) {
 				if (ShowFrameInterpolationSettings()) { SetDirty(); }
+				return (LRESULT)1;
+			}
+
+			if (nID == IDC_BUTTON_SDR_ENHANCE) {
+				if (ShowSdrEnhanceSettings()) { SetDirty(); }
 				return (LRESULT)1;
 			}
 

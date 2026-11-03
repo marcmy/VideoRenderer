@@ -562,6 +562,11 @@ CDX11VideoProcessor::CDX11VideoProcessor(CMpcVideoRenderer* pFilter, const Setti
 	m_iSdrPeakFloorNits    = config.iSdrPeakFloorNits;
 	m_bSdrPeakSceneCuts    = config.bSdrPeakSceneCuts;
 	m_iSDRDisplayNits      = config.iSDRDisplayNits;
+	m_iSdrEnhanceMode      = config.iSdrEnhanceMode;
+	m_iSdrEnhanceContrast  = config.iSdrEnhanceContrast;
+	m_iSdrEnhancePivot     = config.iSdrEnhancePivot;
+	m_iSdrEnhanceVibrance  = config.iSdrEnhanceVibrance;
+	m_iSdrEnhanceSkinProtection = config.iSdrEnhanceSkinProtection;
 
 	m_nCurrentAdapter = -1;
 
@@ -914,6 +919,9 @@ void CDX11VideoProcessor::ReleaseDevice()
 	m_pPSConvertColorDeint.Release();
 
 	m_pPSHDR10ToneMapping.Release();
+	m_pPSSdrEnhance.Release();
+	m_pSdrEnhanceConstants.Release();
+	m_SdrEnhanceTimer.Release();
 
 	m_pShaderUpscaleX.Release();
 	m_pShaderUpscaleY.Release();
@@ -998,6 +1006,9 @@ UINT CDX11VideoProcessor::GetPostScaleSteps()
 		nSteps++;
 	}
 	if (m_pPSHDR10ToneMapping) {
+		nSteps++;
+	}
+	if (SdrEnhanceActive()) {
 		nSteps++;
 	}
 	if (m_pPSHalfOUtoInterlace) {
@@ -2478,6 +2489,7 @@ BOOL CDX11VideoProcessor::InitMediaType(const CMediaType* pmt)
 
 	if (SUCCEEDED(hr)) {
 		UpdateBitmapShader();
+		UpdateSdrEnhanceShader();
 		UpdateTexures();
 		UpdatePostScaleTexures();
 		UpdateStatsStatic();
@@ -4327,9 +4339,10 @@ void CDX11VideoProcessor::UpdateTexures()
 
 void CDX11VideoProcessor::UpdatePostScaleTexures()
 {
+	const DXGI_FORMAT postScaleFmt = GetPostScaleTexFormat(m_InternalTexFmt);
 	const bool needDither =
-		(m_SwapChainFmt == DXGI_FORMAT_B8G8R8A8_UNORM && m_InternalTexFmt != DXGI_FORMAT_B8G8R8A8_UNORM
-		|| m_SwapChainFmt == DXGI_FORMAT_R10G10B10A2_UNORM && m_InternalTexFmt == DXGI_FORMAT_R16G16B16A16_FLOAT);
+		(m_SwapChainFmt == DXGI_FORMAT_B8G8R8A8_UNORM && postScaleFmt != DXGI_FORMAT_B8G8R8A8_UNORM
+		|| m_SwapChainFmt == DXGI_FORMAT_R10G10B10A2_UNORM && postScaleFmt == DXGI_FORMAT_R16G16B16A16_FLOAT);
 
 	m_bFinalPass = (m_bUseDither && needDither && m_TexDither.pTexture);
 	if (m_bFinalPass) {
@@ -4341,7 +4354,7 @@ void CDX11VideoProcessor::UpdatePostScaleTexures()
 	}
 
 	const UINT numPostScaleSteps = GetPostScaleSteps();
-	HRESULT hr = m_TexsPostScale.CheckCreate(m_pDevice, m_InternalTexFmt, m_windowRect.Width(), m_windowRect.Height(), numPostScaleSteps);
+	HRESULT hr = m_TexsPostScale.CheckCreate(m_pDevice, postScaleFmt, m_windowRect.Width(), m_windowRect.Height(), numPostScaleSteps);
 	//UpdateStatsPostProc();
 }
 
@@ -4759,6 +4772,55 @@ HRESULT CDX11VideoProcessor::FinalPass(const Tex2D_t& Tex, ID3D11Texture2D* pRen
 	return hr;
 }
 
+void CDX11VideoProcessor::UpdateSdrEnhanceShader()
+{
+	if (m_iSdrEnhanceMode == SDR_ENHANCE_Off || SourceIsHDR() || m_bVPUseRTXVideoHDR) {
+		m_pPSSdrEnhance.Release();
+		m_SdrEnhanceTimer.Release();
+		return;
+	}
+	if (!m_pPSSdrEnhance) {
+		EXECUTE_ASSERT(S_OK == CreatePShaderFromResource(&m_pPSSdrEnhance, IDF_PS_11_SDR_ENHANCE));
+	}
+}
+
+HRESULT CDX11VideoProcessor::SdrEnhancePass(const Tex2D_t& Tex, ID3D11Texture2D* pRenderTarget, const CRect& rect,
+	const bool rifeSourcePreparation)
+{
+	HRESULT hr = S_OK;
+	if (!m_pSdrEnhanceConstants) {
+		D3D11_BUFFER_DESC desc = {};
+		desc.ByteWidth = 32;
+		desc.Usage = D3D11_USAGE_DYNAMIC;
+		desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+		desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+		hr = m_pDevice->CreateBuffer(&desc, nullptr, &m_pSdrEnhanceConstants);
+		if (FAILED(hr)) return hr;
+	}
+
+	// The split is in render-target pixels, so it stays at the middle of the
+	// video in source-sized RIFE input and in the presentation-sized frame.
+	const bool split = m_iSdrEnhanceMode == SDR_ENHANCE_Split;
+	const float constants[8] = {
+		m_iSdrEnhanceContrast / 100.0f, m_iSdrEnhancePivot / 100.0f,
+		m_iSdrEnhanceVibrance / 100.0f, m_iSdrEnhanceSkinProtection / 100.0f,
+		split ? rect.left + rect.Width() * 0.5f : -1.0f, std::max(1.0f, rect.Width() / 1920.0f),
+		0, 0
+	};
+	D3D11_MAPPED_SUBRESOURCE mapped = {};
+	hr = m_pDeviceContext->Map(m_pSdrEnhanceConstants, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+	if (FAILED(hr)) return hr;
+	memcpy(mapped.pData, constants, sizeof(constants));
+	m_pDeviceContext->Unmap(m_pSdrEnhanceConstants, 0);
+
+	m_SdrEnhanceTimer.Begin(m_pDevice, m_pDeviceContext);
+	hr = TextureCopyRect(Tex, pRenderTarget, rect, rect, m_pPSSdrEnhance, m_pSdrEnhanceConstants, 0, false);
+	m_SdrEnhanceTimer.End(m_pDeviceContext);
+	m_SdrEnhanceSize = rect.Size();
+	m_bSdrEnhanceBeforeInterpolation = rifeSourcePreparation || m_iFrameInterpolationMode != FRUC_MODE_Disabled;
+	return hr;
+}
+
 void CDX11VideoProcessor::DrawSubtitles(ID3D11Texture2D* pRenderTarget)
 {
 	HRESULT hr = S_OK;
@@ -4938,7 +5000,7 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 			return hr;
 		}
 
-		hr = pPostScaleTextures->CheckCreate(m_pDevice, GetRifeSurfaceFormat(),
+		hr = pPostScaleTextures->CheckCreate(m_pDevice, GetPostScaleTexFormat(GetRifeSurfaceFormat()),
 			dstRect.Width(), dstRect.Height(), numSteps);
 		if (FAILED(hr)) {
 			return hr;
@@ -5073,6 +5135,11 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 				m_pDeviceContext->PSSetShaderResources(1, 1, &pNullSRV);
 				ReadHdrMeasureStats();
 			}
+		}
+
+		if (SdrEnhanceActive()) {
+			StepSetting();
+			hr = SdrEnhancePass(*pInputTexture, pRT, rect, rifeSourcePreparation);
 		}
 
 		if (m_pPostScaleShaders.size()) {
@@ -5756,6 +5823,15 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 		}
 	}
 
+	// Strength changes are per-frame constants. Only enabling or disabling the
+	// step changes the post-scale chain, its texture format and dithering.
+	const bool changeSdrEnhance = (config.iSdrEnhanceMode == SDR_ENHANCE_Off) != (m_iSdrEnhanceMode == SDR_ENHANCE_Off);
+	m_iSdrEnhanceMode = config.iSdrEnhanceMode;
+	m_iSdrEnhanceContrast = config.iSdrEnhanceContrast;
+	m_iSdrEnhancePivot = config.iSdrEnhancePivot;
+	m_iSdrEnhanceVibrance = config.iSdrEnhanceVibrance;
+	m_iSdrEnhanceSkinProtection = config.iSdrEnhanceSkinProtection;
+
 	if (!m_pFilter->GetActive()) {
 		return;
 	}
@@ -5839,6 +5915,11 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 
 	if (changeLuminanceParams) {
 		SetShaderLuminanceParams();
+	}
+
+	if (changeSdrEnhance) {
+		UpdateSdrEnhanceShader();
+		changeNumTextures = true;
 	}
 
 	if (changeNumTextures) {
@@ -6312,6 +6393,19 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 	}
 	else if (m_iMaxineOperation != MAXINE_OPERATION_Disabled) {
 		str += std::format(L"\nMaxine       : not used ({})", m_strMaxineVSRStatus);
+	}
+	if (m_iSdrEnhanceMode != SDR_ENHANCE_Off) {
+		if (SdrEnhanceActive()) {
+			str += std::format(L"\nSDR enhance  : {}, contrast {}%, vibrance {}%, {}x{} {}",
+				m_iSdrEnhanceMode == SDR_ENHANCE_Split ? L"A/B split" : L"on",
+				m_iSdrEnhanceContrast, m_iSdrEnhanceVibrance, m_SdrEnhanceSize.cx, m_SdrEnhanceSize.cy,
+				m_bSdrEnhanceBeforeInterpolation ? L"before interpolation" : L"per frame");
+			if (m_SdrEnhanceTimer.HasSample()) {
+				str += std::format(L", GPU {:.3f} ms", m_SdrEnhanceTimer.AverageMs());
+			}
+		} else {
+			str += L"\nSDR enhance  : inactive (HDR source or RTX Video HDR)";
+		}
 	}
 
 	if (m_iFrameInterpolationMode != FRUC_MODE_Disabled) {
