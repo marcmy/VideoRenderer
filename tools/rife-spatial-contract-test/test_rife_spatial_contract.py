@@ -129,8 +129,8 @@ assert runtime.count(
 assert '"_abi" << MPCVR_RIFE_RUNTIME_ABI' in runtime, (
     "TensorRT engine cache keys must be isolated by the renderer/runtime ABI"
 )
-assert "GetRifeEngineProfile(m_paddedWidth, m_paddedHeight, m_performanceBoost)" in runtime \
-    and "out << RifeEngineProfileCacheSuffix(m_paddedWidth, m_paddedHeight, m_performanceBoost)" in runtime, (
+assert "GetRifeEngineProfileCandidates(m_paddedWidth, m_paddedHeight, m_performanceBoost)" in runtime \
+    and "out << RifeEngineProfileCacheSuffix(profile, m_performanceBoost)" in runtime, (
     "TensorRT profiles and cache keys must use the CPU-tested normal/Boost geometry policy"
 )
 assert "config->setBuilderOptimizationLevel(5)" not in runtime, (
