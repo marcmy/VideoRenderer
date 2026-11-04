@@ -23,6 +23,7 @@
 #include <dxva2api.h>
 #include "RifeRateRules.h"
 #include "RifeSpatialPolicy.h"
+#include "FeatureHotkeys.h"
 
 enum :int {
 	TEXFMT_AUTOINT = 0,
@@ -359,6 +360,14 @@ struct Settings_t {
 	int iSdrEnhancePivot;
 	int iSdrEnhanceVibrance;
 	int iSdrEnhanceSkinProtection;
+	// Renderer hotkeys (FeatureHotkeys.h packing; 0 = none) and the modes
+	// they restore when switching a feature back on.
+	int iHotkeyMaxine;
+	int iHotkeyRife;
+	int iHotkeySdrEnhance;
+	int iMaxineLastOperation;
+	int iRifeLastMode;
+	int iSdrEnhanceLastMode;
 
 	Settings_t() {
 		SetDefault();
@@ -460,6 +469,10 @@ struct Settings_t {
 		bDetailedStats                  = false;
 
 		SetSdrEnhanceDefault();
+		SetFeatureHotkeyDefault();
+		iMaxineLastOperation            = MAXINE_OPERATION_Upscale;
+		iRifeLastMode                   = RIFE_MODE_Movie2x;
+		iSdrEnhanceLastMode             = SDR_ENHANCE_On;
 	}
 
 	void SetSdrEnhanceDefault() {
@@ -468,6 +481,21 @@ struct Settings_t {
 		iSdrEnhancePivot                = SDR_ENHANCE_PIVOT_DEF;
 		iSdrEnhanceVibrance             = SDR_ENHANCE_VIBRANCE_DEF;
 		iSdrEnhanceSkinProtection       = SDR_ENHANCE_SKIN_DEF;
+	}
+
+	void SetFeatureHotkeyDefault() {
+		iHotkeyMaxine                   = FeatureHotkeyDefault(FEATURE_HOTKEY_Maxine);
+		iHotkeyRife                     = FeatureHotkeyDefault(FEATURE_HOTKEY_Rife);
+		iHotkeySdrEnhance               = FeatureHotkeyDefault(FEATURE_HOTKEY_SdrEnhance);
+	}
+
+	int& FeatureHotkey(int feature) {
+		return feature == FEATURE_HOTKEY_Maxine ? iHotkeyMaxine
+			: feature == FEATURE_HOTKEY_Rife ? iHotkeyRife : iHotkeySdrEnhance;
+	}
+
+	int FeatureHotkey(int feature) const {
+		return const_cast<Settings_t*>(this)->FeatureHotkey(feature);
 	}
 };
 

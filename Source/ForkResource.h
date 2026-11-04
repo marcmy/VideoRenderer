@@ -82,5 +82,14 @@
 #define IDC_SDR_ENHANCE_VIBRANCE               20071
 #define IDC_SDR_ENHANCE_SKIN                   20072
 #define IDC_BUTTON_SDR_ENHANCE_DEFAULTS        20073
+#define IDD_FEATURE_HOTKEYS                    20074
+#define IDC_BUTTON_HOTKEYS                     20075
+#define IDC_HOTKEY_MAXINE                      20076
+#define IDC_HOTKEY_RIFE                        20077
+#define IDC_HOTKEY_SDR_ENHANCE                 20078
+#define IDC_HOTKEY_MAXINE_CLEAR                20079
+#define IDC_HOTKEY_RIFE_CLEAR                  20080
+#define IDC_HOTKEY_SDR_ENHANCE_CLEAR           20081
+#define IDC_BUTTON_HOTKEYS_DEFAULTS            20082
 
 #endif

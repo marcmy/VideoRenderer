@@ -207,6 +207,11 @@ public:
 	void OnDisplayModeChange(const bool bReset = false);
 	void OnWindowMove();
 
+	// Renderer hotkeys for Maxine, RIFE and SDR enhancement (RifeVideoRenderer.inl).
+	void RegisterFeatureHotkeys();
+	void OnFeatureHotkey(int feature);
+	void OnFeatureHotkeyMessageExpired();
+
 	DECLARE_IUNKNOWN
 	STDMETHODIMP NonDelegatingQueryInterface(REFIID riid, void** ppv);
 

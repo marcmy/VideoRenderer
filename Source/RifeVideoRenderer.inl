@@ -20,6 +20,12 @@
 
 // RIFE settings and playback integration, included by VideoRenderer.cpp.
 
+#include "FeatureHotkeyDialog.h"
+
+#include <condition_variable>
+#include <unordered_map>
+#include <vector>
+
 namespace {
 
 constexpr LPCWSTR OPT_RifeMode              = L"RifeMode";
@@ -43,6 +49,14 @@ constexpr LPCWSTR OPT_SdrEnhanceContrast     = L"SdrEnhanceContrast";
 constexpr LPCWSTR OPT_SdrEnhancePivot        = L"SdrEnhancePivot";
 constexpr LPCWSTR OPT_SdrEnhanceVibrance     = L"SdrEnhanceVibrance";
 constexpr LPCWSTR OPT_SdrEnhanceSkin         = L"SdrEnhanceSkinProtection";
+constexpr LPCWSTR OPT_HotkeyMaxine           = L"HotkeyMaxine";
+constexpr LPCWSTR OPT_HotkeyRife             = L"HotkeyRife";
+constexpr LPCWSTR OPT_HotkeySdrEnhance       = L"HotkeySdrEnhance";
+constexpr LPCWSTR OPT_MaxineLastOperation    = L"MaxineLastOperation";
+constexpr LPCWSTR OPT_RifeLastMode           = L"RifeLastMode";
+constexpr LPCWSTR OPT_SdrEnhanceLastMode     = L"SdrEnhanceLastMode";
+
+constexpr UINT FeatureHotkeyMessageMs = 2000;
 
 std::mutex g_rifeSettingsMutex;
 std::unordered_set<const CMpcVideoRenderer*> g_rifeSettingsLoaded;
@@ -84,6 +98,198 @@ void ClampSdrEnhanceSettings(Settings_t& settings)
 	settings.iSdrEnhanceVibrance = std::clamp(settings.iSdrEnhanceVibrance,
 		SDR_ENHANCE_VIBRANCE_MIN, SDR_ENHANCE_VIBRANCE_MAX);
 	settings.iSdrEnhanceSkinProtection = std::clamp(settings.iSdrEnhanceSkinProtection, 0, 100);
+}
+
+void ClampFeatureHotkeySettings(Settings_t& settings)
+{
+	for (int feature = 0; feature < FEATURE_HOTKEY_COUNT; ++feature) {
+		int& hotkey = settings.FeatureHotkey(feature);
+		hotkey = NormalizeFeatureHotkey(hotkey);
+	}
+	// The mode a hotkey restores is the last one that was on.
+	RememberFeatureMode(settings.iMaxineOperation, settings.iMaxineLastOperation,
+		MAXINE_OPERATION_Disabled, MAXINE_OPERATION_Upscale, MAXINE_OPERATION_COUNT);
+	RememberFeatureMode(settings.iRifeMode, settings.iRifeLastMode,
+		RIFE_MODE_Disabled, RIFE_MODE_Movie2x, RIFE_MODE_COUNT);
+	RememberFeatureMode(settings.iSdrEnhanceMode, settings.iSdrEnhanceLastMode,
+		SDR_ENHANCE_Off, SDR_ENHANCE_On, SDR_ENHANCE_COUNT);
+}
+
+void LoadFeatureHotkeySettings(CRegKey& key, Settings_t& settings)
+{
+	DWORD dw = 0;
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_HotkeyMaxine, dw)) settings.iHotkeyMaxine = static_cast<int>(dw);
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_HotkeyRife, dw)) settings.iHotkeyRife = static_cast<int>(dw);
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_HotkeySdrEnhance, dw)) settings.iHotkeySdrEnhance = static_cast<int>(dw);
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_MaxineLastOperation, dw)) settings.iMaxineLastOperation = static_cast<int>(dw);
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeLastMode, dw)) settings.iRifeLastMode = static_cast<int>(dw);
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_SdrEnhanceLastMode, dw)) settings.iSdrEnhanceLastMode = static_cast<int>(dw);
+	ClampFeatureHotkeySettings(settings);
+}
+
+// Renderer hotkeys. The player owns the keyboard: its accelerators are
+// translated in its message loop before any window sees the key. A
+// thread-specific WH_GETMESSAGE hook on the player's UI thread sees each key
+// message as the loop retrieves it; it blanks only the three bound hotkeys
+// and leaves everything else alone. (WH_KEYBOARD would miss key messages that
+// were posted rather than typed.) Hook procedures, the toggle and the expiry
+// timer all run on that thread.
+struct FeatureHotkeyRenderer {
+	CMpcVideoRenderer* renderer = nullptr;
+	int hotkeys[FEATURE_HOTKEY_COUNT] = {};
+	UINT_PTR messageTimer = 0;
+	// A hook or timer callback is running in this renderer (outside the lock).
+	int busy = 0;
+	DWORD busyThread = 0;
+};
+
+struct FeatureHotkeyThread {
+	HHOOK hook = nullptr;
+	UINT swallowedKey = 0;
+	// The most recently registered renderer is the one playing: during a file
+	// switch the old one may still exist briefly.
+	std::vector<FeatureHotkeyRenderer> renderers;
+};
+
+std::mutex g_featureHotkeyMutex;
+std::condition_variable g_featureHotkeyIdle;
+std::unordered_map<DWORD, FeatureHotkeyThread> g_featureHotkeyThreads;
+
+FeatureHotkeyRenderer* FindFeatureHotkeyRenderer(const CMpcVideoRenderer* renderer)
+{
+	for (auto& [threadId, thread] : g_featureHotkeyThreads) {
+		for (auto& entry : thread.renderers) {
+			if (entry.renderer == renderer) {
+				return &entry;
+			}
+		}
+	}
+	return nullptr;
+}
+
+// Calls into a registered renderer without holding the lock, so the
+// renderer's own locks never nest inside it (the player may initialise the
+// renderer on another thread while holding them). Unregistering waits until
+// the call has returned, so the renderer outlives it.
+template <class Call>
+void CallFeatureHotkeyRenderer(std::unique_lock<std::mutex>& lock, FeatureHotkeyRenderer& entry, Call&& call)
+{
+	const CMpcVideoRenderer* renderer = entry.renderer;
+	++entry.busy;
+	entry.busyThread = GetCurrentThreadId();
+	lock.unlock();
+	call();
+	lock.lock();
+	// The renderer may have re-registered meanwhile; never count below zero.
+	if (auto* current = FindFeatureHotkeyRenderer(renderer); current && current->busy > 0) {
+		--current->busy;
+	}
+	g_featureHotkeyIdle.notify_all();
+}
+
+LRESULT CALLBACK FeatureHotkeyProc(int code, WPARAM wParam, LPARAM lParam)
+{
+	// Every message the thread retrieves passes here; only key messages matter.
+	auto* msg = reinterpret_cast<MSG*>(lParam);
+	if (code != HC_ACTION || !msg || !IsKeyboardMessage(msg->message) || FeatureHotkeyCaptureActive()) {
+		// While the hotkey settings are open, their key boxes get every key.
+		return CallNextHookEx(nullptr, code, wParam, lParam);
+	}
+
+	std::unique_lock lock(g_featureHotkeyMutex);
+	const auto it = g_featureHotkeyThreads.find(GetCurrentThreadId());
+	if (it == g_featureHotkeyThreads.end()) {
+		lock.unlock();
+		return CallNextHookEx(nullptr, code, wParam, lParam);
+	}
+	FeatureHotkeyThread& thread = it->second;
+	const HHOOK hook = thread.hook;
+	const UINT vk = static_cast<UINT>(msg->wParam);
+
+	int feature = -1;
+	if (!thread.renderers.empty()) {
+		const int pressed = FeatureHotkeyFromKeyboard(vk,
+			GetKeyState(VK_SHIFT) < 0, GetKeyState(VK_CONTROL) < 0, GetKeyState(VK_MENU) < 0);
+		feature = FindFeatureHotkey(thread.renderers.back().hotkeys, pressed);
+	}
+
+	const auto action = ClassifyFeatureHotkey(wParam == PM_REMOVE, vk, msg->lParam, feature, thread.swallowedKey);
+	if (action != FEATURE_HOTKEY_ACTION_Pass) {
+		// The player's message loop, accelerators included, sees WM_NULL.
+		msg->message = WM_NULL;
+	}
+	if (action == FEATURE_HOTKEY_ACTION_Toggle) {
+		CMpcVideoRenderer* renderer = thread.renderers.back().renderer;
+		CallFeatureHotkeyRenderer(lock, thread.renderers.back(), [=] { renderer->OnFeatureHotkey(feature); });
+	}
+	lock.unlock();
+	return CallNextHookEx(hook, code, wParam, lParam);
+}
+
+void CALLBACK FeatureHotkeyMessageTimerProc(HWND, UINT, UINT_PTR timer, DWORD)
+{
+	KillTimer(nullptr, timer);
+	std::unique_lock lock(g_featureHotkeyMutex);
+	for (auto& [threadId, thread] : g_featureHotkeyThreads) {
+		for (auto& entry : thread.renderers) {
+			if (entry.messageTimer == timer) {
+				entry.messageTimer = 0;
+				CMpcVideoRenderer* renderer = entry.renderer;
+				CallFeatureHotkeyRenderer(lock, entry, [=] { renderer->OnFeatureHotkeyMessageExpired(); });
+				return;
+			}
+		}
+	}
+}
+
+// Removes a renderer's registration, and the hook with a thread's last
+// renderer. The caller holds the lock.
+void RemoveFeatureHotkeyRenderer(const CMpcVideoRenderer* renderer)
+{
+	for (auto it = g_featureHotkeyThreads.begin(); it != g_featureHotkeyThreads.end();) {
+		auto& renderers = it->second.renderers;
+		std::erase_if(renderers, [renderer](const FeatureHotkeyRenderer& entry) { return entry.renderer == renderer; });
+		if (renderers.empty()) {
+			if (it->second.hook) {
+				UnhookWindowsHookEx(it->second.hook);
+			}
+			it = g_featureHotkeyThreads.erase(it);
+		} else {
+			++it;
+		}
+	}
+}
+
+// For the destructor: waits until no hook or timer call is running in the
+// renderer. A call running on this thread is the caller itself.
+void UnregisterFeatureHotkeys(const CMpcVideoRenderer* renderer)
+{
+	std::unique_lock lock(g_featureHotkeyMutex);
+	g_featureHotkeyIdle.wait(lock, [renderer] {
+		const auto* entry = FindFeatureHotkeyRenderer(renderer);
+		return !entry || !entry->busy || entry->busyThread == GetCurrentThreadId();
+	});
+	RemoveFeatureHotkeyRenderer(renderer);
+}
+
+void UpdateFeatureHotkeyBindings(const CMpcVideoRenderer* renderer, const Settings_t& settings)
+{
+	std::scoped_lock lock(g_featureHotkeyMutex);
+	if (auto* entry = FindFeatureHotkeyRenderer(renderer)) {
+		for (int feature = 0; feature < FEATURE_HOTKEY_COUNT; ++feature) {
+			entry->hotkeys[feature] = settings.FeatureHotkey(feature);
+		}
+	}
+}
+
+void StartFeatureHotkeyMessageTimer(const CMpcVideoRenderer* renderer)
+{
+	std::scoped_lock lock(g_featureHotkeyMutex);
+	if (auto* entry = FindFeatureHotkeyRenderer(renderer)) {
+		// A thread timer: no window procedure has to know about it.
+		entry->messageTimer = SetTimer(nullptr, entry->messageTimer,
+			FeatureHotkeyMessageMs + 100, FeatureHotkeyMessageTimerProc);
+	}
 }
 
 void LoadSdrEnhanceSettings(CRegKey& key, Settings_t& settings)
@@ -156,6 +362,7 @@ void LoadRifeSettings(Settings_t& settings)
 		settings.bDetailedStats = !!dw;
 	}
 	LoadSdrEnhanceSettings(key, settings);
+	LoadFeatureHotkeySettings(key, settings);
 	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeSceneDetection, dw)) {
 		settings.iRifeSceneDetection = dw < RIFE_SCENE_COUNT ? static_cast<int>(dw) : RIFE_SCENE_SVPflow1;
 	}
@@ -228,6 +435,7 @@ STDMETHODIMP_(void) CMpcVideoRenderer::SetSettings(const Settings_t& settings)
 	adjusted.iRifeProcessingLimit = std::clamp(settings.iRifeProcessingLimit,
 		RifeProcessingLimitMin, RifeProcessingLimitMax);
 	ClampSdrEnhanceSettings(adjusted);
+	ClampFeatureHotkeySettings(adjusted);
 	if (adjusted.iRifeMode != RIFE_MODE_Disabled) {
 		// RIFE owns production frame synthesis once enabled. Keep the old
 		// NvOFFRUC values only as migration data; never let both paths run.
@@ -242,6 +450,7 @@ STDMETHODIMP_(void) CMpcVideoRenderer::SetSettings(const Settings_t& settings)
 	}
 
 	SetSettingsLegacy(adjusted);
+	UpdateFeatureHotkeyBindings(this, m_Sets);
 }
 
 STDMETHODIMP CMpcVideoRenderer::SaveSettings()
@@ -269,6 +478,12 @@ STDMETHODIMP CMpcVideoRenderer::SaveSettings()
 		key.SetDWORDValue(OPT_SdrEnhancePivot,      static_cast<DWORD>(m_Sets.iSdrEnhancePivot));
 		key.SetDWORDValue(OPT_SdrEnhanceVibrance,   static_cast<DWORD>(m_Sets.iSdrEnhanceVibrance));
 		key.SetDWORDValue(OPT_SdrEnhanceSkin,       static_cast<DWORD>(m_Sets.iSdrEnhanceSkinProtection));
+		key.SetDWORDValue(OPT_HotkeyMaxine,         static_cast<DWORD>(m_Sets.iHotkeyMaxine));
+		key.SetDWORDValue(OPT_HotkeyRife,           static_cast<DWORD>(m_Sets.iHotkeyRife));
+		key.SetDWORDValue(OPT_HotkeySdrEnhance,     static_cast<DWORD>(m_Sets.iHotkeySdrEnhance));
+		key.SetDWORDValue(OPT_MaxineLastOperation,  static_cast<DWORD>(m_Sets.iMaxineLastOperation));
+		key.SetDWORDValue(OPT_RifeLastMode,         static_cast<DWORD>(m_Sets.iRifeLastMode));
+		key.SetDWORDValue(OPT_SdrEnhanceLastMode,   static_cast<DWORD>(m_Sets.iSdrEnhanceLastMode));
 		key.SetDWORDValue(OPT_RifeSceneDetection,   static_cast<DWORD>(m_Sets.iRifeSceneDetection));
 		key.SetDWORDValue(OPT_RifeProcessingResolution, static_cast<DWORD>(m_Sets.iRifeProcessingResolution));
 		key.SetDWORDValue(OPT_RifeProcessingLimit, static_cast<DWORD>(m_Sets.iRifeProcessingLimit));
@@ -282,6 +497,105 @@ STDMETHODIMP CMpcVideoRenderer::SaveSettings()
 	}
 
 	return S_OK;
+}
+
+void CMpcVideoRenderer::RegisterFeatureHotkeys()
+{
+	if (!m_hWndParentMain) {
+		return;
+	}
+	const DWORD threadId = GetWindowThreadProcessId(m_hWndParentMain, nullptr);
+	if (!threadId) {
+		return;
+	}
+
+	EnsureRifeSettingsLoaded(this, m_Sets);
+	// Init() holds the renderer lock, so this never waits for a running toggle.
+	std::scoped_lock lock(g_featureHotkeyMutex);
+	if (const auto it = g_featureHotkeyThreads.find(threadId); it != g_featureHotkeyThreads.end()) {
+		for (const auto& entry : it->second.renderers) {
+			if (entry.renderer == this) {
+				return;
+			}
+		}
+	}
+	// First Init(), or the player window moved to another thread.
+	RemoveFeatureHotkeyRenderer(this);
+
+	FeatureHotkeyThread& thread = g_featureHotkeyThreads[threadId];
+	if (!thread.hook) {
+		// Thread-specific, never global: only the player's own keyboard input.
+		thread.hook = SetWindowsHookExW(WH_GETMESSAGE, FeatureHotkeyProc, nullptr, threadId);
+		DLogIf(!thread.hook, L"CMpcVideoRenderer::RegisterFeatureHotkeys() : SetWindowsHookExW() failed with error {}",
+			HR2Str(HRESULT_FROM_WIN32(GetLastError())));
+	}
+	FeatureHotkeyRenderer entry;
+	entry.renderer = this;
+	for (int feature = 0; feature < FEATURE_HOTKEY_COUNT; ++feature) {
+		entry.hotkeys[feature] = m_Sets.FeatureHotkey(feature);
+	}
+	thread.renderers.push_back(entry);
+}
+
+void CMpcVideoRenderer::OnFeatureHotkey(int feature)
+{
+	Settings_t settings;
+	GetSettings(settings);
+
+	std::wstring message;
+	switch (feature) {
+	case FEATURE_HOTKEY_Maxine:
+		settings.iMaxineOperation = ToggleFeatureMode(settings.iMaxineOperation, settings.iMaxineLastOperation,
+			MAXINE_OPERATION_Disabled, MAXINE_OPERATION_Upscale, MAXINE_OPERATION_COUNT);
+		switch (settings.iMaxineOperation) {
+		case MAXINE_OPERATION_Upscale: message = L"Maxine: upscaling"; break;
+		case MAXINE_OPERATION_Denoise: message = L"Maxine: denoising"; break;
+		case MAXINE_OPERATION_Deblur:  message = L"Maxine: deblurring"; break;
+		default:                       message = L"Maxine: off"; break;
+		}
+		break;
+	case FEATURE_HOTKEY_Rife:
+		settings.iRifeMode = ToggleFeatureMode(settings.iRifeMode, settings.iRifeLastMode,
+			RIFE_MODE_Disabled, RIFE_MODE_Movie2x, RIFE_MODE_COUNT);
+		message = settings.iRifeMode != RIFE_MODE_Disabled
+			? L"RIFE frame interpolation: on" : L"RIFE frame interpolation: off";
+		break;
+	case FEATURE_HOTKEY_SdrEnhance:
+		settings.iSdrEnhanceMode = ToggleFeatureMode(settings.iSdrEnhanceMode, settings.iSdrEnhanceLastMode,
+			SDR_ENHANCE_Off, SDR_ENHANCE_On, SDR_ENHANCE_COUNT);
+		message = settings.iSdrEnhanceMode == SDR_ENHANCE_Split ? L"SDR enhancement: A/B split"
+			: settings.iSdrEnhanceMode == SDR_ENHANCE_On ? L"SDR enhancement: on" : L"SDR enhancement: off";
+		break;
+	default:
+		return;
+	}
+#ifndef _WIN64
+	if (feature != FEATURE_HOTKEY_SdrEnhance) {
+		message += L" (needs the 64-bit renderer)";
+	}
+#endif
+	if (m_VideoProcessor->Type() != VP_DX11) {
+		message += L" (needs Direct3D 11)";
+	}
+
+	SetSettings(settings);
+	SaveSettings();
+
+	if (m_VideoProcessor->Type() == VP_DX11) {
+		static_cast<CDX11VideoProcessor*>(m_VideoProcessor.get())->ShowToggleMessage(message, FeatureHotkeyMessageMs);
+		if (m_filterState != State_Running) {
+			// Paused or stopped: show it now and clear it when it expires.
+			Redraw();
+			StartFeatureHotkeyMessageTimer(this);
+		}
+	}
+}
+
+void CMpcVideoRenderer::OnFeatureHotkeyMessageExpired()
+{
+	if (m_filterState != State_Running) {
+		Redraw();
+	}
 }
 
 HRESULT CMpcVideoRenderer::Receive(IMediaSample* pSample)
