@@ -1674,6 +1674,49 @@ void CDX11VideoProcessor::UpdateScalingStrings()
 		: s_Upscaling11ResIDs[m_iUpscaling].description;
 }
 
+void CDX11VideoProcessor::ShowToggleMessage(const std::wstring& message, UINT durationMs)
+{
+	std::lock_guard lock(m_ToggleMessageLock);
+	m_ToggleMessage = message;
+	m_ToggleMessageUntil = GetPreciseTick() + GetPreciseTicksPerSecondI() * durationMs / 1000;
+}
+
+HRESULT CDX11VideoProcessor::DrawToggleMessage(ID3D11Texture2D* pRenderTarget)
+{
+	std::wstring message;
+	{
+		std::lock_guard lock(m_ToggleMessageLock);
+		if (m_ToggleMessage.empty()) {
+			return S_OK;
+		}
+		if (GetPreciseTick() >= m_ToggleMessageUntil) {
+			m_ToggleMessage.clear();
+			return S_OK;
+		}
+		message = m_ToggleMessage;
+	}
+
+	SIZE textSize = {};
+	if (FAILED(m_Font3D.GetTextExtent(message.c_str(), &textSize)) || !textSize.cx) {
+		return S_OK;
+	}
+	ID3D11RenderTargetView* pRenderTargetView = nullptr;
+	HRESULT hr = m_pDevice->CreateRenderTargetView(pRenderTarget, nullptr, &pRenderTargetView);
+	if (S_OK == hr) {
+		// Top centre, clear of the statistics panel in the top-left corner.
+		const SIZE rtSize = m_windowRect.Size();
+		const int padX = textSize.cy / 2, padY = textSize.cy / 4;
+		const int x = std::max<int>(padX, (rtSize.cx - textSize.cx) / 2);
+		const int y = m_StatsTextPoint.y + padY;
+		m_Rect3D.Set({ x - padX, y - padY, x + textSize.cx + padX, y + textSize.cy + padY }, rtSize, D3DCOLOR_ARGB(160, 0, 0, 0));
+		m_Rect3D.Draw(pRenderTargetView, rtSize);
+		hr = m_Font3D.Draw2DText(pRenderTargetView, rtSize, static_cast<float>(x), static_cast<float>(y),
+			D3DCOLOR_XRGB(255, 255, 255), message.c_str());
+		pRenderTargetView->Release();
+	}
+	return hr;
+}
+
 void CDX11VideoProcessor::CalcStatsParams()
 {
 	if (m_pDeviceContext && !m_windowRect.IsRectEmpty()) {
@@ -3747,6 +3790,7 @@ HRESULT CDX11VideoProcessor::Render(int field, const REFERENCE_TIME frameStartTi
 	if (m_bShowStats) {
 		hr = DrawStats(pBackBuffer);
 	}
+	DrawToggleMessage(pBackBuffer);
 
 	if (m_bAlphaBitmapEnable) {
 		D3D11_TEXTURE2D_DESC desc;
@@ -3872,6 +3916,7 @@ HRESULT CDX11VideoProcessor::FillBlack()
 	if (m_bShowStats) {
 		hr = DrawStats(pBackBuffer);
 	}
+	DrawToggleMessage(pBackBuffer);
 
 	if (m_bAlphaBitmapEnable) {
 		D3D11_TEXTURE2D_DESC desc;

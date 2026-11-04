@@ -25,6 +25,7 @@
 #include "PropPage.h"
 #include "RifeSettingsDialog.h"
 #include "SdrEnhanceDialog.h"
+#include "FeatureHotkeyDialog.h"
 #include "SettingsDialogTheme.h"
 
 void SetCursor(HWND hWnd, LPCWSTR lpCursorName)
@@ -462,6 +463,11 @@ bool CVRMainPPage::ShowSdrEnhanceSettings()
 	return ::ShowSdrEnhanceSettings(m_hWnd, g_hInst, m_SetsPP);
 }
 
+bool CVRMainPPage::ShowFeatureHotkeySettings()
+{
+	return ::ShowFeatureHotkeySettings(m_hWnd, g_hInst, m_SetsPP);
+}
+
 HRESULT CVRMainPPage::OnConnect(IUnknown *pUnk)
 {
 	if (pUnk == nullptr) return E_POINTER;
@@ -644,6 +650,10 @@ HRESULT CVRMainPPage::OnActivate()
 		L"Opens the dedicated NVIDIA Maxine settings window.\n"
 		L"Maxine is available in the 64-bit Direct3D 11 renderer.");
 
+	AddHint(IDC_BUTTON_HOTKEYS,
+		L"Keyboard shortcuts that switch Maxine, RIFE and SDR enhancement on and off\n"
+		L"during playback (defaults Ctrl+Alt+M, Ctrl+Alt+F and Ctrl+Alt+E).");
+
 	AddHint(IDC_BUTTON_SDR_ENHANCE,
 		L"Optional tone curve and vibrance for SDR video on SDR displays (Direct3D 11).\n"
 		L"Includes an A/B split view; Off leaves the output unchanged.");
@@ -777,6 +787,11 @@ INT_PTR CVRMainPPage::OnReceiveMessage(HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 
 			if (nID == IDC_BUTTON_SDR_ENHANCE) {
 				if (ShowSdrEnhanceSettings()) { SetDirty(); }
+				return (LRESULT)1;
+			}
+
+			if (nID == IDC_BUTTON_HOTKEYS) {
+				if (ShowFeatureHotkeySettings()) { SetDirty(); }
 				return (LRESULT)1;
 			}
 

@@ -44,6 +44,7 @@
 
 #include <array>
 #include <atomic>
+#include <mutex>
 
 #define TEST_SHADER 0
 
@@ -104,6 +105,12 @@ private:
 	CGpuPassTimer m_SdrEnhanceTimer;
 	CSize m_SdrEnhanceSize;
 	bool m_bSdrEnhanceBeforeInterpolation = false;
+
+	// Brief message after a renderer hotkey switches a feature. Set from the
+	// player's UI thread and drawn by the presenting thread.
+	std::mutex m_ToggleMessageLock;
+	std::wstring m_ToggleMessage;
+	uint64_t m_ToggleMessageUntil = 0;
 	// Regular D3D11 staging target for the fully processed source frame.
 	// Maxine must finish before the NvOFFRUC keyed-mutex input transaction
 	// begins, otherwise the two CUDA/D3D11 interop stacks can serialize.
@@ -622,8 +629,11 @@ private:
 	void UpdateStatsStatic() override;
 	//void UpdateStatsPostProc();
 	HRESULT DrawStats(ID3D11Texture2D* pRenderTarget);
+	HRESULT DrawToggleMessage(ID3D11Texture2D* pRenderTarget);
 
 public:
+	void ShowToggleMessage(const std::wstring& message, UINT durationMs);
+
 	// IMFVideoProcessor
 	STDMETHODIMP SetProcAmpValues(DWORD dwFlags, DXVA2_ProcAmpValues *pValues) override;
 

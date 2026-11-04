@@ -29,6 +29,7 @@
 namespace {
 void ForgetRifeSettings(const CMpcVideoRenderer* renderer);
 void EnsureRifeSettingsLoaded(CMpcVideoRenderer* renderer, Settings_t& settings);
+void UnregisterFeatureHotkeys(const CMpcVideoRenderer* renderer);
 }
 
 #include <atomic>
@@ -469,6 +470,8 @@ CMpcVideoRenderer::~CMpcVideoRenderer()
 {
 	DLog(L"CMpcVideoRenderer::~CMpcVideoRenderer()");
 
+	// First: no hotkey or its timer may call into a renderer being destroyed.
+	UnregisterFeatureHotkeys(this);
 	StopFrameInterpolationPresenter();
 	m_RifePipeline.reset();
 	ForgetRifeSettings(this);
@@ -1744,6 +1747,8 @@ HRESULT CMpcVideoRenderer::Init(const bool bCreateWindow/* = false*/)
 	if (bChangeDevice) {
 		DoAfterChangingDevice();
 	}
+
+	RegisterFeatureHotkeys();
 
 	return hr;
 }

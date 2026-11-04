@@ -51,6 +51,7 @@ private:
 	bool ShowMaxineSettings();
 	bool ShowFrameInterpolationSettings();
 	bool ShowSdrEnhanceSettings();
+	bool ShowFeatureHotkeySettings();
 	void SetControls();
 	void EnableControls();
 

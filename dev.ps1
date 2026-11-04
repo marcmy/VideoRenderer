@@ -95,9 +95,9 @@ function Test-Renderer {
         & $hostName -NoLogo -NoProfile -ExecutionPolicy Bypass -File tools/Dev/Test-Dependencies.ps1
         if ($LASTEXITCODE -ne 0) { throw "$hostName dependency tests failed." }
     }
-    $pythonTests=@('rife-receive-pacing-test/test_receive_pacing.py','rife-lifecycle-test/test_rife_lifecycle.py','rife-spatial-contract-test/test_rife_vsr_routing.py','rife-presentation-preparation-test/test_preparation_contract.py','rife-spatial-contract-test/test_rife_spatial_contract.py','sdr-enhance-test/test_sdr_enhance_contract.py')
+    $pythonTests=@('rife-receive-pacing-test/test_receive_pacing.py','rife-lifecycle-test/test_rife_lifecycle.py','rife-spatial-contract-test/test_rife_vsr_routing.py','rife-presentation-preparation-test/test_preparation_contract.py','rife-spatial-contract-test/test_rife_spatial_contract.py','sdr-enhance-test/test_sdr_enhance_contract.py','feature-hotkeys-test/test_feature_hotkeys_contract.py')
     foreach ($path in $pythonTests) { Run-Python @("tools/$path") }
-    $nativeTests=@('rife-scheduler-test/build-test.cmd','rife-runtime-abi-test/build-test.cmd','rife-cache-test/build-test.cmd','rife-image-scene-test/build-test.cmd','rife-nvof-input-test/build-test.cmd','rife-spatial-policy-test/build-test.cmd','rife-svp-scene-test/build-test.cmd','rife-precision-test/build-warp.cmd','sdr-enhance-test/build-test.cmd')
+    $nativeTests=@('rife-scheduler-test/build-test.cmd','rife-runtime-abi-test/build-test.cmd','rife-cache-test/build-test.cmd','rife-image-scene-test/build-test.cmd','rife-nvof-input-test/build-test.cmd','rife-spatial-policy-test/build-test.cmd','rife-svp-scene-test/build-test.cmd','rife-precision-test/build-warp.cmd','sdr-enhance-test/build-test.cmd','feature-hotkeys-test/build-test.cmd')
     foreach ($path in $nativeTests) {
         & cmd.exe /d /c "tools\$($path.Replace('/','\'))"
         if ($LASTEXITCODE -ne 0) { throw "Regression test failed: $path" }
