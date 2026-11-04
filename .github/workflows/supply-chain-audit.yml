@@ -22,10 +22,30 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+      # Install an exact Trivy release from GitHub instead of letting the action
+      # resolve "latest" through get.trivy.dev, which stopped resolving in DNS.
+      - name: Install pinned Trivy
+        env:
+          TRIVY_VERSION: 0.76.1
+          TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
+        run: |
+          set -euo pipefail
+          asset="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+          dir="${RUNNER_TEMP}/trivy"
+          mkdir -p "${dir}/bin"
+          cd "${dir}"
+          curl -fsSL --retry 3 -o "${asset}" "${base}/${asset}"
+          curl -fsSL --retry 3 -o checksums.txt "${base}/trivy_${TRIVY_VERSION}_checksums.txt"
+          echo "${TRIVY_SHA256}  ${asset}" | sha256sum -c -
+          grep -qx "${TRIVY_SHA256}  ${asset}" checksums.txt
+          tar -xzf "${asset}" -C bin trivy
+          echo "${dir}/bin" >> "${GITHUB_PATH}"
+          "${dir}/bin/trivy" --version
       - name: Scan repository with Trivy
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          version: latest
+          skip-setup-trivy: true
           scan-type: fs
           scan-ref: .
           format: sarif
@@ -34,7 +54,7 @@ jobs:
           ignore-unfixed: true
           exit-code: "0"
       - name: Upload findings to GitHub Security
-        if: always()
+        if: always() && hashFiles('trivy-results.sarif') != ''
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
