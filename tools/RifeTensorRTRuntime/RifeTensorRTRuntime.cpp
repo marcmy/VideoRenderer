@@ -234,8 +234,9 @@ struct ContextState {
     {
         if (tensorRtGraphExec) cudaGraphExecDestroy(tensorRtGraphExec);
         if (tensorRtGraph) cudaGraphDestroy(tensorRtGraph);
-        features.reset();
+        // The synthesis context may use scratch memory owned by features.
         context.reset();
+        features.reset();
         if (output) cudaFree(output);
         if (input) cudaFree(input);
         if (endEvent) cudaEventDestroy(endEvent);
@@ -1127,7 +1128,7 @@ private:
 
         for (uint32_t i = 0; i < m_contextCount; ++i) {
             auto state = std::make_unique<ContextState>();
-            state->context.reset((m_features ? m_features->Core() : m_engine.get())->createExecutionContext());
+            state->context.reset(m_features ? m_features->CreateCoreContext() : m_engine->createExecutionContext());
             if (!state->context) return false;
             int leastPriority = 0;
             int greatestPriority = 0;

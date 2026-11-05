@@ -1,3 +1,5 @@
+import json
+import re
 from pathlib import Path
 
 
@@ -202,5 +204,31 @@ rotation_branch = renderer_legacy[rotation_start:rotation_end]
 assert "m_RifePipeline->Reset()" in rotation_branch and "ResetFrameInterpolationPresenterQueue()" in rotation_branch, (
     "rotation changes must invalidate queued RIFE work before new geometry is used for presentation"
 )
+
+feature_engine = (repo / "tools" / "RifeTensorRTRuntime" / "FeatureReuseEngine.h").read_text(encoding="utf-8")
+lock = json.loads((repo / "dependencies.lock.json").read_text(encoding="utf-8"))
+models_release = lock["components"]["rife-models"]["releaseTag"]
+assert f'kValidatedModelsRelease = "{models_release}"' in feature_engine, (
+    "feature reuse validates exact model hashes; revalidate them on the GPU and update "
+    "FeatureReuseEngine.h whenever the pinned rife-models release changes"
+)
+validated_start = feature_engine.find("static bool IsValidatedModel(")
+validated_end = feature_engine.find("\n    }\n", validated_start)
+assert validated_start != -1 and validated_end != -1, "IsValidatedModel() was not found"
+assert len(set(re.findall(r'"([0-9a-f]{64})"', feature_engine[validated_start:validated_end]))) == 3, (
+    "every bundled model with an image encoder (4.15 Lite, 4.25, 4.25 Lite) must be listed"
+)
+assert "ExposeImageView(*network)" in feature_engine and "setTensorAddress(kImageViewName, images)" in feature_engine, (
+    "the synthesis stage must take the image view as an input sharing the packed input buffer; "
+    "the fused reshape corrupts the top rows of RIFE 4.25 Lite"
+)
+assert "_pairfeatures_v2_" in feature_engine, (
+    "feature-stage plans from the fused reshape form must not be reused"
+)
+for path in ("RifePlaybackPipeline.cpp", "RifeSettingsDialog.cpp"):
+    source = (repo / "Source" / path).read_text(encoding="utf-8")
+    assert "RifeModelSupportsFeatureReuse(" in source, (
+        f"{path} must use the shared feature-reuse model list"
+    )
 
 print("RIFE spatial contract test passed")

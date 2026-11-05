@@ -1227,7 +1227,7 @@ struct CRifePlaybackPipeline::Impl
         key.performanceBoost = frame.settings.bRifePerformanceBoost;
         key.format = TextureFormat(frame.texture);
         key.featureReuse = frame.settings.bRifeFeatureReuse
-            && (key.model == RIFE_MODEL_415_LITE || key.model == RIFE_MODEL_425);
+            && RifeModelSupportsFeatureReuse(key.model);
         if (!runtimeKey || !(*runtimeKey == key)) encoderFeaturesActive.store(false, std::memory_order_relaxed);
 
         if (runtimeKey && RifeRuntimeCacheConflicts(*runtimeKey, key)) {
@@ -2250,8 +2250,7 @@ struct CRifePlaybackPipeline::Impl
                     || runtimeKey->model != currentFrame->settings.iRifeModel
                     || runtimeKey->format != desc.Format
                     || runtimeKey->featureReuse != (currentFrame->settings.bRifeFeatureReuse
-                        && (currentFrame->settings.iRifeModel == RIFE_MODEL_415_LITE
-                            || currentFrame->settings.iRifeModel == RIFE_MODEL_425))
+                        && RifeModelSupportsFeatureReuse(currentFrame->settings.iRifeModel))
                     || runtimeKey->performanceBoost != currentFrame->settings.bRifePerformanceBoost);
             if (runtimeSettingsChanged) {
                 // Retire all work using the previous runtime before switching a

@@ -402,7 +402,7 @@ void EnableControls(HWND hwnd)
 	}
 	const auto model = ComboValue(hwnd, IDC_RIFE_MODEL);
 	EnableWindow(GetDlgItem(hwnd, IDC_RIFE_FEATURE_REUSE), enabled
-		&& (model == RIFE_MODEL_415_LITE || model == RIFE_MODEL_425));
+		&& RifeModelSupportsFeatureReuse(static_cast<int>(model)));
 	const BOOL imageEnabled = enabled && ComboValue(hwnd, IDC_RIFE_SCENE_DETECTION) == RIFE_SCENE_Image;
 	EnableWindow(GetDlgItem(hwnd, IDC_RIFE_SCENE_THRESHOLD), imageEnabled);
 	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_RIFE_SCENE_THRESHOLD), imageEnabled);

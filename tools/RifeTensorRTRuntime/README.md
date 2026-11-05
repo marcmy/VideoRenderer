@@ -130,6 +130,26 @@ plans use private staging files and checked replacement without deleting the
 previous plan on publication failure. A failed save reports its path to the debug
 log; the already-built engine remains usable in memory.
 
+Feature reuse (`FeatureReuseEngine.h`) builds two fixed-shape stages from the
+hash-qualified sidecars: a six-channel image encoder and the remaining
+synthesis graph. It is enabled only for model hashes from the rife-models
+release named by `kValidatedModelsRelease`; `dev.ps1 test` fails when the
+dependency lock pins another release, so new exports are revalidated before
+reuse covers them. The synthesis sidecar still reshapes the two images to
+2x3xHxW for the first warp. When the encoder is removed, TensorRT fuses that
+reshape into the first warp kernel, and on an RTX 2070 SUPER (SM75, TensorRT
+11.4) the fused kernel corrupted the top rows of RIFE 4.25 Lite output. The
+runtime therefore replaces that reshape with a network input bound to the same
+memory as the first six input channels; the warp then builds as in the original
+engine. Stage plans use the `_pairfeatures_v2_` cache suffix, so plans from the
+fused form are never reused. The encoder and synthesis contexts run in order on
+one stream and share one user-managed TensorRT scratch allocation. TensorRT
+11.4's 4.25 Lite plans (the original whole plan as well) read part of their
+scratch before writing it; with their own previous-frame leftovers the effect
+is negligible (6,198 instead of 6,140 pixels off by more than 0.05 from the CPU
+reference on a 1920x1152 frame), but encoder data could decode as NaN, so the
+scratch is cleared once per pair after the encoder runs.
+
 Deleting the cache is safe; the runtime rebuilds the engine from ONNX.
 
 ## Adapter rule

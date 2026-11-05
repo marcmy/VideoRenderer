@@ -8,15 +8,29 @@ public:
     struct Context final {
         TrtPtr<nvinfer1::IExecutionContext> encoder;
         void* features = nullptr;
+        // TensorRT scratch shared by the encoder and synthesis contexts. Both
+        // run in order on one stream, so one allocation serves both; separate
+        // allocations made reuse exceed the original engine's memory at 4K.
+        // The synthesis context must be destroyed before this Context.
+        void* scratch = nullptr;
+        size_t scratchBytes = 0;
         cudaGraph_t graph = nullptr;
         cudaGraphExec_t graphExec = nullptr;
         ~Context() {
             if (graphExec) cudaGraphExecDestroy(graphExec);
             if (graph) cudaGraphDestroy(graph);
+            encoder.reset();
             if (features) cudaFree(features);
+            if (scratch) cudaFree(scratch);
         }
         bool Enqueue(cudaStream_t stream) {
-            return graphExec ? cudaGraphLaunch(graphExec, stream) == cudaSuccess : encoder->enqueueV3(stream);
+            const bool encoded = graphExec ? cudaGraphLaunch(graphExec, stream) == cudaSuccess : encoder->enqueueV3(stream);
+            // TensorRT 11.4's RIFE 4.25 Lite plans (whole and synthesis) read
+            // part of their scratch before writing it; their own leftovers from
+            // the previous frame have negligible effect, but encoder data could
+            // decode as NaN there. Clear the shared scratch once per pair, after
+            // the encoder: features live in their own buffer.
+            return encoded && (!scratchBytes || cudaMemsetAsync(scratch, 0, scratchBytes, stream) == cudaSuccess);
         }
         bool Prime(cudaStream_t stream) {
             if (!encoder->enqueueV3(stream) || cudaStreamSynchronize(stream) != cudaSuccess) return false;
@@ -37,13 +51,23 @@ public:
         }
     };
 
+    // Exports checked on the native GPU path, as published in this rife-models
+    // dependency release. A model package with other hashes keeps its original
+    // engine; update both together after validating the new exports.
+    static constexpr const char* kValidatedModelsRelease = "mpcvr-deps-rife-models-cc46eaca0cda87fa";
+    static bool IsValidatedModel(const std::string& modelHash) {
+        for (const char* validated : {
+                "f25f9da57fc6e8ecdeac5f9e3ab90b340004b11b9fadb6e805fbecc2431d9ea9",   // RIFE 4.15 Lite
+                "a8daec071d3adb1b784647dea111094b939e9feb0a89bb163f34d9c4d017551b",   // RIFE 4.25
+                "15e6177e5469924c1b3a70d360d0d807bd87f0a2be4c94188184b47f886a0563"}) { // RIFE 4.25 Lite
+            if (modelHash == validated) return true;
+        }
+        return false;
+    }
+
     bool Initialize(const std::filesystem::path& model, const std::filesystem::path& cache,
         const std::string& modelHash, const std::string& cacheKey, uint32_t width, uint32_t height) {
-        // Enable only exports checked on the native GPU path. The pinned 4.25
-        // Lite split has a reproducible top-edge artifact on SM75; keep its
-        // original engine even if experimental sidecars are present.
-        if (modelHash != "77b01922e3190277ada3e5172078b99b90a994dd826ccbd4875f6974d0fe592b"
-                && modelHash != "e8254b183b95fe7abc3ba357d4137a5178af80bb049bef59b26c1b888d4d0b08") return false;
+        if (!IsValidatedModel(modelHash)) return false;
         m_width = width; m_height = height;
         const auto prefix = model.parent_path() / (model.stem().wstring() + L"_"
             + std::wstring(modelHash.begin(), modelHash.begin() + 16));
@@ -52,7 +76,8 @@ public:
         if (!std::filesystem::is_regular_file(featurePath) || !std::filesystem::is_regular_file(synthesisPath)) return false;
         m_runtime.reset(nvinfer1::createInferRuntime(g_logger));
         if (!m_runtime) return false;
-        const std::string suffix = "_pairfeatures_v1_" + std::to_string(width) + 'x' + std::to_string(height);
+        // v2: the synthesis stage receives the image view as its own input.
+        const std::string suffix = "_pairfeatures_v2_" + std::to_string(width) + 'x' + std::to_string(height);
         if (!BuildStage(featurePath, cache, cacheKey + suffix + "_encoder", true, m_encoder)) return false;
         if (m_encoder->getNbIOTensors() != 2) return false;
         for (int i = 0; i < 2; ++i) {
@@ -70,32 +95,83 @@ public:
         if (!volume || volume > (size_t{1} << 29)) return false;
         m_featureBytes = volume * sizeof(uint16_t);
         if (!BuildStage(synthesisPath, cache, cacheKey + suffix + "_synthesis", false, m_core)) return false;
-        if (m_core->getNbIOTensors() != 3
-                || m_core->getTensorIOMode(m_featureName.c_str()) != nvinfer1::TensorIOMode::kINPUT
-                || m_core->getTensorDataType(m_featureName.c_str()) != nvinfer1::DataType::kHALF
-                || m_core->getTensorFormat(m_featureName.c_str()) != nvinfer1::TensorFormat::kLINEAR) return false;
+        if (m_core->getNbIOTensors() != 4) return false;
+        for (const char* name : {m_featureName.c_str(), kImageViewName}) {
+            if (m_core->getTensorIOMode(name) != nvinfer1::TensorIOMode::kINPUT
+                    || m_core->getTensorDataType(name) != nvinfer1::DataType::kHALF
+                    || m_core->getTensorFormat(name) != nvinfer1::TensorFormat::kLINEAR) return false;
+        }
         return true;
     }
 
-    nvinfer1::ICudaEngine* Core() const { return m_core.get(); }
+    // Its scratch memory is assigned by CreateContext().
+    nvinfer1::IExecutionContext* CreateCoreContext() const {
+        return m_core->createExecutionContext(nvinfer1::ExecutionContextAllocationStrategy::kUSER_MANAGED);
+    }
     uint64_t EngineBytes() const { return m_engineBytes; }
 
     std::unique_ptr<Context> CreateContext(void* images, nvinfer1::IExecutionContext* core) {
         auto result = std::make_unique<Context>();
-        result->encoder.reset(m_encoder->createExecutionContext());
+        result->encoder.reset(m_encoder->createExecutionContext(nvinfer1::ExecutionContextAllocationStrategy::kUSER_MANAGED));
         if (!images || !core || !result->encoder
                 || !result->encoder->setInputShape(m_imageName.c_str(), ImageShape())
                 || !core->setInputShape(m_featureName.c_str(), m_featureShape)
+                || !core->setInputShape(kImageViewName, ImageViewShape())
                 || cudaMalloc(&result->features, m_featureBytes) != cudaSuccess
                 || !result->encoder->setTensorAddress(m_imageName.c_str(), images)
                 || !result->encoder->setTensorAddress(m_featureName.c_str(), result->features)
-                || !core->setTensorAddress(m_featureName.c_str(), result->features)) return {};
+                || !core->setTensorAddress(m_featureName.c_str(), result->features)
+                // The two images as 2x3xHxW are the first six NCHW input
+                // channels unchanged, so the view shares the input buffer.
+                || !core->setTensorAddress(kImageViewName, images)) return {};
+        // Both stages have fixed-shape profiles, so the engine sizes are exact.
+        const int64_t scratchBytes = std::max(m_encoder->getDeviceMemorySizeV2(), m_core->getDeviceMemorySizeV2());
+        if (scratchBytes < 0
+                || (scratchBytes && cudaMalloc(&result->scratch, static_cast<size_t>(scratchBytes)) != cudaSuccess)) return {};
+        result->scratchBytes = static_cast<size_t>(scratchBytes);
+        result->encoder->setDeviceMemoryV2(result->scratch, scratchBytes);
+        core->setDeviceMemoryV2(result->scratch, scratchBytes);
         return result;
     }
 
 private:
+    static constexpr const char* kImageViewName = "mpcvr_rife_image_view";
+
     nvinfer1::Dims4 ImageShape() const {
         return {1, 6, static_cast<int>(m_height), static_cast<int>(m_width)};
+    }
+    nvinfer1::Dims4 ImageViewShape() const {
+        return {2, 3, static_cast<int>(m_height), static_cast<int>(m_width)};
+    }
+    // The split graph still reshapes the two input images to 2x3xHxW for the
+    // first warp, a step the original graph shares with the removed encoder.
+    // TensorRT fuses that lone reshape into the first warp kernel, which
+    // corrupted the top rows of RIFE 4.25 Lite on SM75. Feed the view as an
+    // input instead: the warp then builds as it does in the original engine.
+    static bool ExposeImageView(nvinfer1::INetworkDefinition& network) {
+        nvinfer1::ITensor* view = nullptr;
+        for (int i = 0; i < network.getNbLayers() && !view; ++i) {
+            auto* layer = network.getLayer(i);
+            if (layer->getType() == nvinfer1::LayerType::kSHUFFLE && std::string_view(layer->getName()) == "/Reshape") {
+                view = layer->getOutput(0);
+            }
+        }
+        if (!view || view->getType() != nvinfer1::DataType::kHALF) return false;
+        const auto dims = view->getDimensions();
+        if (dims.nbDims != 4 || dims.d[0] != 2 || dims.d[1] != 3) return false;
+        auto* input = network.addInput(kImageViewName, nvinfer1::DataType::kHALF, nvinfer1::Dims4{2, 3, -1, -1});
+        if (!input) return false;
+        int consumers = 0;
+        for (int i = 0; i < network.getNbLayers(); ++i) {
+            auto* layer = network.getLayer(i);
+            for (int j = 0; j < layer->getNbInputs(); ++j) {
+                if (layer->getInput(j) == view) {
+                    layer->setInput(j, *input);
+                    ++consumers;
+                }
+            }
+        }
+        return consumers > 0;
     }
     bool BuildStage(const std::filesystem::path& path, const std::filesystem::path& cache,
         const std::string& key, bool encoder, TrtPtr<nvinfer1::ICudaEngine>& engine) {
@@ -120,13 +196,15 @@ private:
         TrtPtr<nvonnxparser::IParser> parser(nvonnxparser::createParser(*network, g_logger));
         TrtPtr<nvinfer1::IBuilderConfig> config(builder->createBuilderConfig());
         if (!parser || !config || !parser->parse(model.data(), model.size())
-                || network->getNbInputs() != (encoder ? 1 : 2) || network->getNbOutputs() != 1) return false;
+                || network->getNbInputs() != (encoder ? 1 : 2) || network->getNbOutputs() != 1
+                || (!encoder && !ExposeImageView(*network))) return false;
         auto* profile = builder->createOptimizationProfile();
         if (!profile) return false;
         for (int i = 0; i < network->getNbInputs(); ++i) {
             auto* input = network->getInput(i);
             nvinfer1::Dims dims;
             if (!encoder && input->getName() == m_featureName) dims = m_featureShape;
+            else if (!encoder && std::string_view(input->getName()) == kImageViewName) dims = ImageViewShape();
             else dims = nvinfer1::Dims4{1, encoder ? 6 : 11, static_cast<int>(m_height), static_cast<int>(m_width)};
             if (input->getType() != nvinfer1::DataType::kHALF || dims.nbDims != 4) return false;
             input->setAllowedFormats(1u << static_cast<uint32_t>(nvinfer1::TensorFormat::kLINEAR));

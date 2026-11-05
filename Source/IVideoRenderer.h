@@ -179,6 +179,13 @@ enum :int {
 	RIFE_MODEL_425_LITE = 4251,
 };
 
+// Models whose exports have a separate image encoder that can be reused for
+// every target time of one source pair (4.4 and 4.6 have none).
+constexpr inline bool RifeModelSupportsFeatureReuse(const int model) noexcept
+{
+	return model == RIFE_MODEL_415_LITE || model == RIFE_MODEL_425 || model == RIFE_MODEL_425_LITE;
+}
+
 constexpr inline int RIFE_GPU_Auto = -1;
 constexpr inline int RIFE_CUSTOM_FPS_DEF = 60;
 constexpr inline int RIFE_CUSTOM_FPS_MIN = 24;

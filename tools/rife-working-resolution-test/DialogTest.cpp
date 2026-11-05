@@ -37,7 +37,7 @@ int wmain(int argc, wchar_t** argv)
         SelectComboValue(dialog, IDC_RIFE_MODEL, model);
         EnableControls(dialog);
         assert(!!IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_FEATURE_REUSE))
-            == (model == RIFE_MODEL_415_LITE || model == RIFE_MODEL_425));
+            == (model == RIFE_MODEL_415_LITE || model == RIFE_MODEL_425 || model == RIFE_MODEL_425_LITE));
         Settings_t readback;
         assert(ReadControls(dialog, readback));
         assert(readback.bRifePreservePrecision && readback.bRifeFeatureReuse);
