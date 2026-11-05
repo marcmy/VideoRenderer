@@ -18,4 +18,13 @@ cl /nologo /std:c++20 /EHsc /W4 /WX MaxineSpatialPolicyTest.cpp /Fe:MaxineSpatia
 if errorlevel 1 exit /b %errorlevel%
 
 MaxineSpatialPolicyTest.exe
+if errorlevel 1 exit /b %errorlevel%
+
+set "FIXTURE=%~dp0..\..\_test-validation\maxine-spatial-policy"
+if not exist "%FIXTURE%" mkdir "%FIXTURE%"
+call py -3 prepare-path-test.py --output "%FIXTURE%\MaxineTargetTest.cpp"
+if errorlevel 1 exit /b %errorlevel%
+cl /nologo /std:c++20 /EHsc /W4 /WX /D_WIN64 "%FIXTURE%\MaxineTargetTest.cpp" /Fo:"%FIXTURE%\MaxineTargetTest.obj" /Fe:"%FIXTURE%\MaxineTargetTest.exe"
+if errorlevel 1 exit /b %errorlevel%
+"%FIXTURE%\MaxineTargetTest.exe"
 exit /b %errorlevel%

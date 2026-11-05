@@ -4048,11 +4048,14 @@ bool CDX11VideoProcessor::GetMaxineVSRTargetSizeForInput(const CRect& dstRect, c
 			return false;
 		}
 
-		// The stored texture can be landscape while anamorphic presentation is
-		// portrait. Resolve the output class in display-aspect space on both the
-		// source and RIFE paths, then return to the raw texture's orientation.
+		// RIFE input already has the selected presentation geometry. Match its
+		// enhancement to the fitted video rectangle; applying the portrait source
+		// class rule here would upscale a display-sized image only to shrink it
+		// again. Raw source playback retains its existing resolution-class rule.
 		const CSize presentationSource = sourceAlreadyOriented ? sourceSize : GetRifeSourceContentSize();
-		MaxineSpatialSize baseTarget = ResolveMaxineMatchOutputBaseSize(
+		MaxineSpatialSize baseTarget = sourceAlreadyOriented
+			? MaxineSpatialSize{ static_cast<uint32_t>(dstWidth), static_cast<uint32_t>(dstHeight) }
+			: ResolveMaxineMatchOutputBaseSize(
 			{ static_cast<uint32_t>(std::max<LONG>(0, presentationSource.cx)),
 			  static_cast<uint32_t>(std::max<LONG>(0, presentationSource.cy)) },
 			{ static_cast<uint32_t>(dstWidth), static_cast<uint32_t>(dstHeight) },
