@@ -7,6 +7,7 @@
 #include "EngineCacheFile.h"
 #include "EngineProfile.h"
 #include "RuntimeCreation.h"
+#include "RifeWarpPlugin.h"
 
 #include <NvInfer.h>
 #include <NvInferRuntime.h>

@@ -94,7 +94,18 @@ public:
         const size_t volume = Volume(m_featureShape);
         if (!volume || volume > (size_t{1} << 29)) return false;
         m_featureBytes = volume * sizeof(uint16_t);
-        if (!BuildStage(synthesisPath, cache, cacheKey + suffix + "_synthesis", false, m_core)) return false;
+        // Only the measured SM75/4.25 Lite path uses the fused warp. Keep the
+        // native feature engine as a fallback, with its original cache identity.
+        int device = 0;
+        cudaDeviceProp props{};
+        const bool useWarp = modelHash == "15e6177e5469924c1b3a70d360d0d807bd87f0a2be4c94188184b47f886a0563"
+            && cudaGetDevice(&device) == cudaSuccess && cudaGetDeviceProperties(&props, device) == cudaSuccess
+            && props.major == 7 && props.minor == 5 && RegisterRifeWarpPlugin();
+        // Keep this suffix no longer than the native suffix: the atomic writer
+        // also appends a unique temporary filename, subject to MAX_PATH.
+        const bool warpBuilt = useWarp
+            && BuildStage(synthesisPath, cache, cacheKey + suffix + "_synth_w1", false, m_core, true);
+        if (!warpBuilt && !BuildStage(synthesisPath, cache, cacheKey + suffix + "_synthesis", false, m_core)) return false;
         if (m_core->getNbIOTensors() != 4) return false;
         for (const char* name : {m_featureName.c_str(), kImageViewName}) {
             if (m_core->getTensorIOMode(name) != nvinfer1::TensorIOMode::kINPUT
@@ -174,7 +185,7 @@ private:
         return consumers > 0;
     }
     bool BuildStage(const std::filesystem::path& path, const std::filesystem::path& cache,
-        const std::string& key, bool encoder, TrtPtr<nvinfer1::ICudaEngine>& engine) {
+        const std::string& key, bool encoder, TrtPtr<nvinfer1::ICudaEngine>& engine, bool fuseWarp = false) {
         const auto model = ReadFile(path);
         if (model.empty()) return false;
         const auto hash = Sha256Hex(model);
@@ -197,7 +208,8 @@ private:
         TrtPtr<nvinfer1::IBuilderConfig> config(builder->createBuilderConfig());
         if (!parser || !config || !parser->parse(model.data(), model.size())
                 || network->getNbInputs() != (encoder ? 1 : 2) || network->getNbOutputs() != 1
-                || (!encoder && !ExposeImageView(*network))) return false;
+                || (!encoder && !ExposeImageView(*network))
+                || (fuseWarp && !FuseRifeSynthesisWarps(*network))) return false;
         auto* profile = builder->createOptimizationProfile();
         if (!profile) return false;
         for (int i = 0; i < network->getNbInputs(); ++i) {

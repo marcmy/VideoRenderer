@@ -61,6 +61,7 @@ endif()
 add_library(MPCVRRifeRuntime64 SHARED
     RifeTensorRTRuntime.cpp
     RifeKernels.cu
+    RifeWarpPlugin.cu
 )
 
 target_include_directories(MPCVRRifeRuntime64 PRIVATE
@@ -77,6 +78,8 @@ target_compile_options(MPCVRRifeRuntime64 PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:/W4 /permissive->
     $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/W4>
 )
+# Match the ONNX FP16 operation boundaries in the fused warp kernel.
+set_source_files_properties(RifeWarpPlugin.cu PROPERTIES COMPILE_OPTIONS "--fmad=false")
 
 set(MPCVR_CUDA_ARCHITECTURES "75-real;86-real;89-real;120" CACHE STRING "CUDA architectures for the runtime")
 set_target_properties(MPCVRRifeRuntime64 PROPERTIES
@@ -96,11 +99,16 @@ target_link_libraries(MPCVRRifeRuntime64 PRIVATE
 
 message(STATUS "CUDA toolkit: ${CUDAToolkit_VERSION}")
 
-option(MPCVR_RIFE_BUILD_TESTS "Build the offline CUDA/D3D precision and feature-reuse test" OFF)
+option(MPCVR_RIFE_BUILD_TESTS "Build the offline CUDA/D3D precision, feature-reuse and fused-warp tests" OFF)
 if(MPCVR_RIFE_BUILD_TESTS)
     add_executable(RifePrecisionGpuTest ../rife-precision-test/GpuTest.cpp RifeKernels.cu)
     target_include_directories(RifePrecisionGpuTest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../Source")
     target_compile_definitions(RifePrecisionGpuTest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
     set_target_properties(RifePrecisionGpuTest PROPERTIES CUDA_ARCHITECTURES "${MPCVR_CUDA_ARCHITECTURES}")
     target_link_libraries(RifePrecisionGpuTest PRIVATE CUDA::cudart d3d11 dxgi)
+    add_executable(RifeWarpGpuTest ../rife-warp-test/WarpGpuTest.cpp RifeWarpPlugin.cu)
+    target_include_directories(RifeWarpGpuTest PRIVATE "${TENSORRT_INCLUDE_DIR}")
+    target_compile_definitions(RifeWarpGpuTest PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    set_target_properties(RifeWarpGpuTest PROPERTIES CUDA_ARCHITECTURES "${MPCVR_CUDA_ARCHITECTURES}")
+    target_link_libraries(RifeWarpGpuTest PRIVATE CUDA::cudart "${TENSORRT_NVINFER}")
 endif()
