@@ -66,7 +66,9 @@ constexpr RifeSpatialSize ResolveRifeContentSize(
 }
 
 // Fit the complete oriented picture, never growing it or including model
-// padding. Integer rounding keeps both dimensions inside the requested box.
+// padding. Round to the nearest pixel, matching the fitted presentation size;
+// truncation turns a 607.5-pixel portrait width into 607 instead of 608 and
+// needlessly enables a one-pixel VSR upscale. Both axes stay inside the box.
 constexpr RifeSpatialSize FitRifeContentSize(
 	const RifeSpatialSize source, const RifeSpatialSize bounds) noexcept
 {
@@ -84,7 +86,8 @@ constexpr RifeSpatialSize FitRifeContentSize(
 		denominator = source.height;
 	}
 	const auto scale = [&](uint32_t value) {
-		const auto result = static_cast<uint32_t>(static_cast<uint64_t>(value) * numerator / denominator);
+		const auto result = static_cast<uint32_t>(
+			(static_cast<uint64_t>(value) * numerator + denominator / 2u) / denominator);
 		return result ? result : 1u;
 	};
 	return {scale(source.width), scale(source.height)};

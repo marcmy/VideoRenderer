@@ -143,8 +143,11 @@ int main() {
             require(target==CSize{(608*oversample+50)/100,(1080*oversample+50)/100},
                 "Portrait RIFE target exceeds fitted output and explicit oversampling"); ++cases;
             if (oversample==100) {
+                const auto working=ResolveRifeWorkingSize({1080,1920},{608,1080},
+                    RIFE_RESOLUTION_Display,720);
+                require(working==RifeSpatialSize{608,1080}, "Display-fit RIFE geometry truncates a half pixel");
                 require(!renderer.GetMaxineVSRTargetSizeForInput({608,1080},
-                    {608,1080},true,target,up) && !up,
+                    {static_cast<int>(working.width),static_cast<int>(working.height)},true,target,up) && !up,
                     "Equal-size RIFE output must bypass VSR when cleanup is off"); ++cases;
                 renderer.m_iMaxineDenoise=MAXINE_FILTER_Low;
                 require(renderer.GetMaxineVSRTargetSizeForInput({608,1080},
