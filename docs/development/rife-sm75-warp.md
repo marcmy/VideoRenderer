@@ -161,11 +161,13 @@ measurements or sustained rates.
 Synthesis scratch fell from 271 to 168 MiB, but the encoder's 270 MiB scratch shares that
 allocation and sets its size, so runtime VRAM reads about the same.
 
-Against the whole-model engine, values differing by more than 32/255 were 0.0209%
-against 0.0200% before on the mandel clip, and 0.0507% against 0.0547% on the pan clip.
-They sit on hard detail, with a local gradient near 30 against 1.5 overall. Against ONNX
-Runtime at timesteps 0.25, 0.5 and 0.75 on a real input, the new engine's rate was
-0.0135%, 0.0263% and 0.0187%, against native TensorRT's 0.0131%, 0.0265% and 0.0161%.
+Against the whole-model engine, the distributed builds' values differing by more than
+32/255 were 0.0250% against 0.0193% before on the mandel clip, and 0.0426% against
+0.0474% on the pan clip. Locally compiled, the same comparison read 0.0209% against
+0.0200% and 0.0507% against 0.0547%, so these move in both directions between clips and
+builds. They sit on hard detail, with a local gradient near 30 against 1.5 overall.
+Against ONNX Runtime at timesteps 0.25, 0.5 and 0.75 on a real input, a local build's rate
+was 0.0135%, 0.0263% and 0.0187%, against native TensorRT's 0.0131%, 0.0265% and 0.0161%.
 
 The largest cost left outside block 4 is the encoder, about 2.8 ms per pair. Each pair
 encodes both images, although the first was the previous pair's second. Reusing those
