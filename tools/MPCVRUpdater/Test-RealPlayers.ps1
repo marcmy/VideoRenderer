@@ -97,7 +97,11 @@ function Get-LoadedRenderer([string]$Executable, [string]$Clip, [int]$TimeoutSec
             }
             catch { }
         }
-        throw "$Executable did not load MPC Video Renderer within $TimeoutSeconds seconds."
+        $process.Refresh()
+        $modules = @($process.Modules | ForEach-Object { $_.ModuleName } | Where-Object { $_ -match '^(evr|quartz|d3d9|d3d11|mpc|LAV)' }) -join ', '
+        $renderer = (Get-ItemProperty -Path 'HKCU:\Software\MPC-HC\MPC-HC\Settings' -Name 'DSVidRen' -ErrorAction SilentlyContinue).DSVidRen
+        $ini = @(Get-ChildItem -LiteralPath ([IO.Path]::GetDirectoryName($Executable)) -Filter '*.ini' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) -join ', '
+        throw "$Executable did not load MPC Video Renderer within $TimeoutSeconds seconds. Window: '$($process.MainWindowTitle)'. DSVidRen: $renderer. INI: '$ini'. Modules: $modules"
     }
     finally {
         Stop-Players
@@ -202,6 +206,8 @@ Check ((Sha $beLoaded) -eq $customX64) 'MPC-BE loaded a renderer that is not thi
 
 & $registration.Register 'x64' $stock
 foreach ($target in @($targets | Where-Object { $_.Architecture -eq 'x64' -and $_.LoadMode -eq 'PlayerFolder' })) {
+    # A player that was killed may have rewritten or skipped settings, so set the renderer each time.
+    New-ItemProperty -Path $settings -Name 'DSVidRen' -PropertyType DWord -Value 14 -Force | Out-Null
     $loaded = Get-LoadedRenderer $target.Executable $clip
     Write-Host "$($target.Player) loaded: $loaded"
     Check ($loaded -ieq $target.Destination) "$($target.Player) loaded $loaded instead of $($target.Destination)"
