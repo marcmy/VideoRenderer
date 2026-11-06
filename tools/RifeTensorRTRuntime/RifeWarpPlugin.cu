@@ -10,21 +10,14 @@
 namespace mpcvr_rife_warp {
 using namespace nvinfer1;
 constexpr char kName[] = "MpcvrRifeWarpConcat";
-constexpr char kVersion[] = "1";
+constexpr char kVersion[] = "2";
 constexpr char kNamespace[] = "mpcvr";
 
-// Fuse four graph operations: normalized flow coordinates, bilinear border
-// warp, batch-to-channel reshape and concatenation of the next block's input.
-// Inputs are raw NCHW [1,11,H,W], encoded images [2,4,H,W], flow [1,4,H,W],
-// recurrent state [1,9,H,W] and next-block flow [1,4,H,W]. Output is [1,28,H,W].
-// Keeping both FP16 coordinate-rounding boundaries matters at large widths.
-__global__ void WarpConcat(const __half* raw, const __half* features, const __half* flow,
-    const __half* state, const __half* tail, __half* output, int height, int width)
+// Add one output pixel's bilinear border samples to sum. Keeping both FP16
+// coordinate-rounding boundaries matters at large widths.
+__device__ __forceinline__ void AddWarpedPixel(const __half* raw, const __half* features, const __half* flow,
+    int batch, int x, int y, int height, int width, float* sum)
 {
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    if (x >= width) return;
-    const int y = blockIdx.y;
-    const int batch = blockIdx.z;
     const size_t plane = size_t(height) * width;
     const size_t pixel = size_t(y) * width + x;
     const float gx = __half2float(__hadd(raw[7 * plane + pixel],
@@ -40,28 +33,92 @@ __global__ void WarpConcat(const __half* raw, const __half* features, const __ha
     for (int channel = 0; channel < 7; ++channel) {
         const __half* source = channel < 3 ? raw + (batch * 3 + channel) * plane
             : features + (batch * 4 + channel - 3) * plane;
-        const float value = a * __half2float(source[size_t(y0) * width + x0])
+        sum[channel] += a * __half2float(source[size_t(y0) * width + x0])
             + b * __half2float(source[size_t(y0) * width + x1])
             + c * __half2float(source[size_t(y1) * width + x0])
             + d * __half2float(source[size_t(y1) * width + x1]);
-        output[(batch * 7 + channel) * plane + pixel] = __float2half_rn(value);
-    }
-    // Split the unwarped tail across the same two batches to keep both busy.
-#pragma unroll
-    for (int channel = 0; channel < 7; ++channel) {
-        const int index = batch * 7 + channel;
-        output[(14 + index) * plane + pixel] = index == 0 ? raw[6 * plane + pixel]
-            : index < 10 ? state[(index - 1) * plane + pixel] : tail[(index - 10) * plane + pixel];
     }
 }
 
-bool ValidInputs(PluginTensorDesc const* input, int32_t count) noexcept
+// Unwarped tail: timestep plane, recurrent state and next-block flow. Each of
+// the two batches writes seven of these 14 channels, to keep both busy.
+__device__ __forceinline__ __half TailValue(const __half* raw, const __half* state, const __half* tail,
+    int index, size_t plane, size_t pixel)
+{
+    return index == 0 ? raw[6 * plane + pixel]
+        : index < 10 ? state[(index - 1) * plane + pixel] : tail[(index - 10) * plane + pixel];
+}
+
+// Fuse four graph operations: normalized flow coordinates, bilinear border
+// warp, batch-to-channel reshape and concatenation of the next block's input.
+// Inputs are raw NCHW [1,11,H,W], encoded images [2,4,H,W], flow [1,4,H,W],
+// recurrent state [1,9,H,W] and next-block flow [1,4,H,W]. Output is [1,28,H,W].
+__global__ void WarpConcat(const __half* raw, const __half* features, const __half* flow,
+    const __half* state, const __half* tail, __half* output, int height, int width)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    if (x >= width) return;
+    const int y = blockIdx.y;
+    const int batch = blockIdx.z;
+    const size_t plane = size_t(height) * width;
+    const size_t pixel = size_t(y) * width + x;
+    float warped[7] = {};
+    AddWarpedPixel(raw, features, flow, batch, x, y, height, width, warped);
+#pragma unroll
+    for (int channel = 0; channel < 7; ++channel) {
+        output[(batch * 7 + channel) * plane + pixel] = __float2half_rn(warped[channel]);
+        const int index = batch * 7 + channel;
+        output[(14 + index) * plane + pixel] = TailValue(raw, state, tail, index, plane, pixel);
+    }
+}
+
+// The same operations, followed by the next block's half_pixel linear Resize at
+// exactly 1/scale. Each output sample is the mean of the four input pixels around
+// its centre, so only those need warping: 1/64 of the full image at scale 16.
+// The one FP16 rounding per output replaces one per warp plus one per resize.
+__global__ void WarpConcatDown(const __half* raw, const __half* features, const __half* flow,
+    const __half* state, const __half* tail, __half* output, int height, int width, int scale)
+{
+    const int outputWidth = width / scale;
+    const int outputX = blockIdx.x * blockDim.x + threadIdx.x;
+    if (outputX >= outputWidth) return;
+    const int outputY = blockIdx.y;
+    const int batch = blockIdx.z;
+    const size_t plane = size_t(height) * width;
+    const size_t outputPlane = size_t(height / scale) * outputWidth;
+    const size_t outputPixel = size_t(outputY) * outputWidth + outputX;
+    const int left = outputX * scale + scale / 2 - 1, top = outputY * scale + scale / 2 - 1;
+    float warped[7] = {}, rest[7] = {};
+#pragma unroll
+    for (int offset = 0; offset < 4; ++offset) {
+        const int x = left + (offset & 1), y = top + (offset >> 1);
+        AddWarpedPixel(raw, features, flow, batch, x, y, height, width, warped);
+        const size_t pixel = size_t(y) * width + x;
+#pragma unroll
+        for (int channel = 0; channel < 7; ++channel) {
+            rest[channel] += __half2float(TailValue(raw, state, tail, batch * 7 + channel, plane, pixel));
+        }
+    }
+#pragma unroll
+    for (int channel = 0; channel < 7; ++channel) {
+        output[(batch * 7 + channel) * outputPlane + outputPixel] = __float2half_rn(warped[channel] * 0.25f);
+        output[(14 + batch * 7 + channel) * outputPlane + outputPixel] = __float2half_rn(rest[channel] * 0.25f);
+    }
+}
+
+constexpr bool ValidScale(int32_t scale) noexcept
+{
+    return scale == 1 || scale == 4 || scale == 8 || scale == 16;
+}
+
+bool ValidInputs(PluginTensorDesc const* input, int32_t count, int32_t scale) noexcept
 {
     if (!input || count != 5) return false;
     constexpr int batches[]{1, 2, 1, 1, 1}, channels[]{11, 4, 4, 9, 4};
     const auto& shape = input[0].dims;
     if (shape.nbDims != 4 || shape.d[2] < 1 || shape.d[2] > 16384
-            || shape.d[3] < 1 || shape.d[3] > 16384) return false;
+            || shape.d[3] < 1 || shape.d[3] > 16384
+            || shape.d[2] % scale != 0 || shape.d[3] % scale != 0) return false;
     for (int i = 0; i < count; ++i) {
         const auto& desc = input[i];
         if (desc.type != DataType::kHALF || desc.format != TensorFormat::kLINEAR
@@ -74,6 +131,7 @@ bool ValidInputs(PluginTensorDesc const* input, int32_t count) noexcept
 class WarpPlugin final : public IPluginV3, public IPluginV3OneCore,
     public IPluginV3OneBuild, public IPluginV3OneRuntime {
 public:
+    explicit WarpPlugin(int32_t scale) noexcept : m_scale(scale) {}
     IPluginCapability* getCapabilityInterface(PluginCapabilityType type) noexcept override {
         switch (type) {
         case PluginCapabilityType::kCORE: return static_cast<IPluginV3OneCore*>(this);
@@ -82,7 +140,7 @@ public:
         default: return nullptr;
         }
     }
-    IPluginV3* clone() noexcept override { return new (std::nothrow) WarpPlugin; }
+    IPluginV3* clone() noexcept override { return new (std::nothrow) WarpPlugin(m_scale); }
     char const* getPluginName() const noexcept override { return kName; }
     char const* getPluginVersion() const noexcept override { return kVersion; }
     char const* getPluginNamespace() const noexcept override { return kNamespace; }
@@ -103,6 +161,11 @@ public:
         if (inputs != 5 || outputs != 1 || shapeInputs || input[0].nbDims != 4) return -1;
         output[0] = input[0];
         output[0].d[1] = builder.constant(28);
+        if (m_scale > 1) {
+            auto const* scale = builder.constant(m_scale);
+            output[0].d[2] = builder.operation(DimensionOperation::kFLOOR_DIV, *input[0].d[2], *scale);
+            output[0].d[3] = builder.operation(DimensionOperation::kFLOOR_DIV, *input[0].d[3], *scale);
+        }
         return 0;
     }
     bool supportsFormatCombination(int32_t position, DynamicPluginTensorDesc const* io,
@@ -112,41 +175,63 @@ public:
     }
     int32_t onShapeChange(PluginTensorDesc const* input, int32_t inputs,
         PluginTensorDesc const* output, int32_t outputs) noexcept override {
-        if (!ValidInputs(input, inputs) || outputs != 1) return -1;
+        if (!ValidInputs(input, inputs, m_scale) || outputs != 1) return -1;
         const auto& shape = output[0].dims;
         return output[0].type == DataType::kHALF && output[0].format == TensorFormat::kLINEAR
             && shape.nbDims == 4 && shape.d[0] == 1 && shape.d[1] == 28
-            && shape.d[2] == input[0].dims.d[2] && shape.d[3] == input[0].dims.d[3] ? 0 : -1;
+            && shape.d[2] == input[0].dims.d[2] / m_scale && shape.d[3] == input[0].dims.d[3] / m_scale ? 0 : -1;
     }
     int32_t enqueue(PluginTensorDesc const* desc, PluginTensorDesc const*, void const* const* input,
         void* const* output, void*, cudaStream_t stream) noexcept override {
         const int height = static_cast<int>(desc[0].dims.d[2]), width = static_cast<int>(desc[0].dims.d[3]);
-        WarpConcat<<<dim3((unsigned(width) + 127) / 128, unsigned(height), 2), 128, 0, stream>>>(
-            static_cast<const __half*>(input[0]), static_cast<const __half*>(input[1]),
-            static_cast<const __half*>(input[2]), static_cast<const __half*>(input[3]),
-            static_cast<const __half*>(input[4]), static_cast<__half*>(output[0]), height, width);
+        const auto* raw = static_cast<const __half*>(input[0]);
+        const auto* features = static_cast<const __half*>(input[1]);
+        const auto* flow = static_cast<const __half*>(input[2]);
+        const auto* state = static_cast<const __half*>(input[3]);
+        const auto* tail = static_cast<const __half*>(input[4]);
+        auto* result = static_cast<__half*>(output[0]);
+        const unsigned columns = (unsigned(width / m_scale) + 127) / 128, rows = unsigned(height / m_scale);
+        if (m_scale == 1) {
+            WarpConcat<<<dim3(columns, rows, 2), 128, 0, stream>>>(raw, features, flow, state, tail, result, height, width);
+        } else {
+            WarpConcatDown<<<dim3(columns, rows, 2), 128, 0, stream>>>(raw, features, flow, state, tail, result, height, width, m_scale);
+        }
         return cudaPeekAtLastError() == cudaSuccess ? 0 : -1;
     }
     IPluginV3* attachToContext(IPluginResourceContext*) noexcept override { return clone(); }
-    PluginFieldCollection const* getFieldsToSerialize() noexcept override {
-        static PluginFieldCollection const fields{0, nullptr};
-        return &fields;
-    }
+    PluginFieldCollection const* getFieldsToSerialize() noexcept override { return &m_fields; }
+private:
+    int32_t m_scale;
+    PluginField m_field{"scale", &m_scale, PluginFieldType::kINT32, 1};
+    PluginFieldCollection m_fields{1, &m_field};
 };
 
 class WarpCreator final : public IPluginCreatorV3One {
 public:
-    IPluginV3* createPlugin(char const*, PluginFieldCollection const*, TensorRTPhase) noexcept override {
-        return new (std::nothrow) WarpPlugin;
+    IPluginV3* createPlugin(char const*, PluginFieldCollection const* fields, TensorRTPhase) noexcept override {
+        if (!fields || fields->nbFields != 1 || std::string_view(fields->fields[0].name) != "scale"
+                || fields->fields[0].type != PluginFieldType::kINT32 || fields->fields[0].length != 1) return nullptr;
+        const int32_t scale = *static_cast<const int32_t*>(fields->fields[0].data);
+        return ValidScale(scale) ? new (std::nothrow) WarpPlugin(scale) : nullptr;
     }
     PluginFieldCollection const* getFieldNames() noexcept override {
-        static PluginFieldCollection const fields{0, nullptr};
+        static PluginField const field{"scale", nullptr, PluginFieldType::kINT32, 1};
+        static PluginFieldCollection const fields{1, &field};
         return &fields;
     }
     char const* getPluginName() const noexcept override { return kName; }
     char const* getPluginVersion() const noexcept override { return kVersion; }
     char const* getPluginNamespace() const noexcept override { return kNamespace; }
 };
+
+ILayer* FindLayer(INetworkDefinition& network, std::string_view name) noexcept
+{
+    for (int i = 0; i < network.getNbLayers(); ++i) {
+        auto* layer = network.getLayer(i);
+        if (std::string_view(layer->getName()) == name) return layer;
+    }
+    return nullptr;
+}
 
 ITensor* FindTensor(INetworkDefinition& network, std::string_view name) noexcept
 {
@@ -185,36 +270,50 @@ bool FuseRifeSynthesisWarps(nvinfer1::INetworkDefinition& network) noexcept
 {
     using namespace mpcvr_rife_warp;
     // Exact export names are safe only behind the model hash gate in
-    // FeatureReuseEngine. Check the complete match before rewriting anything.
+    // FeatureReuseEngine, whose padded sizes are multiples of 32 and so divide
+    // by every scale here. Check the complete match before rewriting anything.
     constexpr std::array<const char*, 4> concatNames{"/Concat_2", "/Concat_3", "/Concat_4", "/Concat_5"};
     constexpr std::array<const char*, 4> flowNames{
         "/block0/Mul_output_0", "/Add_1_output_0", "/Add_3_output_0", "/Add_5_output_0"};
     constexpr std::array<const char*, 4> pluginNames{
         "mpcvr_rife_warp0", "mpcvr_rife_warp1", "mpcvr_rife_warp2", "mpcvr_rife_warp3"};
+    // The next block's downscale, folded into the warp. The last stage has none.
+    constexpr std::array<const char*, 4> resizeNames{"/block1/Resize", "/block2/Resize", "/block3/Resize", nullptr};
+    constexpr std::array<int32_t, 4> scales{16, 8, 4, 1};
     auto* raw = FindTensor(network, "input");
     auto* features = FindTensor(network, "/encode/cnn3/ConvTranspose_output_0");
     if (!raw || !features) return false;
-    struct Match { ILayer* concat = nullptr; ITensor* flow = nullptr; };
+    struct Match { ILayer* concat = nullptr; ILayer* resize = nullptr; ITensor* flow = nullptr; };
     std::array<Match, 4> matches{};
-    for (size_t i = 0; i < matches.size(); ++i) {
-        matches[i].flow = FindTensor(network, flowNames[i]);
+    const auto consumers = [&network](const ITensor* tensor) noexcept {
+        int count = 0;
         for (int j = 0; j < network.getNbLayers(); ++j) {
             auto* layer = network.getLayer(j);
-            if (std::string_view(layer->getName()) == concatNames[i]) matches[i].concat = layer;
+            for (int k = 0; k < layer->getNbInputs(); ++k) count += layer->getInput(k) == tensor;
         }
-        const auto* concat = matches[i].concat;
-        if (!matches[i].flow || !concat || concat->getType() != LayerType::kCONCATENATION
-                || concat->getNbInputs() != 4 || concat->getNbOutputs() != 1) return false;
+        return count;
+    };
+    for (size_t i = 0; i < matches.size(); ++i) {
+        auto& match = matches[i];
+        match.flow = FindTensor(network, flowNames[i]);
+        match.concat = FindLayer(network, concatNames[i]);
+        if (!match.flow || !match.concat || match.concat->getType() != LayerType::kCONCATENATION
+                || match.concat->getNbInputs() != 4 || match.concat->getNbOutputs() != 1) return false;
+        if (!resizeNames[i]) continue;
+        match.resize = FindLayer(network, resizeNames[i]);
+        if (!match.resize || match.resize->getType() != LayerType::kRESIZE || match.resize->getNbOutputs() != 1
+                || match.resize->getInput(0) != match.concat->getOutput(0)
+                || consumers(match.concat->getOutput(0)) != 1) return false;
     }
     for (size_t i = 0; i < matches.size(); ++i) {
         auto* concat = matches[i].concat;
         ITensor* input[]{raw, features, matches[i].flow, concat->getInput(2), concat->getInput(3)};
-        WarpPlugin plugin;
+        WarpPlugin plugin(scales[i]);
         auto* fused = network.addPluginV3(input, 5, nullptr, 0, plugin);
         if (!fused) return false;
         // addPluginV3 clones the plugin; the network owns that clone.
         fused->setName(pluginNames[i]);
-        auto* old = concat->getOutput(0);
+        auto* old = (matches[i].resize ? matches[i].resize : concat)->getOutput(0);
         for (int j = 0; j < network.getNbLayers(); ++j) {
             auto* layer = network.getLayer(j);
             for (int k = 0; k < layer->getNbInputs(); ++k) {

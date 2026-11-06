@@ -12,8 +12,8 @@ hash in `FeatureReuseEngine.h`. It requires Feature reuse. Other models, GPU
 architectures and the ordinary dynamic engine keep their existing paths. A failed
 fused build falls back to the native feature engine. ABI 2 is unchanged.
 
-The `_synth_w1` cache suffix distinguishes plugin plans from native plans, without
-lengthening their filenames. Registration precedes deserialization and is removed
+The `_synth_w2` cache suffix distinguishes plugin plans from native plans and from
+the first plugin version's `_synth_w1`, without lengthening their filenames. Registration precedes deserialization and is removed
 when the runtime DLL unloads. Existing caches are retained. The image encoder's
 plan is reused; the new synthesis plan needs one initial build at each feature
 engine size, as the existing feature-reuse path already does.
@@ -46,6 +46,49 @@ During 2x playback there is only one synthesized output per source pair; inferen
 shorter than the source interval need not overlap another call. An overlap of
 1.00 alone is not evidence of a synchronization defect.
 
+## Folding the next block's downscale into the warp, 2026-11-06
+
+Three refinement stages built a full-resolution 28-channel image only to shrink it
+at once to 1/16, 1/8 and 1/4 size. A `half_pixel` linear Resize at exactly 1/scale
+makes each output the mean of the four input pixels around its centre, so the
+plugin now warps just those: 1/64, 1/16 and 1/4 of the image. The last stage has no
+downscale and keeps the full-resolution kernel. ONNX Runtime confirmed the formula
+on real model tensors to within one FP16 rounding step at all three scales.
+
+Plugin version 2 serializes its scale, and plans use the `_synth_w2` suffix. Sizes
+that are not a multiple of the scale are rejected; feature-engine sizes are always
+multiples of 32. Rounding happens once per output instead of once per warp plus
+once per resize, so downscaled warps can differ from the graph by one FP16 step.
+
+The desktop GPU carried a steady unrelated load of about 51% during this comparison,
+so averages were unusable: the unchanged reuse-off baseline read 22-41 ms. Per-call
+minimums separate cleanly, because outside work only ever slows a call. This table
+gives the median across eight alternating runs on two synthetic 1920x1152 clips,
+each run reporting its minimum over 59 repetitions, built with the same compiler.
+The two-target mean is the workload of 30-to-90 FPS playback.
+
+| Runtime with feature reuse | First target, ms | Reused target, ms | Mean of two targets, ms | Runtime VRAM, MiB |
+| --- | ---: | ---: | ---: | ---: |
+| Fused warp | 17.17 | 13.37 | 15.27 | 1122 |
+| Fused warp and downscale | 14.75 | 10.87 | 12.81 | 1090 |
+
+That is about 16% less TensorRT time, or 19% more inference capacity. These are
+best-case isolated figures, not playback measurements or sustained rates.
+
+Comparing visible RGB output with the whole-model engine, after the change versus
+before: mandel clip mean 0.047 versus 0.043 of 255, pan clip 0.118 for both. Pixels
+differing by more than 32/255 were 0.057% versus 0.051% and 0.120% versus 0.117%.
+They sit on hard detail, with a local gradient near 30 against 1.5 overall, and not
+along picture edges. Any two plans differ this much, including the previous fused
+engine against the new one, so these differences are not specific to this change.
+
+The flow, state and tail inputs of the three downscaled stages are still upsampled
+to full resolution by TensorRT and then mostly discarded. Those stages' `Resize_1`,
+`Split` and flow arithmetic are the next candidates. They feed each other, so
+keeping them at low resolution needs its own numerical check.
+
+## Scheduler
+
 The adaptive scheduler's delivery checks and recovery headroom were preserved.
 Changing its estimates would not reduce GPU work. Recovery that accounts for
 different fresh/reused costs needs separate, fresh timing evidence and playback
@@ -54,11 +97,13 @@ validation before changing policy.
 ## Correctness and limits
 
 `RifeWarpGpuTest` tests the production plugin against an independent CPU sampler
-at 1x1, 128x128, 257x129, 640x1152 and 1920x1152. It checks dynamic profiles,
-serialization/deserialization, finite results and exact copying of all unwarped
-channels. The measured maximum difference was zero in the native test. The graph's
-two explicit FP16 coordinate rounding steps are retained; contraction is disabled
-for this CUDA translation unit.
+at 1x1, 128x128, 257x129, 640x1152 and 1920x1152, and for each downscale at one
+output pixel, 128x128, 640x1152, 1920x1152 and 1792x1024. It checks dynamic
+profiles, serialization/deserialization, finite results, rejected scales and sizes,
+and all unwarped channels. At scale 1 the maximum difference was zero. Downscaled
+warps stayed within one FP16 step (0.000488) and their tail channels matched
+exactly. The graph's two explicit FP16 coordinate rounding steps are retained;
+contraction is disabled for this CUDA translation unit.
 
 `RifePrecisionGpuTest` passed with all three feature models, BGRA8/16F output,
 pair invalidation, repeated reuse and independent contexts. Whole-model versus
