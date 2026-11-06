@@ -233,13 +233,13 @@ stages 3 and 4 run at the content height rounded up to 64. Rows of the coarse le
 height read the last source row, which is black at 1080p. A height already a multiple of 128
 is unaffected, so 4K's 2176 gains nothing, and 720p's 768 is already its content rounded up.
 
-Local build against the distributed previous runtime, per-run minimums over two alternating
-rounds on both clips:
+Distributed runtimes, built by the pinned toolchain. Median of per-run minimums across
+four alternating runs on the two clips:
 
 | Runtime with feature reuse | First target, ms | Reused target, ms | Runtime VRAM, MiB |
 | --- | ---: | ---: | ---: |
-| Keeping the shared frame | 6.14-6.50 | 4.36-4.64 | 754 |
-| This change | 5.56-5.80 | 3.62-3.66 | 830 |
+| Keeping the shared frame | 6.35 | 4.53 | 754 |
+| This change | 5.79 | 3.78 | 822 |
 
 The extra VRAM is the warp source. Builder optimization level 5 and all three tiling levels
 were also tried on this graph and gained nothing, so the defaults stay.
@@ -253,7 +253,7 @@ padding, on the harness's first target:
 | Keeping the shared frame | 0.229, 0.594%, 0.094% | 0.326, 0.864%, 0.132% |
 | FP32 kernels at the padded height | 0.023, 0.038%, 0.009% | 0.071, 0.120%, 0.021% |
 | FP32 kernels at the content height everywhere | 0.170, 0.298%, 0.129% | 0.403, 0.720%, 0.249% |
-| FP32 kernels, only the fine block short | 0.075, 0.146%, 0.052% | 0.188, 0.354%, 0.094% |
+| FP32 kernels, only the fine block short | 0.075, 0.143%, 0.051% | 0.185, 0.344%, 0.094% |
 
 Against true in-between frames, PSNR in dB on six four-frame clips where the runtime is given
 frames 0 and 3: four 1/f-textured moving scenes, `testsrc2` and a fractal zoom.
