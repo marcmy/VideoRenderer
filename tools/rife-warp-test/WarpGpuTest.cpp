@@ -30,11 +30,11 @@ struct DeviceBuffer {
 };
 
 constexpr int levelScales[]{32, 16, 8, 4};
-constexpr int kFullStage = 3, kTailStage = 4, kAnchorStage = 5, kLevelStage = 6, kFieldStage = 7;
-bool Finishing(int stage) { return stage == kTailStage || stage == kFieldStage; }
+constexpr int kFullStage = 3, kAnchorStage = 5, kLevelStage = 6, kFieldStage = 7;
+bool Finishing(int stage) { return stage == kFieldStage; }
 int InputCount(int stage) { return stage < 0 ? 2 : Finishing(stage) ? 4 : stage == kAnchorStage ? 6 : stage == kLevelStage ? 3 : 3 + stage; }
 int OutputScale(int stage) { return stage < 0 ? 32 : stage == kAnchorStage ? 4 : stage >= kFullStage ? 1 : 16 >> stage; }
-int OutputChannels(int stage) { return stage < 0 ? 15 : stage == kTailStage ? 3 : stage == kAnchorStage ? 16 : stage == kFieldStage ? 8 : 28; }
+int OutputChannels(int stage) { return stage < 0 ? 15 : stage == kAnchorStage ? 16 : stage == kFieldStage ? 8 : 28; }
 // The coarse blocks run at the height the model needs, which may be more than the frame's.
 int CoarseHeight(int height) { return (height + 127) / 128 * 128; }
 int LevelRows(int level, int height) { return CoarseHeight(height) / levelScales[level]; }
@@ -112,23 +112,6 @@ struct Reference {
         if (channel < 14) return Source((channel - 6) / 4, 4 + (channel - 6) % 4, x, y);
         return Timestep();
     }
-    // Stage 4 from the graph's operators: DepthToSpace with mode CRD and factor 2, Add,
-    // GridSample of the two images, Sigmoid, Mul, Sub, Mul, Add. Input 2 is stage 3's
-    // accumulated flow and input 3 the ConvTranspose, whose first 20 channels matter.
-    float Finished(int channel, int x, int y) const {
-        const auto accumulated = [&](int c) { return __half2float(host[2][(size_t(y) * width + x) * 4 + c]); };
-        const auto block = [&](int c) {
-            const int lowWidth = width / 2, lowHeight = height / 2;
-            const int mapped = c * 4 + (y % 2) * 2 + x % 2;
-            return __half2float(host[3][(size_t(mapped) * lowHeight + y / 2) * lowWidth + x / 2]);
-        };
-        const auto warped = [&](int batch) {
-            return Bilinear(accumulated(batch * 2) + block(batch * 2), accumulated(batch * 2 + 1) + block(batch * 2 + 1), x, y,
-                [&](int row, int col) { return Source(batch, channel, col, row); });
-        };
-        const float mask = 1 / (1 + std::exp(-block(4)));
-        return warped(0) * mask + warped(1) * (1 - mask);
-    }
     // Stage 7: final flow and mask, with the block's channels placed as in Finished().
     float Field(int channel, int x, int y) const {
         const auto block = [&](int c) {
@@ -187,7 +170,7 @@ void TestStage(const int stage, const std::vector<std::pair<int, int>>& sizes, c
     const int layers = net->getNbLayers(), networkInputs = net->getNbInputs();
     std::vector<uint16_t> fusedWeights;
     Check(!FuseRifeSynthesisWarps(*net, fusedWeights) && net->getNbLayers() == layers && net->getNbInputs() == networkInputs, "unknown graph preserved");
-    auto* creator = static_cast<IPluginCreatorV3One*>(getPluginRegistry()->getCreator("MpcvrRifeWarpConcat", "6", "mpcvr"));
+    auto* creator = static_cast<IPluginCreatorV3One*>(getPluginRegistry()->getCreator("MpcvrRifeWarpConcat", "7", "mpcvr"));
     Check(creator != nullptr, "creator lookup");
     const int32_t invalidStage = 8;
     PluginField invalidField("stage", &invalidStage, PluginFieldType::kINT32, 1);
@@ -271,12 +254,11 @@ void TestStage(const int stage, const std::vector<std::pair<int, int>>& sizes, c
             const size_t p = size_t(outY) * outputWidth + outX;
             for (int c = 0; c < channels; ++c) {
                 const float expected = Half(reference.Down([&](int x, int y) {
-                    return stage < 0 ? reference.Input(c, x, y)
-                        : stage == kTailStage ? reference.Finished(c, x, y) : reference.Stage(c, x, y);
+                    return stage < 0 ? reference.Input(c, x, y) : reference.Stage(c, x, y);
                 }, outX, outY));
                 const float error = std::abs(expected - __half2float(result[c * outputPlane + p]));
                 Check(std::isfinite(error), "finite result");
-                if (stage == kTailStage || (stage >= 0 && c < 14)) { warpMaximum = std::max(warpMaximum, error); total += error; }
+                if (stage >= 0 && c < 14) { warpMaximum = std::max(warpMaximum, error); total += error; }
                 else if (stage >= 0 && c >= 24) flowMaximum = std::max(flowMaximum, error);
                 else tailMaximum = std::max(tailMaximum, error);
             }
@@ -289,7 +271,7 @@ void TestStage(const int stage, const std::vector<std::pair<int, int>>& sizes, c
                 flowMaximum = std::max(flowMaximum, error);
             }
         }
-        const int warpChannels = stage == kTailStage ? channels : 14;
+        const int warpChannels = 14;
         std::cout << "stage " << stage << ' ' << width << 'x' << height << " warp max=" << warpMaximum
                   << " mean=" << (stage < 0 ? 0 : total / (outputPlane * warpChannels)) << " tail max=" << tailMaximum
                   << " flow max=" << flowMaximum << '\n';
@@ -385,9 +367,15 @@ void TestRetime(cudaStream_t stream)
         Cuda(cudaMallocArray(&floatArray, &floatFormat, width, height, cudaArraySurfaceLoadStore));
         for (const float t : {.125f, .5f, .75f}) {
             cudaSurfaceObject_t bgraSurface = 0, floatSurface = 0;
-            Cuda(MpcvrRifeRetimeFrameLinear(fieldDevice.pointer, sourceDevice.pointer, linearDevice.pointer, size_t(width) * 4, height, width, t, stream));
-            Cuda(MpcvrRifeRetimeFrame(fieldDevice.pointer, sourceDevice.pointer, bgraArray, false, height, width, t, stream, &bgraSurface));
-            Cuda(MpcvrRifeRetimeFrame(fieldDevice.pointer, sourceDevice.pointer, floatArray, true, height, width, t, stream, &floatSurface));
+            RifeFrameOutput toLinear, toBgra, toFloat;
+            toLinear.linear = linearDevice.pointer;
+            toLinear.pitch = size_t(width) * 4;
+            toBgra.array = bgraArray;
+            toFloat.array = floatArray;
+            toFloat.rgba16 = true;
+            Cuda(MpcvrRifeRetimeFrame(fieldDevice.pointer, sourceDevice.pointer, toLinear, height, width, t, stream, nullptr));
+            Cuda(MpcvrRifeRetimeFrame(fieldDevice.pointer, sourceDevice.pointer, toBgra, height, width, t, stream, &bgraSurface));
+            Cuda(MpcvrRifeRetimeFrame(fieldDevice.pointer, sourceDevice.pointer, toFloat, height, width, t, stream, &floatSurface));
             Cuda(cudaStreamSynchronize(stream));
             std::vector<uchar4> linear(size_t(height) * width), bgra(linear.size());
             std::vector<__half> floats(linear.size() * 4);
@@ -435,6 +423,122 @@ void TestRetime(cudaStream_t stream)
         Cuda(cudaFreeArray(bgraArray));
     }
 }
+
+// The frame kernel, on every target, from the warp source and from filtered surfaces. As the
+// graph computes it: DepthToSpace (CRD, factor 2), Add, GridSample, Sigmoid, Mul, Sub, Mul, Add.
+void TestFinish(cudaStream_t stream)
+{
+    std::mt19937 rng(78);
+    std::uniform_real_distribution<float> flowValue(-24, 24), residual(-2, 2), maskValue(-4, 4), unit(0, 1);
+    for (const auto& [width, height] : std::vector<std::pair<int, int>>{{256, 128}, {640, 384}, {1920, 1088}}) {
+        const size_t pixels = size_t(height) * width;
+        std::vector<__half> flows(pixels * 4), low(size_t(height / 2) * (width / 2) * 24), source(pixels * 2 * 8);
+        std::vector<uchar4> bgraImage(pixels * 2);
+        std::vector<__half> floatImage(pixels * 2 * 4);
+        for (auto& value : flows) value = __float2half_rn(flowValue(rng));
+        for (size_t i = 0; i < low.size(); ++i) low[i] = __float2half_rn(i % 24 < 16 ? residual(rng) : maskValue(rng));
+        for (size_t p = 0; p < pixels * 2; ++p) {
+            uchar4 bytes{};
+            bytes.w = 255;
+            for (int c = 0; c < 3; ++c) {
+                const auto byte = static_cast<unsigned char>(unit(rng) * 255.0f + 0.5f);
+                (c == 0 ? bytes.z : c == 1 ? bytes.y : bytes.x) = byte;
+                source[p * 8 + c] = __float2half_rn(byte / 255.0f);
+                floatImage[p * 4 + c] = source[p * 8 + c];
+            }
+            floatImage[p * 4 + 3] = __float2half_rn(1.0f);
+            bgraImage[p] = bytes;
+        }
+        DeviceBuffer flowsDevice(flows.size() * sizeof(__half)), lowDevice(low.size() * sizeof(__half)), sourceDevice(source.size() * sizeof(__half));
+        DeviceBuffer linearDevice(pixels * 4);
+        Cuda(cudaMemcpy(flowsDevice.pointer, flows.data(), flows.size() * sizeof(__half), cudaMemcpyHostToDevice));
+        Cuda(cudaMemcpy(lowDevice.pointer, low.data(), low.size() * sizeof(__half), cudaMemcpyHostToDevice));
+        Cuda(cudaMemcpy(sourceDevice.pointer, source.data(), source.size() * sizeof(__half), cudaMemcpyHostToDevice));
+        const cudaChannelFormatDesc bgraFormat = cudaCreateChannelDesc<uchar4>(), floatFormat = cudaCreateChannelDesc(16, 16, 16, 16, cudaChannelFormatKindFloat);
+        cudaArray_t bgraArray = nullptr, floatArray = nullptr;
+        Cuda(cudaMallocArray(&bgraArray, &bgraFormat, width, height, cudaArraySurfaceLoadStore));
+        Cuda(cudaMallocArray(&floatArray, &floatFormat, width, height, cudaArraySurfaceLoadStore));
+        // Two images as surfaces, as imported ones are read.
+        cudaArray_t images[4]{};
+        cudaTextureObject_t filtered[4]{};
+        for (int k = 0; k < 4; ++k) {
+            const bool isFloat = k >= 2;
+            Cuda(cudaMallocArray(&images[k], isFloat ? &floatFormat : &bgraFormat, width, height));
+            const void* data = isFloat ? static_cast<const void*>(floatImage.data() + pixels * 4 * (k - 2)) : static_cast<const void*>(bgraImage.data() + pixels * k);
+            Cuda(cudaMemcpy2DToArray(images[k], 0, 0, data, size_t(width) * (isFloat ? 8 : 4), size_t(width) * (isFloat ? 8 : 4), height, cudaMemcpyHostToDevice));
+            cudaResourceDesc resource{};
+            resource.resType = cudaResourceTypeArray;
+            resource.res.array.array = images[k];
+            cudaTextureDesc filter{};
+            filter.addressMode[0] = filter.addressMode[1] = cudaAddressModeClamp;
+            filter.filterMode = cudaFilterModeLinear;
+            filter.readMode = isFloat ? cudaReadModeElementType : cudaReadModeNormalizedFloat;
+            Cuda(cudaCreateTextureObject(&filtered[k], &resource, &filter, nullptr));
+        }
+        for (const bool textured : {false, true}) {
+            RifeFrameOutput toLinear, toBgra, toFloat;
+            toLinear.linear = linearDevice.pointer;
+            toLinear.pitch = size_t(width) * 4;
+            toBgra.array = bgraArray;
+            toFloat.array = floatArray;
+            toFloat.rgba16 = true;
+            if (textured) {
+                toLinear.firstImage = toBgra.firstImage = filtered[0];
+                toLinear.secondImage = toBgra.secondImage = filtered[1];
+                toFloat.firstImage = filtered[2];
+                toFloat.secondImage = filtered[3];
+            }
+            cudaSurfaceObject_t bgraSurface = 0, floatSurface = 0;
+            Cuda(MpcvrRifeFinishFrame(flowsDevice.pointer, lowDevice.pointer, sourceDevice.pointer, toLinear, height, width, stream, nullptr));
+            Cuda(MpcvrRifeFinishFrame(flowsDevice.pointer, lowDevice.pointer, sourceDevice.pointer, toBgra, height, width, stream, &bgraSurface));
+            Cuda(MpcvrRifeFinishFrame(flowsDevice.pointer, lowDevice.pointer, sourceDevice.pointer, toFloat, height, width, stream, &floatSurface));
+            Cuda(cudaStreamSynchronize(stream));
+            std::vector<uchar4> linear(pixels), bgra(pixels);
+            std::vector<__half> floats(pixels * 4);
+            Cuda(cudaMemcpy(linear.data(), linearDevice.pointer, pixels * 4, cudaMemcpyDeviceToHost));
+            Cuda(cudaMemcpy2DFromArray(bgra.data(), size_t(width) * 4, bgraArray, 0, 0, size_t(width) * 4, height, cudaMemcpyDeviceToHost));
+            Cuda(cudaMemcpy2DFromArray(floats.data(), size_t(width) * 8, floatArray, 0, 0, size_t(width) * 8, height, cudaMemcpyDeviceToHost));
+            Cuda(cudaDestroySurfaceObject(bgraSurface));
+            Cuda(cudaDestroySurfaceObject(floatSurface));
+            float maximum = 0;
+            for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
+                const size_t pixel = size_t(y) * width + x;
+                const __half* block = low.data() + (size_t(y / 2) * (width / 2) + x / 2) * 24 + (y % 2) * 2 + x % 2;
+                const float mask = 1 / (1 + std::exp(-__half2float(block[16])));
+                float expected[3];
+                for (int c = 0; c < 3; ++c) {
+                    const auto warped = [&](int image) {
+                        const float px = std::clamp(x + __half2float(flows[pixel * 4 + image * 2]) + __half2float(block[image * 8]), 0.0f, float(width - 1));
+                        const float py = std::clamp(y + __half2float(flows[pixel * 4 + image * 2 + 1]) + __half2float(block[image * 8 + 4]), 0.0f, float(height - 1));
+                        const int x0 = int(px), y0 = int(py), x1 = std::min(x0 + 1, width - 1), y1 = std::min(y0 + 1, height - 1);
+                        const auto at = [&](int row, int col) { return __half2float(source[((size_t(image) * height + row) * width + col) * 8 + c]); };
+                        return Lerp2(at(y0, x0), at(y0, x1), at(y1, x0), at(y1, x1), px - x0, py - y0);
+                    };
+                    expected[c] = std::clamp(warped(0) * mask + warped(1) * (1 - mask), 0.0f, 1.0f);
+                }
+                for (int c = 0; c < 3; ++c) {
+                    const float error = std::abs(expected[c] - __half2float(floats[pixel * 4 + c]));
+                    Check(std::isfinite(error), "finite finished frame");
+                    maximum = std::max(maximum, error);
+                }
+                Check(__half2float(floats[pixel * 4 + 3]) == 1.0f && linear[pixel].w == 255 && bgra[pixel].w == 255, "finished frame is opaque");
+                Check(linear[pixel].x == bgra[pixel].x && linear[pixel].y == bgra[pixel].y && linear[pixel].z == bgra[pixel].z, "finished surface and linear targets agree");
+                // The filter's weights have eight fractional bits, on noise as harsh as images get.
+                const float tolerance = textured ? 2.5f : 1.0f;
+                Check(std::abs(linear[pixel].z - expected[0] * 255) <= tolerance && std::abs(linear[pixel].y - expected[1] * 255) <= tolerance
+                    && std::abs(linear[pixel].x - expected[2] * 255) <= tolerance, "finished 8-bit frame");
+            }
+            std::cout << "finish frame " << width << 'x' << height << (textured ? " filtered" : " warp source") << " max=" << maximum << '\n';
+            Check(maximum <= (textured ? 1.0f / 128 : 1.0f / 1024), "finished frame tolerance");
+        }
+        for (int k = 0; k < 4; ++k) {
+            Cuda(cudaDestroyTextureObject(filtered[k]));
+            Cuda(cudaFreeArray(images[k]));
+        }
+        Cuda(cudaFreeArray(floatArray));
+        Cuda(cudaFreeArray(bgraArray));
+    }
+}
 }
 
 // Explicitly invoked native GPU test. No player, installed runtime or engine
@@ -445,10 +549,11 @@ int main()
     try {
         Check(RegisterRifeWarpPlugin(), "plugin registration");
         cudaStream_t stream = nullptr; Cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-        for (const int stage : {-1, 0, 1, 2, 3, kTailStage, kAnchorStage, kLevelStage, kFieldStage}) {
+        for (const int stage : {-1, 0, 1, 2, 3, kAnchorStage, kLevelStage, kFieldStage}) {
             TestStage(stage, {{128, 64}, {128, 128}, {640, 1152}, {1792, 1024}, {1920, 1088}, {1920, 1152}}, stream);
         }
         TestRetime(stream);
+        TestFinish(stream);
         Cuda(cudaStreamDestroy(stream));
         std::cout << "Fused warp: reference, dynamic shapes and serialization passed\n";
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; return 1; }

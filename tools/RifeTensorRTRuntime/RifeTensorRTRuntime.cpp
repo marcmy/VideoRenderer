@@ -4,6 +4,7 @@
 #include "PackedInputReuse.h"
 #include "RifeRequestCompatibility.h"
 #include "D3D11InteropLock.h"
+#include <dxgi.h>
 #include "EngineCacheFile.h"
 #include "EngineProfile.h"
 #include "RuntimeCreation.h"
@@ -294,6 +295,109 @@ private:
     std::unordered_map<ID3D11Texture2D*, cudaGraphicsResource_t> m_outputs;
 };
 
+// A shared texture imported once stays reachable from CUDA with no map or unmap per frame.
+// Those calls need the D3D11 device lock, which IDXGISwapChain::Present holds while it blocks,
+// so each could wait for most of a present. The caller orders CUDA and D3D11 use: a request
+// has finished writing when it returns, and D3D11 work on the texture has finished before the
+// texture is passed again.
+class PersistentSurfaces {
+public:
+    ~PersistentSurfaces() { Clear(); }
+
+    // Null if the texture isn't shared or can't be imported: the caller maps it instead.
+    cudaArray_t Get(ID3D11Texture2D* texture, bool writable, ID3D11Multithread* multithread)
+    {
+        return Find(texture, writable, multithread).array;
+    }
+
+    // Zero if the frame kernels should read the warp source instead.
+    cudaTextureObject_t Filtered(ID3D11Texture2D* texture, ID3D11Multithread* multithread)
+    {
+        return Find(texture, false, multithread).filtered;
+    }
+
+    void Clear()
+    {
+        std::lock_guard lock(m_mutex);
+        for (auto& [texture, entry] : m_entries) {
+            if (entry.filtered) cudaDestroyTextureObject(entry.filtered);
+            if (entry.mipmapped) cudaFreeMipmappedArray(entry.mipmapped);
+            if (entry.memory) cudaDestroyExternalMemory(entry.memory);
+            texture->Release();
+        }
+        m_entries.clear();
+    }
+
+private:
+    struct Entry {
+        cudaExternalMemory_t memory = nullptr;
+        cudaMipmappedArray_t mipmapped = nullptr;
+        cudaArray_t array = nullptr;
+        cudaTextureObject_t filtered = 0;
+    };
+
+    const Entry& Find(ID3D11Texture2D* texture, bool writable, ID3D11Multithread* multithread)
+    {
+        std::lock_guard lock(m_mutex);
+        const auto it = m_entries.find(texture);
+        if (it != m_entries.end()) return it->second;
+        Entry entry;
+        Import(texture, writable, multithread, entry);
+        texture->AddRef();
+        return m_entries.emplace(texture, entry).first->second;
+    }
+
+    static void Import(ID3D11Texture2D* texture, bool writable, ID3D11Multithread* multithread, Entry& entry)
+    {
+        D3D11_TEXTURE2D_DESC desc{};
+        texture->GetDesc(&desc);
+        if (!(desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED)) return;
+        IDXGIResource* resource = nullptr;
+        if (FAILED(texture->QueryInterface(IID_PPV_ARGS(&resource)))) return;
+        HANDLE shared = nullptr;
+        const HRESULT handleResult = resource->GetSharedHandle(&shared);
+        resource->Release();
+        if (FAILED(handleResult) || !shared) return;
+        const bool high = desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+        const int bits = high ? 16 : 8;
+        cudaExternalMemoryHandleDesc memoryDesc{};
+        memoryDesc.type = cudaExternalMemoryHandleTypeD3D11ResourceKmt;
+        memoryDesc.handle.win32.handle = shared;
+        memoryDesc.size = size_t(desc.Width) * desc.Height * (high ? 8 : 4);
+        memoryDesc.flags = cudaExternalMemoryDedicated;
+        cudaExternalMemoryMipmappedArrayDesc arrayDesc{};
+        arrayDesc.extent = make_cudaExtent(desc.Width, desc.Height, 0);
+        arrayDesc.formatDesc = cudaCreateChannelDesc(bits, bits, bits, bits, high ? cudaChannelFormatKindFloat : cudaChannelFormatKindUnsigned);
+        arrayDesc.numLevels = 1;
+        arrayDesc.flags = writable ? cudaArraySurfaceLoadStore : 0;
+        D3D11InteropLock interopLock(multithread);
+        if (cudaImportExternalMemory(&entry.memory, &memoryDesc) != cudaSuccess) {
+            entry.memory = nullptr;
+            return;
+        }
+        if (cudaExternalMemoryGetMappedMipmappedArray(&entry.mipmapped, entry.memory, &arrayDesc) != cudaSuccess) {
+            entry.mipmapped = nullptr;
+            return;
+        }
+        if (cudaGetMipmappedArrayLevel(&entry.array, entry.mipmapped, 0) != cudaSuccess) {
+            entry.array = nullptr;
+            return;
+        }
+        if (writable) return;
+        cudaResourceDesc source{};
+        source.resType = cudaResourceTypeArray;
+        source.res.array.array = entry.array;
+        cudaTextureDesc filter{};
+        filter.addressMode[0] = filter.addressMode[1] = cudaAddressModeClamp;
+        filter.filterMode = cudaFilterModeLinear;
+        filter.readMode = high ? cudaReadModeElementType : cudaReadModeNormalizedFloat;
+        if (cudaCreateTextureObject(&entry.filtered, &source, &filter, nullptr) != cudaSuccess) entry.filtered = 0;
+    }
+
+    std::mutex m_mutex;
+    std::unordered_map<ID3D11Texture2D*, Entry> m_entries;
+};
+
 class RifeRuntime {
 public:
     ~RifeRuntime()
@@ -306,6 +410,7 @@ public:
             D3D11InteropLock interopLock(m_d3dMultithread);
             m_registrations.Clear();
         }
+        m_persistentSurfaces.Clear();
         m_contexts.clear();
         for (auto& output : m_cudaOutputs) {
             if (output.stream) cudaStreamSynchronize(output.stream);
@@ -482,22 +587,28 @@ public:
         std::array<cudaGraphicsResource_t, 2> inputResources{};
         cudaGraphicsResource_t outputResource = nullptr;
         const auto registrationStart = Clock::now();
-        {
+        cudaArray_t persistentOutput = linear ? nullptr : m_persistentSurfaces.Get(request.output, true, m_d3dMultithread);
+        cudaArray_t persistentFirst = reusePackedInput ? nullptr : m_persistentSurfaces.Get(request.first, false, m_d3dMultithread);
+        cudaArray_t persistentSecond = reusePackedInput ? nullptr : m_persistentSurfaces.Get(request.second, false, m_d3dMultithread);
+        const bool persistentInputs = persistentFirst && persistentSecond;
+        const bool inputsNeedMapping = !reusePackedInput && !persistentInputs;
+        // Nothing here should wait for the device lock when no resource needs it.
+        if (inputsNeedMapping || (!linear && !persistentOutput)) {
             D3D11InteropLock interopLock(m_d3dMultithread);
-            if (!reusePackedInput) {
+            if (inputsNeedMapping) {
                 inputResources = {m_registrations.Get(request.first, false),
                     m_registrations.Get(request.second, false)};
             }
-            if (!linear) outputResource = m_registrations.Get(request.output, true);
+            if (!linear && !persistentOutput) outputResource = m_registrations.Get(request.output, true);
         }
         stats.registrationMs = elapsedMs(registrationStart, Clock::now());
-        if ((!reusePackedInput && (!inputResources[0] || !inputResources[1])) || (!linear && !outputResource)) {
+        if ((inputsNeedMapping && (!inputResources[0] || !inputResources[1])) || (!linear && !persistentOutput && !outputResource)) {
             return MPCVR_RIFE_CUDA_FAILURE;
         }
 
         const auto inputPackLockStart = Clock::now();
         std::optional<InputResourceClaim> inputResourceClaim;
-        if (!reusePackedInput) {
+        if (inputsNeedMapping) {
             inputResourceClaim.emplace(
                 m_inputResourceMutex, m_inputResourceCv, m_activeInputResources, inputResources);
         }
@@ -505,7 +616,7 @@ public:
 
         // Deferred mode retains both staged inputs through inference, so all
         // three resources can share one D3D11/CUDA ownership transition.
-        const bool batchDeferred = m_deferInputRelease && !reusePackedInput && !linear;
+        const bool batchDeferred = m_deferInputRelease && inputsNeedMapping && !linear && !persistentOutput;
         std::array<cudaGraphicsResource_t, 3> batchResources{
             inputResources[0], inputResources[1], outputResource};
         bool inputsMapped = false;
@@ -594,8 +705,8 @@ public:
             return destroyResult;
         };
 
-        cudaArray_t firstArray = nullptr;
-        cudaArray_t secondArray = nullptr;
+        cudaArray_t firstArray = persistentFirst;
+        cudaArray_t secondArray = persistentSecond;
         if (!reusePackedInput) {
             // MPC-VR normally passes role-specific staged input copies, so
             // adjacent A/B and B/C inference contexts can map and pack
@@ -605,24 +716,26 @@ public:
             if (cudaEventRecord(state.preMapEvent, state.stream) != cudaSuccess) {
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
-            const auto inputMapStart = Clock::now();
-            {
-                D3D11InteropLock interopLock(m_d3dMultithread);
-                if (cudaGraphicsMapResources(
-                        batchDeferred ? static_cast<int>(batchResources.size()) : static_cast<int>(inputResources.size()),
-                        batchDeferred ? batchResources.data() : inputResources.data(), state.stream) != cudaSuccess) {
+            if (inputsNeedMapping) {
+                const auto inputMapStart = Clock::now();
+                {
+                    D3D11InteropLock interopLock(m_d3dMultithread);
+                    if (cudaGraphicsMapResources(
+                            batchDeferred ? static_cast<int>(batchResources.size()) : static_cast<int>(inputResources.size()),
+                            batchDeferred ? batchResources.data() : inputResources.data(), state.stream) != cudaSuccess) {
+                        return MPCVR_RIFE_CUDA_FAILURE;
+                    }
+                }
+                inputsMapped = true;
+                outputMapped = batchDeferred;
+                stats.inputMapMs = elapsedMs(inputMapStart, Clock::now());
+
+                if (cudaGraphicsSubResourceGetMappedArray(&firstArray, inputResources[0], 0, 0) != cudaSuccess ||
+                        cudaGraphicsSubResourceGetMappedArray(&secondArray, inputResources[1], 0, 0) != cudaSuccess) {
+                    releaseInputs(state.stream);
+                    finishStream();
                     return MPCVR_RIFE_CUDA_FAILURE;
                 }
-            }
-            inputsMapped = true;
-            outputMapped = batchDeferred;
-            stats.inputMapMs = elapsedMs(inputMapStart, Clock::now());
-
-            if (cudaGraphicsSubResourceGetMappedArray(&firstArray, inputResources[0], 0, 0) != cudaSuccess ||
-                    cudaGraphicsSubResourceGetMappedArray(&secondArray, inputResources[1], 0, 0) != cudaSuccess) {
-                releaseInputs(state.stream);
-                finishStream();
-                return MPCVR_RIFE_CUDA_FAILURE;
             }
             if (cudaEventRecord(state.startEvent, state.stream) != cudaSuccess) {
                 releaseInputs(state.stream);
@@ -695,7 +808,7 @@ public:
             }
         }
 
-        if (!linear && !outputMapped) {
+        if (!linear && !persistentOutput && !outputMapped) {
             const auto outputMapStart = Clock::now();
             {
                 D3D11InteropLock interopLock(m_d3dMultithread);
@@ -708,8 +821,8 @@ public:
             outputMapped = true;
         }
 
-        cudaArray_t outputArray = nullptr;
-        if (!linear && cudaGraphicsSubResourceGetMappedArray(&outputArray, outputResource, 0, 0) != cudaSuccess) {
+        cudaArray_t outputArray = persistentOutput;
+        if (!linear && !persistentOutput && cudaGraphicsSubResourceGetMappedArray(&outputArray, outputResource, 0, 0) != cudaSuccess) {
             releaseOutput();
             finishStream();
             return MPCVR_RIFE_CUDA_FAILURE;
@@ -743,11 +856,22 @@ public:
         }
 
         const auto writeHostStart = Clock::now();
+        const bool fusedFrame = m_features && m_features->Fused();
+        RifeFrameOutput frameOutput;
+        if (fusedFrame) {
+            frameOutput.array = outputArray;
+            frameOutput.rgba16 = m_highPrecision;
+            frameOutput.linear = linearOutput;
+            frameOutput.pitch = linearPitch;
+            frameOutput.firstImage = m_persistentSurfaces.Filtered(request.first, m_d3dMultithread);
+            frameOutput.secondImage = m_persistentSurfaces.Filtered(request.second, m_d3dMultithread);
+        }
         const cudaError_t writeResult = flowReuse == RifeFlowReuse::Retime
-            ? (linear ? MpcvrRifeRetimeFrameLinear(state.output, state.features->warpSource, linearOutput, linearPitch,
-                    static_cast<int>(m_tensorHeight), static_cast<int>(m_paddedWidth), request.timestep, state.stream)
-                : MpcvrRifeRetimeFrame(state.output, state.features->warpSource, outputArray, m_highPrecision,
-                    static_cast<int>(m_tensorHeight), static_cast<int>(m_paddedWidth), request.timestep, state.stream, &outputSurface))
+            ? MpcvrRifeRetimeFrame(state.output, state.features->warpSource, frameOutput,
+                static_cast<int>(m_tensorHeight), static_cast<int>(m_paddedWidth), request.timestep, state.stream, &outputSurface)
+            : fusedFrame
+            ? MpcvrRifeFinishFrame(state.features->flows, state.output, state.features->warpSource, frameOutput,
+                static_cast<int>(m_tensorHeight), static_cast<int>(m_paddedWidth), state.stream, &outputSurface)
             : linear
             ? MpcvrRifeWriteLinearOutput(state.output, m_outputIsFp16, linearOutput, linearPitch,
                 static_cast<int>(m_paddedWidth), static_cast<int>(m_tensorHeight),
@@ -876,6 +1000,7 @@ public:
         stats.inputPairReuse = reusePackedInput ? 2u : 1u;
         stats.featureReuse = !state.features ? 0u : reusePackedInput ? 2u : firstFeaturesKept ? 3u : 1u;
         stats.flowReuse = static_cast<uint64_t>(flowReuse);
+        stats.persistentOutput = (persistentOutput ? 1u : 0u) | (persistentInputs ? 2u : 0u);
         return MPCVR_RIFE_OK;
     }
 
@@ -1157,7 +1282,7 @@ private:
         const nvinfer1::Dims4 outputShape{1, 3, static_cast<int>(m_tensorHeight), static_cast<int>(m_paddedWidth)};
         const size_t inputBytes = Volume(inputShape) * DataTypeBytes(m_engine->getTensorDataType(m_inputName.c_str()));
         const size_t frameBytes = Volume(outputShape) * DataTypeBytes(m_engine->getTensorDataType(m_outputName.c_str()));
-        const size_t outputBytes = m_features && m_features->FlowReuse() == RifeFlowReuse::Retime ? std::max(frameBytes, m_features->OutputBytes()) : frameBytes;
+        const size_t outputBytes = m_features && m_features->Fused() ? std::max(frameBytes, m_features->OutputBytes()) : frameBytes;
         if (!inputBytes || !outputBytes) return false;
 
         for (uint32_t i = 0; i < m_contextCount; ++i) {
@@ -1291,6 +1416,7 @@ private:
     std::mutex m_inputResourceMutex;
     std::condition_variable m_inputResourceCv;
     std::unordered_set<cudaGraphicsResource_t> m_activeInputResources;
+    PersistentSurfaces m_persistentSurfaces;
     GraphicsRegistrationCache m_registrations;
     struct CudaOutputSlot {
         std::mutex mutex;

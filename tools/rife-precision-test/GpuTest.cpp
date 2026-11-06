@@ -9,6 +9,7 @@
 #include <cuda_fp16.h>
 #include "../../Source/RifeRuntimeApi.h"
 #include "../RifeTensorRTRuntime/RifeKernels.h"
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <vector>
@@ -22,10 +23,10 @@
 
 void Check(bool ok, const char* label) { if(!ok) throw std::runtime_error(label); }
 void Cuda(cudaError_t e, const char* label) { if(e!=cudaSuccess) { std::cerr<<label<<": "<<cudaGetErrorString(e)<<'\n'; throw std::runtime_error(label); } }
-CComPtr<ID3D11Texture2D> Texture(ID3D11Device* device, UINT w, UINT h, bool precise, const void* pixels=nullptr) {
+CComPtr<ID3D11Texture2D> Texture(ID3D11Device* device, UINT w, UINT h, bool precise, const void* pixels=nullptr, UINT misc=0) {
     D3D11_TEXTURE2D_DESC d={};d.Width=w;d.Height=h;d.ArraySize=d.MipLevels=d.SampleDesc.Count=1;
     d.Format=precise?DXGI_FORMAT_R16G16B16A16_FLOAT:DXGI_FORMAT_B8G8R8A8_UNORM; d.Usage=D3D11_USAGE_DEFAULT;
-    d.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_RENDER_TARGET;
+    d.BindFlags=D3D11_BIND_SHADER_RESOURCE|D3D11_BIND_RENDER_TARGET;d.MiscFlags=misc;
     D3D11_SUBRESOURCE_DATA data={pixels,w*(precise?8u:4u),0}; CComPtr<ID3D11Texture2D> result;
     Check(SUCCEEDED(device->CreateTexture2D(&d,pixels?&data:nullptr,&result)),"D3D texture");return result;
 }
@@ -270,6 +271,70 @@ int wmain(int argc,wchar_t** argv) {
             Check(toEarly<.06&&toLate<.06,"shared flow lands gentle motion where it truly is");
             destroy(handle);
         }
+    }
+    // Shared surfaces stay imported, with no map or unmap. D3D11 rewrites both inputs between
+    // pairs and reads the output after every target, ordered only by a fence, as in playback:
+    // what CUDA sees and what D3D11 sees must match surfaces that are mapped every time.
+    {
+        CComQIPtr<ID3D11Device5> device5(device);CComQIPtr<ID3D11DeviceContext4> context4(context);
+        Check(device5&&context4,"fence interfaces");
+        CComPtr<ID3D11Fence> fence;Check(SUCCEEDED(device5->CreateFence(0,D3D11_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence))),"fence");
+        const HANDLE fenceEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);
+        uint64_t fenceValue=0;
+        const auto model=(std::filesystem::path(argv[2])/L"rife_v4.25_lite.onnx").wstring();
+        constexpr int size=256,shift=16;
+        for(const bool precise:{false,true}) {
+            const auto frame=[&](int offset){
+                std::vector<ushort4> pixels(size*size);std::vector<uchar4> bytes(size*size);
+                for(int y=0;y<size;++y) for(int x=0;x<size;++x) {
+                    const float r=.5f+.4f*std::sin((x-offset)*.1f),g=.5f+.4f*std::sin(y*.08f),b=((x-offset+y)&32)?.8f:.2f;
+                    pixels[size_t(y)*size+x]=make_ushort4(__half_as_ushort(__float2half(r)),__half_as_ushort(__float2half(g)),__half_as_ushort(__float2half(b)),__half_as_ushort(__float2half(1)));
+                    bytes[size_t(y)*size+x]=make_uchar4(static_cast<unsigned char>(b*255),static_cast<unsigned char>(g*255),static_cast<unsigned char>(r*255),255);
+                }
+                return Texture(device,size,size,precise,precise?static_cast<const void*>(pixels.data()):static_cast<const void*>(bytes.data()));
+            };
+            std::array<CComPtr<ID3D11Texture2D>,3> frames{frame(0),frame(shift),frame(shift*3)};
+            for(uint32_t mode=0;mode<3;++mode) {
+                std::array<std::vector<std::vector<uint8_t>>,2> outputs;
+                for(int imported=0;imported<2;++imported) {
+                    const UINT misc=imported?D3D11_RESOURCE_MISC_SHARED:0u;
+                    auto stagedFirst=Texture(device,size,size,precise,nullptr,misc),stagedSecond=Texture(device,size,size,precise,nullptr,misc);
+                    auto output=Texture(device,size,size,precise,nullptr,misc);
+                    MpcvrRifeCreateParams p;p.device=device;p.width=p.height=p.contentWidth=p.contentHeight=size;p.contextCount=2;p.performanceBoost=1;
+                    p.modelPath=model.c_str();p.cachePath=argv[3];
+                    p.flags=(precise?MPCVR_RIFE_CREATE_HIGH_PRECISION:0u)|MPCVR_RIFE_CREATE_FEATURE_REUSE
+                        |(mode==1?MPCVR_RIFE_CREATE_FLOW_REUSE_COARSE:mode==2?MPCVR_RIFE_CREATE_FLOW_REUSE_RETIME:0u);
+                    void* handle=nullptr;Check(create(&p,&handle)==0&&handle,"imported surfaces create");
+                    for(int pair=0;pair<6;++pair) {
+                        context->CopyResource(stagedFirst,frames[pair%3]);
+                        context->CopyResource(stagedSecond,frames[(pair+1)%3]);
+                        ++fenceValue;
+                        Check(SUCCEEDED(context4->Signal(fence,fenceValue)),"signal");
+                        context->Flush();
+                        Check(SUCCEEDED(fence->SetEventOnCompletion(fenceValue,fenceEvent)),"fence event");
+                        Check(WaitForSingleObject(fenceEvent,5000)==WAIT_OBJECT_0,"fence completes");
+                        for(int target=1;target<=3;++target) {
+                            MpcvrRifeRequest q;q.contextIndex=pair%2;q.first=stagedFirst;q.second=stagedSecond;q.output=output;q.timestep=target*.25f;
+                            q.inputPairId=uint64_t(pair)+1;q.previousPairId=pair?uint64_t(pair):0;
+                            MpcvrRifeStats s;Check(infer(handle,&q,&s)==0,"imported surfaces inference");
+                            const uint64_t expected=!imported?0u:target==1?3u:1u;
+                            Check(s.persistentOutput==expected,"surfaces imported as requested");
+                            outputs[imported].push_back(Read(device,context,output));
+                        }
+                    }
+                    destroy(handle);
+                }
+                double worst=0;
+                for(size_t i=0;i<outputs[0].size();++i) worst=std::max(worst,MaxDifference(outputs[0][i],outputs[1][i],precise));
+                bool changes=false;
+                for(size_t i=3;i<outputs[1].size();++i) changes|=outputs[1][i]!=outputs[1][i-3];
+                std::cout<<"Imported surfaces mode "<<mode<<(precise?" RGBA16F":" BGRA8")<<": mapped vs imported max="<<worst<<"\n";
+                Check(changes,"each pair's output reflects its inputs");
+                // Only the frame kernel's filter differs: its weights have eight fractional bits.
+                Check(worst<.02,"imported surfaces show the same frames");
+            }
+        }
+        CloseHandle(fenceEvent);
     }
     FreeLibrary(module);std::cout<<"Native GPU: models, precision, pair invalidation and context isolation passed\n";
     } catch(const std::exception& e) {std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}

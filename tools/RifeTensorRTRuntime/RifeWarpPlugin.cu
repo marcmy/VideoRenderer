@@ -5,6 +5,7 @@
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <array>
+#include <type_traits>
 #include <cstdint>
 #include <new>
 #include <string>
@@ -13,7 +14,7 @@
 namespace mpcvr_rife_warp {
 using namespace nvinfer1;
 constexpr char kName[] = "MpcvrRifeWarpConcat";
-constexpr char kVersion[] = "6";
+constexpr char kVersion[] = "7";
 constexpr char kNamespace[] = "mpcvr";
 
 // RIFE 4.25 Lite's refinement stages rebuild full-resolution flow and state from
@@ -59,16 +60,17 @@ constexpr char kNamespace[] = "mpcvr";
 // Stage 7 ends a plan that also runs block 4 once per pair, in place of stage 4: inputs as
 //   stage 4; output is final flow and mask, [1,H,W,8] as linear memory, F0 F1 m 0 0 0.
 //   MpcvrRifeRetimeFrame then makes each target from it without running any block.
-constexpr int kInputStage = -1, kFullStage = 3, kTailStage = 4, kAnchorStage = 5, kLevelStage = 6, kFieldStage = 7;
+// Stage 4 made the frame until MpcvrRifeFinishFrame took over, outside TensorRT.
+constexpr int kInputStage = -1, kFullStage = 3, kRetiredFrameStage = 4, kAnchorStage = 5, kLevelStage = 6, kFieldStage = 7;
 
-constexpr bool ValidStage(int32_t stage) noexcept { return stage >= kInputStage && stage <= kFieldStage; }
+constexpr bool ValidStage(int32_t stage) noexcept { return stage >= kInputStage && stage <= kFieldStage && stage != kRetiredFrameStage; }
 constexpr int32_t InputCount(int32_t stage) noexcept
 {
-    return stage == kInputStage ? 2 : stage == kTailStage || stage == kFieldStage ? 4 : stage == kAnchorStage ? 6 : stage == kLevelStage ? 3 : 3 + stage;
+    return stage == kInputStage ? 2 : stage == kFieldStage ? 4 : stage == kAnchorStage ? 6 : stage == kLevelStage ? 3 : 3 + stage;
 }
 constexpr int32_t OutputCount(int32_t stage) noexcept { return stage == kFullStage || stage == kLevelStage ? 2 : 1; }
 constexpr int32_t OutputScale(int32_t stage) noexcept { return stage == kInputStage ? 32 : stage == kAnchorStage ? 4 : stage >= kFullStage ? 1 : 16 >> stage; }
-constexpr int32_t OutputChannels(int32_t stage) noexcept { return stage == kInputStage ? 15 : stage == kTailStage ? 3 : 28; }
+constexpr int32_t OutputChannels(int32_t stage) noexcept { return stage == kInputStage ? 15 : 28; }
 constexpr int kFullPixelChannels = 32, kTailLowPixelChannels = 24, kTailLowChannels = 20;
 __host__ __device__ constexpr int32_t LevelScale(int32_t level) noexcept { return 32 >> level; }
 __host__ __device__ constexpr int CoarseHeight(int height) noexcept { return (height + 127) / 128 * 128; }
@@ -196,50 +198,7 @@ __global__ void WarpFull(const uint4* source, LowLevels levels, const __half* ti
     flows[pixel] = make_uint2(bits(out[24], out[25]), bits(out[26], out[27]));
 }
 
-// Stage 4: block 4's DepthToSpace (CRD, factor 2) at the channels used, its flow
-// residual, the final warp of both images and the mask blend, rounding as the graph does.
-__global__ void FinishFrame(const uint4* source, const uint2* flows, const __half* low, __half* output, int height, int width)
-{
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    if (x >= width) return;
-    const int y = blockIdx.y;
-    const size_t plane = size_t(height) * width;
-    const size_t pixel = size_t(y) * width + x;
-    const __half* lowPixel = low + (size_t(y / 2) * (width / 2) + x / 2) * kTailLowPixelChannels + (y & 1) * 2 + (x & 1);
-    const uint2 accumulated = flows[pixel];
-    float warped[2][3];
-    __half result[3];
-#pragma unroll
-    for (int batch = 0; batch < 2; ++batch) {
-        const unsigned word = batch ? accumulated.y : accumulated.x;
-        const float flowX = Half(word & 0xffff) + __half2float(lowPixel[batch * 8]);
-        const float flowY = Half(word >> 16) + __half2float(lowPixel[batch * 8 + 4]);
-        const float u = fminf(fmaxf(x + flowX, 0.0f), float(width - 1));
-        const float v = fminf(fmaxf(y + flowY, 0.0f), float(height - 1));
-        const int x0 = int(u), y0 = int(v), x1 = min(x0 + 1, width - 1), y1 = min(y0 + 1, height - 1);
-        const float fx = u - x0, fy = v - y0;
-        const float a = (1 - fx) * (1 - fy), b = fx * (1 - fy), c = (1 - fx) * fy, d = fx * fy;
-        // Only the first eight bytes of each texel hold the image.
-        const auto* image = reinterpret_cast<const uint2*>(source + size_t(batch) * plane);
-        const uint2 tl = image[(size_t(y0) * width + x0) * 2], tr = image[(size_t(y0) * width + x1) * 2];
-        const uint2 bl = image[(size_t(y1) * width + x0) * 2], br = image[(size_t(y1) * width + x1) * 2];
-        const auto rgb = [](const uint2& t, int c) { return c == 0 ? Half(t.x & 0xffff) : c == 1 ? Half(t.x >> 16) : Half(t.y & 0xffff); };
-#pragma unroll
-        for (int channel = 0; channel < 3; ++channel) {
-            warped[batch][channel] = a * rgb(tl, channel) + b * rgb(tr, channel) + c * rgb(bl, channel) + d * rgb(br, channel);
-        }
-    }
-    const float mask = 1.0f / (1.0f + expf(-__half2float(lowPixel[16])));
-#pragma unroll
-    for (int channel = 0; channel < 3; ++channel) {
-        result[channel] = __float2half_rn(warped[0][channel] * mask + warped[1][channel] * (1.0f - mask));
-    }
-    output[pixel] = result[0];
-    output[plane + pixel] = result[1];
-    output[2 * plane + pixel] = result[2];
-}
-
-// Stage 7: stage 4's flow and mask, kept for retiming instead of used.
+// Stage 7: the frame's final flow and mask, kept for retiming instead of used.
 __global__ void ComposeField(const uint2* flows, const __half* low, uint4* output, int height, int width)
 {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -323,17 +282,88 @@ __global__ void RetimeLevelKernel(const uint4* anchor, uint4* level, __half* tim
 
 enum class FrameTarget { Bgra8, Rgba16, Linear };
 
-// A target from the anchor's final flow and mask: the same warp and blend as stage 4 at
-// flow moved to this time, weighting each image by how close it is in time. At t = 0.5
-// this is stage 4; towards either end it becomes that source image.
+// One image warped by this pixel's flow. Textured reads the imported D3D11 surface through the
+// GPU's own bilinear filter, about 60% of the time, whose weights have eight fractional bits.
+// A BGRA8 surface reads B G R, the warp source R G B. It has the same image.
+template <FrameTarget Target, bool Textured>
+__device__ __forceinline__ void WarpRgb(const uint4* source, cudaTextureObject_t texture, int batch, int x, int y,
+    float flowX, float flowY, int height, int width, float* rgb)
+{
+    const float u = fminf(fmaxf(x + flowX, 0.0f), float(width - 1));
+    const float v = fminf(fmaxf(y + flowY, 0.0f), float(height - 1));
+    if constexpr (Textured) {
+        const float4 c = tex2D<float4>(texture, u + 0.5f, v + 0.5f);
+        rgb[0] = Target == FrameTarget::Rgba16 ? c.x : c.z;
+        rgb[1] = c.y;
+        rgb[2] = Target == FrameTarget::Rgba16 ? c.z : c.x;
+    } else {
+        const int x0 = int(u), y0 = int(v), x1 = min(x0 + 1, width - 1), y1 = min(y0 + 1, height - 1);
+        const float fx = u - x0, fy = v - y0;
+        const float a = (1 - fx) * (1 - fy), b = fx * (1 - fy), c = (1 - fx) * fy, d = fx * fy;
+        // Only the first eight bytes of each texel hold the image.
+        const auto* image = reinterpret_cast<const uint2*>(source + size_t(batch) * height * width);
+        const uint2 itl = image[(size_t(y0) * width + x0) * 2], itr = image[(size_t(y0) * width + x1) * 2];
+        const uint2 ibl = image[(size_t(y1) * width + x0) * 2], ibr = image[(size_t(y1) * width + x1) * 2];
+        const auto channelOf = [](const uint2& t, int channel) { return channel == 0 ? Half(t.x & 0xffff) : channel == 1 ? Half(t.x >> 16) : Half(t.y & 0xffff); };
+#pragma unroll
+        for (int channel = 0; channel < 3; ++channel) {
+            rgb[channel] = a * channelOf(itl, channel) + b * channelOf(itr, channel) + c * channelOf(ibl, channel) + d * channelOf(ibr, channel);
+        }
+    }
+}
+
 template <FrameTarget Target>
-__global__ void RetimeFrameKernel(const uint4* field, const uint4* source, cudaSurfaceObject_t surface,
-    unsigned char* linear, size_t pitch, float timestep, int height, int width)
+__device__ __forceinline__ void StorePixel(cudaSurfaceObject_t surface, unsigned char* linear, size_t pitch, int x, int y, const float* rgb)
+{
+    const float r = fminf(1.0f, fmaxf(0.0f, rgb[0])), g = fminf(1.0f, fmaxf(0.0f, rgb[1])), b = fminf(1.0f, fmaxf(0.0f, rgb[2]));
+    if constexpr (Target == FrameTarget::Rgba16) {
+        const ushort4 rgba = make_ushort4(__half_as_ushort(__float2half_rn(r)), __half_as_ushort(__float2half_rn(g)),
+            __half_as_ushort(__float2half_rn(b)), __half_as_ushort(__float2half_rn(1.0f)));
+        surf2Dwrite(rgba, surface, x * int(sizeof(ushort4)), y);
+    } else {
+        const uchar4 bgra = make_uchar4(static_cast<unsigned char>(b * 255.0f + 0.5f), static_cast<unsigned char>(g * 255.0f + 0.5f),
+            static_cast<unsigned char>(r * 255.0f + 0.5f), 255);
+        if constexpr (Target == FrameTarget::Linear) reinterpret_cast<uchar4*>(linear + size_t(y) * pitch)[x] = bgra;
+        else surf2Dwrite(bgra, surface, x * int(sizeof(uchar4)), y);
+    }
+}
+
+// The frame from block 4: its DepthToSpace (CRD, factor 2) at the channels used, its flow
+// residual, the final warp of both images and the mask blend.
+template <FrameTarget Target, bool Textured>
+__global__ void FinishFrameKernel(const uint2* flows, const __half* low, const uint4* source, cudaTextureObject_t firstImage, cudaTextureObject_t secondImage,
+    cudaSurfaceObject_t surface, unsigned char* linear, size_t pitch, int height, int width)
 {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     if (x >= width) return;
     const int y = blockIdx.y;
-    const size_t plane = size_t(height) * width;
+    const __half* lowPixel = low + (size_t(y / 2) * (width / 2) + x / 2) * kTailLowPixelChannels + (y & 1) * 2 + (x & 1);
+    const uint2 accumulated = flows[size_t(y) * width + x];
+    float warped[2][3];
+#pragma unroll
+    for (int batch = 0; batch < 2; ++batch) {
+        const unsigned word = batch ? accumulated.y : accumulated.x;
+        const float flowX = Half(word & 0xffff) + __half2float(lowPixel[batch * 8]);
+        const float flowY = Half(word >> 16) + __half2float(lowPixel[batch * 8 + 4]);
+        WarpRgb<Target, Textured>(source, batch ? secondImage : firstImage, batch, x, y, flowX, flowY, height, width, warped[batch]);
+    }
+    const float mask = 1.0f / (1.0f + expf(-__half2float(lowPixel[16])));
+    float result[3];
+#pragma unroll
+    for (int channel = 0; channel < 3; ++channel) result[channel] = warped[0][channel] * mask + warped[1][channel] * (1.0f - mask);
+    StorePixel<Target>(surface, linear, pitch, x, y, result);
+}
+
+// A target from the anchor's final flow and mask: the same warp and blend as a frame at
+// flow moved to this time, weighting each image by how close it is in time. At t = 0.5
+// this is that frame; towards either end it becomes that source image.
+template <FrameTarget Target, bool Textured>
+__global__ void RetimeFrameKernel(const uint4* field, const uint4* source, cudaTextureObject_t firstImage, cudaTextureObject_t secondImage,
+    cudaSurfaceObject_t surface, unsigned char* linear, size_t pitch, float timestep, int height, int width)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    if (x >= width) return;
+    const int y = blockIdx.y;
     const uint4 own = field[size_t(y) * width + x];
     const float move = timestep - 0.5f;
     const float fieldU = fminf(fmaxf(x - move * (Half(own.y & 0xffff) - Half(own.x & 0xffff)), 0.0f), float(width - 1));
@@ -349,20 +379,7 @@ __global__ void RetimeFrameKernel(const uint4* field, const uint4* source, cudaS
         const float scale = batch ? toSecond : toFirst;
         const float flowX = scale * Lerp2(Channel(tl, batch * 2), Channel(tr, batch * 2), Channel(bl, batch * 2), Channel(br, batch * 2), s);
         const float flowY = scale * Lerp2(Channel(tl, batch * 2 + 1), Channel(tr, batch * 2 + 1), Channel(bl, batch * 2 + 1), Channel(br, batch * 2 + 1), s);
-        const float u = fminf(fmaxf(x + flowX, 0.0f), float(width - 1));
-        const float v = fminf(fmaxf(y + flowY, 0.0f), float(height - 1));
-        const int x0 = int(u), y0 = int(v), x1 = min(x0 + 1, width - 1), y1 = min(y0 + 1, height - 1);
-        const float fx = u - x0, fy = v - y0;
-        const float a = (1 - fx) * (1 - fy), b = fx * (1 - fy), c = (1 - fx) * fy, d = fx * fy;
-        // Only the first eight bytes of each texel hold the image.
-        const auto* image = reinterpret_cast<const uint2*>(source + size_t(batch) * plane);
-        const uint2 itl = image[(size_t(y0) * width + x0) * 2], itr = image[(size_t(y0) * width + x1) * 2];
-        const uint2 ibl = image[(size_t(y1) * width + x0) * 2], ibr = image[(size_t(y1) * width + x1) * 2];
-        const auto rgb = [](const uint2& t, int channel) { return channel == 0 ? Half(t.x & 0xffff) : channel == 1 ? Half(t.x >> 16) : Half(t.y & 0xffff); };
-#pragma unroll
-        for (int channel = 0; channel < 3; ++channel) {
-            warped[batch][channel] = a * rgb(itl, channel) + b * rgb(itr, channel) + c * rgb(ibl, channel) + d * rgb(ibr, channel);
-        }
+        WarpRgb<Target, Textured>(source, batch ? secondImage : firstImage, batch, x, y, flowX, flowY, height, width, warped[batch]);
     }
     const float mask = 1.0f / (1.0f + expf(-Lerp2(Channel(tl, 4), Channel(tr, 4), Channel(bl, 4), Channel(br, 4), s)));
     // The anchor's mask knows only equal distances. Fourth powers of the distance to the
@@ -373,19 +390,8 @@ __global__ void RetimeFrameKernel(const uint4* field, const uint4* source, cudaS
     const float toUnit = 1.0f / fmaxf(first + second, 1e-6f);
     float result[3];
 #pragma unroll
-    for (int channel = 0; channel < 3; ++channel) {
-        result[channel] = fminf(1.0f, fmaxf(0.0f, (warped[0][channel] * first + warped[1][channel] * second) * toUnit));
-    }
-    if constexpr (Target == FrameTarget::Rgba16) {
-        const ushort4 rgba = make_ushort4(__half_as_ushort(__float2half_rn(result[0])), __half_as_ushort(__float2half_rn(result[1])),
-            __half_as_ushort(__float2half_rn(result[2])), __half_as_ushort(__float2half_rn(1.0f)));
-        surf2Dwrite(rgba, surface, x * int(sizeof(ushort4)), y);
-    } else {
-        const uchar4 bgra = make_uchar4(static_cast<unsigned char>(result[2] * 255.0f + 0.5f), static_cast<unsigned char>(result[1] * 255.0f + 0.5f),
-            static_cast<unsigned char>(result[0] * 255.0f + 0.5f), 255);
-        if constexpr (Target == FrameTarget::Linear) reinterpret_cast<uchar4*>(linear + size_t(y) * pitch)[x] = bgra;
-        else surf2Dwrite(bgra, surface, x * int(sizeof(uchar4)), y);
-    }
+    for (int channel = 0; channel < 3; ++channel) result[channel] = (warped[0][channel] * first + warped[1][channel] * second) * toUnit;
+    StorePixel<Target>(surface, linear, pitch, x, y, result);
 }
 
 // Stages 0-2: each output sample is the mean of the four pixels around its centre,
@@ -478,7 +484,7 @@ __global__ void DownscaleInput(const uint4* source, const __half* timestep, __ha
 TensorFormat InputFormat(int32_t stage, int32_t input) noexcept
 {
     if (input < 2 || stage == kLevelStage) return TensorFormat::kLINEAR;
-    if ((stage == kTailStage || stage == kFieldStage) && input == 2) return TensorFormat::kLINEAR;
+    if (stage == kFieldStage && input == 2) return TensorFormat::kLINEAR;
     return TensorFormat::kHWC8;
 }
 
@@ -501,7 +507,7 @@ bool ValidInputs(PluginTensorDesc const* input, int32_t count, int32_t stage) no
             if (desc.dims.d[0] != 2 || desc.dims.d[1] != shape.d[2] || desc.dims.d[2] != shape.d[3] || desc.dims.d[3] != 8) return false;
             continue;
         }
-        const bool finishing = stage == kTailStage || stage == kFieldStage;
+        const bool finishing = stage == kFieldStage;
         if (finishing && i == 2) {
             if (desc.dims.d[0] != 1 || desc.dims.d[1] != shape.d[2] || desc.dims.d[2] != shape.d[3] || desc.dims.d[3] != 4) return false;
             continue;
@@ -644,7 +650,6 @@ public:
         case kLevelStage: WarpFull<3><<<blocks, 128, 0, stream>>>(source, levels, timestep, result, static_cast<uint2*>(output[1]), height, width); break;
         case kAnchorStage: AccumulateLevels<<<blocks, 128, 0, stream>>>(levels, static_cast<uint4*>(output[0]), height, width); break;
         case kFieldStage: ComposeField<<<blocks, 128, 0, stream>>>(static_cast<const uint2*>(input[2]), static_cast<const __half*>(input[3]), static_cast<uint4*>(output[0]), height, width); break;
-        default: FinishFrame<<<blocks, 128, 0, stream>>>(source, static_cast<const uint2*>(input[2]), static_cast<const __half*>(input[3]), result, height, width); break;
         }
         return cudaPeekAtLastError() == cudaSuccess ? 0 : -1;
     }
@@ -734,21 +739,30 @@ cudaError_t MpcvrRifeRetimeLevel(const void* anchor, void* level, int levelHeigh
     return cudaGetLastError();
 }
 
-cudaError_t MpcvrRifeRetimeFrame(const void* field, const void* source, cudaArray* output, bool rgba16, int height, int width,
-    float timestep, cudaStream_t stream, cudaSurfaceObject_t* surfaceOut) noexcept
+namespace {
+// Launches a frame kernel for the output's kind, with a surface only if it has one.
+template <typename Launch>
+cudaError_t LaunchFrameKernel(const RifeFrameOutput& output, cudaSurfaceObject_t* surfaceOut, Launch&& launch) noexcept
 {
     using namespace mpcvr_rife_warp;
+    const bool textured = output.firstImage && output.secondImage;
+    using Bgra = std::integral_constant<FrameTarget, FrameTarget::Bgra8>;
+    using Rgba = std::integral_constant<FrameTarget, FrameTarget::Rgba16>;
+    using Linear = std::integral_constant<FrameTarget, FrameTarget::Linear>;
+    using Yes = std::true_type;
+    using No = std::false_type;
+    if (output.linear) {
+        if (textured) launch(Linear{}, Yes{}, cudaSurfaceObject_t(0)); else launch(Linear{}, No{}, cudaSurfaceObject_t(0));
+        return cudaGetLastError();
+    }
     cudaResourceDesc resource{};
     resource.resType = cudaResourceTypeArray;
-    resource.res.array.array = output;
+    resource.res.array.array = output.array;
     cudaSurfaceObject_t surface = 0;
     cudaError_t result = cudaCreateSurfaceObject(&surface, &resource);
     if (result != cudaSuccess) return result;
-    const dim3 blocks((width + 127) / 128, height);
-    const auto* flowField = static_cast<const uint4*>(field);
-    const auto* images = static_cast<const uint4*>(source);
-    if (rgba16) RetimeFrameKernel<FrameTarget::Rgba16><<<blocks, 128, 0, stream>>>(flowField, images, surface, nullptr, 0, timestep, height, width);
-    else RetimeFrameKernel<FrameTarget::Bgra8><<<blocks, 128, 0, stream>>>(flowField, images, surface, nullptr, 0, timestep, height, width);
+    if (output.rgba16) { if (textured) launch(Rgba{}, Yes{}, surface); else launch(Rgba{}, No{}, surface); }
+    else { if (textured) launch(Bgra{}, Yes{}, surface); else launch(Bgra{}, No{}, surface); }
     result = cudaGetLastError();
     if (result != cudaSuccess) {
         cudaDestroySurfaceObject(surface);
@@ -758,14 +772,28 @@ cudaError_t MpcvrRifeRetimeFrame(const void* field, const void* source, cudaArra
     *surfaceOut = surface;
     return cudaSuccess;
 }
+}
 
-cudaError_t MpcvrRifeRetimeFrameLinear(const void* field, const void* source, void* output, size_t pitch, int height, int width,
-    float timestep, cudaStream_t stream) noexcept
+cudaError_t MpcvrRifeFinishFrame(const void* flows, const void* low, const void* source, const RifeFrameOutput& output,
+    int height, int width, cudaStream_t stream, cudaSurfaceObject_t* surfaceOut) noexcept
 {
     using namespace mpcvr_rife_warp;
-    RetimeFrameKernel<FrameTarget::Linear><<<dim3((width + 127) / 128, height), 128, 0, stream>>>(static_cast<const uint4*>(field),
-        static_cast<const uint4*>(source), 0, static_cast<unsigned char*>(output), pitch, timestep, height, width);
-    return cudaGetLastError();
+    const dim3 blocks((width + 127) / 128, height);
+    return LaunchFrameKernel(output, surfaceOut, [&](auto target, auto textured, cudaSurfaceObject_t surface) {
+        FinishFrameKernel<decltype(target)::value, decltype(textured)::value><<<blocks, 128, 0, stream>>>(static_cast<const uint2*>(flows), static_cast<const __half*>(low),
+            static_cast<const uint4*>(source), output.firstImage, output.secondImage, surface, static_cast<unsigned char*>(output.linear), output.pitch, height, width);
+    });
+}
+
+cudaError_t MpcvrRifeRetimeFrame(const void* field, const void* source, const RifeFrameOutput& output,
+    int height, int width, float timestep, cudaStream_t stream, cudaSurfaceObject_t* surfaceOut) noexcept
+{
+    using namespace mpcvr_rife_warp;
+    const dim3 blocks((width + 127) / 128, height);
+    return LaunchFrameKernel(output, surfaceOut, [&](auto target, auto textured, cudaSurfaceObject_t surface) {
+        RetimeFrameKernel<decltype(target)::value, decltype(textured)::value><<<blocks, 128, 0, stream>>>(static_cast<const uint4*>(field), static_cast<const uint4*>(source),
+            output.firstImage, output.secondImage, surface, static_cast<unsigned char*>(output.linear), output.pitch, timestep, height, width);
+    });
 }
 
 bool FuseRifeSynthesisWarps(nvinfer1::INetworkDefinition& network, std::vector<uint16_t>& weightStorage, RifeFusedPlan plan) noexcept
@@ -840,9 +868,9 @@ bool FuseRifeSynthesisWarps(nvinfer1::INetworkDefinition& network, std::vector<u
     }
     // Which stages each plan holds, in the order they run. Layers no stage needs are
     // removed by TensorRT with the rest.
-    constexpr std::array<int, 6> wholeStages{kInputStage, 0, 1, 2, kFullStage, kTailStage};
+    constexpr std::array<int, 5> wholeStages{kInputStage, 0, 1, 2, kFullStage};
     constexpr std::array<int, 5> anchorStages{kInputStage, 0, 1, 2, kAnchorStage};
-    constexpr std::array<int, 2> tailStages{kLevelStage, kTailStage};
+    constexpr std::array<int, 1> tailStages{kLevelStage};
     constexpr std::array<int, 6> fieldStages{kInputStage, 0, 1, 2, kFullStage, kFieldStage};
     const int* stages = plan == RifeFusedPlan::Whole ? wholeStages.data() : plan == RifeFusedPlan::Anchor ? anchorStages.data()
         : plan == RifeFusedPlan::Tail ? tailStages.data() : fieldStages.data();
@@ -851,7 +879,7 @@ bool FuseRifeSynthesisWarps(nvinfer1::INetworkDefinition& network, std::vector<u
     ITensor* flows = nullptr;
     for (size_t i = 0; i < stageCount; ++i) {
         const int stage = stages[i];
-        const bool finishing = stage == kTailStage || stage == kFieldStage;
+        const bool finishing = stage == kFieldStage;
         ITensor* input[6]{raw, warpSource, levels[0], levels[1], levels[2], levels[3]};
         if (finishing) {
             input[2] = flows;
@@ -876,6 +904,21 @@ bool FuseRifeSynthesisWarps(nvinfer1::INetworkDefinition& network, std::vector<u
             fused->getOutput(0)->setName(name.c_str());
             network.markOutput(*fused->getOutput(0));
         }
+    }
+    if (plan == RifeFusedPlan::Whole || plan == RifeFusedPlan::Tail) {
+        // These end at what MpcvrRifeFinishFrame reads, as the kernel lays it out: TensorRT
+        // would otherwise reformat both only to hand them over.
+        auto* output = network.getOutput(0);
+        const std::string name = output->getName();
+        network.unmarkOutput(*output);
+        output->setName("mpcvr_rife_replaced_output");
+        auto* low = pruned->getOutput(0);
+        low->setName(name.c_str());
+        network.markOutput(*low);
+        low->setAllowedFormats(1u << static_cast<uint32_t>(TensorFormat::kHWC8));
+        flows->setName(kRifeFlowsName);
+        network.markOutput(*flows);
+        flows->setAllowedFormats(1u << static_cast<uint32_t>(TensorFormat::kLINEAR));
     }
     return true;
 }

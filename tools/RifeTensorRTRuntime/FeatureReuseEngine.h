@@ -77,6 +77,8 @@ public:
         EncoderStage anchor;
         void* anchorLevel = nullptr;
         void* level = nullptr;
+        // On the fused path, except when retiming: the flow the frame kernel adds block 4's to.
+        void* flows = nullptr;
         void* features = nullptr;
         size_t imageFeatureBytes = 0;
         // On the fused path, what the synthesis kernels read: each image and its
@@ -107,6 +109,7 @@ public:
             if (warpSource) cudaFree(warpSource);
             if (anchorLevel) cudaFree(anchorLevel);
             if (level) cudaFree(level);
+            if (flows) cudaFree(flows);
             if (scratch) cudaFree(scratch);
         }
         bool Enqueue(cudaStream_t stream, uint64_t pairId, uint64_t previousPairId, bool& firstKept) {
@@ -206,7 +209,7 @@ public:
     bool Fused() const { return m_fused; }
     int LevelRows() const { return static_cast<int>((m_height + 127) / 128 * 128 / 4); }
     int LevelCols() const { return static_cast<int>(m_width / 4); }
-    // The field plan's output doesn't fit the frame's three planes.
+    // Neither the field plan's output nor block 4's fits the frame's three planes.
     size_t OutputBytes() const { return size_t{16} * m_height * m_width; }
 
     // Rows every tensor has; on the fused path, fewer than the padded surface's.
@@ -250,6 +253,8 @@ public:
                     || cudaMemset(result->warpSource, 0, sourceBytes) != cudaSuccess
                     || !core->setInputShape(kRifeWarpSourceName, WarpSourceShape())
                     || !core->setTensorAddress(kRifeWarpSourceName, result->warpSource)) return {};
+            if (m_flowReuse != RifeFlowReuse::Retime && (cudaMalloc(&result->flows, size_t{8} * m_height * m_width) != cudaSuccess
+                    || !core->setTensorAddress(kRifeFlowsName, result->flows))) return {};
             result->imageSourceBytes = sourceBytes / 2;
             result->images = images;
             result->width = static_cast<int>(m_width);
@@ -346,11 +351,11 @@ private:
         // also appends a unique temporary filename, subject to MAX_PATH.
         const auto corePlan = flowReuse == RifeFlowReuse::Coarse ? RifeFusedPlan::Tail
             : flowReuse == RifeFlowReuse::Retime ? RifeFusedPlan::Field : RifeFusedPlan::Whole;
-        const char* coreSuffix = flowReuse == RifeFlowReuse::Coarse ? "_tail_w6" : flowReuse == RifeFlowReuse::Retime ? "_field_w6" : "_synth_w6";
+        const char* coreSuffix = flowReuse == RifeFlowReuse::Coarse ? "_tail_w7" : flowReuse == RifeFlowReuse::Retime ? "_field_w7" : "_synth_w7";
         const bool warpBuilt = useWarp
             && BuildStage(synthesisPath, cache, cacheKey + suffix + coreSuffix, false, m_core, true, false, corePlan)
             && (flowReuse != RifeFlowReuse::Coarse
-                || BuildStage(synthesisPath, cache, cacheKey + suffix + "_anchor_w6", false, m_anchor, true, false, RifeFusedPlan::Anchor));
+                || BuildStage(synthesisPath, cache, cacheKey + suffix + "_anchor_w7", false, m_anchor, true, false, RifeFusedPlan::Anchor));
         // On the same measured path, encoding images one at a time lets consecutive
         // pairs share their common frame. The two-image plan stays the fallback.
         if (warpBuilt && BuildStage(featurePath, cache, cacheKey + suffix + "_encoder1", true, m_oneImage, false, true)
@@ -365,7 +370,7 @@ private:
         if (!useWarp && !BuildStage(synthesisPath, cache, cacheKey + suffix + "_synthesis", false, m_core)) return false;
         m_fused = warpBuilt;
         m_flowReuse = flowReuse;
-        if (m_core->getNbIOTensors() != (!m_fused ? 4 : flowReuse == RifeFlowReuse::Coarse ? 6 : 5)) return false;
+        if (m_core->getNbIOTensors() != (!m_fused ? 4 : flowReuse == RifeFlowReuse::Coarse ? 7 : flowReuse == RifeFlowReuse::Retime ? 5 : 6)) return false;
         for (const char* name : {m_featureName.c_str(), kImageViewName}) {
             if (m_core->getTensorIOMode(name) != nvinfer1::TensorIOMode::kINPUT
                     || m_core->getTensorDataType(name) != nvinfer1::DataType::kHALF
@@ -493,7 +498,8 @@ private:
                 if (!profile->setDimensions(input->getName(), selector, dims)) return false;
             }
         }
-        network->getOutput(0)->setAllowedFormats(1u << static_cast<uint32_t>(nvinfer1::TensorFormat::kLINEAR));
+        // The fused plans that end at the frame kernel's inputs have set their own.
+        if (network->getNbOutputs() == 1) network->getOutput(0)->setAllowedFormats(1u << static_cast<uint32_t>(nvinfer1::TensorFormat::kLINEAR));
         if (config->addOptimizationProfile(profile) < 0) return false;
         config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, size_t{2} << 30);
         TrtPtr<nvinfer1::IHostMemory> serialized(builder->buildSerializedNetwork(*network, *config));

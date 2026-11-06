@@ -136,6 +136,9 @@ struct MpcvrRifeStats {
     uint64_t featureReuse = 0;
     // Optional tail: flow actually shared within a pair, 0 = none, 1 = coarse, 2 = all.
     uint64_t flowReuse = 0;
+    // Optional tail, bits: 1 = the output surface was written with no map or unmap,
+    // 2 = this request read its input surfaces the same way.
+    uint64_t persistentOutput = 0;
 };
 
 using MpcvrRifeGetAbiVersionFn = uint32_t(WINAPI*)();
