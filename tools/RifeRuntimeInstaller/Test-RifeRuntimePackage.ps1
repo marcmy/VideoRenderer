@@ -130,8 +130,10 @@ try {
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     Assert-Manifest -Manifest $manifest -ExpectedArchitectures $expectedArchitectures
 
-    $commonEntries = @(Get-ZipFileEntries -ArchivePath (Join-Path $root 'MPCVR-RIFE-Common.zip'))
-    Assert-EqualSet -Actual $commonEntries -Expected @(Get-RifeCommonRuntimeFileNames) -Description 'MPCVR-RIFE-Common.zip'
+    $runtimeEntries = @(Get-ZipFileEntries -ArchivePath (Join-Path $root 'MPCVR-RIFE-Runtime.zip'))
+    Assert-EqualSet -Actual $runtimeEntries -Expected @(Get-RifeRuntimeBuildFileNames) -Description 'MPCVR-RIFE-Runtime.zip'
+    $libraryEntries = @(Get-ZipFileEntries -ArchivePath (Join-Path $root 'MPCVR-RIFE-Libraries.zip'))
+    Assert-EqualSet -Actual $libraryEntries -Expected @(Get-RifeLibraryFileNames) -Description 'MPCVR-RIFE-Libraries.zip'
 
     foreach ($architecture in $expectedArchitectures) {
         $archiveName = "MPCVR-RIFE-$($architecture.Key).zip"

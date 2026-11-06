@@ -1,10 +1,11 @@
 # MPC-VR RIFE TensorRT runtime bundle
 
-The release runtime is split into one common archive plus one TensorRT builder-resource pack per supported NVIDIA compute capability. The installer can therefore install the shared runtime once and add only the builder resource that matches the detected GPU.
+The release runtime is split into a small runtime archive, a stable TensorRT library archive, and one TensorRT builder-resource pack per supported NVIDIA compute capability. A new runtime build therefore changes only the runtime archive, and the installer adds only the builder resource that matches the detected GPU.
 
 The shipping bundle contains:
 
-- `MPCVR-RIFE-Common.zip`
+- `MPCVR-RIFE-Runtime.zip`
+- `MPCVR-RIFE-Libraries.zip`
 - `MPCVR-RIFE-sm75.zip` for compute capability 7.5 (Turing)
 - `MPCVR-RIFE-sm86.zip` for compute capability 8.6 (Ampere)
 - `MPCVR-RIFE-sm89.zip` for compute capability 8.9 (Ada)
@@ -13,19 +14,26 @@ The shipping bundle contains:
 - `SHA256SUMS.txt`
 - build provenance plus NVIDIA license/notice files carried from the pinned SDK archives when present
 
-`MPCVR-RIFE-Common.zip` contains exactly:
+`MPCVR-RIFE-Runtime.zip` contains exactly:
 
 ```text
 MPCVRRifeRuntime64.dll
-nvinfer_11.dll
-nvonnxparser_11.dll
-nvinfer_builder_resource_ptx_11.dll
 BUILD-INFO.txt
 ```
 
+`MPCVR-RIFE-Libraries.zip` contains exactly the following, packed by `tools/Dev/dependencies.py pack` so that unchanged libraries keep the same hash and are reused:
+
+```text
+nvinfer_11.dll
+nvonnxparser_11.dll
+nvinfer_builder_resource_ptx_11.dll
+```
+
+Earlier releases hold these five files together in `MPCVR-RIFE-Common.zip`. The installer still accepts a bundle with that one archive in place of the two above.
+
 Each architecture archive contains exactly one matching `nvinfer_builder_resource_<architecture>_11.dll`. TensorRT engines are generated locally on the target machine; prebuilt `.plan` engines are not distributed.
 
-The release stack is pinned to CUDA toolkit 13.4.1, CUDA runtime 13.4.49, and TensorRT 11.4.0.106. CUDA 13 links the runtime through the NVIDIA display driver's hybrid CUDA loader, so the common archive does not carry a standalone `cudart64_13.dll`. `runtime-manifest.json` records the version contract and runtime ABI 2.
+The release stack is pinned to CUDA toolkit 13.4.1, CUDA runtime 13.4.49, and TensorRT 11.4.0.106. CUDA 13 links the runtime through the NVIDIA display driver's hybrid CUDA loader, so the library archive does not carry a standalone `cudart64_13.dll`. `runtime-manifest.json` records the version contract and runtime ABI 2.
 
 Validate an assembled bundle with either Windows PowerShell 5.1 or PowerShell 7:
 

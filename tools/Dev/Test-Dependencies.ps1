@@ -179,6 +179,7 @@ try {
 function Invoke-SetupStep {
     param($Name,$ScriptPath,$Parameters)
     if ($Name -notmatch '^(3/4 |4/4 |Running RIFE post-install preflight)') { throw "Unexpected runtime reinstall: $Name" }
+    if ($env:MPCVR_SETUP_TEST_FAIL_STEP) { throw 'fixture step failure' }
     Add-Content -LiteralPath $env:MPCVR_SETUP_TEST_STEPS -Value $Name
 }
 '@
@@ -208,6 +209,267 @@ exit $LASTEXITCODE
     Check ($steps.Count -eq 3 -and $steps[0] -like '3/4 *' -and $steps[1] -like '4/4 *' -and $steps[2] -like 'Running RIFE post-install preflight*') 'Reuse skipped renderer/updater installation or post-install checks'
     Check (Test-Path -LiteralPath $profileCache -PathType Container) 'Setup failed to repair a missing empty cache directory during RIFE reuse'
     'PASS: installed dependency reuse, cached legacy adoption, independent components, corruption and GPU/pin changes.'
+    # Automatic cleanup through the real coordinator in the isolated profile.
+    $profileDownloads=Join-Path $profile 'MPCVideoRenderer/downloads'
+    $hexName={ param($Seed) -join ((Get-FileHash -InputStream ([IO.MemoryStream]::new([Text.Encoding]::ASCII.GetBytes($Seed))) -Algorithm SHA256).Hash.ToLowerInvariant()) }
+    $pinnedName=$reuseLock.components.PSObject.Properties['maxine'].Value.manifest.files.PSObject.Properties['MPCVR-Maxine-Runtime.zip'].Value.sha256
+    $staleName=& $hexName 'stale'
+    $otherFiles=@(($staleName+'.partial'),'notes.txt',(& $hexName 'upper').ToUpperInvariant(),'abc123')
+    foreach ($name in @($pinnedName,$staleName)+$otherFiles) { [IO.File]::WriteAllText((Join-Path $profileDownloads $name),'fixture') }
+    New-Item -ItemType Directory (Join-Path $profileDownloads (& $hexName 'folder')) | Out-Null
+    function Invoke-CleanupSetup([string]$Expect) {
+        $previous=$ErrorActionPreference
+        try {
+            $ErrorActionPreference='Continue'
+            $output=@(& $hostExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $runner -Setup $coordinatorPath -Profile $profile -Steps $stepsPath 2>&1 | ForEach-Object { "$_" })
+            $code=$LASTEXITCODE
+        } finally { $ErrorActionPreference=$previous }
+        if (($Expect -eq 'success') -ne ($code -eq 0)) { $output | ForEach-Object { Write-Host $_ }; throw "Setup exit code $code was not the expected $Expect" }
+    }
+    $env:MPCVR_SETUP_TEST_FAIL_STEP='1'
+    try { Invoke-CleanupSetup 'failure' } finally { Remove-Item Env:MPCVR_SETUP_TEST_FAIL_STEP }
+    Check (Test-Path (Join-Path $profileDownloads $staleName)) 'A failed setup removed a download'
+    $recordPath=Join-Path $profileDownloads 'retained-pins.json'
+    [IO.File]::WriteAllText($recordPath,'invalid JSON')
+    Invoke-CleanupSetup 'success'
+    Check (Test-Path (Join-Path $profileDownloads $staleName)) 'An unreadable record allowed cleanup in the same run'
+    Check ((Get-Content $recordPath -Raw | ConvertFrom-Json).schemaVersion -eq 1) 'An unreadable record was not replaced'
+    Invoke-CleanupSetup 'success'
+    Check (-not (Test-Path (Join-Path $profileDownloads $staleName))) 'A successful setup kept a superseded download'
+    Check (Test-Path (Join-Path $profileDownloads $pinnedName)) 'Cleanup deleted a download the current lock pins'
+    foreach ($name in $otherFiles+@((& $hexName 'folder'),'retained-pins.json')) {
+        Check (Test-Path (Join-Path $profileDownloads $name)) "Cleanup touched something that is not a superseded download: $name"
+    }
+    # Temporary files from a killed setup go once they are clearly abandoned.
+    $leftovers=Join-Path $fixture 'leftover-cache'; New-Item -ItemType Directory $leftovers | Out-Null
+    $guid='0123456789abcdef0123456789abcdef'
+    $abandoned=@("$pinnedName.$guid.partial","retained-pins.json.$guid.tmp")
+    $retainedNames=@("$pinnedName.partial","$pinnedName.FEDCBA9876543210FEDCBA9876543210.partial","other.$guid.partial","retained-pins.json.tmp")
+    foreach ($name in $abandoned+$retainedNames) {
+        [IO.File]::WriteAllText((Join-Path $leftovers $name),'fixture')
+        (Get-Item -LiteralPath (Join-Path $leftovers $name)).LastWriteTime=(Get-Date).AddDays(-2)
+    }
+    $activeDownload=(& $hexName 'active')+".$guid.partial"
+    [IO.File]::WriteAllText((Join-Path $leftovers $activeDownload),'fixture')
+    $removal=Remove-MPCVRSupersededDownload -Lock $reuseLock -CacheRoot $leftovers
+    Check ($removal.Count -eq 2) 'Cleanup did not remove exactly the abandoned temporary files'
+    foreach ($name in $abandoned) { Check (-not (Test-Path -LiteralPath (Join-Path $leftovers $name))) "An abandoned temporary file remained: $name" }
+    foreach ($name in $retainedNames+@($activeDownload)) { Check (Test-Path -LiteralPath (Join-Path $leftovers $name)) "Cleanup removed a file it does not own or one still in use: $name" }
+    # With no record yet, the install being replaced identifies the last build.
+    $firstRun=Join-Path $fixture 'first-run-cache'; New-Item -ItemType Directory $firstRun | Out-Null
+    $firstRunRoot=Join-Path $fixture 'first-run-install'; New-Item -ItemType Directory $firstRunRoot | Out-Null
+    $lastCommon=& $hexName 'last common'; $lastPack=& $hexName 'last pack'; $older=& $hexName 'older build'
+    foreach ($name in @($lastCommon,$lastPack,$older)) { [IO.File]::WriteAllText((Join-Path $firstRun $name),'fixture') }
+    @{schemaVersion=2;commonRuntimeArchiveSha256=$lastCommon;architectures=@(@{key='sm75';sha256=$lastPack})} | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $firstRunRoot 'installed-manifest.json')
+    $installedHashes=@(Get-MPCVRInstalledArchiveHash -InstallRoot $firstRunRoot)
+    Check ($installedHashes.Count -eq 2 -and @(Get-MPCVRInstalledArchiveHash -InstallRoot (Join-Path $fixture 'missing')).Count -eq 0) 'The installed archives were not identified'
+    Check (Save-MPCVRDownloadRetention -Lock $reuseLock -InstalledHashes $installedHashes -CacheRoot $firstRun) 'A first run was treated as an unreadable record'
+    $removal=Remove-MPCVRSupersededDownload -Lock $reuseLock -CacheRoot $firstRun
+    Check ($removal.Count -eq 1 -and -not (Test-Path (Join-Path $firstRun $older)) -and (Test-Path (Join-Path $firstRun $lastCommon)) -and (Test-Path (Join-Path $firstRun $lastPack))) 'The first cleanup did not keep the last build'
+    # A new pin moves the installed set to "previous"; the set before that goes.
+    $pruneCache=Join-Path $fixture 'prune-cache'; New-Item -ItemType Directory $pruneCache | Out-Null
+    $pinLock=Get-Content $lockPath -Raw | ConvertFrom-Json
+    $pinAsset=$pinLock.components.PSObject.Properties['rife-runtime'].Value.manifest.files.PSObject.Properties['SHA256SUMS.txt'].Value
+    $generations=@('generation one','generation two','generation three' | ForEach-Object { & $hexName $_ })
+    foreach ($generation in $generations) { [IO.File]::WriteAllText((Join-Path $pruneCache $generation),'fixture') }
+    $superseded={ @(Get-MPCVRSupersededDownload -Lock $pinLock -CacheRoot $pruneCache | ForEach-Object Name) }
+    $pinAsset.sha256=$generations[0]
+    [void](Save-MPCVRDownloadRetention -Lock $pinLock -CacheRoot $pruneCache)
+    [void](Save-MPCVRDownloadRetention -Lock $pinLock -CacheRoot $pruneCache)
+    $pinAsset.sha256=$generations[1]
+    Check (@(& $superseded).Count -eq 1 -and (& $superseded) -eq $generations[2]) 'The recorded set was not kept before setup succeeded on the new pin'
+    [void](Save-MPCVRDownloadRetention -Lock $pinLock -CacheRoot $pruneCache)
+    [void](Save-MPCVRDownloadRetention -Lock $pinLock -CacheRoot $pruneCache)
+    Check (@(& $superseded).Count -eq 1 -and (& $superseded) -eq $generations[2]) 'Rerunning the same setup forgot the previous pin'
+    $pinAsset.sha256=$generations[2]
+    [void](Save-MPCVRDownloadRetention -Lock $pinLock -CacheRoot $pruneCache)
+    Check (@(& $superseded).Count -eq 1 -and (& $superseded) -eq $generations[0]) 'Cleanup did not keep exactly the current and previous pins'
+    $removal=Remove-MPCVRSupersededDownload -Lock $pinLock -CacheRoot $pruneCache
+    Check ($removal.Count -eq 1 -and $removal.Bytes -eq 7 -and -not (Test-Path (Join-Path $pruneCache $generations[0]))) 'Cleanup did not report what it removed'
+    [IO.File]::WriteAllText((Join-Path $pruneCache (& $hexName 'after damage')),'fixture')
+    [IO.File]::WriteAllText((Join-Path $pruneCache 'retained-pins.json'),'invalid JSON')
+    $rejected=$false
+    try { Remove-MPCVRSupersededDownload -Lock $pinLock -CacheRoot $pruneCache | Out-Null } catch { $rejected=$true }
+    Check ($rejected -and (Test-Path (Join-Path $pruneCache (& $hexName 'after damage')))) 'An unreadable retention record allowed deletion'
+    'PASS: successful setups keep the current and last builds and remove only older verified downloads.'
+    # A new runtime build must cost only its own small package. Mock the network and
+    # count what it asks for; Libraries is already cached from the previous build.
+    $split=Join-Path $fixture 'split'; $splitCache=Join-Path $split 'cache'
+    New-Item -ItemType Directory $splitCache -Force | Out-Null
+    function New-SplitArchive($Files,$Stem) {
+        $source=Join-Path $split ([guid]::NewGuid().ToString('N')); New-Item -ItemType Directory $source | Out-Null
+        foreach ($file in $Files.GetEnumerator()) { [IO.File]::WriteAllText((Join-Path $source $file.Key),$file.Value) }
+        $zip=Join-Path $split "$Stem.zip"; Compress-Archive -Path (Join-Path $source '*') -DestinationPath $zip -Force
+        Remove-Item -LiteralPath $source -Recurse -Force
+        return $zip
+    }
+    function ConvertTo-SplitLock($Lock,$RuntimeZip,$LibrariesZip) {
+        $manifest=$Lock.components.PSObject.Properties['rife-runtime'].Value.manifest
+        if ($manifest.files.PSObject.Properties['MPCVR-RIFE-Common.zip']) { $manifest.files.PSObject.Properties.Remove('MPCVR-RIFE-Common.zip') }
+        foreach ($pair in @(@('MPCVR-RIFE-Runtime.zip',$RuntimeZip),@('MPCVR-RIFE-Libraries.zip',$LibrariesZip))) {
+            $manifest.files.PSObject.Properties.Remove($pair[0])
+            $manifest.files | Add-Member -NotePropertyName $pair[0] -NotePropertyValue ([pscustomobject]@{
+                sha256=(Get-FileHash $pair[1] -Algorithm SHA256).Hash.ToLowerInvariant();bytes=(Get-Item $pair[1]).Length
+                url="https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/$($manifest.releaseTag)/$($pair[0])"})
+        }
+    }
+    $librariesZip=New-SplitArchive @{'nvinfer_11.dll'='TensorRT';'nvonnxparser_11.dll'='parser';'nvinfer_builder_resource_ptx_11.dll'='ptx'} 'libraries'
+    $runtimeZip=New-SplitArchive @{'MPCVRRifeRuntime64.dll'='build one';'BUILD-INFO.txt'='info'} 'runtime-one'
+    $nextRuntimeZip=New-SplitArchive @{'MPCVRRifeRuntime64.dll'='build two';'BUILD-INFO.txt'='info'} 'runtime-two'
+    $splitLock=Get-Content $lockPath -Raw | ConvertFrom-Json
+    # Everything except the runtime package is present already.
+    foreach ($component in $splitLock.components.PSObject.Properties) {
+        foreach ($asset in $component.Value.manifest.files.PSObject.Properties) { $asset.Value.sha256=$sha; $asset.Value.bytes=(Get-Item $payload).Length }
+    }
+    Copy-Item $payload (Join-Path $splitCache $sha)
+    ConvertTo-SplitLock $splitLock $nextRuntimeZip $librariesZip
+    $librariesSha=(Get-FileHash $librariesZip -Algorithm SHA256).Hash.ToLowerInvariant()
+    Copy-Item $librariesZip (Join-Path $splitCache $librariesSha)
+    $splitLockPath=Join-Path $split 'lock.json'
+    $splitLock | ConvertTo-Json -Depth 40 | Set-Content $splitLockPath
+    Check (@((Read-MPCVRDependencyLock -Path $splitLockPath).components.PSObject.Properties['rife-runtime'].Value.manifest.files.PSObject.Properties.Name) -contains 'MPCVR-RIFE-Libraries.zip') 'The split runtime lock was not accepted'
+    foreach ($mutation in @('no-libraries','no-runtime','both-layouts')) {
+        $invalid=Get-Content $splitLockPath -Raw | ConvertFrom-Json
+        $files=$invalid.components.PSObject.Properties['rife-runtime'].Value.manifest.files
+        switch ($mutation) {
+            'no-libraries' { $files.PSObject.Properties.Remove('MPCVR-RIFE-Libraries.zip') }
+            'no-runtime' { $files.PSObject.Properties.Remove('MPCVR-RIFE-Runtime.zip') }
+            'both-layouts' { $files | Add-Member -NotePropertyName 'MPCVR-RIFE-Common.zip' -NotePropertyValue $files.PSObject.Properties['MPCVR-RIFE-Runtime.zip'].Value.PSObject.Copy() ; $files.PSObject.Properties['MPCVR-RIFE-Common.zip'].Value.url=$files.PSObject.Properties['MPCVR-RIFE-Common.zip'].Value.url.Replace('Runtime.zip','Common.zip') }
+        }
+        $invalid | ConvertTo-Json -Depth 40 | Set-Content $badPath
+        $rejected=$false
+        try { Read-MPCVRDependencyLock -Path $badPath | Out-Null } catch { $rejected=$true }
+        Check $rejected "Incomplete runtime pin was accepted: $mutation"
+    }
+    & $module { param($Served,$Log) $script:FixtureServed=$Served; $script:FixtureLog=$Log
+        function script:Invoke-WebRequest { param($Uri,$OutFile,[switch]$UseBasicParsing)
+            Add-Content -LiteralPath $script:FixtureLog -Value $Uri
+            Copy-Item -LiteralPath $script:FixtureServed -Destination $OutFile }
+    } $nextRuntimeZip (Join-Path $split 'downloads.txt')
+    $resolvedSplit=Join-Path $split 'resolved'
+    Resolve-MPCVRDependencies -Lock $splitLock -Destination $resolvedSplit -ArchitectureKeys @('sm75') -CacheRoot $splitCache -Components @('rife-runtime')
+    $requested=@(Get-Content (Join-Path $split 'downloads.txt'))
+    Check ($requested.Count -eq 1 -and $requested[0] -like '*/MPCVR-RIFE-Runtime.zip') "A new runtime build downloaded more than its own package: $($requested -join ', ')"
+    Check ((Get-FileHash (Join-Path $resolvedSplit 'MPCVR-RIFE-Libraries.zip') -Algorithm SHA256).Hash -ieq $librariesSha) 'Cached libraries were not staged for installation'
+    Check (-not (Test-Path (Join-Path $resolvedSplit 'MPCVR-RIFE-Common.zip'))) 'Split lock staged a common package'
+    # Corrupt the cached libraries: the pinned hash must force one replacement, never trust the file.
+    [IO.File]::WriteAllText((Join-Path $splitCache $librariesSha),'corrupt')
+    $rejected=$false
+    try { Resolve-MPCVRDependencies -Lock $splitLock -Destination (Join-Path $split 'corrupt') -ArchitectureKeys @('sm75') -CacheRoot $splitCache -Components @('rife-runtime') } catch { $rejected=$true }
+    Check $rejected 'A corrupted library package was accepted from the cache'
+    Copy-Item $librariesZip (Join-Path $splitCache $librariesSha) -Force
+    # The real installer: stage split packages, record both hashes, keep plans,
+    # and roll back when post-swap checks fail. Only the native preflight is stubbed.
+    $installer=Join-Path $split 'installer'; New-Item -ItemType Directory $installer | Out-Null
+    Copy-Item (Join-Path $PSScriptRoot '../RifeRuntimeInstaller/Install-MPCVRRifeRuntime.ps1') $installer
+    Copy-Item (Join-Path $PSScriptRoot '../RifeRuntimeInstaller/RifeRuntimeManifest.psm1') $installer
+    @'
+param($InstallRoot,$GpuInventoryJson,[switch]$ThrowOnFailure)
+if ($env:MPCVR_TEST_FAIL_PREFLIGHT) { throw 'fixture preflight failure' }
+'@ | Set-Content (Join-Path $installer 'Test-MPCVRRifePreflight.ps1') -Encoding UTF8
+    $modelRoot=Join-Path $split 'models'; New-Item -ItemType Directory $modelRoot | Out-Null
+    $modelEntries=foreach ($model in @(@('RIFE 4.4','rife_v4.4.onnx'),@('RIFE 4.6','rife_v4.6.onnx'),@('RIFE 4.15 Lite','rife_v4.15_lite.onnx'),@('RIFE 4.25','rife_v4.25.onnx'),@('RIFE 4.25 Lite','rife_v4.25_lite.onnx'))) {
+        [IO.File]::WriteAllText((Join-Path $modelRoot $model[1]),"fixture $($model[1])")
+        [pscustomobject]@{model=$model[0];file=$model[1];sourceRelease='fixture';sourceArchive='fixture.7z';sourceArchiveSha256='a'*64;sourceModel='fixture.onnx';input=@(1,11,'H','W');output=@(1,3,'H','W');precision='mixed-fp16-fp32'}
+    }
+    [pscustomobject]@{schemaVersion=3;models=@($modelEntries)} | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $modelRoot 'model-manifest.json')
+    Get-ChildItem $modelRoot -File | ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),$_.Name } | Set-Content (Join-Path $modelRoot 'SHA256SUMS.txt') -Encoding ASCII
+    $sm75Zip=New-SplitArchive @{'nvinfer_builder_resource_sm75_11.dll'='sm75'} 'sm75'
+    function New-RuntimeBundle($Name,[string[]]$Archives) {
+        $bundle=Join-Path $split $Name; New-Item -ItemType Directory $bundle | Out-Null
+        foreach ($archive in $Archives) { $target=$archive.Split('=',2); Copy-Item $target[1] (Join-Path $bundle $target[0]) }
+        @{schemaVersion=1;runtimeAbi=2;tensorRtVersion='11.4.0.106';cudaVersion='13.4.1';cudaRuntimeVersion='13.4.49'
+          architectures=@(@{computeCapability='7.5';key='sm75';builderResource='nvinfer_builder_resource_sm75_11.dll'})} | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $bundle 'runtime-manifest.json')
+        Get-ChildItem $bundle -Filter '*.zip' | ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),$_.Name } | Set-Content (Join-Path $bundle 'SHA256SUMS.txt') -Encoding ASCII
+        return $bundle
+    }
+    $splitBundle=New-RuntimeBundle 'bundle-one' @("MPCVR-RIFE-Runtime.zip=$runtimeZip","MPCVR-RIFE-Libraries.zip=$librariesZip","MPCVR-RIFE-sm75.zip=$sm75Zip")
+    $nextBundle=New-RuntimeBundle 'bundle-two' @("MPCVR-RIFE-Runtime.zip=$nextRuntimeZip","MPCVR-RIFE-Libraries.zip=$librariesZip","MPCVR-RIFE-sm75.zip=$sm75Zip")
+    $commonZip=New-SplitArchive @{'MPCVRRifeRuntime64.dll'='legacy';'BUILD-INFO.txt'='info';'nvinfer_11.dll'='TensorRT';'nvonnxparser_11.dll'='parser';'nvinfer_builder_resource_ptx_11.dll'='ptx'} 'common'
+    $legacyBundle=New-RuntimeBundle 'bundle-legacy' @("MPCVR-RIFE-Common.zip=$commonZip","MPCVR-RIFE-sm75.zip=$sm75Zip")
+    $partialBundle=New-RuntimeBundle 'bundle-partial' @("MPCVR-RIFE-Runtime.zip=$runtimeZip","MPCVR-RIFE-sm75.zip=$sm75Zip")
+    $inventoryFile=Join-Path $split 'gpu.json'
+    [IO.File]::WriteAllText($inventoryFile,'[{"name":"fixture GPU","computeCapability":"7.5"}]')
+    $installRoot=Join-Path $split 'installed'
+    $hostExecutable=if ($PSVersionTable.PSEdition -eq 'Core') {(Get-Command pwsh.exe).Source} else {Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'}
+    function Invoke-FixtureInstall($Bundle) {
+        $previous=$ErrorActionPreference
+        try {
+            $ErrorActionPreference='Continue'
+            & $hostExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File (Join-Path $installer 'Install-MPCVRRifeRuntime.ps1') -RuntimeBundleRoot $Bundle -ModelArchive $modelRoot -InstallRoot $installRoot -GpuInventoryJson $inventoryFile -NoPause 2>&1 | Tee-Object -Variable script:LastFixtureInstallOutput | Out-Null
+            return $LASTEXITCODE
+        } finally { $ErrorActionPreference=$previous }
+    }
+    $installedDll=Join-Path $installRoot 'runtime/MPCVRRifeRuntime64.dll'
+    $firstInstall=Invoke-FixtureInstall $splitBundle
+    if ($firstInstall -ne 0) { $script:LastFixtureInstallOutput | ForEach-Object { Write-Host $_ } }
+    Check ($firstInstall -eq 0) 'Split runtime bundle did not install'
+    foreach ($name in @('MPCVRRifeRuntime64.dll','BUILD-INFO.txt','nvinfer_11.dll','nvonnxparser_11.dll','nvinfer_builder_resource_ptx_11.dll','nvinfer_builder_resource_sm75_11.dll')) {
+        Check (Test-Path -LiteralPath (Join-Path $installRoot "runtime/$name") -PathType Leaf) "Split install is missing $name"
+    }
+    $recorded=@((Get-Content (Join-Path $installRoot 'installed-manifest.json') -Raw | ConvertFrom-Json).sharedRuntimeArchives)
+    Check ($recorded.Count -eq 2 -and @($recorded | Where-Object { $_.archive -eq 'MPCVR-RIFE-Libraries.zip' -and $_.sha256 -eq $librariesSha }).Count -eq 1) 'Split install did not record its package hashes'
+    Check ((Invoke-FixtureInstall $partialBundle) -ne 0 -and [IO.File]::ReadAllText($installedDll) -eq 'build one') 'A bundle without libraries changed the installation'
+    Add-Content -LiteralPath (Join-Path $nextBundle 'MPCVR-RIFE-Libraries.zip') -Value 'corruption'
+    Check ((Invoke-FixtureInstall $nextBundle) -ne 0 -and [IO.File]::ReadAllText($installedDll) -eq 'build one') 'A corrupted library package changed the installation'
+    Copy-Item $librariesZip (Join-Path $nextBundle 'MPCVR-RIFE-Libraries.zip') -Force
+    [IO.File]::WriteAllText((Join-Path $installRoot 'cache/fixture.plan'),'user engine cache')
+    $env:MPCVR_TEST_FAIL_PREFLIGHT='1'
+    try { $failed=Invoke-FixtureInstall $nextBundle } finally { Remove-Item Env:MPCVR_TEST_FAIL_PREFLIGHT }
+    Check ($failed -ne 0 -and [IO.File]::ReadAllText($installedDll) -eq 'build one') 'A failed post-swap check did not roll back the previous runtime'
+    Check ((Invoke-FixtureInstall $nextBundle) -eq 0 -and [IO.File]::ReadAllText($installedDll) -eq 'build two') 'A new runtime build did not replace the installed DLL'
+    Check ([IO.File]::ReadAllText((Join-Path $installRoot 'cache/fixture.plan')) -eq 'user engine cache') 'Runtime upgrade lost compatible engine plans'
+    # Reuse is recorded against the pinned packages and refuses corrupted or changed ones.
+    $sm75Sha=(Get-FileHash $sm75Zip -Algorithm SHA256).Hash.ToLowerInvariant()
+    $asset=$splitLock.components.PSObject.Properties['rife-runtime'].Value.manifest.files.PSObject.Properties['MPCVR-RIFE-sm75.zip'].Value
+    $asset.sha256=$sm75Sha; $asset.bytes=(Get-Item $sm75Zip).Length
+    Copy-Item $sm75Zip (Join-Path $splitCache $sm75Sha)
+    Copy-Item $nextRuntimeZip (Join-Path $splitCache (Get-FileHash $nextRuntimeZip -Algorithm SHA256).Hash.ToLowerInvariant()) -Force
+    $modelZip=Join-Path $split 'models.zip'; Compress-Archive -Path (Join-Path $modelRoot '*') -DestinationPath $modelZip
+    $modelSha=(Get-FileHash $modelZip -Algorithm SHA256).Hash.ToLowerInvariant()
+    Copy-Item $modelZip (Join-Path $splitCache $modelSha)
+    $asset=$splitLock.components.PSObject.Properties['rife-models'].Value.manifest.files.PSObject.Properties['MPCVR-RIFE-Models.zip'].Value
+    $asset.sha256=$modelSha; $asset.bytes=(Get-Item $modelZip).Length
+    $splitArgs=@{Lock=$splitLock;Component='rife';InstallRoot=$installRoot;ArchitectureKeys=@('sm75');CacheRoot=$splitCache}
+    Check (Test-MPCVRInstalledDependency @splitArgs) 'A split install was not recognised from its pinned packages'
+    Save-MPCVRInstalledDependency @splitArgs
+    $splitArgs.CacheRoot=Join-Path $split 'no-cache'
+    Check (Test-MPCVRInstalledDependency @splitArgs) 'A recorded split install needed the download cache'
+    [IO.File]::WriteAllText((Join-Path $installRoot 'runtime/nvinfer_11.dll'),'CORRUPTED')
+    Check (-not (Test-MPCVRInstalledDependency @splitArgs)) 'Corrupted installed libraries were accepted'
+    [IO.File]::WriteAllText((Join-Path $installRoot 'runtime/nvinfer_11.dll'),'TensorRT')
+    Check (Test-MPCVRInstalledDependency @splitArgs) 'Restored libraries were not accepted'
+    $runtimePin=$splitLock.components.PSObject.Properties['rife-runtime'].Value
+    $savedManifestSha=$runtimePin.manifestSha256; $runtimePin.manifestSha256='0'*64
+    Check (-not (Test-MPCVRInstalledDependency @splitArgs)) 'A new runtime pin reused the previous installation'
+    $runtimePin.manifestSha256=$savedManifestSha
+    # An install from the common package migrates through one normal installation,
+    # and the common package itself still installs for older pins.
+    Remove-Item -LiteralPath (Join-Path $installRoot 'dependency-receipt.json')
+    $splitArgs.CacheRoot=$splitCache
+    Check ((Invoke-FixtureInstall $legacyBundle) -eq 0 -and [IO.File]::ReadAllText($installedDll) -eq 'legacy') 'The legacy common package no longer installs'
+    Check (-not (Test-MPCVRInstalledDependency @splitArgs)) 'A common-package install was treated as the pinned split packages'
+    Check ((Invoke-FixtureInstall $nextBundle) -eq 0 -and (Test-MPCVRInstalledDependency @splitArgs)) 'A common-package install did not migrate to the split packages'
+    # The setup coordinator builds the installer's bundle from the staged payload.
+    $setupAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1'),[ref]$null,[ref]$null)
+    foreach ($node in $setupAst.FindAll({param($item) $item -is [Management.Automation.Language.FunctionDefinitionAst] -and $item.Name -in @('New-RifeRuntimeBundle','Assert-RifeRuntimeDownloadContract')},$true)) {
+        . ([scriptblock]::Create($node.Extent.Text))
+    }
+    Import-Module (Join-Path $installer 'RifeRuntimeManifest.psm1') -Force
+    $payloadRoot=Join-Path $split 'payload'; New-Item -ItemType Directory $payloadRoot | Out-Null
+    Get-ChildItem $nextBundle -Filter '*.zip' | Copy-Item -Destination $payloadRoot
+    $rifeRuntimeChecksums=Join-Path $nextBundle 'SHA256SUMS.txt'
+    $rifeRuntimeManifest=Join-Path $nextBundle 'runtime-manifest.json'
+    $rifeRuntimeSource=Join-Path $payloadRoot 'unused-release.json'
+    $coordinatorBundle=Join-Path $split 'coordinator-bundle'
+    New-RifeRuntimeBundle -Destination $coordinatorBundle -ArchitectureKeys @('sm75')
+    Check ((Get-Content (Join-Path $coordinatorBundle 'SHA256SUMS.txt')).Count -eq 3) 'Setup bundle does not list both shared packages and the GPU pack'
+    Check ((Invoke-FixtureInstall $coordinatorBundle) -eq 0 -and [IO.File]::ReadAllText($installedDll) -eq 'build two') 'Setup bundle did not install'
+    Remove-Item -LiteralPath (Join-Path $payloadRoot 'MPCVR-RIFE-Libraries.zip')
+    $rejected=$false
+    try { New-RifeRuntimeBundle -Destination (Join-Path $split 'incomplete-bundle') -ArchitectureKeys @('sm75') } catch { $rejected=$true }
+    Check $rejected 'Setup built a bundle without its library package'
+    'PASS: a new runtime downloads only its own package; split install, corruption, rollback, setup bundle and legacy migration.'
     # Exercise the real updater's download/checksum/delegation path with local
     # fixture responses and a harmless setup script. No live player or install.
     $setupRoot=Join-Path $fixture 'setup'; New-Item -ItemType Directory $setupRoot | Out-Null

@@ -258,7 +258,8 @@ function Assert-RifeRuntimeDownloadContract {
 
     $checksums = Read-RifeChecksumList -Path $rifeRuntimeChecksums
     $needsDownload = $false
-    foreach ($archiveName in @('MPCVR-RIFE-Common.zip') + @($ArchitectureKeys | ForEach-Object { "MPCVR-RIFE-$_.zip" })) {
+    $sharedArchiveNames = @(Get-RifeSharedArchiveNames -AvailableNames @($checksums.Keys))
+    foreach ($archiveName in $sharedArchiveNames + @($ArchitectureKeys | ForEach-Object { "MPCVR-RIFE-$_.zip" })) {
         if (-not $checksums.ContainsKey($archiveName)) {
             throw "RIFE runtime checksum list is missing $archiveName."
         }
@@ -266,7 +267,7 @@ function Assert-RifeRuntimeDownloadContract {
         if ($hash -notmatch '^[0-9a-fA-F]{64}$') {
             throw "RIFE runtime checksum is invalid for $archiveName."
         }
-        if (($archiveName -ne 'MPCVR-RIFE-Common.zip') -and
+        if (($archiveName -notin $sharedArchiveNames) -and
                 (-not (Test-Path -LiteralPath (Join-Path $payloadRoot $archiveName) -PathType Leaf))) {
             $needsDownload = $true
         }
@@ -288,10 +289,12 @@ function New-RifeRuntimeBundle {
     $checksums = Read-RifeChecksumList -Path $rifeRuntimeChecksums
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
 
-    $commonArchiveName = 'MPCVR-RIFE-Common.zip'
-    $commonArchive = Join-Path $Destination $commonArchiveName
-    Copy-Item -LiteralPath (Join-Path $payloadRoot $commonArchiveName) -Destination $commonArchive
-    [void](Assert-RifeFileHash -Path $commonArchive -ExpectedHash ([string]$checksums[$commonArchiveName]) -DisplayName $commonArchiveName)
+    $sharedArchiveNames = @(Get-RifeSharedArchiveNames -AvailableNames @($checksums.Keys))
+    foreach ($archiveName in $sharedArchiveNames) {
+        $archivePath = Join-Path $Destination $archiveName
+        Copy-Item -LiteralPath (Join-Path $payloadRoot $archiveName) -Destination $archivePath
+        [void](Assert-RifeFileHash -Path $archivePath -ExpectedHash ([string]$checksums[$archiveName]) -DisplayName $archiveName)
+    }
 
     foreach ($architectureKey in $ArchitectureKeys) {
         $archiveName = "MPCVR-RIFE-$architectureKey.zip"
@@ -323,10 +326,25 @@ function New-RifeRuntimeBundle {
 
     Copy-Item -LiteralPath $rifeRuntimeManifest -Destination (Join-Path $Destination 'runtime-manifest.json')
     @(
-        foreach ($archiveName in @($commonArchiveName) + @($ArchitectureKeys | ForEach-Object { "MPCVR-RIFE-$_.zip" })) {
+        foreach ($archiveName in $sharedArchiveNames + @($ArchitectureKeys | ForEach-Object { "MPCVR-RIFE-$_.zip" })) {
             "{0}  {1}" -f ([string]$checksums[$archiveName]), $archiveName
         }
     ) | Set-Content -LiteralPath (Join-Path $Destination 'SHA256SUMS.txt') -Encoding ASCII
+}
+
+function Remove-SupersededDownloads {
+    # Keeps this build's downloads and the last build's. Cleanup never decides
+    # whether setup succeeded.
+    try {
+        if (-not (Save-MPCVRDownloadRetention -Lock $dependencyLock -InstalledHashes $installedArchiveHashes)) { return }
+        $result = Remove-MPCVRSupersededDownload -Lock $dependencyLock
+        if ($result.Count -gt 0) {
+            Write-Host ('Removed {0} superseded downloads, {1:N1} MiB.' -f $result.Count, ($result.Bytes / 1MB))
+        }
+    }
+    catch {
+        Write-Warning "Download cleanup skipped: $($_.Exception.Message)"
+    }
 }
 
 function Assert-MaxinePreflight {
@@ -376,6 +394,7 @@ $tempRoot = $null
 $exitCode = 0
 $reuseMaxine = $false
 $reuseRife = $false
+$installedArchiveHashes = @()
 $maxineInstallRoot = Join-Path $env:LOCALAPPDATA 'MPCVR Maxine Runtime'
 $rifeInstallRoot = Join-Path $env:LOCALAPPDATA 'MPCVideoRenderer\RIFE'
 try {
@@ -401,6 +420,7 @@ try {
         $inventory=@(Get-RifeGpuInventory -GpuInventoryJson $GpuInventoryJson)
         $keys=@(Get-RifeArchitectureKeysForInventory -GpuInventory $inventory)
         Write-Host 'Checking installed dependency versions and file hashes...'
+        $installedArchiveHashes=@(Get-MPCVRInstalledArchiveHash -InstallRoot $rifeInstallRoot)
         $reuseMaxine=Test-MPCVRInstalledDependency -Lock $dependencyLock -Component maxine -InstallRoot $maxineInstallRoot -ArchitectureKeys $keys
         if ($reuseMaxine) {
             try { [void](Assert-MaxinePreflight) } catch { $reuseMaxine=$false }
@@ -538,6 +558,7 @@ try {
     if ($thinSetup) {
         Save-MPCVRInstalledDependency -Lock $dependencyLock -Component maxine -InstallRoot $maxineInstallRoot -ArchitectureKeys $architectureKeys
         Save-MPCVRInstalledDependency -Lock $dependencyLock -Component rife -InstallRoot $rifeInstallRoot -ArchitectureKeys $architectureKeys
+        Remove-SupersededDownloads
     }
 
     Write-Host
