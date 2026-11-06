@@ -281,9 +281,13 @@ int wmain(int argc,wchar_t** argv) {
         CComPtr<ID3D11Fence> fence;Check(SUCCEEDED(device5->CreateFence(0,D3D11_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence))),"fence");
         const HANDLE fenceEvent=CreateEventW(nullptr,FALSE,FALSE,nullptr);
         uint64_t fenceValue=0;
-        const auto model=(std::filesystem::path(argv[2])/L"rife_v4.25_lite.onnx").wstring();
         constexpr int size=256,shift=16;
+        // Other models write through a different path from the fused one, on every GPU.
+        for(const auto name:{L"rife_v4.25_lite.onnx",L"rife_v4.25.onnx",L"rife_v4.15_lite.onnx",L"rife_v4.6.onnx",L"rife_v4.4.onnx"})
         for(const bool precise:{false,true}) {
+            const auto model=(std::filesystem::path(argv[2])/name).wstring();
+            const std::wstring modelName(name);
+            const bool lite=modelName==L"rife_v4.25_lite.onnx",encoder=modelName!=L"rife_v4.6.onnx"&&modelName!=L"rife_v4.4.onnx";
             const auto frame=[&](int offset){
                 std::vector<ushort4> pixels(size*size);std::vector<uchar4> bytes(size*size);
                 for(int y=0;y<size;++y) for(int x=0;x<size;++x) {
@@ -294,7 +298,7 @@ int wmain(int argc,wchar_t** argv) {
                 return Texture(device,size,size,precise,precise?static_cast<const void*>(pixels.data()):static_cast<const void*>(bytes.data()));
             };
             std::array<CComPtr<ID3D11Texture2D>,3> frames{frame(0),frame(shift),frame(shift*3)};
-            for(uint32_t mode=0;mode<3;++mode) {
+            for(uint32_t mode=0;mode<(lite?3u:1u);++mode) {
                 std::array<std::vector<std::vector<uint8_t>>,2> outputs;
                 for(int imported=0;imported<2;++imported) {
                     const UINT misc=imported?D3D11_RESOURCE_MISC_SHARED:0u;
@@ -302,7 +306,7 @@ int wmain(int argc,wchar_t** argv) {
                     auto output=Texture(device,size,size,precise,nullptr,misc);
                     MpcvrRifeCreateParams p;p.device=device;p.width=p.height=p.contentWidth=p.contentHeight=size;p.contextCount=2;p.performanceBoost=1;
                     p.modelPath=model.c_str();p.cachePath=argv[3];
-                    p.flags=(precise?MPCVR_RIFE_CREATE_HIGH_PRECISION:0u)|MPCVR_RIFE_CREATE_FEATURE_REUSE
+                    p.flags=(precise?MPCVR_RIFE_CREATE_HIGH_PRECISION:0u)|(encoder?MPCVR_RIFE_CREATE_FEATURE_REUSE:0u)
                         |(mode==1?MPCVR_RIFE_CREATE_FLOW_REUSE_COARSE:mode==2?MPCVR_RIFE_CREATE_FLOW_REUSE_RETIME:0u);
                     void* handle=nullptr;Check(create(&p,&handle)==0&&handle,"imported surfaces create");
                     for(int pair=0;pair<6;++pair) {
@@ -318,7 +322,7 @@ int wmain(int argc,wchar_t** argv) {
                             q.inputPairId=uint64_t(pair)+1;q.previousPairId=pair?uint64_t(pair):0;
                             MpcvrRifeStats s;Check(infer(handle,&q,&s)==0,"imported surfaces inference");
                             const uint64_t expected=!imported?0u:target==1?3u:1u;
-                            Check(s.persistentOutput==expected,"surfaces imported as requested");
+                            Check(lite?s.persistentOutput==expected:(s.persistentOutput&1u)==(imported?1u:0u),"surfaces imported as requested");
                             outputs[imported].push_back(Read(device,context,output));
                         }
                     }
@@ -328,7 +332,7 @@ int wmain(int argc,wchar_t** argv) {
                 for(size_t i=0;i<outputs[0].size();++i) worst=std::max(worst,MaxDifference(outputs[0][i],outputs[1][i],precise));
                 bool changes=false;
                 for(size_t i=3;i<outputs[1].size();++i) changes|=outputs[1][i]!=outputs[1][i-3];
-                std::cout<<"Imported surfaces mode "<<mode<<(precise?" RGBA16F":" BGRA8")<<": mapped vs imported max="<<worst<<"\n";
+                std::wcout<<L"Imported surfaces "<<modelName<<L" mode "<<mode<<(precise?L" RGBA16F":L" BGRA8")<<L": mapped vs imported max="<<worst<<L"\n";
                 Check(changes,"each pair's output reflects its inputs");
                 // Only the frame kernel's filter differs: its weights have eight fractional bits.
                 Check(worst<.02,"imported surfaces show the same frames");
