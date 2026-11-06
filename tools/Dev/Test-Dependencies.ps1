@@ -240,6 +240,21 @@ exit $LASTEXITCODE
     foreach ($name in $otherFiles+@((& $hexName 'folder'),'retained-pins.json')) {
         Check (Test-Path (Join-Path $profileDownloads $name)) "Cleanup touched something that is not a superseded download: $name"
     }
+    # Temporary files from a killed setup go once they are clearly abandoned.
+    $leftovers=Join-Path $fixture 'leftover-cache'; New-Item -ItemType Directory $leftovers | Out-Null
+    $guid='0123456789abcdef0123456789abcdef'
+    $abandoned=@("$pinnedName.$guid.partial","retained-pins.json.$guid.tmp")
+    $retainedNames=@("$pinnedName.partial","$pinnedName.FEDCBA9876543210FEDCBA9876543210.partial","other.$guid.partial","retained-pins.json.tmp")
+    foreach ($name in $abandoned+$retainedNames) {
+        [IO.File]::WriteAllText((Join-Path $leftovers $name),'fixture')
+        (Get-Item -LiteralPath (Join-Path $leftovers $name)).LastWriteTime=(Get-Date).AddDays(-2)
+    }
+    $activeDownload=(& $hexName 'active')+".$guid.partial"
+    [IO.File]::WriteAllText((Join-Path $leftovers $activeDownload),'fixture')
+    $removal=Remove-MPCVRSupersededDownload -Lock $reuseLock -CacheRoot $leftovers
+    Check ($removal.Count -eq 2) 'Cleanup did not remove exactly the abandoned temporary files'
+    foreach ($name in $abandoned) { Check (-not (Test-Path -LiteralPath (Join-Path $leftovers $name))) "An abandoned temporary file remained: $name" }
+    foreach ($name in $retainedNames+@($activeDownload)) { Check (Test-Path -LiteralPath (Join-Path $leftovers $name)) "Cleanup removed a file it does not own or one still in use: $name" }
     # With no record yet, the install being replaced identifies the last build.
     $firstRun=Join-Path $fixture 'first-run-cache'; New-Item -ItemType Directory $firstRun | Out-Null
     $firstRunRoot=Join-Path $fixture 'first-run-install'; New-Item -ItemType Directory $firstRunRoot | Out-Null

@@ -318,8 +318,9 @@ function Save-MPCVRDownloadRetention {
 }
 
 function Get-MPCVRSupersededDownload {
-    # Only exact verified-download names qualify. Partial downloads, the retention
-    # record, folders and links are never candidates.
+    # Only exact verified-download names qualify, plus this module's own temporary
+    # files abandoned by a killed setup. The age limit spares a setup still running.
+    # Other names, the retention record, folders and links are never candidates.
     param([Parameter(Mandatory=$true)]$Lock,
           [string]$CacheRoot=(Join-Path $env:LOCALAPPDATA 'MPCVideoRenderer\downloads'))
     if (-not (Test-Path -LiteralPath $CacheRoot -PathType Container)) { return @() }
@@ -327,9 +328,12 @@ function Get-MPCVRSupersededDownload {
     foreach ($hash in @(Get-MPCVRLockDownloadHash -Lock $Lock)) { $keep[$hash]=$true }
     $retention=Read-MPCVRDownloadRetention -CacheRoot $CacheRoot
     if ($retention) { foreach ($hash in @($retention.current)+@($retention.previous)) { $keep[[string]$hash]=$true } }
+    $abandonedBefore=(Get-Date).AddDays(-1)
     @(Get-ChildItem -LiteralPath $CacheRoot -File | Where-Object {
-        $_.Name -cmatch '^[a-f0-9]{64}$' -and -not $keep.ContainsKey($_.Name) -and
-        -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint)
+        -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and (
+            ($_.Name -cmatch '^[a-f0-9]{64}$' -and -not $keep.ContainsKey($_.Name)) -or
+            ($_.Name -cmatch '^([a-f0-9]{64}\.[a-f0-9]{32}\.partial|retained-pins\.json\.[a-f0-9]{32}\.tmp)$' -and $_.LastWriteTime -lt $abandonedBefore)
+        )
     } | Sort-Object Name)
 }
 
