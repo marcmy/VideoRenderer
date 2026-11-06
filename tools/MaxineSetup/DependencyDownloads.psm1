@@ -276,14 +276,33 @@ function Read-MPCVRDownloadRetention {
     return $retention
 }
 
+function Get-MPCVRInstalledArchiveHash {
+    # The archives behind the current RIFE install, read before setup replaces it.
+    # They identify the last build the first time no retention record exists.
+    param([Parameter(Mandatory=$true)][string]$InstallRoot)
+    try {
+        $metadata=Get-Content -LiteralPath (Join-Path $InstallRoot 'installed-manifest.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+        $hashes=@($metadata.architectures | ForEach-Object { $_.sha256 })
+        if ($metadata.PSObject.Properties['sharedRuntimeArchives']) { $hashes+=@($metadata.sharedRuntimeArchives | ForEach-Object { $_.sha256 }) }
+        if ($metadata.PSObject.Properties['commonRuntimeArchiveSha256']) { $hashes+=$metadata.commonRuntimeArchiveSha256 }
+        return @($hashes | ForEach-Object { ([string]$_).ToLowerInvariant() } | Where-Object { $_ -cmatch '^[a-f0-9]{64}$' })
+    } catch { return @() }
+}
+
 function Save-MPCVRDownloadRetention {
     # Called after a successful setup, so "previous" is always a set that installed.
+    # Returns $false when an unreadable record was replaced: this run cannot tell
+    # which files the last build used, so it must not delete anything.
     param([Parameter(Mandatory=$true)]$Lock,
+          [AllowEmptyCollection()][string[]]$InstalledHashes=@(),
           [string]$CacheRoot=(Join-Path $env:LOCALAPPDATA 'MPCVideoRenderer\downloads'))
     $current=@(Get-MPCVRLockDownloadHash -Lock $Lock)
-    $recorded=$null
-    try { $recorded=Read-MPCVRDownloadRetention -CacheRoot $CacheRoot } catch { Write-Warning "Replacing an unreadable download retention record: $($_.Exception.Message)" }
-    $previous=@()
+    $recorded=$null; $readable=$true
+    try { $recorded=Read-MPCVRDownloadRetention -CacheRoot $CacheRoot } catch {
+        $readable=$false
+        Write-Warning "Replacing an unreadable download retention record; keeping all downloads this time: $($_.Exception.Message)"
+    }
+    $previous=@($InstalledHashes)
     if ($recorded) {
         $previous=@($recorded.previous)
         if (@(Compare-Object -ReferenceObject @($recorded.current) -DifferenceObject $current).Count -ne 0) { $previous=@($recorded.current) }
@@ -295,6 +314,7 @@ function Save-MPCVRDownloadRetention {
         ConvertTo-Json -InputObject ([ordered]@{schemaVersion=1;current=$current;previous=$previous}) | Set-Content -LiteralPath $temporary -Encoding ASCII
         Move-Item -LiteralPath $temporary -Destination $path -Force
     } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
+    return $readable
 }
 
 function Get-MPCVRSupersededDownload {
@@ -314,8 +334,8 @@ function Get-MPCVRSupersededDownload {
 }
 
 function Remove-MPCVRSupersededDownload {
-    # The caller shows this list and gets the user's answer first. Each pass
-    # recomputes the candidates, so a stale list can only delete fewer files.
+    # Permanent, and safe because every candidate can be downloaded again from its
+    # immutable release. Setup calls this only after it has fully succeeded.
     param([Parameter(Mandatory=$true)]$Lock,
           [string]$CacheRoot=(Join-Path $env:LOCALAPPDATA 'MPCVideoRenderer\downloads'))
     $removed=0; $bytes=[long]0
@@ -329,4 +349,4 @@ function Remove-MPCVRSupersededDownload {
     [pscustomobject]@{Count=$removed;Bytes=$bytes}
 }
 
-Export-ModuleMember -Function Read-MPCVRDependencyLock,Get-MPCVRVerifiedDownload,Resolve-MPCVRDependencies,Test-MPCVRInstalledDependency,Save-MPCVRInstalledDependency,Save-MPCVRDownloadRetention,Get-MPCVRSupersededDownload,Remove-MPCVRSupersededDownload
+Export-ModuleMember -Function Read-MPCVRDependencyLock,Get-MPCVRVerifiedDownload,Resolve-MPCVRDependencies,Test-MPCVRInstalledDependency,Save-MPCVRInstalledDependency,Get-MPCVRInstalledArchiveHash,Save-MPCVRDownloadRetention,Get-MPCVRSupersededDownload,Remove-MPCVRSupersededDownload
