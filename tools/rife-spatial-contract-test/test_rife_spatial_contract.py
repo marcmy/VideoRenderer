@@ -124,9 +124,12 @@ assert "m_paddedWidth != RoundUp(m_contentWidth, kPadMultiple)" not in runtime, 
     "the runtime must not reject models such as RIFE 4.25 Lite that require 128-pixel padding"
 )
 assert runtime.count(
-    "static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),"
+    "static_cast<int>(m_paddedWidth), static_cast<int>(m_tensorHeight),"
 ) >= 4, (
     "RIFE CUDA pack/write must use aligned model-space geometry for both texture coordinates and tensor strides"
+)
+assert "m_tensorHeight = m_paddedHeight;" in runtime and "m_tensorHeight = features->Height();" in runtime, (
+    "Tensors must use the padded height unless the fused feature engine chose its own"
 )
 assert '"_abi" << MPCVR_RIFE_RUNTIME_ABI' in runtime, (
     "TensorRT engine cache keys must be isolated by the renderer/runtime ABI"
