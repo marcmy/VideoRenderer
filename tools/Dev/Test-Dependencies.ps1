@@ -162,7 +162,7 @@ try {
     Remove-Item -LiteralPath $profileCache -Recurse -Force
     $coordinator=Join-Path $fixture 'coordinator'; $coordinatorPayload=Join-Path $coordinator 'payload'
     New-Item -ItemType Directory $coordinatorPayload -Force | Out-Null
-    foreach ($name in @('Install-MPCVRMaxineRuntime.ps1','Install-MPCVRRifeRuntime.ps1','Test-MPCVRRifePreflight.ps1','Install-KLiteMPCVRUpdater.ps1','Update-KLiteMPCVR.ps1','KLiteRendererInstall.psm1','MpcVideoRenderer-Maxine-RIFE.zip')) {
+    foreach ($name in @('Install-MPCVRMaxineRuntime.ps1','Install-MPCVRRifeRuntime.ps1','Test-MPCVRRifePreflight.ps1','Install-MPCVRUpdater.ps1','Update-MPCVR.ps1','Update-KLiteMPCVR.ps1','MPCVRPlayerInstall.psm1','MpcVideoRenderer-Maxine-RIFE.zip')) {
         [IO.File]::WriteAllText((Join-Path $coordinatorPayload $name),'unused boundary fixture')
     }
     Copy-Item (Join-Path $PSScriptRoot '../MaxineSetup/DependencyDownloads.psm1') $coordinatorPayload
@@ -184,8 +184,9 @@ function Invoke-SetupStep {
 }
 '@
         'Assert-MaxinePreflight'='function Assert-MaxinePreflight { return (Join-Path $env:LOCALAPPDATA "MPCVR Maxine Runtime/nvvfx/libs") }'
+        'Assert-PlayerInstalled'='function Assert-PlayerInstalled { }'
     }
-    $replacements=@($coordinatorAst.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @('Invoke-SetupStep','Assert-MaxinePreflight')},$true) | Sort-Object {$_.Extent.StartOffset} -Descending)
+    $replacements=@($coordinatorAst.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @('Invoke-SetupStep','Assert-MaxinePreflight','Assert-PlayerInstalled')},$true) | Sort-Object {$_.Extent.StartOffset} -Descending)
     foreach ($node in $replacements) {
         $coordinatorSource=$coordinatorSource.Substring(0,$node.Extent.StartOffset)+$boundaries[$node.Name]+$coordinatorSource.Substring($node.Extent.EndOffset)
     }
@@ -494,8 +495,6 @@ function Test-Path {
     param([Parameter(ParameterSetName='Path',Position=0)][string[]]$Path,
           [Parameter(ParameterSetName='LiteralPath')][Alias('PSPath')][string[]]$LiteralPath,
           [Microsoft.PowerShell.Commands.TestPathType]$PathType='Any')
-    if ($env:MPCVR_FIXTURE_KLITE_X64_ONLY -and $LiteralPath -like 'C:\Program Files (x86)\K-Lite Codec Pack\Filters\MPCVR*') { return $false }
-    if ($LiteralPath -like 'C:\Program Files (x86)\K-Lite Codec Pack*') { return $true }
     return Microsoft.PowerShell.Management\Test-Path @PSBoundParameters
 }
 function Invoke-WebRequest {
@@ -510,28 +509,20 @@ function Invoke-WebRequest {
 exit $LASTEXITCODE
 '@ | Set-Content -LiteralPath $routingFixture -Encoding UTF8
     $hostExecutable=if ($PSVersionTable.PSEdition -eq 'Core') {(Get-Command pwsh.exe).Source} else {Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'}
-    $updaterSource=Join-Path $PSScriptRoot '..\KLiteMaxineUpdater\Update-KLiteMPCVR.ps1'
+    $updaterSource=Join-Path $PSScriptRoot '..\MPCVRUpdater\Update-MPCVR.ps1'
     $tokens=$null; $errors=$null
     $ast=[Management.Automation.Language.Parser]::ParseFile($updaterSource,[ref]$tokens,[ref]$errors)
     $adminFunction=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-IsAdministrator'},$true)
     Check ([bool]$adminFunction) 'Updater fixture could not isolate its elevation check'
     $source=Get-Content -LiteralPath $updaterSource -Raw
     $instrumented=$source.Substring(0,$adminFunction.Extent.StartOffset)+'function Test-IsAdministrator { return $true }'+$source.Substring($adminFunction.Extent.EndOffset)
-    $updater=Join-Path $fixture 'Update-KLiteMPCVR.ps1'
+    $updater=Join-Path $fixture 'Update-MPCVR.ps1'
     $instrumented | Set-Content -LiteralPath $updater -Encoding UTF8
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\KLiteMaxineUpdater\KLiteRendererInstall.psm1') -Destination $fixture
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\MPCVRUpdater\MPCVRPlayerInstall.psm1') -Destination $fixture
     & $hostExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $routingFixture -Root $fixture -Updater $updater
     Check ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $marker)) "Updater did not delegate a verified, pinned setup (host $hostExecutable, exit $LASTEXITCODE)"
     Remove-Item -LiteralPath $marker -Force
-    # K-Lite installed with only 64-bit components has no Filters\MPCVR.
-    $env:MPCVR_FIXTURE_KLITE_X64_ONLY='1'
-    try {
-        & $hostExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $routingFixture -Root $fixture -Updater $updater
-        $x64OnlyExit=$LASTEXITCODE
-    } finally { Remove-Item Env:MPCVR_FIXTURE_KLITE_X64_ONLY -ErrorAction SilentlyContinue }
-    Check ($x64OnlyExit -eq 0 -and (Test-Path -LiteralPath $marker)) "Updater refused a 64-bit-only K-Lite installation (host $hostExecutable, exit $x64OnlyExit)"
-    Remove-Item -LiteralPath $marker -Force
-    'PASS: updater delegates setup on a 64-bit-only K-Lite installation.'
+    'PASS: updater delegates a verified setup, which detects the players itself.'
     ('0'*64+'  MPCVR-Setup.zip') | Set-Content -LiteralPath (Join-Path $fixture 'SHA256SUMS.txt') -Encoding ASCII
     $previousNativePreference=$ErrorActionPreference
     try {

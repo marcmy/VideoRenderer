@@ -6,9 +6,9 @@ This helper installs a known-good NVIDIA Video Effects VideoSuperRes runtime for
 
 1. Download `MaxineRuntimeInstaller-Setup.zip` from the latest Maxine release.
 2. Extract the ZIP.
-3. Close MPC-HC.
+3. Close MPC-HC and MPC-BE.
 4. Run `Install-MPCVRMaxineRuntime.cmd`.
-5. Reopen MPC-HC and press **Ctrl+J** while a video is playing. The statistics should report the loaded Maxine runtime path.
+5. Reopen the player and press **Ctrl+J** while a video is playing. The statistics should report the loaded Maxine runtime path.
 
 The launcher uses the built-in Windows PowerShell 5.1 executable at:
 
@@ -62,5 +62,5 @@ The release workflow carries an existing verified runtime bundle forward from th
 - The downloaded archive is rejected unless its SHA-256 matches the separately published checksum.
 - The five required DLLs are checked before and after installation.
 - An existing runtime is moved aside and restored if installation fails.
-- MPC-HC must be closed so loaded DLLs cannot interfere with replacement.
+- MPC-HC and MPC-BE must be closed so loaded DLLs cannot interfere with replacement.
 - Only the current user's environment variable is changed.

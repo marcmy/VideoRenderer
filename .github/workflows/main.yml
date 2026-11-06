@@ -48,7 +48,29 @@ jobs:
           compression-level: 0
           if-no-files-found: error
   validate-updater:
-    uses: ./.github/workflows/validate-klite-updater.yml
+    uses: ./.github/workflows/validate-player-updater.yml
+  # Downloads third-party installers, so it reports on pull requests without gating publication.
+  validate-real-players:
+    needs: build
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: renderer-release
+          path: release
+      - name: Install real MPC-HC, MPC-BE and K-Lite, update them and check what each one loads
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./tools/MPCVRUpdater/Test-RealPlayers.ps1 -PackageArchive release/MPCVR-Portable.zip -ChecksumFile release/SHA256SUMS.txt -WorkRoot $env:RUNNER_TEMP/real-players
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: real-player-screenshots
+          path: ${{ runner.temp }}/real-players/*.png
+          if-no-files-found: ignore
+          retention-days: 7
   validate-maxine-installer:
     uses: ./.github/workflows/validate-maxine-runtime-installer.yml
   validate-rife-installer:

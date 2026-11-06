@@ -2,13 +2,13 @@
 
 MPC Video Renderer is a free and open-source DirectShow video renderer for Windows. It supports modern hardware decoding paths, high-quality scaling, HDR playback, subtitle and OSD composition, and several NVIDIA-specific video-processing features.
 
-This fork adds a dedicated **NVIDIA Maxine** control panel, a tested five-DLL Maxine Video Super Resolution runtime, output oversampling, and a one-click setup package for **MPC-HC installed through K-Lite Codec Pack**.
+This fork adds a dedicated **NVIDIA Maxine** control panel, a tested five-DLL Maxine Video Super Resolution runtime, output oversampling, and a one-click setup package for **MPC-HC**, **MPC-BE** and **MPC-HC installed through K-Lite Codec Pack**.
 
 ## Recommended download
 
 Go to the [latest release](https://github.com/marcmy/VideoRenderer/releases/latest) and download:
 
-- **`MPCVR-Setup.zip`** for the normal one-click K-Lite installation
+- **`MPCVR-Setup.zip`** for the normal one-click installation
 - **`MPCVR-Portable.zip`** only for manual or portable installation
 - **`SHA256SUMS.txt`** to verify the two public ZIP files
 
@@ -28,29 +28,31 @@ For most people, `MPCVR-Setup.zip` is the only ZIP they need.
 - A compatible NVIDIA GPU and current NVIDIA display driver
 - The one-click setup package from this repository
 
-Maxine processing is implemented in the 64-bit renderer. The setup still updates both K-Lite renderer files so the normal K-Lite installation stays consistent.
+Maxine processing is implemented in the 64-bit renderer. The setup still updates any 32-bit renderer a detected player has, so the installation stays consistent.
 
-## One-click setup with K-Lite
+## One-click setup
 
-1. Install [K-Lite Codec Pack](https://codecguide.com/download_kl.htm) with **MPC-HC** and **MPC Video Renderer** selected.
+1. Install a supported player: [MPC-HC](https://github.com/clsid2/mpc-hc/releases/latest), [MPC-BE](https://github.com/Aleksoid1978/MPC-BE/releases/latest), or [K-Lite Codec Pack](https://codecguide.com/download_kl.htm) with **MPC-HC** selected. More than one is fine: setup detects them and installs for each.
 2. Download **`MPCVR-Setup.zip`** from the [latest release](https://github.com/marcmy/VideoRenderer/releases/latest).
 3. Extract the ZIP completely. Do not run the installer from inside the compressed archive.
-4. Close every open MPC-HC window.
+4. Close every open MPC-HC and MPC-BE window.
 5. Run **`Install-MPCVR-Maxine-RIFE.cmd`**.
-6. Approve the administrator prompt when Windows asks for permission to replace the K-Lite renderer files.
-7. Reopen MPC-HC.
+6. Approve the administrator prompt when Windows asks for permission to replace the renderer files.
+7. Reopen the player, and select MPC Video Renderer as described below.
 
 The setup package:
 
 - verifies the embedded renderer and Maxine runtime before installing them
-- installs the custom 32-bit and 64-bit MPC Video Renderer files into K-Lite
+- installs the custom MPC Video Renderer for each detected player, and registers MPC-BE's copy if it would otherwise load a different renderer ([details](../tools/MPCVRUpdater/README.md))
 - installs the tested Maxine runtime under `%LOCALAPPDATA%\MPCVR Maxine Runtime\nvvfx\libs`
 - creates the current-user `NV_VIDEO_EFFECTS_PATH` environment variable
 - creates a **Restore MPC-VR Maxine** shortcut on the desktop
 
 The lightweight setup downloads pinned, checksum-verified dependencies when needed. Current, verified Maxine and RIFE installations are reused; unchanged dependencies are not reinstalled. See [current setup details](https://github.com/marcmy/VideoRenderer/blob/master/tools/MaxineSetup/README.md).
 
-## Select MPC Video Renderer in MPC-HC
+## Select MPC Video Renderer in the player
+
+In MPC-BE, choose **MPC Video Renderer** under **Options > Video**. In MPC-HC:
 
 1. Open MPC-HC.
 2. Go to **View > Options**.
@@ -279,24 +281,24 @@ Play an SDR video and press **Ctrl+J**. Check for:
 
 The overlay is also the most useful information to capture when reporting a problem.
 
-## K-Lite updates and the restore shortcut
+## Player updates and the restore shortcut
 
-K-Lite updates may replace the custom renderer with the normal bundled MPC Video Renderer.
+Updates of K-Lite or MPC-BE may replace the custom renderer with the normal bundled MPC Video Renderer. Installing another player afterwards needs the same step.
 
 When that happens:
 
-1. Close MPC-HC.
+1. Close the player.
 2. Double-click **Restore MPC-VR Maxine** on the desktop.
 3. Approve the administrator prompt.
-4. Reopen MPC-HC.
+4. Reopen the player.
 
-The shortcut downloads the latest custom renderer, verifies its SHA-256 hash, and restores both K-Lite renderer files. The Maxine runtime normally remains installed and does not need to be reinstalled.
+The shortcut downloads the latest custom renderer, verifies its SHA-256 hash, and installs it for each detected player. The Maxine runtime normally remains installed and does not need to be reinstalled.
 
 ## Manual or portable installation
 
 `MPCVR-Portable.zip` contains the renderer files only. It is intended for advanced users who already know where their player loads MPC Video Renderer from.
 
-The manual ZIP does not perform the complete K-Lite setup and does not install the Maxine runtime or environment variable. Normal K-Lite users should use `MPCVR-Setup.zip` instead.
+The manual ZIP does not perform the complete setup and does not install the Maxine runtime or environment variable. Most users should use `MPCVR-Setup.zip` instead. For a portable player, MPC-HC loads `MPCVR\MpcVideoRenderer64.ax` from its own folder; MPC-BE loads the registered filter, so put the file in `Filters` beside it and register it with `regsvr32` as administrator.
 
 ## Key renderer features
 
@@ -318,11 +320,11 @@ The manual ZIP does not perform the complete K-Lite setup and does not install t
 
 ### The NVIDIA Maxine settings button is missing
 
-Confirm that MPC-HC is actually loading this fork's renderer. Open **View > Renderer Settings**, then check the Information tab or Ctrl+J overlay. A normal upstream K-Lite renderer will not contain this fork's Maxine panel.
+Confirm that the player is actually loading this fork's renderer. Open **View > Renderer Settings**, then check the Information tab or Ctrl+J overlay. A normal upstream renderer will not contain this fork's Maxine panel.
 
 ### Maxine runtime could not be loaded
 
-Run `MPCVR-Setup.zip` again, close and reopen MPC-HC, and verify that Ctrl+J reports a runtime path under:
+Run `MPCVR-Setup.zip` again, close and reopen the player, and verify that Ctrl+J reports a runtime path under:
 
 `%LOCALAPPDATA%\MPCVR Maxine Runtime\nvvfx\libs`
 
@@ -334,7 +336,7 @@ The required runtime files are:
 - `nvngx_vsr.dll`
 - `nvVFXVideoSuperRes.dll`
 
-### K-Lite replaced the custom renderer
+### A player update replaced the custom renderer
 
 Use the **Restore MPC-VR Maxine** desktop shortcut.
 

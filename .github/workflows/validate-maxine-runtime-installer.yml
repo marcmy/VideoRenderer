@@ -21,8 +21,8 @@ jobs:
           $scripts = @(
             'tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1',
             'tools/MaxineRuntimeInstaller/Export-MPCVRMaxineRuntime.ps1',
-            'tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1',
-            'tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1',
+            'tools/MPCVRUpdater/Install-MPCVRUpdater.ps1',
+            'tools/MPCVRUpdater/Update-MPCVR.ps1',
             'tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1'
           )
           foreach ($script in $scripts) {
@@ -44,8 +44,8 @@ jobs:
           $scripts = @(
             'tools/MaxineRuntimeInstaller/Install-MPCVRMaxineRuntime.ps1',
             'tools/MaxineRuntimeInstaller/Export-MPCVRMaxineRuntime.ps1',
-            'tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1',
-            'tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1',
+            'tools/MPCVRUpdater/Install-MPCVRUpdater.ps1',
+            'tools/MPCVRUpdater/Update-MPCVR.ps1',
             'tools/MaxineSetup/Install-MPCVR-Maxine-RIFE.ps1'
           )
           foreach ($script in $scripts) {
@@ -172,9 +172,10 @@ jobs:
           Copy-Item tools/RifeRuntimeInstaller/Install-MPCVRRifeRuntime.ps1 $payloadRoot
           Copy-Item tools/RifeRuntimeInstaller/Test-MPCVRRifePreflight.ps1 $payloadRoot
           Copy-Item tools/RifeRuntimeInstaller/RifeRuntimeManifest.psm1 $payloadRoot
-          Copy-Item tools/KLiteMaxineUpdater/Install-KLiteMPCVRUpdater.ps1 $payloadRoot
-          Copy-Item tools/KLiteMaxineUpdater/Update-KLiteMPCVR.ps1 $payloadRoot
-          Copy-Item tools/KLiteMaxineUpdater/KLiteRendererInstall.psm1 $payloadRoot
+          Copy-Item tools/MPCVRUpdater/Install-MPCVRUpdater.ps1 $payloadRoot
+          Copy-Item tools/MPCVRUpdater/Update-MPCVR.ps1 $payloadRoot
+          Copy-Item tools/MPCVRUpdater/Update-KLiteMPCVR.ps1 $payloadRoot
+          Copy-Item tools/MPCVRUpdater/MPCVRPlayerInstall.psm1 $payloadRoot
           Copy-Item (Join-Path $testRoot 'exported\MPCVR-Maxine-Runtime.zip') $payloadRoot
 
           Set-Content -LiteralPath (Join-Path $rendererSource 'MpcVideoRenderer.ax') -Value 'mock x86 renderer' -Encoding ASCII

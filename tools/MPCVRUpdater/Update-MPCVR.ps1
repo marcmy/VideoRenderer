@@ -11,7 +11,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-Import-Module (Join-Path $PSScriptRoot 'KLiteRendererInstall.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'MPCVRPlayerInstall.psm1') -Force
 
 $releaseBaseUrl = 'https://github.com/marcmy/VideoRenderer/releases/latest/download'
 $setupAssetName = 'MPCVR-Setup.zip'
@@ -20,11 +20,7 @@ $previousAssetName = 'MpcVideoRenderer-Maxine-RIFE.zip'
 $legacyAssetName = 'MpcVideoRenderer-Maxine.zip'
 $checksumListName = 'SHA256SUMS.txt'
 
-$targets = [ordered]@{
-    'MpcVideoRenderer.ax' = 'C:\Program Files (x86)\K-Lite Codec Pack\Filters\MPCVR\MpcVideoRenderer.ax'
-    'MpcVideoRenderer64.ax' = 'C:\Program Files (x86)\K-Lite Codec Pack\MPC-HC64\MPCVR\MpcVideoRenderer64.ax'
-}
-$requiredTargets = @('MpcVideoRenderer64.ax')
+$playerProcesses = @(Get-MPCVRPlayerProcessName)
 
 function Test-IsWindowsPlatform {
     $isWindowsVariable = Get-Variable -Name IsWindows -ErrorAction SilentlyContinue
@@ -53,19 +49,6 @@ function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object -TypeName Security.Principal.WindowsPrincipal -ArgumentList $identity
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
-
-function Get-TargetDirectory {
-    param(
-        [Parameter(Mandatory)]
-        [string]$TargetPath
-    )
-
-    $directory = [IO.Path]::GetDirectoryName($TargetPath)
-    if ([string]::IsNullOrWhiteSpace($directory)) {
-        throw "Could not determine the parent directory for: $TargetPath"
-    }
-    return $directory
 }
 
 function Quote-ProcessArgument {
@@ -124,23 +107,22 @@ if ([string]::IsNullOrWhiteSpace($PackageArchive) -xor [string]::IsNullOrWhiteSp
 }
 
 if ($ValidateOnly) {
-    foreach ($destination in $targets.Values) {
-        $directory = Get-TargetDirectory -TargetPath $destination
-        if (-not [IO.Path]::IsPathRooted($directory)) {
-            throw "Target directory is not fully qualified: $directory"
+    # Detection only reads. Having no player is not a failure here: CI validates on clean machines.
+    foreach ($target in @(Get-MPCVRPlayerTarget)) {
+        if (-not [IO.Path]::IsPathRooted($target.Destination)) {
+            throw "Target is not fully qualified: $($target.Destination)"
         }
     }
 
     [void](Get-PowerShellExecutable)
-    [void](Get-Command Install-KLiteRendererFiles -CommandType Function -ErrorAction Stop)
-    [void](Get-Command Select-KLiteRendererTargets -CommandType Function -ErrorAction Stop)
+    [void](Get-Command Install-MPCVRPlayerRenderer -CommandType Function -ErrorAction Stop)
     if (-not [string]::IsNullOrWhiteSpace($PackageArchive)) {
         $resolvedArchive = (Resolve-Path -LiteralPath $PackageArchive).Path
         $resolvedChecksum = (Resolve-Path -LiteralPath $ChecksumFile).Path
         [void](Get-ExpectedHash -ChecksumPath $resolvedChecksum -FileName ([IO.Path]::GetFileName($resolvedArchive)))
     }
 
-    Write-Host "K-Lite updater validation passed under PowerShell $($PSVersionTable.PSVersion)." -ForegroundColor Green
+    Write-Host "Renderer updater validation passed under PowerShell $($PSVersionTable.PSVersion)." -ForegroundColor Green
     Complete-Run -ExitCode 0
 }
 
@@ -182,22 +164,12 @@ $selectedAssetName = $primaryAssetName
 $exitCode = 0
 
 try {
-    if (Get-Process -Name 'mpc-hc', 'mpc-hc64' -ErrorAction SilentlyContinue) {
-        Write-Host 'MPC-HC is open. Close it to continue installation automatically (Ctrl+C to cancel).' -ForegroundColor Yellow
-        while (Get-Process -Name 'mpc-hc', 'mpc-hc64' -ErrorAction SilentlyContinue) {
+    if (Get-Process -Name $playerProcesses -ErrorAction SilentlyContinue) {
+        Write-Host 'MPC-HC or MPC-BE is open. Close it to continue installation automatically (Ctrl+C to cancel).' -ForegroundColor Yellow
+        while (Get-Process -Name $playerProcesses -ErrorAction SilentlyContinue) {
             Start-Sleep -Milliseconds 500
         }
-        Write-Host 'MPC-HC has closed. Continuing installation...' -ForegroundColor Green
-    }
-
-    # Only the 64-bit renderer is required. K-Lite installed with 64-bit
-    # components alone has no Filters\MPCVR; that optional target is skipped
-    # when the renderer files are selected.
-    foreach ($fileName in $requiredTargets) {
-        $destinationDirectory = Get-TargetDirectory -TargetPath $targets[$fileName]
-        if (-not (Test-Path -LiteralPath $destinationDirectory -PathType Container)) {
-            throw "K-Lite destination directory was not found: $destinationDirectory. Install K-Lite Codec Pack with MPC-HC (64-bit) and MPC Video Renderer selected."
-        }
+        Write-Host 'The player has closed. Continuing installation...' -ForegroundColor Green
     }
 
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
@@ -288,23 +260,22 @@ try {
     }
 
     $sources = @{}
-    foreach ($fileName in $targets.Keys) {
-        $source = Join-Path $extractPath $fileName
-        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
-            throw "The renderer package does not contain $fileName."
-        }
-        $sources[$fileName] = $source
+    foreach ($item in @(Get-ChildItem -LiteralPath $extractPath -File -Filter '*.ax')) {
+        $sources[$item.Name] = $item.FullName
     }
 
-    $installTargets = Select-KLiteRendererTargets -Targets $targets -Required $requiredTargets
-    foreach ($fileName in @($installTargets.Keys | Sort-Object)) {
-        Write-Host "Installing $fileName..."
+    $installTargets = @(Get-MPCVRRequiredPlayerTarget)
+    foreach ($target in $installTargets) {
+        Write-Host "Installing for $($target.Player) ($($target.Architecture)): $($target.Destination)"
     }
-    $installedFiles = @(Install-KLiteRendererFiles -Sources $sources -Targets $installTargets)
+    $installedFiles = @(Install-MPCVRPlayerRenderer -Sources $sources -Targets $installTargets)
 
     Write-Host
     Write-Host 'Custom MPC Video Renderer Maxine + RIFE build restored successfully.' -ForegroundColor Green
-    $installedFiles | Select-Object File, Version, Path | Format-Table -AutoSize
+    $installedFiles | Select-Object Player, Architecture, Version, LoadsFrom | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+    if ($installedFiles | Where-Object { $_.Player -eq 'MPC-BE' }) {
+        Write-Host 'MPC-BE: choose MPC Video Renderer under Options > Video if another renderer is selected.'
+    }
 }
 catch {
     $exitCode = 1

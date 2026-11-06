@@ -1,4 +1,4 @@
-name: Test K-Lite updater
+name: Test player updater
 
 # Historical diagnostics; normal CI uses the comprehensive reusable validation.
 on:
@@ -20,7 +20,7 @@ jobs:
         run: |
           $errors = $null
           [void][System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path '.\tools\KLiteMaxineUpdater\Update-KLiteMPCVR.ps1'),
+            (Resolve-Path '.\tools\MPCVRUpdater\Update-MPCVR.ps1'),
             [ref]$null,
             [ref]$errors
           )
@@ -29,4 +29,4 @@ jobs:
             exit 1
           }
 
-          .\tools\KLiteMaxineUpdater\Update-KLiteMPCVR.ps1 -ValidateOnly -NoPause
+          .\tools\MPCVRUpdater\Update-MPCVR.ps1 -ValidateOnly -NoPause

@@ -1,0 +1,62 @@
+name: Validate player updater
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Validate with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          foreach ($file in Get-ChildItem tools/MPCVRUpdater -File | Where-Object { $_.Extension -in '.ps1', '.psm1' }) {
+              $tokens = $null
+              $errors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors)
+              if ($errors.Count) {
+                  $errors | Format-List -Force
+                  throw "Windows PowerShell parser rejected $file"
+              }
+          }
+
+          & .\tools\MPCVRUpdater\Update-MPCVR.ps1 -ValidateOnly -NoPause
+          if ($LASTEXITCODE -ne 0) {
+              throw "Windows PowerShell validation returned $LASTEXITCODE"
+          }
+
+      - name: Validate with PowerShell 7
+        shell: pwsh
+        run: |
+          foreach ($file in Get-ChildItem tools/MPCVRUpdater -File | Where-Object { $_.Extension -in '.ps1', '.psm1' }) {
+              $tokens = $null
+              $errors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors)
+              if ($errors.Count) {
+                  $errors | Format-List -Force
+                  throw "PowerShell 7 parser rejected $file"
+              }
+          }
+
+          & .\tools\MPCVRUpdater\Update-MPCVR.ps1 -ValidateOnly -NoPause
+          if ($LASTEXITCODE -ne 0) {
+              throw "PowerShell 7 validation returned $LASTEXITCODE"
+          }
+
+      - name: Validate detection, transactions and registration handling with both PowerShell hosts
+        shell: powershell
+        run: |
+          foreach ($hostExe in @('powershell.exe', 'pwsh.exe')) {
+              & $hostExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File tools/MPCVRUpdater/Test-PlayerInstall.ps1
+              if ($LASTEXITCODE -ne 0) {
+                  throw "$hostExe player install test returned $LASTEXITCODE"
+              }
+          }
