@@ -82,7 +82,7 @@ def package(version_path, architecture, output):
     sources = {
         'MaxineRuntimeInstaller':['Install-MPCVRMaxineRuntime.ps1'],
         'RifeRuntimeInstaller':['Install-MPCVRRifeRuntime.ps1','Test-MPCVRRifePreflight.ps1','RifeRuntimeManifest.psm1'],
-        'KLiteMaxineUpdater':['Install-KLiteMPCVRUpdater.ps1','Update-KLiteMPCVR.ps1','KLiteRendererInstall.psm1'],
+        'MPCVRUpdater':['Install-MPCVRUpdater.ps1','Update-MPCVR.ps1','Update-KLiteMPCVR.ps1','MPCVRPlayerInstall.psm1'],
     }
     for directory,names in sources.items():
         for name in names: payload[name]=(ROOT/'tools'/directory/name).read_bytes()

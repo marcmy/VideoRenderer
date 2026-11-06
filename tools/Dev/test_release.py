@@ -326,7 +326,7 @@ class PackageTests(unittest.TestCase):
     def test_single_architecture_and_full_setup_integrity(self):
         with tempfile.TemporaryDirectory(prefix='mpcvr-release-test-') as directory:
             root=Path(directory)/'source'; root.mkdir()
-            for name in ['distrib','tools/MaxineSetup','tools/MaxineRuntimeInstaller','tools/RifeRuntimeInstaller','tools/KLiteMaxineUpdater']:
+            for name in ['distrib','tools/MaxineSetup','tools/MaxineRuntimeInstaller','tools/RifeRuntimeInstaller','tools/MPCVRUpdater']:
                 shutil.copytree(release.ROOT/name,root/name,ignore=shutil.ignore_patterns('__pycache__','*.exe','*.zip'))
             for name in ['Readme.md','history.txt','LICENSE.txt','dependencies.lock.json']:
                 shutil.copyfile(release.ROOT/name,root/name)

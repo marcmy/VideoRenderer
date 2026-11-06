@@ -18,8 +18,8 @@ $payloadChecksums = Join-Path $payloadRoot 'PAYLOAD-SHA256SUMS.txt'
 $maxineRuntimeInstaller = Join-Path $payloadRoot 'Install-MPCVRMaxineRuntime.ps1'
 $rifeRuntimeInstaller = Join-Path $payloadRoot 'Install-MPCVRRifeRuntime.ps1'
 $rifePreflight = Join-Path $payloadRoot 'Test-MPCVRRifePreflight.ps1'
-$updaterInstaller = Join-Path $payloadRoot 'Install-KLiteMPCVRUpdater.ps1'
-$rendererUpdater = Join-Path $payloadRoot 'Update-KLiteMPCVR.ps1'
+$updaterInstaller = Join-Path $payloadRoot 'Install-MPCVRUpdater.ps1'
+$rendererUpdater = Join-Path $payloadRoot 'Update-MPCVR.ps1'
 
 $rendererArchive = Join-Path $payloadRoot 'MpcVideoRenderer-Maxine-RIFE.zip'
 $maxineRuntimeArchive = Join-Path $payloadRoot 'MPCVR-Maxine-Runtime.zip'
@@ -34,9 +34,10 @@ $requiredPayloadNames = @(
     'Install-MPCVRRifeRuntime.ps1',
     'Test-MPCVRRifePreflight.ps1',
     'RifeRuntimeManifest.psm1',
-    'Install-KLiteMPCVRUpdater.ps1',
+    'Install-MPCVRUpdater.ps1',
+    'Update-MPCVR.ps1',
     'Update-KLiteMPCVR.ps1',
-    'KLiteRendererInstall.psm1',
+    'MPCVRPlayerInstall.psm1',
     'MpcVideoRenderer-Maxine-RIFE.zip',
     'MPCVR-Maxine-Runtime.zip',
     'MPCVR-RIFE-Common.zip',
@@ -347,6 +348,14 @@ function Remove-SupersededDownloads {
     }
 }
 
+function Assert-PlayerInstalled {
+    # Before any large download: without a player there is nowhere to install the renderer.
+    Import-Module (Join-Path $payloadRoot 'MPCVRPlayerInstall.psm1') -Force
+    foreach ($target in @(Get-MPCVRRequiredPlayerTarget)) {
+        Write-Host "Detected $($target.Player) ($($target.Architecture)): $($target.Destination)"
+    }
+}
+
 function Assert-MaxinePreflight {
     $runtimePath = Join-Path $env:LOCALAPPDATA 'MPCVR Maxine Runtime\nvvfx\libs'
     foreach ($fileName in @(
@@ -402,6 +411,7 @@ try {
 
     Write-Host 'Verified all declared Maxine + RIFE setup payload hashes.' -ForegroundColor Green
     Import-Module $rifeManifestModule -Force
+    if (-not $ValidateOnly) { Assert-PlayerInstalled }
 
     if ($thinSetup) {
         Import-Module (Join-Path $payloadRoot 'DependencyDownloads.psm1') -Force
@@ -482,12 +492,13 @@ try {
         Complete-Run -ExitCode 0
     }
 
-    if (Get-Process -Name 'mpc-hc', 'mpc-hc64' -ErrorAction SilentlyContinue) {
-        Write-Host 'MPC-HC is open. Close it to continue installation automatically (Ctrl+C to cancel).' -ForegroundColor Yellow
-        while (Get-Process -Name 'mpc-hc', 'mpc-hc64' -ErrorAction SilentlyContinue) {
+    $playerProcesses = @('mpc-hc', 'mpc-hc64', 'mpc-be', 'mpc-be64')
+    if (Get-Process -Name $playerProcesses -ErrorAction SilentlyContinue) {
+        Write-Host 'MPC-HC or MPC-BE is open. Close it to continue installation automatically (Ctrl+C to cancel).' -ForegroundColor Yellow
+        while (Get-Process -Name $playerProcesses -ErrorAction SilentlyContinue) {
             Start-Sleep -Milliseconds 500
         }
-        Write-Host 'MPC-HC has closed. Continuing installation...' -ForegroundColor Green
+        Write-Host 'The player has closed. Continuing installation...' -ForegroundColor Green
     }
 
     if ($PSVersionTable.PSEdition -eq 'Desktop') {
@@ -536,12 +547,12 @@ try {
     }
 
     Invoke-SetupStep `
-        -Name '3/4 Installing K-Lite restore shortcut...' `
+        -Name '3/4 Installing the restore shortcut...' `
         -ScriptPath $updaterInstaller `
         -Parameters @{ NoPause = $true }
 
     Invoke-SetupStep `
-        -Name '4/4 Installing custom MPC Video Renderer into K-Lite...' `
+        -Name '4/4 Installing custom MPC Video Renderer for each detected player...' `
         -ScriptPath $rendererUpdater `
         -Parameters @{
             PackageArchive = $rendererArchive
@@ -564,7 +575,7 @@ try {
     Write-Host
     Write-Host 'MPCVR Maxine + RIFE Setup completed successfully.' -ForegroundColor Green
     Write-Host
-    Write-Host 'Open MPC-HC and play a video.'
+    Write-Host 'Open MPC-HC or MPC-BE and play a video.'
     Write-Host 'Press Ctrl+J and confirm:'
     Write-Host "  Maxine runtime: $maxineRuntimePath"
     Write-Host '  RIFE runtime: ready'
