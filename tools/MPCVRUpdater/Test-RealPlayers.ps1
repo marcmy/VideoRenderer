@@ -126,14 +126,16 @@ foreach ($pattern in @('MPC-BE.*.x64-installer.zip', 'MPC-BE.*.x86-installer.zip
     Expand-Archive -LiteralPath $zip -DestinationPath $folder -Force
     Install-Silently (@(Get-ChildItem -LiteralPath $folder -Recurse -Filter '*.exe')[0].FullName)
 }
-$page = (Invoke-WebRequest -Uri 'https://www.codecguide.com/download_k-lite_codec_pack_basic.htm' -UseBasicParsing -UserAgent 'Mozilla/5.0').Content
-$kliteUrl = [regex]::Match($page, 'https://[^"]*K-Lite_Codec_Pack_[^"]*_Basic\.exe').Value
-Check ([bool]$kliteUrl) 'Could not find the K-Lite Basic download.'
+$page = (Invoke-WebRequest -Uri 'https://www.codecguide.com/download_k-lite_codec_pack_mega.htm' -UseBasicParsing -UserAgent 'Mozilla/5.0').Content
+$kliteUrl = [regex]::Match($page, 'https://[^"]*K-Lite_Codec_Pack_[^"]*_Mega\.exe').Value
+Check ([bool]$kliteUrl) 'Could not find the K-Lite Mega download.'
 Write-Host "K-Lite: $kliteUrl"
 $kliteLog = Join-Path $WorkRoot 'klite-setup.log'
-$process = Start-Process -FilePath (Get-File $kliteUrl 'K-Lite_Basic.exe') -ArgumentList '/VERYSILENT', '/NORESTART', '/SUPPRESSMSGBOXES', '/SP-', "/LOG=`"$kliteLog`"" -Wait -PassThru
+# A silent K-Lite install selects no player by default, so name the components a player needs.
+$kliteComponents = 'player,player\mpchc,player\mpchc\x64,other,other\mpcvr,video,video\lav,audio,audio\lav,sourcefilter,sourcefilter\lav'
+$process = Start-Process -FilePath (Get-File $kliteUrl 'K-Lite_Mega.exe') -ArgumentList '/VERYSILENT', '/NORESTART', '/SUPPRESSMSGBOXES', '/SP-', "/COMPONENTS=`"$kliteComponents`"", "/LOG=`"$kliteLog`"" -Wait -PassThru
 Write-Host "K-Lite setup exit code: $($process.ExitCode)"
-if (Test-Path -LiteralPath $kliteLog) { Get-Content -LiteralPath $kliteLog | Select-String -Pattern 'Components|Tasks|Dest filename:.*(mpc-hc|MpcVideoRenderer)|Directory|Exception|Error|rror' | Select-Object -First 40 | ForEach-Object { Write-Host $_.Line } }
+if (Test-Path -LiteralPath $kliteLog) { Get-Content -LiteralPath $kliteLog | Select-String -Pattern 'Selected components|Exception|rror' | Select-Object -First 20 | ForEach-Object { Write-Host $_.Line } }
 foreach ($folder in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
     Get-ChildItem -LiteralPath (Join-Path $folder 'K-Lite Codec Pack') -Recurse -File -Include 'mpc-hc*.exe', 'MpcVideoRenderer*.ax' -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "K-Lite file: $($_.FullName)" }
 }
