@@ -169,10 +169,44 @@ builds. They sit on hard detail, with a local gradient near 30 against 1.5 overa
 Against ONNX Runtime at timesteps 0.25, 0.5 and 0.75 on a real input, a local build's rate
 was 0.0135%, 0.0263% and 0.0187%, against native TensorRT's 0.0131%, 0.0265% and 0.0161%.
 
-The largest cost left outside block 4 is the encoder, about 2.8 ms per pair. Each pair
-encodes both images, although the first was the previous pair's second. Reusing those
-features would save about half of that, but needs the renderer to identify consecutive
-pairs through the runtime ABI.
+## Keeping the frame consecutive pairs share, 2026-11-06
+
+Each pair encoded both images, although its first image was the previous pair's second.
+Request tail field `previousPairId` promises that relationship: the renderer sets it
+only when both jobs really used that one source frame, so a seek, a repeat, a skipped
+pair or a changed runtime promises nothing and both images are encoded as before.
+
+On the SM75 and 4.25 Lite path, a one-image encoder plan (`_encoder1`) now replaces the
+two-image plan, reading past the graph's reshape into two. A pair that shares a frame
+copies those features and encodes only its second image. Others run the plan twice,
+which is slower than the two-image plan, but only happens after a discontinuity.
+
+Consecutive pairs normally run on different contexts, so the copy crosses CUDA streams.
+All of this happens under one lock: a reader waits on an event for the encoder it copies
+from, and that context waits for the reader's copy before it next overwrites the buffer.
+`RifePrecisionGpuTest` runs both contexts unsynchronized and compares every image with
+its expected direction. Of 240 racing requests 239 kept a frame, and none used a wrong one.
+
+The one-image plan's scratch is half the size, so the shared allocation falls to
+synthesis's 168 MiB and runtime VRAM falls about 176 MiB for two contexts. Each pair now
+clears only the range both plans can touch, 135 MiB.
+
+Local builds against the distributed previous runtime, with other GPU work running, so
+the distributed comparison in the test build's results is the one to quote. Median across
+four alternating runs on the two clips, with contexts alternating as in playback:
+
+| Runtime with feature reuse | First target, ms | Reused target, ms | Runtime VRAM, MiB |
+| --- | ---: | ---: | ---: |
+| Finished in one kernel | 7.82 | 4.67 | 930 |
+| Keeping the shared frame | 6.50 | 4.65 | 754 |
+
+Plans differ in how they round. Against ONNX Runtime on one real input, the two-image plan's
+features differed by 0.00071 on average and the one-image plan's by 0.00078, on values
+averaging 0.234. Final images against the whole-model engine, values differing by more
+than 32/255, were 0.0232% against 0.0220% before on the mandel clip, and 0.0434% against
+0.0534% on the pan clip.
+
+The saving is small at high rates, because a pair with more targets encodes once.
 
 ## Scheduler
 

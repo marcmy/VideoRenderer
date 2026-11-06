@@ -41,7 +41,7 @@ void TestLazyOutputFallback()
     auto acquireOutput = [&]() { ++allocations; return fallback; };
     auto allocationFailure = [&]() -> ID3D11Texture2D* { ++allocations; return nullptr; };
     auto interpolate = [&](std::shared_ptr<RifeCudaOutputLease>& lease, auto&& acquire) {
-        return InterpolateRifeOutput(*runtime, 1, first, second, 0.25f, stats, 42, lease, output, runtimeInvoked, acquire);
+        return InterpolateRifeOutput(*runtime, 1, first, second, 0.25f, stats, 42, 0, lease, output, runtimeInvoked, acquire);
     };
 
     const uint32_t initialD3DCalls = d3dCalls();

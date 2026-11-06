@@ -258,6 +258,9 @@ struct CRifePlaybackPipeline::Impl
         uint32_t maxOutputFpsMilli = 0;
         CComPtr<IReferenceClock> clock;
         REFERENCE_TIME graphStart = 0;
+        // The job that used this frame as its second input. Set and read only
+        // by the thread that creates pair jobs.
+        uint64_t pairIdAsSecond = 0;
     };
 
     using SourceFramePtr = std::shared_ptr<SourceFrame>;
@@ -274,6 +277,7 @@ struct CRifePlaybackPipeline::Impl
     struct PairJob {
         uint64_t sequence = 0;
         uint64_t inputPairId = nextInputPairId.fetch_add(1, std::memory_order_relaxed);
+        uint64_t previousPairId = 0;
         uint32_t contextIndex = 0;
         SourceFramePtr first;
         SourceFramePtr second;
@@ -468,6 +472,8 @@ struct CRifePlaybackPipeline::Impl
     std::atomic_uint64_t lastInputPackUs = 0;
     std::atomic_uint64_t inputPairPacks = 0;
     std::atomic_uint64_t inputPairReuses = 0;
+    std::atomic_uint64_t featuresEncodedBoth = 0;
+    std::atomic_uint64_t featuresKeptFirst = 0;
     std::atomic_bool inputPairReuseAvailable = false;
     std::atomic_bool encoderFeaturesActive = false;
     std::atomic_uint64_t lastInputUnmapUs = 0;
@@ -1416,6 +1422,7 @@ struct CRifePlaybackPipeline::Impl
         ID3D11Texture2D*& output,
         const std::optional<bool> copiesReadyAtWorkerStart,
         const uint64_t inputPairId,
+        const uint64_t previousPairId,
         std::shared_ptr<RifeCudaOutputLease>& cudaOutput,
         bool& runtimeInvoked)
     {
@@ -1438,7 +1445,7 @@ struct CRifePlaybackPipeline::Impl
         }
         const auto runtimeStart = std::chrono::steady_clock::now();
         const bool ok = InterpolateRifeOutput(*runtime, contextIndex, first, second,
-            timestep, stats, inputPairId, cudaOutput, output, runtimeInvoked, [&]() -> ID3D11Texture2D* {
+            timestep, stats, inputPairId, previousPairId, cudaOutput, output, runtimeInvoked, [&]() -> ID3D11Texture2D* {
                 auto* fallback = AcquireInferenceOutput(workerState, device,
                     desc.Width, desc.Height, outputIndex++, desc.Format);
                 if (!fallback) return nullptr;
@@ -1459,6 +1466,8 @@ struct CRifePlaybackPipeline::Impl
         encoderFeaturesActive.store(stats.featureReuse != 0, std::memory_order_relaxed);
         if (stats.inputPairReuse == 1) inputPairPacks.fetch_add(1, std::memory_order_relaxed);
         if (stats.inputPairReuse == 2) inputPairReuses.fetch_add(1, std::memory_order_relaxed);
+        if (stats.featureReuse == 1) featuresEncodedBoth.fetch_add(1, std::memory_order_relaxed);
+        if (stats.featureReuse == 3) featuresKeptFirst.fetch_add(1, std::memory_order_relaxed);
         adaptiveInferenceTiming.AddMicroseconds(
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
                 runtimeStart.time_since_epoch()).count()),
@@ -1681,7 +1690,7 @@ struct CRifePlaybackPipeline::Impl
                 workerState, device, outputIndex,
                 firstInference, secondInference,
                 static_cast<float>(target.timestep), generated,
-                copiesReadyAtWorkerStart, job.inputPairId, cudaOutput, runtimeInvoked);
+                copiesReadyAtWorkerStart, job.inputPairId, job.previousPairId, cudaOutput, runtimeInvoked);
             // GenerateRife() first retires any deferred input release left by
             // the previous request on this same context. Only now is it safe to
             // let those old source-pool slots go; retain this pair until the
@@ -1980,6 +1989,11 @@ struct CRifePlaybackPipeline::Impl
                 diagnostics += std::format(L", pair reuse {:.0f}%", 100.0 * reused / (packed + reused));
             } else {
                 diagnostics += L", pair reuse unavailable";
+            }
+            const auto keptFirst = featuresKeptFirst.load(std::memory_order_relaxed);
+            const auto encodedBoth = featuresEncodedBoth.load(std::memory_order_relaxed);
+            if (keptFirst) {
+                diagnostics += std::format(L", frame reuse {:.0f}%", 100.0 * keptFirst / (keptFirst + encodedBoth));
             }
             const auto waits = presentationSurfaceWaitCount.load(std::memory_order_relaxed);
             if (waits) {
@@ -2286,6 +2300,8 @@ struct CRifePlaybackPipeline::Impl
             job->contextIndex = nextWorker++ % static_cast<uint32_t>(contextCount);
             job->first = previous;
             job->second = currentFrame;
+            job->previousPairId = previous->pairIdAsSecond;
+            currentFrame->pairIdAsSecond = job->inputPairId;
             job->runtime = std::move(runtime);
             job->targets = targets;
             job->results.resize(targets.size());

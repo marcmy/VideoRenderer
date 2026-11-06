@@ -35,6 +35,7 @@ extern "C" __declspec(dllexport) int WINAPI MpcvrRifeInterpolate(
     // Echo generation through an existing field to verify the renderer loader
     // actually transmitted it across the DLL boundary.
     stats.engineBytes = request.inputPairId;
+    stats.registrationMs = static_cast<double>(request.previousPairId);
     stats.inputPairReuse = 1;
     CopyRifeRuntimeStats(destination, stats);
 #endif

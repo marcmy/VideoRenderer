@@ -14,6 +14,8 @@
 #include <vector>
 #include <set>
 #include <array>
+#include <atomic>
+#include <thread>
 #include <algorithm>
 #include <stdexcept>
 #include <fstream>
@@ -130,6 +132,50 @@ int wmain(int argc,wchar_t** argv) {
             q.timestep=1;Check(infer(handle,&q,&s)==MPCVR_RIFE_INVALID_ARGUMENT,"invalid request rejected");q.timestep=.5f;
             Check(infer(handle,&q,&s)==0 && s.featureReuse==uint64_t(reuse&&supported?1:0),"failure invalidates encoder");
             q.contextIndex=1;Check(infer(handle,&q,&s)==0 && s.featureReuse==uint64_t(reuse&&supported?1:0),"contexts own independent features");
+            if(reuse&&supported) {
+                // Consecutive pairs may keep the frame they share, across contexts, but
+                // only when the IDs promise it. Only 4.25 Lite on SM75 currently does.
+                const auto run=[&](uint32_t index,ID3D11Texture2D* first,ID3D11Texture2D* second,ID3D11Texture2D* target,uint64_t id,uint64_t previous){
+                    MpcvrRifeRequest r;r.contextIndex=index;r.first=first;r.second=second;r.output=target;r.timestep=.5f;r.inputPairId=id;r.previousPairId=previous;
+                    MpcvrRifeStats rs;Check(infer(handle,&r,&rs)==0,"consecutive pair inference");return rs.featureReuse;};
+                const uint64_t none=run(0,a,b,output,10,0);Check(none==1,"no promise encodes both images");
+                const auto forward=Read(device,context,output);
+                Check(run(0,b,a,output,11,0)==1,"no promise encodes both images, even if the frame is shared");
+                const auto backward=Read(device,context,output);
+                run(0,a,b,output,12,0);
+                const uint64_t kept=run(1,b,a,output,13,12);
+                Check(kept==1||kept==3,"consecutive pair status");
+                const bool keeps=kept==3;
+                Check(MaxDifference(Read(device,context,output),backward,precise)<.02,"keeping a frame across contexts matches encoding both");
+                Check(run(1,a,b,output,14,13)==(keeps?3u:1u),"consecutive pair on one context keeps its frame");
+                Check(MaxDifference(Read(device,context,output),forward,precise)<.02,"keeping a frame on one context matches encoding both");
+                Check(run(0,b,a,output,15,999)==1,"a pair that never ran keeps nothing");
+                Check(run(1,a,b,output,16,13)==1,"an older pair keeps nothing");
+                Check(run(0,b,a,output,17,16)==(keeps?3u:1u),"keeping resumes after a mismatch");
+                MpcvrRifeRequest bad;bad.first=a;bad.second=b;bad.output=output;bad.inputPairId=18;bad.previousPairId=17;bad.timestep=1;MpcvrRifeStats badStats;
+                Check(infer(handle,&bad,&badStats)==MPCVR_RIFE_INVALID_ARGUMENT,"invalid consecutive request rejected");
+                Check(MaxDifference(forward,backward,precise)>.02,"the test images must tell directions apart");
+                // Contexts racing unsynchronized, as the renderer's workers do: any request
+                // may miss the shared frame, but none may ever use the wrong one.
+                std::atomic_uint64_t raced{0},failed{0};
+                const auto worker=[&](uint32_t index) {
+                    auto target=Texture(device,128,128,precise);
+                    for(uint64_t i=0;i<120;++i) {
+                        const uint64_t id=1000+i*2+index;
+                        const uint64_t status=run(index,index?b:a,index?a:b,target,id,id-1);
+                        raced+=status==3;
+                        if(MaxDifference(Read(device,context,target),index?backward:forward,precise)>=.02) ++failed;
+                    }
+                };
+                std::exception_ptr error0,error1;
+                std::thread first([&]{try{worker(0);}catch(...){error0=std::current_exception();}}),second([&]{try{worker(1);}catch(...){error1=std::current_exception();}});
+                first.join();second.join();
+                if(error0) std::rethrow_exception(error0);
+                if(error1) std::rethrow_exception(error1);
+                Check(failed==0,"racing contexts never use the wrong frame");
+                std::wcout<<name<<L" frame reuse "<<(keeps?L"active":L"not used")<<L", racing requests kept "<<raced.load()<<L" of 240\n";
+                if(keeps) Check(raced>0,"racing contexts still keep frames");
+            }
             destroy(handle);
         }
         double maximum=0, total=0; size_t n=0; std::vector<double> errors;

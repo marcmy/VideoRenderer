@@ -371,7 +371,8 @@ bool CRifeFrameInterpolation::Interpolate(
     ID3D11Texture2D* output,
     const float timestep,
     MpcvrRifeStats& stats,
-    const uint64_t inputPairId)
+    const uint64_t inputPairId,
+    const uint64_t previousPairId)
 {
     if (!IsReady() || !first || !second || !output || !(timestep > 0.0f && timestep < 1.0f)) {
         return false;
@@ -384,6 +385,7 @@ bool CRifeFrameInterpolation::Interpolate(
     request.output = output;
     request.timestep = timestep;
     request.inputPairId = inputPairId;
+    request.previousPairId = previousPairId;
 
     stats = {};
     const int result = m_interpolate(m_handle, &request, &stats);
@@ -457,7 +459,7 @@ RifeCudaOutputLease::~RifeCudaOutputLease()
 }
 
 bool RifeCudaOutputLease::Interpolate(uint32_t contextIndex, ID3D11Texture2D* first,
-    ID3D11Texture2D* second, float timestep, MpcvrRifeStats& stats, uint64_t inputPairId)
+    ID3D11Texture2D* second, float timestep, MpcvrRifeStats& stats, uint64_t inputPairId, uint64_t previousPairId)
 {
     if (!m_image.leaseId || !first || !second || !(timestep > 0.0f && timestep < 1.0f)) return false;
     MpcvrRifeRequest request{};
@@ -466,6 +468,7 @@ bool RifeCudaOutputLease::Interpolate(uint32_t contextIndex, ID3D11Texture2D* fi
     request.second = second;
     request.timestep = timestep;
     request.inputPairId = inputPairId;
+    request.previousPairId = previousPairId;
     stats = {};
     return m_owner->m_interpolateCuda(m_owner->m_handle, &request, m_image.leaseId, &stats) == MPCVR_RIFE_OK;
 }

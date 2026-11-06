@@ -438,7 +438,8 @@ public:
         contextLock.lock();
         stats.contextLockWaitMs = elapsedMs(contextLockStart, Clock::now());
         auto& state = *m_contexts[request.contextIndex];
-        const uint64_t inputPairId = request.size >= sizeof(MpcvrRifeRequest) ? request.inputPairId : 0;
+        // CopyRifeRuntimeRequest() has already cleared fields beyond the caller's size.
+        const uint64_t inputPairId = request.inputPairId;
         const bool reusePackedInput = state.packedInput.Begin(inputPairId, request.first, request.second);
         const bool linear = linearOutput != nullptr;
         if (linear && m_highPrecision) return MPCVR_RIFE_UNSUPPORTED;
@@ -705,7 +706,9 @@ public:
         }
         const auto tensorRtSubmitStart = Clock::now();
         const bool graphUsed = state.tensorRtGraphExec != nullptr;
-        const bool featureSubmitted = !state.features || reusePackedInput || state.features->Enqueue(state.stream);
+        bool firstFeaturesKept = false;
+        const bool featureSubmitted = !state.features || reusePackedInput
+            || state.features->Enqueue(state.stream, inputPairId, request.previousPairId, firstFeaturesKept);
         const bool tensorRtSubmitted = featureSubmitted && (graphUsed
             ? cudaGraphLaunch(state.tensorRtGraphExec, state.stream) == cudaSuccess
             : state.context->enqueueV3(state.stream));
@@ -845,7 +848,7 @@ public:
         stats.totalRuntimeMs = elapsedMs(runtimeStart, Clock::now());
         state.packedInput.Commit(inputPairId, request.first, request.second);
         stats.inputPairReuse = reusePackedInput ? 2u : 1u;
-        stats.featureReuse = state.features ? (reusePackedInput ? 2u : 1u) : 0u;
+        stats.featureReuse = !state.features ? 0u : reusePackedInput ? 2u : firstFeaturesKept ? 3u : 1u;
         return MPCVR_RIFE_OK;
     }
 

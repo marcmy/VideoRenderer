@@ -52,7 +52,8 @@ public:
         ID3D11Texture2D* output,
         float timestep,
         MpcvrRifeStats& stats,
-        uint64_t inputPairId = 0);
+        uint64_t inputPairId = 0,
+        uint64_t previousPairId = 0);
 
     bool DrainContext(uint32_t contextIndex) noexcept;
 
@@ -106,7 +107,7 @@ public:
     RifeCudaOutputLease& operator=(const RifeCudaOutputLease&) = delete;
     const MpcvrRifeCudaOutput& GetImage() const noexcept { return m_image; }
     bool Interpolate(uint32_t contextIndex, ID3D11Texture2D* first, ID3D11Texture2D* second,
-        float timestep, MpcvrRifeStats& stats, uint64_t inputPairId);
+        float timestep, MpcvrRifeStats& stats, uint64_t inputPairId, uint64_t previousPairId = 0);
     bool Export(ID3D11Texture2D* output) const;
 private:
     friend class CRifeFrameInterpolation;
@@ -119,7 +120,7 @@ private:
 template<class AcquireD3DOutput>
 bool InterpolateRifeOutput(CRifeFrameInterpolation& runtime, uint32_t contextIndex,
     ID3D11Texture2D* first, ID3D11Texture2D* second, float timestep,
-    MpcvrRifeStats& stats, uint64_t inputPairId,
+    MpcvrRifeStats& stats, uint64_t inputPairId, uint64_t previousPairId,
     std::shared_ptr<RifeCudaOutputLease>& cudaOutput, ID3D11Texture2D*& output,
     bool& runtimeInvoked, AcquireD3DOutput&& acquireD3DOutput)
 {
@@ -127,7 +128,7 @@ bool InterpolateRifeOutput(CRifeFrameInterpolation& runtime, uint32_t contextInd
     runtimeInvoked = false;
     if (cudaOutput) {
         runtimeInvoked = true;
-        if (cudaOutput->Interpolate(contextIndex, first, second, timestep, stats, inputPairId)) {
+        if (cudaOutput->Interpolate(contextIndex, first, second, timestep, stats, inputPairId, previousPairId)) {
             return true;
         }
         cudaOutput.reset();
@@ -135,5 +136,5 @@ bool InterpolateRifeOutput(CRifeFrameInterpolation& runtime, uint32_t contextInd
     output = acquireD3DOutput();
     if (!output) return false;
     runtimeInvoked = true;
-    return runtime.Interpolate(contextIndex, first, second, output, timestep, stats, inputPairId);
+    return runtime.Interpolate(contextIndex, first, second, output, timestep, stats, inputPairId, previousPairId);
 }

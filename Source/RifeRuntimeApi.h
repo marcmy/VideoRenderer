@@ -75,6 +75,10 @@ struct MpcvrRifeRequest {
     // or timestamp. A context may reuse its packed input for later timesteps of
     // this pair. New jobs (including seek/repeat) must receive a new ID.
     uint64_t inputPairId = 0;
+    // ABI-2 optional tail. Nonzero promises that this pair's first source frame is
+    // the second source frame of the job that used this inputPairId, so a runtime
+    // may keep what it computed from that frame. Zero promises nothing.
+    uint64_t previousPairId = 0;
 };
 
 struct MpcvrRifeStats {
@@ -121,7 +125,8 @@ struct MpcvrRifeStats {
     // ABI-2 optional tail: 0 = unsupported/not reported, 1 = full pair pack,
     // 2 = reused RGB/geometry with only the timestep plane updated.
     uint64_t inputPairReuse = 0;
-    // Optional tail: 0 = original engine, 1 = fresh encoder, 2 = reused encoder.
+    // Optional tail: 0 = original engine, 1 = fresh encoder, 2 = reused encoder,
+    // 3 = encoded only the second image, keeping the first from the previous pair.
     uint64_t featureReuse = 0;
 };
 
