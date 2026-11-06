@@ -76,6 +76,10 @@ Upstream implementations stay under their original filenames (`VideoRenderer.cpp
 
 Upstream synchronization uses `git merge -Xrenormalize` and a scoped LF text rule for `Source/VideoRenderer.cpp`. This lets Git compare CRLF upstream history with the fork's LF source without a whole-file conflict. Overlapping code edits still require review; runtime packages and license checksums are not normalized. The merge regression tests exercise unrelated and overlapping edits in an isolated Git fixture with mixed line endings.
 
+RIFE runtime packaging separates what changes from what does not. `MPCVR-RIFE-Runtime.zip` holds `MPCVRRifeRuntime64.dll` and `BUILD-INFO.txt`, about 2 MB and new for every runtime build. `MPCVR-RIFE-Libraries.zip` holds the TensorRT libraries, about 400 MiB. `dependencies.py pack` writes both with fixed timestamps and ordering, so unchanged libraries produce identical bytes, and `prepare-component` then pins the existing asset at its original release tag instead of uploading a copy. Setup's download cache is addressed by that hash, so a new runtime build downloads only the runtime ZIP. A `::warning::` in the publish log marks any new library package; expect one only for the first split build and for a TensorRT update.
+
+Packaging is not part of the component's recipe fingerprint, so this layout arrives with the next runtime source change rather than by republishing an existing tag. Immutable releases, older setups and shortcuts that run them keep `MPCVR-RIFE-Common.zip`, which `validate_manifest`, `Read-MPCVRDependencyLock` and both installers still accept: a lock pins exactly one complete layout. The first split pin downloads the libraries package once and reinstalls RIFE through the normal staged swap and rollback; engine plans carry over.
+
 Heavy TensorRT/CUDA and model jobs are manual/reusable dependency builders, not prerequisites for every renderer change. Comprehensive installer workflows are reusable checks called once by normal CI; the redundant parser-only and library-probe workflows remain manual historical diagnostics. The pinned Trivy/Syft supply-chain checks remain active.
 
 ## Compatibility and cleanup

@@ -2,6 +2,18 @@
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+function Get-MPCVRRifeSharedArchiveNames {
+    # Immutable releases and older locks keep the common package; a new runtime
+    # build ships separately from its unchanged libraries.
+    param([Parameter(Mandatory=$true)]$Manifest)
+    $hasCommon=[bool]$Manifest.files.PSObject.Properties['MPCVR-RIFE-Common.zip']
+    $hasRuntime=[bool]$Manifest.files.PSObject.Properties['MPCVR-RIFE-Runtime.zip']
+    $hasLibraries=[bool]$Manifest.files.PSObject.Properties['MPCVR-RIFE-Libraries.zip']
+    if ($hasCommon -and -not ($hasRuntime -or $hasLibraries)) { return @('MPCVR-RIFE-Common.zip') }
+    if ($hasRuntime -and $hasLibraries -and -not $hasCommon) { return @('MPCVR-RIFE-Runtime.zip','MPCVR-RIFE-Libraries.zip') }
+    throw 'Incomplete rife-runtime pin: expected the split runtime and library packages, or the legacy common package.'
+}
+
 function Read-MPCVRDependencyLock {
     param([Parameter(Mandatory=$true)][string]$Path)
     $lock = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
@@ -21,7 +33,7 @@ function Read-MPCVRDependencyLock {
             if ($name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -or $entry.sha256 -notmatch '^[a-f0-9]{64}$' -or [long]$entry.bytes -le 0 -or $entry.url -cnotmatch $assetPattern) { throw "Invalid pinned dependency: $name" }
         }
         $required = switch ($component) {
-            'rife-runtime' { @('MPCVR-RIFE-Common.zip','runtime-manifest.json','SHA256SUMS.txt','MPCVR-RIFE-sm75.zip','MPCVR-RIFE-sm86.zip','MPCVR-RIFE-sm89.zip','MPCVR-RIFE-sm120.zip') }
+            'rife-runtime' { @(Get-MPCVRRifeSharedArchiveNames -Manifest $manifest) + @('runtime-manifest.json','SHA256SUMS.txt','MPCVR-RIFE-sm75.zip','MPCVR-RIFE-sm86.zip','MPCVR-RIFE-sm89.zip','MPCVR-RIFE-sm120.zip') }
             'rife-models' { @('MPCVR-RIFE-Models.zip','RIFE-model-license.txt','model-manifest.json') }
             'maxine' { @('MPCVR-Maxine-Runtime.zip','Maxine-SDK-License.pdf') }
         }
@@ -109,7 +121,7 @@ function Get-MPCVRInstalledDependencyInventory {
         $archives=switch ($componentName) {
             'maxine' { @('MPCVR-Maxine-Runtime.zip') }
             'rife-models' { @('MPCVR-RIFE-Models.zip') }
-            'rife-runtime' { @('MPCVR-RIFE-Common.zip') + @($keys | ForEach-Object { "MPCVR-RIFE-$_.zip" }) }
+            'rife-runtime' { @(Get-MPCVRRifeSharedArchiveNames -Manifest $manifest) + @($keys | ForEach-Object { "MPCVR-RIFE-$_.zip" }) }
         }
         foreach ($name in $archives) {
             $entry=$manifest.files.PSObject.Properties[$name].Value
@@ -168,8 +180,19 @@ function Get-MPCVRInstalledDependencyInventory {
         $metadata=Get-Content -LiteralPath $installedManifest -Raw | ConvertFrom-Json
         $runtimePin=$Lock.components.PSObject.Properties['rife-runtime'].Value.manifest
         if ($metadata.schemaVersion -ne 2 -or $metadata.runtimeAbi -ne $runtimePin.compatibility.runtimeAbi -or
-            [string]$metadata.tensorRtVersion -notmatch '^\d+\.\d+(\.\d+){0,2}$' -or
-            $metadata.commonRuntimeArchiveSha256 -ine $runtimePin.files.PSObject.Properties['MPCVR-RIFE-Common.zip'].Value.sha256) { return $null }
+            [string]$metadata.tensorRtVersion -notmatch '^\d+\.\d+(\.\d+){0,2}$') { return $null }
+        $sharedNames=@(Get-MPCVRRifeSharedArchiveNames -Manifest $runtimePin)
+        # Installs made from the common package recorded one hash under its own name.
+        if ($metadata.PSObject.Properties['sharedRuntimeArchives']) {
+            $recorded=@($metadata.sharedRuntimeArchives)
+        } elseif ($metadata.PSObject.Properties['commonRuntimeArchiveSha256']) {
+            $recorded=@([pscustomobject]@{archive='MPCVR-RIFE-Common.zip';sha256=$metadata.commonRuntimeArchiveSha256})
+        } else { return $null }
+        if ($recorded.Count -ne $sharedNames.Count) { return $null }
+        foreach ($sharedName in $sharedNames) {
+            $selected=@($recorded | Where-Object { $_.archive -eq $sharedName })
+            if ($selected.Count -ne 1 -or $selected[0].sha256 -ine $runtimePin.files.PSObject.Properties[$sharedName].Value.sha256) { return $null }
+        }
         foreach ($key in $keys) {
             $selected=@($metadata.architectures | Where-Object { $_.key -eq $key })
             $archiveName="MPCVR-RIFE-$key.zip"

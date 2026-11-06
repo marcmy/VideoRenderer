@@ -121,7 +121,7 @@ def verify_package(directory, expected_commit=None, release=False):
         sums={name:sha for sha,name in (line.split(maxsplit=1) for line in archive.read('payload/PAYLOAD-SHA256SUMS.txt').decode().splitlines())}
         for name,sha in sums.items():
             if hashlib.sha256(archive.read('payload/'+name)).hexdigest()!=sha: raise ValueError('Setup payload checksum mismatch')
-        forbidden=['payload/MPCVR-Maxine-Runtime.zip','payload/MPCVR-RIFE-Common.zip','payload/MPCVR-RIFE-Models.zip']
+        forbidden=['payload/MPCVR-Maxine-Runtime.zip','payload/MPCVR-RIFE-Common.zip','payload/MPCVR-RIFE-Runtime.zip','payload/MPCVR-RIFE-Libraries.zip','payload/MPCVR-RIFE-Models.zip']
         if any(name in archive.namelist() for name in forbidden): raise ValueError('Normal setup must not embed large dependencies')
     return version
 

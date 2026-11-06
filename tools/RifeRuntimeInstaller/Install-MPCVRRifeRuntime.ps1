@@ -218,12 +218,14 @@ try {
         }
     }
 
-    $commonArchiveName = 'MPCVR-RIFE-Common.zip'
-    if (-not $runtimeChecksums.ContainsKey($commonArchiveName)) {
-        throw "RIFE runtime checksum list is missing $commonArchiveName."
+    $sharedArchives = @()
+    foreach ($archiveName in @(Get-RifeSharedArchiveNames -AvailableNames @($runtimeChecksums.Keys))) {
+        $archivePath = Join-Path $RuntimeBundleRoot $archiveName
+        $sharedArchives += [pscustomobject][ordered]@{
+            archive = $archiveName
+            sha256 = Assert-RifeFileHash -Path $archivePath -ExpectedHash ([string]$runtimeChecksums[$archiveName]) -DisplayName $archiveName
+        }
     }
-    $commonArchive = Join-Path $RuntimeBundleRoot $commonArchiveName
-    $commonHash = Assert-RifeFileHash -Path $commonArchive -ExpectedHash ([string]$runtimeChecksums[$commonArchiveName]) -DisplayName $commonArchiveName
 
     $architectureInfo = @()
     foreach ($key in $architectureKeys) {
@@ -256,7 +258,9 @@ try {
     $stagedModels = Join-Path $stagingRoot 'models'
     $stagedCache = Join-Path $stagingRoot 'cache'
     New-Item -ItemType Directory -Path $stagedRuntime, $stagedModels, $stagedCache -Force | Out-Null
-    Expand-Archive -LiteralPath $commonArchive -DestinationPath $stagedRuntime -Force
+    foreach ($entry in $sharedArchives) {
+        Expand-Archive -LiteralPath (Join-Path $RuntimeBundleRoot $entry.archive) -DestinationPath $stagedRuntime -Force
+    }
     foreach ($entry in $architectureInfo) {
         Expand-Archive -LiteralPath (Join-Path $RuntimeBundleRoot $entry.archive) -DestinationPath $stagedRuntime -Force
     }
@@ -301,7 +305,7 @@ try {
         tensorRtMajorMinor = $tensorRtMajorMinor
         cudaVersion = [string](Get-RequiredProperty $runtimeManifest 'cudaVersion' 'runtime-manifest.json')
         cudaRuntimeVersion = [string](Get-RequiredProperty $runtimeManifest 'cudaRuntimeVersion' 'runtime-manifest.json')
-        commonRuntimeArchiveSha256 = $commonHash
+        sharedRuntimeArchives = $sharedArchives
         architectures = $architectureInfo
         models = $installedModels
     }

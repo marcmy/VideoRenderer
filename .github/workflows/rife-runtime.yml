@@ -165,6 +165,12 @@ jobs:
           cmake --build $env:BUILD_DIR --parallel
           if ($LASTEXITCODE -ne 0) { throw 'RIFE runtime build failed' }
 
+      - name: Set up Python
+        # Packs the stable library ZIP; a fixed version keeps its compressor stable too.
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: '3.12'
+
       - name: Validate and package runtime bundle
         shell: pwsh
         run: |
@@ -187,9 +193,11 @@ jobs:
 
           Remove-Item -LiteralPath $env:PACKAGE_DIR -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -LiteralPath $env:BUNDLE_DIR -Recurse -Force -ErrorAction SilentlyContinue
-          $common = Join-Path $env:PACKAGE_DIR 'common'
+          $runtime = Join-Path $env:PACKAGE_DIR 'runtime'
+          $libraries = Join-Path $env:PACKAGE_DIR 'libraries'
           $architectures = Join-Path $env:PACKAGE_DIR 'architecture'
-          New-Item -ItemType Directory -Force -Path $common | Out-Null
+          New-Item -ItemType Directory -Force -Path $runtime | Out-Null
+          New-Item -ItemType Directory -Force -Path $libraries | Out-Null
           New-Item -ItemType Directory -Force -Path $architectures | Out-Null
           New-Item -ItemType Directory -Force -Path $env:BUNDLE_DIR | Out-Null
 
@@ -200,9 +208,9 @@ jobs:
               $matches[0].FullName
           }
 
-          Copy-Item -LiteralPath $dll.FullName -Destination (Join-Path $common 'MPCVRRifeRuntime64.dll')
+          Copy-Item -LiteralPath $dll.FullName -Destination (Join-Path $runtime 'MPCVRRifeRuntime64.dll')
           foreach ($name in @('nvinfer_11.dll', 'nvonnxparser_11.dll', 'nvinfer_builder_resource_ptx_11.dll')) {
-              Copy-Item -LiteralPath (Resolve-RequiredFile $env:TENSORRT_ROOT $name) -Destination $common
+              Copy-Item -LiteralPath (Resolve-RequiredFile $env:TENSORRT_ROOT $name) -Destination $libraries
           }
 
           $buildInfo = @"
@@ -217,7 +225,8 @@ jobs:
           Supported compute capabilities: 7.5 (sm75), 8.6 (sm86), 8.9 (sm89), 12.0 (sm120)
           TensorRT engines: generated locally; no prebuilt .plan files are distributed.
           "@
-          $buildInfo | Set-Content -Encoding utf8 (Join-Path $common 'BUILD-INFO.txt')
+          # Written at build time, so it belongs with the DLL and never in the library package.
+          $buildInfo | Set-Content -Encoding utf8 (Join-Path $runtime 'BUILD-INFO.txt')
           $buildInfo | Set-Content -Encoding utf8 (Join-Path $env:BUNDLE_DIR 'BUILD-INFO.txt')
           $depends | Set-Content -Encoding utf8 (Join-Path $env:BUNDLE_DIR 'DEPENDENCIES.txt')
 
@@ -242,13 +251,16 @@ jobs:
               architectures = $archEntries
           } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 (Join-Path $env:BUNDLE_DIR 'runtime-manifest.json')
 
-          Compress-Archive -Path (Join-Path $common '*') -DestinationPath (Join-Path $env:BUNDLE_DIR 'MPCVR-RIFE-Common.zip')
+          foreach ($package in @(@($runtime, 'MPCVR-RIFE-Runtime.zip'), @($libraries, 'MPCVR-RIFE-Libraries.zip'))) {
+              & python tools/Dev/dependencies.py pack --source $package[0] --output (Join-Path $env:BUNDLE_DIR $package[1])
+              if ($LASTEXITCODE -ne 0) { throw "Failed to package $($package[1])" }
+          }
           foreach ($entry in $archEntries) {
               $source = Join-Path $architectures $entry.key
               Compress-Archive -Path (Join-Path $source '*') -DestinationPath (Join-Path $env:BUNDLE_DIR "MPCVR-RIFE-$($entry.key).zip")
           }
 
-          $archives = @('MPCVR-RIFE-Common.zip', 'MPCVR-RIFE-sm75.zip', 'MPCVR-RIFE-sm86.zip', 'MPCVR-RIFE-sm89.zip', 'MPCVR-RIFE-sm120.zip')
+          $archives = @('MPCVR-RIFE-Runtime.zip', 'MPCVR-RIFE-Libraries.zip', 'MPCVR-RIFE-sm75.zip', 'MPCVR-RIFE-sm86.zip', 'MPCVR-RIFE-sm89.zip', 'MPCVR-RIFE-sm120.zip')
           @(
               foreach ($archive in $archives) {
                   $hash = (Get-FileHash -LiteralPath (Join-Path $env:BUNDLE_DIR $archive) -Algorithm SHA256).Hash.ToLowerInvariant()

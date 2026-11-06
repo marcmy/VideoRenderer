@@ -2,7 +2,7 @@
 
 Download **MPCVR-Setup.zip**, extract it, close MPC-HC, and run `Install-MPCVR-Maxine-RIFE.cmd`.
 
-The small ZIP includes the exact x86/x64 renderer and installation scripts. Before installation it detects the NVIDIA GPU, resolves `dependencies.lock.json`, and downloads the required Maxine runtime, RIFE models, common TensorRT/CUDA runtime, and only the applicable SM75/SM86/SM89/SM120 architecture packs. All dependency URLs use exact immutable releases in `marcmy/VideoRenderer-Dependencies`; sizes and SHA-256 hashes are checked before use.
+The small ZIP includes the exact x86/x64 renderer and installation scripts. Before installation it detects the NVIDIA GPU, resolves `dependencies.lock.json`, and downloads the required Maxine runtime, RIFE models, RIFE runtime, TensorRT libraries, and only the applicable SM75/SM86/SM89/SM120 architecture packs. All dependency URLs use exact immutable releases in `marcmy/VideoRenderer-Dependencies`; sizes and SHA-256 hashes are checked before use.
 
 Verified downloads are cached under `%LOCALAPPDATA%\MPCVideoRenderer\downloads`. Setup checks the installed Maxine and RIFE files against their pinned dependencies and skips components that already match, including download, extraction and runtime installation. Renderer and updater installation still proceed. A small `dependency-receipt.json` in each runtime root records the dependency identity and expected file hashes; setup rechecks the files on every update. Missing or damaged files, changed pins or a newly required GPU pack cause the affected component to be installed using the existing transactional installer.
 
