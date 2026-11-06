@@ -287,13 +287,13 @@ t = 0.5, and moves it to each target's time. Motion within a pair becomes a stra
 For a target at t, each pixel reads the anchor's field where its contents were at the anchor,
 x - (t - 0.5)(F1 - F0), and flow scales with the time to each image: F0 by 2t, F1 by 2(1 - t).
 
-- **Coarse** runs blocks 0-3 once per pair, then stage 6, block 4 and stage 4 per target from
-  one level holding the accumulated flow. `MpcvrRifeRetimeLevel` moves that level.
+- **Coarse** runs blocks 0-3 once per pair, then stage 6 and block 4 per target from one level
+  holding the accumulated flow, and `MpcvrRifeFinishFrame`. `MpcvrRifeRetimeLevel` moves that level.
 - **Retime** runs every block once per pair and keeps final flow and mask.
   `MpcvrRifeRetimeFrame` then warps, blends and writes the surface, with no block and no
   TensorRT. Since the anchor's mask knows only equal distances, each image's weight is
   multiplied by the fourth power of the distance to the other image. At t = 0.5 this is
-  stage 4 exactly, and towards either end it becomes that source image.
+  the model's own blend, and towards either end it becomes that source image.
 
 Each mode has its own plans, built on first use. Neither plan contains what the mode skips.
 
@@ -353,6 +353,70 @@ changed PSNR by 0.03 dB and the crops by nothing visible. Anchors at 0.25 and 0.
 worse than one at 0.5 (20.7 against 22.4 dB on an earlier set), consistent with the model's
 off-centre results being its weaker ones; that wasn't investigated further.
 
+## Not waiting for Present, 2026-11-06
+
+Measurements in isolation missed the largest cost left. Mapping a D3D11 surface for CUDA needs
+the device lock, and `IDXGISwapChain::Present` holds that lock while it blocks. Beside a real
+blit-model swap chain presenting with vsync, one Coarse request took:
+
+| Output surface | Map, ms | Unmap, ms | GPU, ms | Whole request, ms |
+| --- | ---: | ---: | ---: | ---: |
+| Alone | 0.06 | 0.06 | 2.54 | 2.63 |
+| Beside Present | 0.07 | 1.41 | 2.54 | 4.21 |
+
+Nearly all of the gap between isolated and playback timing was that wait, and it grows with the
+time Present blocks, which is longest at the highest output rates. Nothing was computing.
+
+So the surfaces CUDA uses every frame are now created shared, and the runtime imports each once
+with `cudaImportExternalMemory`. No request takes the device lock, and the registration lookup that
+took it even when there was nothing to register now doesn't. `PersistentSurfaces` falls back to
+mapping for a texture that isn't shared or can't be imported, so nothing else about a caller has to
+change. Ordering that the map used to provide is explicit:
+
+- CUDA to D3D11: a request has finished writing when it returns, as before.
+- D3D11 to CUDA: each staged input copy and each presentation copy signals an `ID3D11Fence` from
+  the immediate context. A worker reads the fence, which takes no lock, before a job starts. Input
+  copies are flushed as they are made and a finished job's copies when it is finalized, so the
+  flush the fence's slow path falls back to is rare. The readiness probe reads the same fence where
+  it had taken the lock twice per pair.
+
+Output through the map and through the import is byte-identical on all three flow reuse modes when
+the frame kernel below isn't involved. `RifePrecisionGpuTest` has D3D11 rewrite inputs between
+pairs and read every output, ordered only by a fence, in both formats.
+
+### The frame outside TensorRT
+
+With surfaces imported, nothing needs the finished frame as a tensor. Having a TensorRT stage
+write three FP16 planes for another kernel to convert was the last of that pattern. The whole and
+tail plans now end at what the frame is made from, block 4's deconvolution and the accumulated
+flow, and `MpcvrRifeFinishFrame` warps, blends and writes the surface in one kernel.
+
+It and `MpcvrRifeRetimeFrame` also read the images differently. Measured alone on 1920x1152:
+
+| Final warp and blend, BGRA8 written | ms |
+| --- | ---: |
+| Software bilinear from the warp source | 0.22 |
+| GPU filter, pitch-linear texture | 0.14 |
+| GPU filter, block-linear array | 0.14 |
+
+So they sample the imported input surfaces through the GPU's filter, with no copy. The earlier
+warps can't gain from this: the same test with 7 channels read and 32 stored took 0.55 ms either
+way, since that stage is limited by storing 64 bytes per pixel. Hardware weights have eight
+fractional bits, the one place the path that was exact is now not: against the warp source's result,
+at most 0.0054 on random noise, and at most one 8-bit step on the moving test images. Scores against
+true in-betweens didn't change in any digit shown above.
+
+On a local build, 1920x1080 in 1920x1152, 8x, alone:
+
+| Mode | First, ms | Later, ms | Mean of 7, ms | Wall mean, ms |
+| --- | ---: | ---: | ---: | ---: |
+| Off | 5.50 | 3.43 | 3.73 | 3.79 |
+| Coarse | 5.32 | 2.28 | 2.72 | 2.76 |
+| Retime | 5.68 | 0.16 | 0.95 | 0.98 |
+
+The per-pair copy of the shared frame was left alone. It costs about 0.03 ms a generated frame at
+8x, and removing it means a ring both contexts bind, which every warp would have to index.
+
 ## Scheduler
 
 The adaptive scheduler's delivery checks and recovery headroom were preserved.
@@ -366,19 +430,23 @@ validation before changing policy.
 CPU reference at 128x64, 128x128, 640x1152, 1792x1024, 1920x1088 and 1920x1152. It
 checks dynamic profiles, serialization/deserialization, finite results and rejected
 stages and sizes. TensorRT's own reformats sit between the plugin and the test's linear
-buffers, so the interleaved layouts are checked as declared. Every stage but the last
-matched exactly. The final stage matched within one FP16 step (0.000488), from the last
-bit of the exponential, averaging about 3e-9. The reference evaluates in FP32 as the
-plugin does; contraction is disabled for this CUDA translation unit.
+buffers, so the interleaved layouts are checked as declared. The reference evaluates in FP32 as
+the plugin does; contraction is disabled for this CUDA translation unit.
 
 Stages 5, 6 and 7, which split the graph for flow reuse, have the same CPU reference, and
-`MpcvrRifeRetimeLevel` and `MpcvrRifeRetimeFrame` are checked against it on linear, BGRA8 and
-RGBA16F targets.
+`MpcvrRifeRetimeLevel`, `MpcvrRifeRetimeFrame` and `MpcvrRifeFinishFrame` are checked against it
+on linear, BGRA8 and RGBA16F targets, the frame kernels reading the warp source and imported
+surfaces. At 1920x1088 the finished frame was within 0.00031 of the reference reading the warp
+source and within 0.0054 through the filter, on noise.
 
 `RifePrecisionGpuTest` compares each flow reuse mode with the whole model. At t = 0.5 they
 agreed within 0.0039 on BGRA8 and 0.00049 on RGBA16F, a repeated target matched exactly, and
 t = 0.25 and 0.75 stayed within 0.0078 of the truth on its gentle test motion. That is a check
 of the mechanics. What reuse does to real motion is the section above.
+
+It also has D3D11 rewrite both inputs between pairs of imported surfaces, ordered only by a fence,
+and reads every output. Against mapping the same textures, all three modes stayed within 0.0039 on
+BGRA8 and 0.0034 on RGBA16F, which is the frame kernel's filter.
 
 `RifePrecisionGpuTest` passed with all three feature models, BGRA8/16F output,
 pair invalidation, repeated reuse and independent contexts. Whole-model versus
