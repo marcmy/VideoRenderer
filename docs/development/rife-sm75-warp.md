@@ -191,20 +191,20 @@ The one-image plan's scratch is half the size, so the shared allocation falls to
 synthesis's 168 MiB and runtime VRAM falls about 176 MiB for two contexts. Each pair now
 clears only the range both plans can touch, 135 MiB.
 
-Local builds against the distributed previous runtime, with other GPU work running, so
-the distributed comparison in the test build's results is the one to quote. Median across
+Distributed runtimes, built by the pinned toolchain. Median of per-run minimums across
 four alternating runs on the two clips, with contexts alternating as in playback:
 
 | Runtime with feature reuse | First target, ms | Reused target, ms | Runtime VRAM, MiB |
 | --- | ---: | ---: | ---: |
-| Finished in one kernel | 7.82 | 4.67 | 930 |
-| Keeping the shared frame | 6.50 | 4.65 | 754 |
+| Finished in one kernel | 7.82 | 4.66 | 930 |
+| Keeping the shared frame | 6.48 | 4.66 | 754 |
 
 Plans differ in how they round. Against ONNX Runtime on one real input, the two-image plan's
 features differed by 0.00071 on average and the one-image plan's by 0.00078, on values
 averaging 0.234. Final images against the whole-model engine, values differing by more
-than 32/255, were 0.0232% against 0.0220% before on the mandel clip, and 0.0434% against
-0.0534% on the pan clip.
+than 32/255, moved in both directions: 0.0182% against 0.0230% before on the mandel clip,
+and 0.0583% against 0.0474% on the pan clip. The same previous runtime measured 0.0220% and
+0.0534% in an earlier run, so these differences are within what the engines vary between runs.
 
 The saving is small at high rates, because a pair with more targets encodes once.
 
