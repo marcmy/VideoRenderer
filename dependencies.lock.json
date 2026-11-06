@@ -3,9 +3,9 @@
   "repository": "marcmy/VideoRenderer-Dependencies",
   "components": {
     "rife-runtime": {
-      "releaseTag": "mpcvr-deps-rife-runtime-fd7789832fea3dff",
-      "manifestSha256": "e5a639701e176d9dda9a53274b7631e774a6a492c59706c02b043eb676d4353e",
-      "manifestUrl": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-fd7789832fea3dff/rife-runtime.json",
+      "releaseTag": "mpcvr-deps-rife-runtime-de8646ed288c16e7",
+      "manifestSha256": "eaeeddb69a226aeafd6e36a5d83f1fe85af34c3ece008b1f2190b96bebd9e7eb",
+      "manifestUrl": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-de8646ed288c16e7/rife-runtime.json",
       "manifest": {
         "component": "rife-runtime",
         "recipeVersion": 1,
@@ -40,22 +40,22 @@
           "tools/RifeTensorRTRuntime/D3D11InteropLock.h": "4e81bae03303b2123ad629086b89ff19a147fdd9",
           "tools/RifeTensorRTRuntime/EngineCacheFile.h": "c0c6e988d5ea7707ad01cbda1683ea631dcbcd6f",
           "tools/RifeTensorRTRuntime/EngineProfile.h": "4f96784e4f8010d0fb8f8e4181947e51fab8029b",
-          "tools/RifeTensorRTRuntime/FeatureReuseEngine.h": "d41cae0868cf2d7dfe0ab101fc9f70a2a93817b9",
+          "tools/RifeTensorRTRuntime/FeatureReuseEngine.h": "eeefdc2a2872d262dae7bc4f50120192208e82b7",
           "tools/RifeTensorRTRuntime/PackedInputReuse.h": "ea7c71c7fcf4562c428b7d7857137b2d8ae252a4",
           "tools/RifeTensorRTRuntime/RifeInputTimestep.h": "b99d8ef851ebab01a6bac3bf39a1464c774db37f",
           "tools/RifeTensorRTRuntime/RifeKernels.cu": "2b160448171a8d0dce15726d68591b34823c757d",
           "tools/RifeTensorRTRuntime/RifeKernels.h": "fdab51d1bc9fc9192ddb7be9539661c9dc5cd3b0",
           "tools/RifeTensorRTRuntime/RifeRequestCompatibility.h": "b849514198fcce0ecbef1945999070ac85c20976",
           "tools/RifeTensorRTRuntime/RifeTensorRTRuntime.cpp": "badef18b38a941112cf927203d6c00b38912cb5e",
-          "tools/RifeTensorRTRuntime/RifeWarpPlugin.cu": "240523d6aa108995376af8a35482208f7ef12aa4",
+          "tools/RifeTensorRTRuntime/RifeWarpPlugin.cu": "50011fd0e877e74556cceede6efa4f4af80d62fb",
           "tools/RifeTensorRTRuntime/RifeWarpPlugin.h": "a92b3dc2a6481fc975000bdc6cdcd84f430cb014",
           "tools/RifeTensorRTRuntime/RuntimeCreation.h": "0e47a5682445cf2b52755eb02b0e385834ce790d"
         },
-        "sourceFingerprint": "fd7789832fea3dff3eabfcc65a19a875d75fe2e1f73c033f9873d9b965555f73",
-        "releaseTag": "mpcvr-deps-rife-runtime-fd7789832fea3dff",
+        "sourceFingerprint": "de8646ed288c16e78f797270566e4c38f2f0aeecf682046cfc313d337bb64fc7",
+        "releaseTag": "mpcvr-deps-rife-runtime-de8646ed288c16e7",
         "schemaVersion": 1,
         "sourceRepository": "marcmy/VideoRenderer",
-        "sourceCommit": "1ae99d1de835340cc600e3bd31726498232a9d8d",
+        "sourceCommit": "dc040a561a51d07860e702aec4eb83c96b0ed038",
         "provenance": {
           "operation": "validated dependency build",
           "repackaged": true
@@ -73,9 +73,9 @@
         },
         "files": {
           "MPCVR-RIFE-Common.zip": {
-            "sha256": "4b0bb0748d02606eff59375f8437a7d4503c76a2cf102ff008383f2aedb9fcaa",
-            "bytes": 421398721,
-            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-fd7789832fea3dff/MPCVR-RIFE-Common.zip"
+            "sha256": "58dfc987b80fde7dd725ee7c18e81c2a3c62086b9bdfe83ecd87eeac3a22ff5d",
+            "bytes": 421487721,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-de8646ed288c16e7/MPCVR-RIFE-Common.zip"
           },
           "runtime-manifest.json": {
             "sha256": "f77a557f42f91fb8aac87c300058f87b6b9cb5e5d5bffebdf2ce086a7883c48c",
@@ -83,9 +83,9 @@
             "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-71fee94d17720fcc/runtime-manifest.json"
           },
           "SHA256SUMS.txt": {
-            "sha256": "210b85cf1b2751dc72cc675ec1868b1e94939db91d9161a545e8dcb20d4e89c3",
+            "sha256": "e77eb9eecda617872d679883c4676c8fc8f15c3e8989198fc0ba37d8197cb20a",
             "bytes": 438,
-            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-fd7789832fea3dff/SHA256SUMS.txt"
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-de8646ed288c16e7/SHA256SUMS.txt"
           },
           "MPCVR-RIFE-sm75.zip": {
             "sha256": "c394833e9d53c0e8276cd9aaea80d4f63161041f634962be9fa91a6cd46a482d",
