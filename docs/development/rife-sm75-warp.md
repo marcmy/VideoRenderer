@@ -12,8 +12,8 @@ hash in `FeatureReuseEngine.h`. It requires Feature reuse. Other models, GPU
 architectures and the ordinary dynamic engine keep their existing paths. A failed
 fused build falls back to the native feature engine. ABI 2 is unchanged.
 
-The `_synth_w2` cache suffix distinguishes plugin plans from native plans and from
-the first plugin version's `_synth_w1`, without lengthening their filenames. Registration precedes deserialization and is removed
+A `_synth_wN` cache suffix distinguishes plugin plans from native plans and from
+each other's plugin versions, without lengthening their filenames. Registration precedes deserialization and is removed
 when the runtime DLL unloads. Existing caches are retained. The image encoder's
 plan is reused; the new synthesis plan needs one initial build at each feature
 engine size, as the existing feature-reuse path already does.
@@ -82,10 +82,48 @@ They sit on hard detail, with a local gradient near 30 against 1.5 overall, and 
 along picture edges. Any two plans differ this much, including the previous fused
 engine against the new one, so these differences are not specific to this change.
 
-The flow, state and tail inputs of the three downscaled stages are still upsampled
-to full resolution by TensorRT and then mostly discarded. Those stages' `Resize_1`,
-`Split` and flow arithmetic are the next candidates. They feed each other, so
-keeping them at low resolution needs its own numerical check.
+## Reading flow and state from the blocks' low-resolution outputs, 2026-11-06
+
+TensorRT still upsampled all 13 channels of each of four blocks to full resolution,
+split them and accumulated flow, although the first three warps read only a fraction
+of the result. Plugin version 3 takes the blocks' outputs directly and evaluates the
+same operations only at the pixels each stage reads, keeping the graph's FP16
+rounding after each upsample and addition. This is not an approximation of the flow.
+Only the last stage works at full resolution, and it also returns the accumulated
+flow that the final warp needs. A fifth plugin stage replaces block 0's full-size
+input concat and its 1/32 downscale. Plans use the `_synth_w3` suffix.
+
+Full-resolution output matched the independent reference exactly at every size in
+`RifeWarpGpuTest`, and block 0's input and the downscaled state and flow were within
+one FP16 step of it. With real block outputs, ONNX Runtime agreed on block 0's input
+exactly and on state and flow within about two steps of their magnitude. Its warped
+channels differ more, with mean 0.00276 and maximum 0.54 on images, but the previous
+kernel given ONNX Runtime's exact flow shows the same 0.00276 and 0.54. That
+difference is between the kernels' and ONNX Runtime's sampling, not from this change.
+
+The GPU read 3% when sampled after this comparison, and timings were far steadier
+than the previous section's. Median across eight alternating runs on the two
+synthetic 1920x1152 clips, each run reporting its minimum over 59 repetitions, built
+with the same compiler:
+
+| Runtime with feature reuse | First target, ms | Reused target, ms | Mean of two targets, ms | Runtime VRAM, MiB |
+| --- | ---: | ---: | ---: | ---: |
+| Fused warp and downscale | 13.80 | 10.16 | 11.98 | 1058 |
+| Low-resolution flow | 9.97 | 6.31 | 8.14 | 930 |
+
+That is about 32% less TensorRT time, or 47% more inference capacity. Again these
+are best-case isolated figures, not playback measurements or sustained rates.
+
+Compared with the whole-model engine, values differing by more than 32/255 were
+0.0220% against 0.0227% before on the mandel clip, and 0.0372% against 0.0440% on the
+pan clip. They again sit on hard detail, not along picture edges. Against ONNX
+Runtime at timesteps 0.25, 0.5 and 0.75 on a real input, the new engine's rate was
+0.0142%, 0.0240% and 0.0178%, against native TensorRT's 0.0131%, 0.0265% and 0.0161%.
+
+The next candidate is the output of block 4. Its DepthToSpace builds 13 full-resolution
+channels, of which the final warp and blend use five. That stage, its reformat
+copies and the final warp together measured about 2.2 of the remaining 6.3 ms in a
+layer profile.
 
 ## Scheduler
 
@@ -96,14 +134,13 @@ validation before changing policy.
 
 ## Correctness and limits
 
-`RifeWarpGpuTest` tests the production plugin against an independent CPU sampler
-at 1x1, 128x128, 257x129, 640x1152 and 1920x1152, and for each downscale at one
-output pixel, 128x128, 640x1152, 1920x1152 and 1792x1024. It checks dynamic
-profiles, serialization/deserialization, finite results, rejected scales and sizes,
-and all unwarped channels. At scale 1 the maximum difference was zero. Downscaled
-warps stayed within one FP16 step (0.000488) and their tail channels matched
-exactly. The graph's two explicit FP16 coordinate rounding steps are retained;
-contraction is disabled for this CUDA translation unit.
+`RifeWarpGpuTest` tests every stage of the production plugin against an independent
+CPU reference at 32x32, 128x64, 640x1152, 1792x1024 and 1920x1152. It checks dynamic
+profiles, serialization/deserialization, finite results and rejected stages and
+sizes. The full-resolution stage and block 0's input matched exactly, and downscaled
+warps and state stayed within one FP16 step (0.000488). The graph's two explicit FP16
+coordinate rounding steps are retained; contraction is disabled for this CUDA
+translation unit.
 
 `RifePrecisionGpuTest` passed with all three feature models, BGRA8/16F output,
 pair invalidation, repeated reuse and independent contexts. Whole-model versus

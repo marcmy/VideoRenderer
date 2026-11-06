@@ -104,7 +104,7 @@ public:
         // Keep this suffix no longer than the native suffix: the atomic writer
         // also appends a unique temporary filename, subject to MAX_PATH.
         const bool warpBuilt = useWarp
-            && BuildStage(synthesisPath, cache, cacheKey + suffix + "_synth_w2", false, m_core, true);
+            && BuildStage(synthesisPath, cache, cacheKey + suffix + "_synth_w3", false, m_core, true);
         if (!warpBuilt && !BuildStage(synthesisPath, cache, cacheKey + suffix + "_synthesis", false, m_core)) return false;
         if (m_core->getNbIOTensors() != 4) return false;
         for (const char* name : {m_featureName.c_str(), kImageViewName}) {
