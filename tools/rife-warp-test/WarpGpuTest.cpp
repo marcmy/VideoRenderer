@@ -30,12 +30,15 @@ struct DeviceBuffer {
 };
 
 constexpr int levelScales[]{32, 16, 8, 4};
-int InputCount(int stage) { return stage < 0 ? 2 : 3 + stage; }
-int OutputScale(int stage) { return stage < 0 ? 32 : stage == 3 ? 1 : 16 >> stage; }
+constexpr int kTailStage = 4;
+int InputCount(int stage) { return stage < 0 ? 2 : stage == kTailStage ? 3 : 3 + stage; }
+int OutputScale(int stage) { return stage < 0 ? 32 : stage >= 3 ? 1 : 16 >> stage; }
+int OutputChannels(int stage) { return stage < 0 ? 15 : stage == kTailStage ? 3 : 28; }
 // [batch, channels, divisor] for each input position.
-std::array<int, 3> InputLayout(int input)
+std::array<int, 3> InputLayout(int stage, int input)
 {
     if (input == 0) return {1, 11, 1};
+    if (stage == kTailStage) return input == 1 ? std::array<int, 3>{1, 28, 1} : std::array<int, 3>{1, 20, 2};
     if (input == 1) return {2, 4, 1};
     return {1, 13, levelScales[input - 2]};
 }
@@ -93,6 +96,32 @@ struct Reference {
         if (channel < 14) return Feature((channel - 6) / 4, (channel - 6) % 4, x, y);
         return Raw(6, x, y);
     }
+    // Stage 4 from the graph's operators: DepthToSpace with mode CRD and factor 2, Add,
+    // Mul, GridSample of the two images, Sigmoid, Mul, Sub, Mul, Add. Input 1 is stage
+    // 3's concat and input 2 the ConvTranspose, whose first 20 channels matter.
+    float Finished(int channel, int x, int y) const {
+        const auto full = [&](int c) { return __half2float(host[1][(size_t(c) * height + y) * width + x]); };
+        const auto block = [&](int c) {
+            const int lowWidth = width / 2, lowHeight = height / 2;
+            const int mapped = c * 4 + (y % 2) * 2 + x % 2;
+            return __half2float(host[2][(size_t(mapped) * lowHeight + y / 2) * lowWidth + x / 2]);
+        };
+        const auto warped = [&](int batch) {
+            const float flowX = Half(full(24 + batch * 2) + block(batch * 2));
+            const float flowY = Half(full(25 + batch * 2) + block(batch * 2 + 1));
+            const float gx = Half(Raw(7, x, y) + Half(flowX * Raw(9, x, y)));
+            const float gy = Half(Raw(8, x, y) + Half(flowY * Raw(10, x, y)));
+            const float u = std::clamp((gx + 1) * .5f * (width - 1), 0.0f, float(width - 1));
+            const float v = std::clamp((gy + 1) * .5f * (height - 1), 0.0f, float(height - 1));
+            const int x0 = int(u), y0 = int(v), x1 = std::min(x0 + 1, width - 1), y1 = std::min(y0 + 1, height - 1);
+            const float fx = u - x0, fy = v - y0;
+            const auto at = [&](int row, int col) { return Raw(batch * 3 + channel, col, row); };
+            return Half((1 - fx) * (1 - fy) * at(y0, x0) + fx * (1 - fy) * at(y0, x1)
+                + (1 - fx) * fy * at(y1, x0) + fx * fy * at(y1, x1));
+        };
+        const float mask = Half(1 / (1 + std::exp(-block(4))));
+        return Half(Half(warped(0) * mask) + Half(warped(1) * Half(1 - mask)));
+    }
     // Resize at exactly 1/scale: x_original = (x_resized + 0.5) * scale - 0.5.
     float Down(const std::function<float(int, int)>& sample, int outputX, int outputY) const {
         const int scale = OutputScale(stage);
@@ -114,7 +143,7 @@ void TestStage(const int stage, const std::vector<std::pair<int, int>>& sizes, c
     std::vector<std::string> names;
     std::vector<ITensor*> inputs;
     for (int i = 0; i < inputCount; ++i) {
-        const auto [batch, channels, divisor] = InputLayout(i);
+        const auto [batch, channels, divisor] = InputLayout(stage, i);
         names.push_back("input" + std::to_string(i));
         inputs.push_back(net->addInput(names[i].c_str(), DataType::kHALF, Dims4{batch, channels, -1, -1}));
         Check(profile->setDimensions(names[i].c_str(), OptProfileSelector::kMIN, Dims4{batch, channels, 32 / divisor, 32 / divisor}), "min");
@@ -123,10 +152,11 @@ void TestStage(const int stage, const std::vector<std::pair<int, int>>& sizes, c
     }
     // An unknown graph must fail the matcher without changing the network.
     const int layers = net->getNbLayers();
-    Check(!FuseRifeSynthesisWarps(*net) && net->getNbLayers() == layers, "unknown graph preserved");
-    auto* creator = static_cast<IPluginCreatorV3One*>(getPluginRegistry()->getCreator("MpcvrRifeWarpConcat", "3", "mpcvr"));
+    std::vector<uint16_t> fusedWeights;
+    Check(!FuseRifeSynthesisWarps(*net, fusedWeights) && net->getNbLayers() == layers, "unknown graph preserved");
+    auto* creator = static_cast<IPluginCreatorV3One*>(getPluginRegistry()->getCreator("MpcvrRifeWarpConcat", "4", "mpcvr"));
     Check(creator != nullptr, "creator lookup");
-    const int32_t invalidStage = 4;
+    const int32_t invalidStage = 5;
     PluginField invalidField("stage", &invalidStage, PluginFieldType::kINT32, 1);
     PluginFieldCollection invalidFields{1, &invalidField};
     Check(!std::unique_ptr<IPluginV3>(creator->createPlugin("warp", &invalidFields, TensorRTPhase::kBUILD)), "invalid stage rejected");
@@ -137,13 +167,11 @@ void TestStage(const int stage, const std::vector<std::pair<int, int>>& sizes, c
     Check(plugin != nullptr, "plugin creation");
     auto* layer = net->addPluginV3(inputs.data(), inputCount, nullptr, 0, *plugin);
     Check(layer != nullptr, "plugin layer");
-    const int outputCount = stage == 3 ? 2 : 1;
-    Check(layer->getNbOutputs() == outputCount, "output count");
-    const char* outputNames[]{"output0", "output1"};
-    for (int i = 0; i < outputCount; ++i) {
-        layer->getOutput(i)->setName(outputNames[i]);
-        net->markOutput(*layer->getOutput(i));
-    }
+    Check(layer->getNbOutputs() == 1, "output count");
+    // Inputs and outputs stay linear here, so TensorRT's own reformats check that the
+    // plugin's interleaved inputs and outputs really have the layout they declare.
+    layer->getOutput(0)->setName("output0");
+    net->markOutput(*layer->getOutput(0));
     Check(config->addOptimizationProfile(profile) >= 0, "profile");
     std::unique_ptr<IHostMemory> plan(builder->buildSerializedNetwork(*net, *config));
     Check(plan != nullptr, "serialize plugin engine");
@@ -153,7 +181,7 @@ void TestStage(const int stage, const std::vector<std::pair<int, int>>& sizes, c
     std::unique_ptr<IExecutionContext> context(engine->createExecutionContext());
     std::mt19937 rng(321 + stage);
     std::uniform_real_distribution<float> values(-1, 1);
-    const int scale = OutputScale(stage), channels = stage < 0 ? 15 : 28;
+    const int scale = OutputScale(stage), channels = OutputChannels(stage);
     for (const auto& [width, height] : sizes) {
         const size_t plane = size_t(width) * height;
         const int outputWidth = width / scale, outputHeight = height / scale;
@@ -161,7 +189,7 @@ void TestStage(const int stage, const std::vector<std::pair<int, int>>& sizes, c
         std::vector<std::vector<__half>> host(inputCount);
         std::vector<std::unique_ptr<DeviceBuffer>> device(inputCount);
         for (int i = 0; i < inputCount; ++i) {
-            const auto [batch, inputChannels, divisor] = InputLayout(i);
+            const auto [batch, inputChannels, divisor] = InputLayout(stage, i);
             const int h = height / divisor, w = width / divisor;
             host[i].resize(size_t(batch) * inputChannels * h * w);
             for (auto& value : host[i]) value = __float2half_rn(values(rng));
@@ -180,46 +208,41 @@ void TestStage(const int stage, const std::vector<std::pair<int, int>>& sizes, c
             Cuda(cudaMemcpy(device[i]->pointer, host[i].data(), host[i].size() * sizeof(__half), cudaMemcpyHostToDevice));
         }
         DeviceBuffer output(channels * outputPlane * sizeof(__half));
-        DeviceBuffer flowOutput(4 * plane * sizeof(__half));
         Check(context->setTensorAddress("output0", output.pointer), "output binding");
-        if (outputCount == 2) Check(context->setTensorAddress("output1", flowOutput.pointer), "flow output binding");
         Check(context->enqueueV3(stream), "plugin inference"); Cuda(cudaStreamSynchronize(stream));
-        std::vector<__half> result(channels * outputPlane), flowResult(4 * plane);
+        std::vector<__half> result(channels * outputPlane);
         Cuda(cudaMemcpy(result.data(), output.pointer, result.size() * sizeof(__half), cudaMemcpyDeviceToHost));
-        if (outputCount == 2) Cuda(cudaMemcpy(flowResult.data(), flowOutput.pointer, flowResult.size() * sizeof(__half), cudaMemcpyDeviceToHost));
         const Reference reference{width, height, stage, host};
         float warpMaximum = 0, tailMaximum = 0, flowMaximum = 0; double total = 0;
         for (int outY = 0; outY < outputHeight; ++outY) for (int outX = 0; outX < outputWidth; ++outX) {
             const size_t p = size_t(outY) * outputWidth + outX;
             for (int c = 0; c < channels; ++c) {
                 const float expected = reference.Down([&](int x, int y) {
-                    return stage < 0 ? reference.Input(c, x, y) : reference.Stage(c, x, y);
+                    return stage < 0 ? reference.Input(c, x, y)
+                        : stage == kTailStage ? reference.Finished(c, x, y) : reference.Stage(c, x, y);
                 }, outX, outY);
                 const float error = std::abs(expected - __half2float(result[c * outputPlane + p]));
                 Check(std::isfinite(error), "finite result");
-                if (stage >= 0 && c < 14) { warpMaximum = std::max(warpMaximum, error); total += error; }
+                if (stage == kTailStage || (stage >= 0 && c < 14)) { warpMaximum = std::max(warpMaximum, error); total += error; }
                 else if (stage >= 0 && c >= 24) flowMaximum = std::max(flowMaximum, error);
                 else tailMaximum = std::max(tailMaximum, error);
             }
         }
+        const int warpChannels = stage == kTailStage ? channels : 14;
         std::cout << "stage " << stage << ' ' << width << 'x' << height << " warp max=" << warpMaximum
-                  << " mean=" << (stage < 0 ? 0 : total / (outputPlane * 14)) << " tail max=" << tailMaximum
+                  << " mean=" << (stage < 0 ? 0 : total / (outputPlane * warpChannels)) << " tail max=" << tailMaximum
                   << " flow max=" << flowMaximum << '\n';
         // Full-resolution output keeps the graph's rounding and must match exactly.
         // Downscaled output rounds once where the graph rounds each sample and then the
         // resize, so it may differ by one FP16 step: 2^-11 just below 1 for images and
         // state; flow in these random tests stays under 16, where a step is 2^-7.
-        const bool exact = scale == 1;
-        Check(exact ? warpMaximum == 0 : warpMaximum <= 1.0f / 2048, "warp reference tolerance");
+        // The final blend's exponential may differ in its last bit from the CPU's. A mask
+        // that then rounds the other way moves the blend by up to two steps near 1.
+        const bool exact = scale == 1 && stage != kTailStage;
+        Check(exact ? warpMaximum == 0 : warpMaximum <= (stage == kTailStage ? 1.0f / 1024 : 1.0f / 2048), "warp reference tolerance");
         Check(exact ? tailMaximum == 0 : tailMaximum <= 1.0f / 2048, "tail reference tolerance");
         Check(exact ? flowMaximum == 0 : flowMaximum <= 1.0f / 128, "flow reference tolerance");
-        Check(total / (outputPlane * 14) < 1.0 / 8192, "mean reference tolerance");
-        if (outputCount == 2) {
-            // The second output carries exactly the concat's flow channels.
-            for (size_t i = 0; i < flowResult.size(); ++i) {
-                Check(__half_as_ushort(flowResult[i]) == __half_as_ushort(result[24 * plane + i]), "flow outputs agree");
-            }
-        }
+        Check(total / (outputPlane * warpChannels) < 1.0 / 8192, "mean reference tolerance");
     }
     // Levels would not divide exactly, so a non-multiple size must not run.
     std::unique_ptr<IExecutionContext> rejected(engine->createExecutionContext());
@@ -227,14 +250,13 @@ void TestStage(const int stage, const std::vector<std::pair<int, int>>& sizes, c
     const int width = 48, height = 64;
     bool shaped = true;
     for (int i = 0; i < inputCount; ++i) {
-        const auto [batch, inputChannels, divisor] = InputLayout(i);
+        const auto [batch, inputChannels, divisor] = InputLayout(stage, i);
         shaped = shaped && rejected->setInputShape(names[i].c_str(), Dims4{batch, inputChannels, height / divisor, width / divisor});
         device[i] = std::make_unique<DeviceBuffer>(size_t(batch) * inputChannels * height * width * sizeof(__half));
         rejected->setTensorAddress(names[i].c_str(), device[i]->pointer);
     }
     DeviceBuffer output(channels * size_t(width) * height * sizeof(__half));
     rejected->setTensorAddress("output0", output.pointer);
-    if (outputCount == 2) rejected->setTensorAddress("output1", output.pointer);
     Check(!shaped || !rejected->enqueueV3(stream), "non-multiple size rejected");
     cudaGetLastError();
 }
@@ -248,7 +270,7 @@ int main()
     try {
         Check(RegisterRifeWarpPlugin(), "plugin registration");
         cudaStream_t stream = nullptr; Cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-        for (const int stage : {-1, 0, 1, 2, 3}) {
+        for (const int stage : {-1, 0, 1, 2, 3, kTailStage}) {
             TestStage(stage, {{32, 32}, {128, 64}, {640, 1152}, {1792, 1024}, {1920, 1152}}, stream);
         }
         Cuda(cudaStreamDestroy(stream));

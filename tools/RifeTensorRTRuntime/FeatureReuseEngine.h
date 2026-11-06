@@ -13,7 +13,7 @@ public:
         // allocations made reuse exceed the original engine's memory at 4K.
         // The synthesis context must be destroyed before this Context.
         void* scratch = nullptr;
-        size_t scratchBytes = 0;
+        size_t scratchClearBytes = 0;
         cudaGraph_t graph = nullptr;
         cudaGraphExec_t graphExec = nullptr;
         ~Context() {
@@ -28,9 +28,9 @@ public:
             // TensorRT 11.4's RIFE 4.25 Lite plans (whole and synthesis) read
             // part of their scratch before writing it; their own leftovers from
             // the previous frame have negligible effect, but encoder data could
-            // decode as NaN there. Clear the shared scratch once per pair, after
+            // decode as NaN there. Clear what synthesis can read once per pair, after
             // the encoder: features live in their own buffer.
-            return encoded && (!scratchBytes || cudaMemsetAsync(scratch, 0, scratchBytes, stream) == cudaSuccess);
+            return encoded && (!scratchClearBytes || cudaMemsetAsync(scratch, 0, scratchClearBytes, stream) == cudaSuccess);
         }
         bool Prime(cudaStream_t stream) {
             if (!encoder->enqueueV3(stream) || cudaStreamSynchronize(stream) != cudaSuccess) return false;
@@ -104,7 +104,7 @@ public:
         // Keep this suffix no longer than the native suffix: the atomic writer
         // also appends a unique temporary filename, subject to MAX_PATH.
         const bool warpBuilt = useWarp
-            && BuildStage(synthesisPath, cache, cacheKey + suffix + "_synth_w3", false, m_core, true);
+            && BuildStage(synthesisPath, cache, cacheKey + suffix + "_synth_w4", false, m_core, true);
         if (!warpBuilt && !BuildStage(synthesisPath, cache, cacheKey + suffix + "_synthesis", false, m_core)) return false;
         if (m_core->getNbIOTensors() != 4) return false;
         for (const char* name : {m_featureName.c_str(), kImageViewName}) {
@@ -139,7 +139,7 @@ public:
         const int64_t scratchBytes = std::max(m_encoder->getDeviceMemorySizeV2(), m_core->getDeviceMemorySizeV2());
         if (scratchBytes < 0
                 || (scratchBytes && cudaMalloc(&result->scratch, static_cast<size_t>(scratchBytes)) != cudaSuccess)) return {};
-        result->scratchBytes = static_cast<size_t>(scratchBytes);
+        result->scratchClearBytes = static_cast<size_t>(m_core->getDeviceMemorySizeV2());
         result->encoder->setDeviceMemoryV2(result->scratch, scratchBytes);
         core->setDeviceMemoryV2(result->scratch, scratchBytes);
         return result;
@@ -205,11 +205,12 @@ private:
         TrtPtr<nvinfer1::INetworkDefinition> network(builder->createNetworkV2(flags));
         if (!network) return false;
         TrtPtr<nvonnxparser::IParser> parser(nvonnxparser::createParser(*network, g_logger));
+        std::vector<uint16_t> fusedWeights;
         TrtPtr<nvinfer1::IBuilderConfig> config(builder->createBuilderConfig());
         if (!parser || !config || !parser->parse(model.data(), model.size())
                 || network->getNbInputs() != (encoder ? 1 : 2) || network->getNbOutputs() != 1
                 || (!encoder && !ExposeImageView(*network))
-                || (fuseWarp && !FuseRifeSynthesisWarps(*network))) return false;
+                || (fuseWarp && !FuseRifeSynthesisWarps(*network, fusedWeights))) return false;
         auto* profile = builder->createOptimizationProfile();
         if (!profile) return false;
         for (int i = 0; i < network->getNbInputs(); ++i) {

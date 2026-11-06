@@ -120,10 +120,54 @@ pan clip. They again sit on hard detail, not along picture edges. Against ONNX
 Runtime at timesteps 0.25, 0.5 and 0.75 on a real input, the new engine's rate was
 0.0142%, 0.0240% and 0.0178%, against native TensorRT's 0.0131%, 0.0265% and 0.0161%.
 
-The next candidate is the output of block 4. Its DepthToSpace builds 13 full-resolution
-channels, of which the final warp and blend use five. That stage, its reformat
-copies and the final warp together measured about 2.2 of the remaining 6.3 ms in a
-layer profile.
+## Finishing the frame in one kernel, 2026-11-06
+
+A layer profile of the 6.2 ms synthesis graph still showed work nothing needed. Block
+4's DepthToSpace took 0.64 ms to build 13 full-resolution channels, of which the frame
+uses five, and copying them for the final warp took 0.27 ms. Copying stage 3's planar
+output into `kHWC8`, the format block 4's first convolution reads, took 0.60 ms.
+
+Plugin version 4 changes four things, and plans use the `_synth_w4` suffix:
+
+- Stage 3 writes `kHWC8` directly, and that copy disappears. It uses one 16-byte store
+  per eight channels: writing channels one at a time in this format was about four
+  times slower, 2.77 ms against 0.65 ms for the stage.
+- A new stage 4 replaces DepthToSpace, the final flow addition, warp, sigmoid and blend.
+  It reads only the channels used, and takes the accumulated flow from stage 3's output
+  instead of a separate tensor.
+- Block 4's last ConvTranspose outputs only the 20 of its 52 maps that those five
+  channels come from, using the original weights. It fell from 0.40 to 0.25 ms.
+- Each pair now clears only the scratch that synthesis can read, 168 rather than
+  271 MiB of the shared allocation.
+
+Three other changes were measured and rejected. Interleaving stages 0-2 made stage 2
+slower, 0.37 against 0.24 ms, and gained 0.03 ms between stages 0 and 1. Writing the
+final image as `kCHW4` made no difference, and neither did block widths of 32 or 256 in
+place of 128. Stage 4 took about 0.51 ms in all of them, and without its exponential.
+
+In the same harness, median across four alternating runs on the two clips, each run
+reporting its minimum over 59 repetitions. The previous runtime is the distributed
+build and the new one is local, so the distributed comparison in the test build's
+results is the one to quote.
+
+| Runtime with feature reuse | First target, ms | Reused target, ms |
+| --- | ---: | ---: |
+| Low-resolution flow | 9.96 | 6.29 |
+| Finished in one kernel | 7.91 | 4.70 |
+
+Synthesis scratch fell from 271 to 168 MiB, but the encoder's 270 MiB scratch shares that
+allocation and sets its size, so runtime VRAM reads about the same.
+
+Against the whole-model engine, values differing by more than 32/255 were 0.0209%
+against 0.0200% before on the mandel clip, and 0.0507% against 0.0547% on the pan clip.
+They sit on hard detail, with a local gradient near 30 against 1.5 overall. Against ONNX
+Runtime at timesteps 0.25, 0.5 and 0.75 on a real input, the new engine's rate was
+0.0135%, 0.0263% and 0.0187%, against native TensorRT's 0.0131%, 0.0265% and 0.0161%.
+
+The largest cost left outside block 4 is the encoder, about 2.8 ms per pair. Each pair
+encodes both images, although the first was the previous pair's second. Reusing those
+features would save about half of that, but needs the renderer to identify consecutive
+pairs through the runtime ABI.
 
 ## Scheduler
 
@@ -137,8 +181,11 @@ validation before changing policy.
 `RifeWarpGpuTest` tests every stage of the production plugin against an independent
 CPU reference at 32x32, 128x64, 640x1152, 1792x1024 and 1920x1152. It checks dynamic
 profiles, serialization/deserialization, finite results and rejected stages and
-sizes. The full-resolution stage and block 0's input matched exactly, and downscaled
-warps and state stayed within one FP16 step (0.000488). The graph's two explicit FP16
+sizes. TensorRT's own reformats sit between the plugin and the test's linear buffers,
+so the interleaved layouts are checked as declared. The full-resolution stage and block
+0's input matched exactly, and downscaled warps and state stayed within one FP16 step
+(0.000488). The final stage matched within two steps, from the last bit of the
+exponential, averaging about 2e-9. The graph's two explicit FP16
 coordinate rounding steps are retained; contraction is disabled for this CUDA
 translation unit.
 

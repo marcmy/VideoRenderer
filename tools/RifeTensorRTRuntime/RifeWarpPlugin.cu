@@ -2,15 +2,17 @@
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <new>
+#include <string>
 #include <string_view>
 
 namespace mpcvr_rife_warp {
 using namespace nvinfer1;
 constexpr char kName[] = "MpcvrRifeWarpConcat";
-constexpr char kVersion[] = "3";
+constexpr char kVersion[] = "4";
 constexpr char kNamespace[] = "mpcvr";
 
 // RIFE 4.25 Lite's refinement stages rebuild full-resolution flow and state from
@@ -22,15 +24,17 @@ constexpr char kNamespace[] = "mpcvr";
 //   [1,15,H/32,W/32], the graph's input concat after its half_pixel linear Resize.
 // Stages 0-2 feed blocks 1-3: inputs raw, features and block outputs [1,13,H/s,W/s]
 //   for s = 32, 16, 8, 4 up to this stage; output [1,28,H/o,W/o] for o = 16, 8, 4.
-// Stage 3 feeds block 4: inputs as above; outputs [1,28,H,W] and the accumulated
-//   flow [1,4,H,W], which the final warp also needs.
-constexpr int kInputStage = -1, kFullStage = 3;
+// Stage 3 feeds block 4: inputs as above; output [1,28,H,W] in kHWC8, the format
+//   block 4's first convolution reads, which also carries the accumulated flow.
+// Stage 4 finishes the frame: inputs raw, stage 3's output and block 4's ConvTranspose
+//   [1,20,H/2,W/2] in kHWC8, pruned to the channels used; output [1,3,H,W].
+constexpr int kInputStage = -1, kFullStage = 3, kTailStage = 4;
 
-constexpr bool ValidStage(int32_t stage) noexcept { return stage >= kInputStage && stage <= kFullStage; }
-constexpr int32_t InputCount(int32_t stage) noexcept { return stage == kInputStage ? 2 : 3 + stage; }
-constexpr int32_t OutputCount(int32_t stage) noexcept { return stage == kFullStage ? 2 : 1; }
-constexpr int32_t OutputScale(int32_t stage) noexcept { return stage == kInputStage ? 32 : stage == kFullStage ? 1 : 16 >> stage; }
-constexpr int32_t OutputChannels(int32_t stage) noexcept { return stage == kInputStage ? 15 : 28; }
+constexpr bool ValidStage(int32_t stage) noexcept { return stage >= kInputStage && stage <= kTailStage; }
+constexpr int32_t InputCount(int32_t stage) noexcept { return stage == kInputStage ? 2 : stage == kTailStage ? 3 : 3 + stage; }
+constexpr int32_t OutputScale(int32_t stage) noexcept { return stage == kInputStage ? 32 : stage >= kFullStage ? 1 : 16 >> stage; }
+constexpr int32_t OutputChannels(int32_t stage) noexcept { return stage == kInputStage ? 15 : stage == kTailStage ? 3 : 28; }
+constexpr int kFullPixelChannels = 32, kTailLowPixelChannels = 24, kTailLowChannels = 20;
 __host__ __device__ constexpr int32_t LevelScale(int32_t level) noexcept { return 32 >> level; }
 
 struct LowLevels { const __half* level[4]; };
@@ -97,40 +101,99 @@ __device__ __forceinline__ void AddWarpedPixel(const __half* raw, const __half* 
     }
 }
 
-// Each batch also writes part of the unwarped tail, to keep both busy: batch 0 the
-// timestep plane and state 0-4, batch 1 state 5-8, and each its own two flow channels.
-constexpr int kStatePerBatch0 = 5;
+// Eight FP16 values as one 16-byte store. Writing a pixel's channels one at a time
+// costs about four times as much in this interleaved format.
+__device__ __forceinline__ uint4 Pack8(const __half* v)
+{
+    const auto bits = [](__half a, __half b) { return unsigned(__half_as_ushort(a)) | unsigned(__half_as_ushort(b)) << 16; };
+    return make_uint4(bits(v[0], v[1]), bits(v[2], v[3]), bits(v[4], v[5]), bits(v[6], v[7]));
+}
 
-// Stage 3: every pixel, no downscale.
-__global__ void WarpFull(const __half* raw, const __half* features, LowLevels levels, __half* output, __half* flowOutput,
-    int height, int width)
+// Stage 3: every pixel, no downscale. Output is kHWC8, 28 channels padded to 32.
+__global__ void WarpFull(const __half* raw, const __half* features, LowLevels levels, __half* output, int height, int width)
 {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     if (x >= width) return;
     const int y = blockIdx.y;
-    const int batch = blockIdx.z;
     const size_t plane = size_t(height) * width;
     const size_t pixel = size_t(y) * width + x;
-    __half flowX, flowY;
-    FlowAt<3>(levels, batch, x, y, height, width, flowX, flowY);
-    float warped[7] = {};
-    AddWarpedPixel(raw, features, flowX, flowY, batch, x, y, height, width, warped);
+    __half out[kFullPixelChannels];
 #pragma unroll
-    for (int channel = 0; channel < 7; ++channel) {
-        output[(batch * 7 + channel) * plane + pixel] = __float2half_rn(warped[channel]);
+    for (int batch = 0; batch < 2; ++batch) {
+        __half flowX, flowY;
+        FlowAt<3>(levels, batch, x, y, height, width, flowX, flowY);
+        float warped[7] = {};
+        AddWarpedPixel(raw, features, flowX, flowY, batch, x, y, height, width, warped);
+#pragma unroll
+        for (int channel = 0; channel < 7; ++channel) out[batch * 7 + channel] = __float2half_rn(warped[channel]);
+        out[24 + batch * 2] = flowX;
+        out[25 + batch * 2] = flowY;
     }
+    out[14] = raw[6 * plane + pixel];
     const int lowWidth = width / 4, lowHeight = height / 4;
     const LowSample s = LocateLow(x, y, 4, lowWidth, lowHeight);
-    const int first = batch ? kStatePerBatch0 : 0, count = batch ? 9 - kStatePerBatch0 : kStatePerBatch0;
-    if (!batch) output[14 * plane + pixel] = raw[6 * plane + pixel];
-    for (int channel = first; channel < first + count; ++channel) {
-        output[(15 + channel) * plane + pixel] = __float2half_rn(ReadLow(levels.level[3], 4 + channel, lowWidth, lowHeight, s));
+#pragma unroll
+    for (int channel = 0; channel < 9; ++channel) {
+        out[15 + channel] = __float2half_rn(ReadLow(levels.level[3], 4 + channel, lowWidth, lowHeight, s));
     }
-    output[(24 + batch * 2) * plane + pixel] = flowX;
-    output[(25 + batch * 2) * plane + pixel] = flowY;
-    flowOutput[(batch * 2) * plane + pixel] = flowX;
-    flowOutput[(batch * 2 + 1) * plane + pixel] = flowY;
+#pragma unroll
+    for (int channel = 28; channel < kFullPixelChannels; ++channel) out[channel] = __float2half_rn(0.0f);
+    auto* target = reinterpret_cast<uint4*>(output + pixel * kFullPixelChannels);
+#pragma unroll
+    for (int group = 0; group < 4; ++group) target[group] = Pack8(out + group * 8);
 }
+
+// Stage 4: block 4's DepthToSpace (CRD, factor 2) at the channels used, its flow
+// residual, the final warp of both images and the mask blend, rounding as the graph does.
+__global__ void FinishFrame(const __half* raw, const __half* full, const __half* low, __half* output, int height, int width)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    if (x >= width) return;
+    const int y = blockIdx.y;
+    const size_t plane = size_t(height) * width;
+    const size_t pixel = size_t(y) * width + x;
+    const __half* lowPixel = low + (size_t(y / 2) * (width / 2) + x / 2) * kTailLowPixelChannels + (y & 1) * 2 + (x & 1);
+    const __half* fullPixel = full + pixel * kFullPixelChannels;
+    const __half gridX = raw[7 * plane + pixel], gridY = raw[8 * plane + pixel];
+    const __half scaleX = raw[9 * plane + pixel], scaleY = raw[10 * plane + pixel];
+    float warped[2][3];
+    __half result[3];
+#pragma unroll
+    for (int batch = 0; batch < 2; ++batch) {
+        const __half flowX = __hadd(fullPixel[24 + batch * 2], lowPixel[batch * 8]);
+        const __half flowY = __hadd(fullPixel[25 + batch * 2], lowPixel[batch * 8 + 4]);
+        const float gx = __half2float(__hadd(gridX, __hmul(flowX, scaleX)));
+        const float gy = __half2float(__hadd(gridY, __hmul(flowY, scaleY)));
+        const float u = fminf(fmaxf((gx + 1.0f) * 0.5f * (width - 1), 0.0f), float(width - 1));
+        const float v = fminf(fmaxf((gy + 1.0f) * 0.5f * (height - 1), 0.0f), float(height - 1));
+        const int x0 = int(u), y0 = int(v), x1 = min(x0 + 1, width - 1), y1 = min(y0 + 1, height - 1);
+        const float fx = u - x0, fy = v - y0;
+        const float a = (1 - fx) * (1 - fy), b = fx * (1 - fy), c = (1 - fx) * fy, d = fx * fy;
+#pragma unroll
+        for (int channel = 0; channel < 3; ++channel) {
+            const __half* source = raw + (batch * 3 + channel) * plane;
+            warped[batch][channel] = __half2float(__float2half_rn(a * __half2float(source[size_t(y0) * width + x0])
+                + b * __half2float(source[size_t(y0) * width + x1])
+                + c * __half2float(source[size_t(y1) * width + x0])
+                + d * __half2float(source[size_t(y1) * width + x1])));
+        }
+    }
+    const float mask = __half2float(__float2half_rn(1.0f / (1.0f + expf(-__half2float(lowPixel[16])))));
+    const float inverse = __half2float(__float2half_rn(1.0f - mask));
+#pragma unroll
+    for (int channel = 0; channel < 3; ++channel) {
+        const float first = __half2float(__float2half_rn(warped[0][channel] * mask));
+        const float second = __half2float(__float2half_rn(warped[1][channel] * inverse));
+        result[channel] = __float2half_rn(first + second);
+    }
+    output[pixel] = result[0];
+    output[plane + pixel] = result[1];
+    output[2 * plane + pixel] = result[2];
+}
+
+// Each batch also writes part of the unwarped tail, to keep both busy: batch 0 the
+// timestep plane and state 0-4, batch 1 state 5-8, and each its own two flow channels.
+constexpr int kStatePerBatch0 = 5;
 
 // Stages 0-2: each output sample is the mean of the four pixels around its centre,
 // which is what a half_pixel linear Resize at exactly 1/scale computes. Rounding once
@@ -202,6 +265,16 @@ __global__ void DownscaleInput(const __half* raw, const __half* features, __half
     }
 }
 
+TensorFormat InputFormat(int32_t stage, int32_t input) noexcept
+{
+    return stage == kTailStage && input > 0 ? TensorFormat::kHWC8 : TensorFormat::kLINEAR;
+}
+
+TensorFormat OutputFormat(int32_t stage) noexcept
+{
+    return stage == kFullStage ? TensorFormat::kHWC8 : TensorFormat::kLINEAR;
+}
+
 bool ValidInputs(PluginTensorDesc const* input, int32_t count, int32_t stage) noexcept
 {
     if (!input || count != InputCount(stage)) return false;
@@ -211,9 +284,15 @@ bool ValidInputs(PluginTensorDesc const* input, int32_t count, int32_t stage) no
             || shape.d[2] % 32 != 0 || shape.d[3] % 32 != 0) return false;
     for (int i = 0; i < count; ++i) {
         const auto& desc = input[i];
-        const int scale = i < 2 ? 1 : LevelScale(i - 2);
-        const int batches = i == 1 ? 2 : 1, channels = i == 0 ? 11 : i == 1 ? 4 : 13;
-        if (desc.type != DataType::kHALF || desc.format != TensorFormat::kLINEAR
+        int scale = 1, batches = 1, channels = 11;
+        if (stage == kTailStage) {
+            if (i) { channels = i == 1 ? 28 : kTailLowChannels; scale = i == 1 ? 1 : 2; }
+        } else if (i) {
+            scale = i < 2 ? 1 : LevelScale(i - 2);
+            batches = i == 1 ? 2 : 1;
+            channels = i == 1 ? 4 : 13;
+        }
+        if (desc.type != DataType::kHALF || desc.format != InputFormat(stage, i)
                 || desc.dims.nbDims != 4 || desc.dims.d[0] != batches || desc.dims.d[1] != channels
                 || desc.dims.d[2] != shape.d[2] / scale || desc.dims.d[3] != shape.d[3] / scale) return false;
     }
@@ -236,21 +315,21 @@ public:
     char const* getPluginName() const noexcept override { return kName; }
     char const* getPluginVersion() const noexcept override { return kVersion; }
     char const* getPluginNamespace() const noexcept override { return kNamespace; }
-    int32_t getNbOutputs() const noexcept override { return OutputCount(m_stage); }
+    int32_t getNbOutputs() const noexcept override { return 1; }
     int32_t configurePlugin(DynamicPluginTensorDesc const*, int32_t inputs,
         DynamicPluginTensorDesc const*, int32_t outputs) noexcept override {
-        return inputs == InputCount(m_stage) && outputs == OutputCount(m_stage) ? 0 : -1;
+        return inputs == InputCount(m_stage) && outputs == 1 ? 0 : -1;
     }
     int32_t getOutputDataTypes(DataType* output, int32_t outputs, DataType const* input,
         int32_t inputs) const noexcept override {
-        if (inputs != InputCount(m_stage) || outputs != OutputCount(m_stage)) return -1;
+        if (inputs != InputCount(m_stage) || outputs != 1) return -1;
         for (int i = 0; i < inputs; ++i) if (input[i] != DataType::kHALF) return -1;
         for (int i = 0; i < outputs; ++i) output[i] = DataType::kHALF;
         return 0;
     }
     int32_t getOutputShapes(DimsExprs const* input, int32_t inputs, DimsExprs const*,
         int32_t shapeInputs, DimsExprs* output, int32_t outputs, IExprBuilder& builder) noexcept override {
-        if (inputs != InputCount(m_stage) || outputs != OutputCount(m_stage) || shapeInputs || input[0].nbDims != 4) return -1;
+        if (inputs != InputCount(m_stage) || outputs != 1 || shapeInputs || input[0].nbDims != 4) return -1;
         output[0] = input[0];
         output[0].d[1] = builder.constant(OutputChannels(m_stage));
         const int32_t outputScale = OutputScale(m_stage);
@@ -259,30 +338,24 @@ public:
             output[0].d[2] = builder.operation(DimensionOperation::kFLOOR_DIV, *input[0].d[2], *scale);
             output[0].d[3] = builder.operation(DimensionOperation::kFLOOR_DIV, *input[0].d[3], *scale);
         }
-        if (outputs == 2) {
-            output[1] = input[0];
-            output[1].d[1] = builder.constant(4);
-        }
         return 0;
     }
     bool supportsFormatCombination(int32_t position, DynamicPluginTensorDesc const* io,
         int32_t inputs, int32_t outputs) noexcept override {
-        return inputs == InputCount(m_stage) && outputs == OutputCount(m_stage)
+        return inputs == InputCount(m_stage) && outputs == 1
             && position >= 0 && position < inputs + outputs
-            && io[position].desc.type == DataType::kHALF && io[position].desc.format == TensorFormat::kLINEAR;
+            && io[position].desc.type == DataType::kHALF
+            && io[position].desc.format == (position < inputs ? InputFormat(m_stage, position) : OutputFormat(m_stage));
     }
     int32_t onShapeChange(PluginTensorDesc const* input, int32_t inputs,
         PluginTensorDesc const* output, int32_t outputs) noexcept override {
-        if (!ValidInputs(input, inputs, m_stage) || outputs != OutputCount(m_stage)) return -1;
+        if (!ValidInputs(input, inputs, m_stage) || outputs != 1) return -1;
         const auto& source = input[0].dims;
-        for (int i = 0; i < outputs; ++i) {
-            const auto& shape = output[i].dims;
-            const int scale = i ? 1 : OutputScale(m_stage), channels = i ? 4 : OutputChannels(m_stage);
-            if (output[i].type != DataType::kHALF || output[i].format != TensorFormat::kLINEAR
-                    || shape.nbDims != 4 || shape.d[0] != 1 || shape.d[1] != channels
-                    || shape.d[2] != source.d[2] / scale || shape.d[3] != source.d[3] / scale) return -1;
-        }
-        return 0;
+        const auto& shape = output[0].dims;
+        const int scale = OutputScale(m_stage);
+        return output[0].type == DataType::kHALF && output[0].format == OutputFormat(m_stage)
+            && shape.nbDims == 4 && shape.d[0] == 1 && shape.d[1] == OutputChannels(m_stage)
+            && shape.d[2] == source.d[2] / scale && shape.d[3] == source.d[3] / scale ? 0 : -1;
     }
     int32_t enqueue(PluginTensorDesc const* desc, PluginTensorDesc const*, void const* const* input,
         void* const* output, void*, cudaStream_t stream) noexcept override {
@@ -290,16 +363,17 @@ public:
         const auto* raw = static_cast<const __half*>(input[0]);
         const auto* features = static_cast<const __half*>(input[1]);
         LowLevels levels{};
-        for (int level = 0; level <= m_stage; ++level) levels.level[level] = static_cast<const __half*>(input[2 + level]);
+        for (int level = 0; level <= m_stage && level < 4; ++level) levels.level[level] = static_cast<const __half*>(input[2 + level]);
         auto* result = static_cast<__half*>(output[0]);
         const int scale = OutputScale(m_stage);
-        const dim3 blocks((unsigned(width / scale) + 127) / 128, unsigned(height / scale), m_stage == kInputStage ? 1 : 2);
+        const dim3 blocks((unsigned(width / scale) + 127) / 128, unsigned(height / scale), m_stage >= 0 && m_stage < kFullStage ? 2 : 1);
         switch (m_stage) {
         case kInputStage: DownscaleInput<<<blocks, 128, 0, stream>>>(raw, features, result, height, width); break;
         case 0: WarpDown<0><<<blocks, 128, 0, stream>>>(raw, features, levels, result, height, width); break;
         case 1: WarpDown<1><<<blocks, 128, 0, stream>>>(raw, features, levels, result, height, width); break;
         case 2: WarpDown<2><<<blocks, 128, 0, stream>>>(raw, features, levels, result, height, width); break;
-        default: WarpFull<<<blocks, 128, 0, stream>>>(raw, features, levels, result, static_cast<__half*>(output[1]), height, width); break;
+        case kFullStage: WarpFull<<<blocks, 128, 0, stream>>>(raw, features, levels, result, height, width); break;
+        default: FinishFrame<<<blocks, 128, 0, stream>>>(raw, features, static_cast<const __half*>(input[2]), result, height, width); break;
         }
         return cudaPeekAtLastError() == cudaSuccess ? 0 : -1;
     }
@@ -381,7 +455,7 @@ bool RegisterRifeWarpPlugin() noexcept
     return registration.registered;
 }
 
-bool FuseRifeSynthesisWarps(nvinfer1::INetworkDefinition& network) noexcept
+bool FuseRifeSynthesisWarps(nvinfer1::INetworkDefinition& network, std::vector<uint16_t>& weightStorage) noexcept
 {
     using namespace mpcvr_rife_warp;
     // Exact export names are safe only behind the model hash gate in
@@ -393,12 +467,11 @@ bool FuseRifeSynthesisWarps(nvinfer1::INetworkDefinition& network) noexcept
         "/block2/lastconv/lastconv.1/DepthToSpace_output_0", "/block3/lastconv/lastconv.1/DepthToSpace_output_0"};
     constexpr std::array<const char*, 5> replacedOutputs{"/block0/Resize_output_0", "/block1/Resize_output_0",
         "/block2/Resize_output_0", "/block3/Resize_output_0", "/Concat_5_output_0"};
-    constexpr std::array<const char*, 5> pluginNames{"mpcvr_rife_input", "mpcvr_rife_warp0",
-        "mpcvr_rife_warp1", "mpcvr_rife_warp2", "mpcvr_rife_warp3"};
+    constexpr std::array<const char*, 6> pluginNames{"mpcvr_rife_input", "mpcvr_rife_warp0",
+        "mpcvr_rife_warp1", "mpcvr_rife_warp2", "mpcvr_rife_warp3", "mpcvr_rife_finish"};
     auto* raw = FindTensor(network, "input");
     auto* features = FindTensor(network, "/encode/cnn3/ConvTranspose_output_0");
-    auto* accumulatedFlow = FindTensor(network, "/Add_5_output_0");
-    if (!raw || !features || !accumulatedFlow) return false;
+    if (!raw || !features || network.getNbOutputs() != 1) return false;
     std::array<ITensor*, 4> levels{};
     for (size_t i = 0; i < levels.size(); ++i) {
         levels[i] = FindTensor(network, blockOutputs[i]);
@@ -409,15 +482,66 @@ bool FuseRifeSynthesisWarps(nvinfer1::INetworkDefinition& network) noexcept
         replaced[i] = FindTensor(network, replacedOutputs[i]);
         if (!replaced[i]) return false;
     }
-    for (int stage = kInputStage; stage <= kFullStage; ++stage) {
-        ITensor* input[]{raw, features, levels[0], levels[1], levels[2], levels[3]};
+    // Block 4's output has 13 channels at full resolution and the frame uses five:
+    // flow and mask. DepthToSpace (CRD, factor 2) places channel c in inputs 4c to
+    // 4c+3, so the first 20 of its ConvTranspose's 52 maps are the ones that matter.
+    constexpr int kInputMaps = 24, kOutputMaps = 52, kKernel = 4;
+    auto* deconv = FindLayer(network, "/block4/lastconv/lastconv.0/ConvTranspose");
+    if (!deconv || deconv->getType() != LayerType::kDECONVOLUTION || deconv->getNbInputs() != 1) return false;
+    auto* original = static_cast<IDeconvolutionLayer*>(deconv);
+    const Weights kernel = original->getKernelWeights(), bias = original->getBiasWeights();
+    const Dims kernelSize = original->getKernelSizeNd();
+    // Weights are CKRS: input channel, output map, filter height and width.
+    if (original->getNbOutputMaps() != kOutputMaps || original->getNbGroups() != 1 || kernelSize.nbDims != 2
+            || kernelSize.d[0] != kKernel || kernelSize.d[1] != kKernel
+            || kernel.type != DataType::kHALF || bias.type != DataType::kHALF || !kernel.values || !bias.values
+            || kernel.count != kInputMaps * kOutputMaps * kKernel * kKernel || bias.count != kOutputMaps) return false;
+    constexpr int kFilterValues = kKernel * kKernel;
+    try {
+        weightStorage.resize(size_t(kInputMaps) * kTailLowChannels * kFilterValues);
+    } catch (...) { return false; }
+    const auto* source = static_cast<const uint16_t*>(kernel.values);
+    for (int input = 0; input < kInputMaps; ++input) {
+        std::copy_n(source + size_t(input) * kOutputMaps * kFilterValues, size_t(kTailLowChannels) * kFilterValues,
+            weightStorage.data() + size_t(input) * kTailLowChannels * kFilterValues);
+    }
+    const Weights prunedKernel{DataType::kHALF, weightStorage.data(), int64_t(weightStorage.size())};
+    // The bias's first values are contiguous; the network holds its original.
+    const Weights prunedBias{DataType::kHALF, bias.values, kTailLowChannels};
+    auto* pruned = network.addDeconvolutionNd(*original->getInput(0), kTailLowChannels, kernelSize, prunedKernel, prunedBias);
+    if (!pruned) return false;
+    pruned->setName("mpcvr_rife_block4_lastconv");
+    pruned->setStrideNd(original->getStrideNd());
+    pruned->setPaddingNd(original->getPaddingNd());
+    pruned->setPrePadding(original->getPrePadding());
+    pruned->setPostPadding(original->getPostPadding());
+    pruned->setDilationNd(original->getDilationNd());
+    pruned->setPaddingMode(original->getPaddingMode());
+    pruned->setNbGroups(1);
+    ITensor* full = nullptr;
+    for (int stage = kInputStage; stage <= kTailStage; ++stage) {
+        ITensor* input[6]{raw, features, levels[0], levels[1], levels[2], levels[3]};
+        if (stage == kTailStage) {
+            input[1] = full;
+            input[2] = pruned->getOutput(0);
+        }
         WarpPlugin plugin(stage);
         auto* fused = network.addPluginV3(input, InputCount(stage), nullptr, 0, plugin);
         if (!fused) return false;
         // addPluginV3 clones the plugin; the network owns that clone.
         fused->setName(pluginNames[stage + 1]);
-        ReplaceTensor(network, replaced[stage + 1], *fused->getOutput(0));
-        if (stage == kFullStage) ReplaceTensor(network, accumulatedFlow, *fused->getOutput(1));
+        if (stage < kTailStage) {
+            ReplaceTensor(network, replaced[stage + 1], *fused->getOutput(0));
+            if (stage == kFullStage) full = fused->getOutput(0);
+        } else {
+            // Callers bind the output by name, so the new tensor takes it over.
+            auto* output = network.getOutput(0);
+            const std::string name = output->getName();
+            network.unmarkOutput(*output);
+            output->setName("mpcvr_rife_replaced_output");
+            fused->getOutput(0)->setName(name.c_str());
+            network.markOutput(*fused->getOutput(0));
+        }
     }
     return true;
 }
