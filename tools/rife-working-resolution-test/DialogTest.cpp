@@ -28,7 +28,7 @@ int wmain(int argc, wchar_t** argv)
     assert(settings.iRifeProcessingResolution == RIFE_RESOLUTION_Source);
     assert(settings.iRifeProcessingLimit == 720);
     settings.iRifeMode = RIFE_MODE_Movie4x;
-    assert(!settings.bRifePreservePrecision && !settings.bRifeFeatureReuse);
+    assert(!settings.bRifePreservePrecision && settings.bRifeFeatureReuse);
     settings.bRifePreservePrecision = settings.bRifeFeatureReuse = true;
     assert(settings.iRifeFlowReuse == RIFE_FLOW_REUSE_Off);
     settings.iRifeFlowReuse = RIFE_FLOW_REUSE_Retime;
@@ -79,7 +79,7 @@ int wmain(int argc, wchar_t** argv)
     DialogProc(dialog, WM_COMMAND, MAKEWPARAM(IDC_BUTTON_RIFE_DEFAULTS, BN_CLICKED), 0);
     assert(settings.iRifeSceneDetection == RIFE_SCENE_SVPflow1);
     assert(settings.iRifeProcessingResolution == RIFE_RESOLUTION_Source);
-    assert(!settings.bRifePreservePrecision && !settings.bRifeFeatureReuse);
+    assert(!settings.bRifePreservePrecision && settings.bRifeFeatureReuse);
     assert(!IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_FEATURE_REUSE)));
     assert(!IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_FLOW_REUSE)));
     assert(!IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_PRESERVE_PRECISION)));

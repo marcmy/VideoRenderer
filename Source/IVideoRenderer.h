@@ -479,7 +479,7 @@ struct Settings_t {
 		iRifeGPU                        = RIFE_GPU_Auto;
 		bRifePerformanceBoost           = false;
 		bRifePreservePrecision          = false;
-		bRifeFeatureReuse               = false;
+		bRifeFeatureReuse               = true;
 		iRifeFlowReuse                  = RIFE_FLOW_REUSE_Off;
 		iRifeSceneDetection             = RIFE_SCENE_SVPflow1;
 		iRifeProcessingResolution       = RIFE_RESOLUTION_Source;

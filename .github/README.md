@@ -223,7 +223,7 @@ Displays the renderer debug overlay. MPC-HC also toggles this overlay with **Ctr
 
 ## RIFE processing size
 
-RIFE has two independent, opt-in options. **Preserve 10-bit** uses RGBA16F working
+RIFE has two independent options. **Preserve 10-bit**, off by default, uses RGBA16F working
 and output surfaces when the source and video-conversion path retain more than
 8 bits. Explicit 8-bit conversion stays 8-bit. Models still use their existing
 mixed FP16/FP32 arithmetic; this option avoids the BGRA8 input/output bottleneck.
@@ -231,7 +231,7 @@ Normal rendering retains precision until its existing output conversion/dither.
 Maxine's current BGRA8 input remains an 8-bit boundary and the BGRA CUDA handoff
 is bypassed for this precision path. Larger surfaces can cost memory/bandwidth.
 
-**Feature reuse** runs the image encoder once per immutable source pair and
+**Feature reuse**, on by default, runs the image encoder once per immutable source pair and
 execution context for the pinned 4.15 Lite, 4.25 and 4.25 Lite exports. 4.4 and
 4.6 lack that encoder. Only the image encoder is shared: each target time still
 runs the full flow/synthesis network, so the output matches the original engine
