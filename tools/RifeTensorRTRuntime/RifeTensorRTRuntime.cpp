@@ -331,6 +331,7 @@ public:
         m_contentHeight = params.contentHeight;
         m_paddedWidth = params.width;
         m_paddedHeight = params.height;
+        m_tensorHeight = params.height;
         // The renderer owns the model-specific alignment policy. Most bundled
         // models use 32 px, while RIFE 4.25 Lite requires 128 px. The runtime
         // only requires a surface large enough for the logical content and
@@ -408,8 +409,9 @@ public:
             auto features = std::make_unique<FeatureReuseEngine>();
             const auto hash = Sha256Hex(ReadFile(m_modelPath));
             if (hash.size() >= 16 && features->Initialize(m_modelPath, m_cachePath, hash,
-                    BuildCacheKey(hash), m_paddedWidth, m_paddedHeight)) {
+                    BuildCacheKey(hash), m_paddedWidth, m_paddedHeight, m_contentHeight)) {
                 m_engineBytes += features->EngineBytes();
+                m_tensorHeight = features->Height();
                 m_features = std::move(features);
             }
         }
@@ -418,6 +420,7 @@ public:
             m_contexts.clear();
             m_contextMutexes.clear();
             m_features.reset();
+            m_tensorHeight = m_paddedHeight;
             if (!PrepareContexts()) return MPCVR_RIFE_TENSORRT_FAILURE;
         }
         return MPCVR_RIFE_OK;
@@ -618,8 +621,8 @@ public:
             }
             const auto packHostStart = Clock::now();
             if (MpcvrRifePackInput(firstArray, secondArray, state.input, m_inputIsFp16,
-                    static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
-                    static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
+                    static_cast<int>(m_paddedWidth), static_cast<int>(m_tensorHeight),
+                    static_cast<int>(m_paddedWidth), static_cast<int>(m_tensorHeight),
                     request.timestep, state.stream, &firstTexture, &secondTexture, m_highPrecision) != cudaSuccess) {
                 releaseInputs(state.stream);
                 finishStream();
@@ -666,8 +669,8 @@ public:
             }
             const auto packHostStart = Clock::now();
             if (MpcvrRifeUpdateTimestep(state.input, m_inputIsFp16,
-                    static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
-                    static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
+                    static_cast<int>(m_paddedWidth), static_cast<int>(m_tensorHeight),
+                    static_cast<int>(m_paddedWidth), static_cast<int>(m_tensorHeight),
                     request.timestep, state.stream) != cudaSuccess) {
                 finishStream();
                 return MPCVR_RIFE_CUDA_FAILURE;
@@ -724,11 +727,11 @@ public:
         const auto writeHostStart = Clock::now();
         const cudaError_t writeResult = linear
             ? MpcvrRifeWriteLinearOutput(state.output, m_outputIsFp16, linearOutput, linearPitch,
-                static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
-                static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight), state.stream)
+                static_cast<int>(m_paddedWidth), static_cast<int>(m_tensorHeight),
+                static_cast<int>(m_paddedWidth), static_cast<int>(m_tensorHeight), state.stream)
             : MpcvrRifeWriteOutput(state.output, m_outputIsFp16, outputArray,
-                static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight),
-                static_cast<int>(m_paddedWidth), static_cast<int>(m_paddedHeight), state.stream, &outputSurface, m_highPrecision);
+                static_cast<int>(m_paddedWidth), static_cast<int>(m_tensorHeight),
+                static_cast<int>(m_paddedWidth), static_cast<int>(m_tensorHeight), state.stream, &outputSurface, m_highPrecision);
         if (writeResult != cudaSuccess) {
             releaseOutput();
             finishStream();
@@ -883,6 +886,8 @@ public:
                     output.pixels = nullptr;
                     return MPCVR_RIFE_CUDA_FAILURE;
                 }
+                // Padded rows past the tensor are never written.
+                if (cudaMemset(output.pixels, 0, output.pitch * m_paddedHeight) != cudaSuccess) return MPCVR_RIFE_CUDA_FAILURE;
             }
             const size_t index = static_cast<size_t>(&output - m_cudaOutputs.data());
             output.leaseId = m_nextCudaLease.fetch_add(1, std::memory_order_relaxed)
@@ -941,7 +946,7 @@ public:
             cudaError_t result = cudaGraphicsSubResourceGetMappedArray(&array, resource, 0, 0);
             if (result == cudaSuccess) {
                 result = cudaMemcpy2DToArrayAsync(array, 0, 0, output.pixels, output.pitch,
-                    static_cast<size_t>(m_paddedWidth) * 4, m_paddedHeight, cudaMemcpyDeviceToDevice, output.stream);
+                    static_cast<size_t>(m_paddedWidth) * 4, m_tensorHeight, cudaMemcpyDeviceToDevice, output.stream);
             }
             cudaError_t unmapResult;
             {
@@ -1124,8 +1129,8 @@ private:
         m_contexts.reserve(m_contextCount);
         m_contextMutexes.reserve(m_contextCount);
 
-        const nvinfer1::Dims4 inputShape{1, 11, static_cast<int>(m_paddedHeight), static_cast<int>(m_paddedWidth)};
-        const nvinfer1::Dims4 outputShape{1, 3, static_cast<int>(m_paddedHeight), static_cast<int>(m_paddedWidth)};
+        const nvinfer1::Dims4 inputShape{1, 11, static_cast<int>(m_tensorHeight), static_cast<int>(m_paddedWidth)};
+        const nvinfer1::Dims4 outputShape{1, 3, static_cast<int>(m_tensorHeight), static_cast<int>(m_paddedWidth)};
         const size_t inputBytes = Volume(inputShape) * DataTypeBytes(m_engine->getTensorDataType(m_inputName.c_str()));
         const size_t outputBytes = Volume(outputShape) * DataTypeBytes(m_engine->getTensorDataType(m_outputName.c_str()));
         if (!inputBytes || !outputBytes) return false;
@@ -1234,6 +1239,8 @@ private:
     uint32_t m_contentHeight = 0;
     uint32_t m_paddedWidth = 0;
     uint32_t m_paddedHeight = 0;
+    // Rows of every tensor. The fused engine needs fewer than the padded surfaces have.
+    uint32_t m_tensorHeight = 0;
     uint32_t m_contextCount = 0;
     bool m_performanceBoost = false;
     RifeEngineProfile m_engineProfile{};

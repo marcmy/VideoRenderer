@@ -190,6 +190,38 @@ int wmain(int argc,wchar_t** argv) {
         Check(maximum<.02,"GPU precision parity within FP16 tactic tolerance");
         }
     }
+    // Content shorter than the padded surface: on SM75 the fused 4.25 Lite plan works on
+    // fewer rows than the surface has, and the visible rows must still match the whole model.
+    {
+        constexpr int size=256,contentHeight=190;
+        const auto model=(std::filesystem::path(argv[2])/L"rife_v4.25_lite.onnx").wstring();
+        // The renderer clears the rows below the picture to black. Smooth content moving a
+        // few pixels keeps flow small, so a row placed wrongly shows and FP16 rounding does not.
+        const auto frame=[&](int shift) {
+            std::vector<uchar4> pixels(size_t(size)*size,make_uchar4(0,0,0,255));
+            for(int y=0;y<contentHeight;++y) for(int x=0;x<size;++x)
+                pixels[size_t(y)*size+x]=make_uchar4(128,static_cast<unsigned char>(y*255/(contentHeight-1)),static_cast<unsigned char>((x+shift)*255/(size+7)),255);
+            return Texture(device,size,size,false,pixels.data());
+        };
+        auto a=frame(0);
+        auto b=frame(8);
+        auto output=Texture(device,size,size,false);
+        std::array<std::vector<uint8_t>,2> images;
+        for(int reuse=0;reuse<2;++reuse) {
+            MpcvrRifeCreateParams p;p.device=device;p.width=p.height=size;p.contentWidth=size;p.contentHeight=contentHeight;p.contextCount=2;p.performanceBoost=1;
+            p.modelPath=model.c_str();p.cachePath=argv[3];p.flags=reuse?MPCVR_RIFE_CREATE_FEATURE_REUSE:0u;
+            void* handle=nullptr;Check(create(&p,&handle)==0&&handle,"shorter content create");
+            MpcvrRifeRequest q;q.first=a;q.second=b;q.output=output;q.timestep=.5f;q.inputPairId=1;
+            MpcvrRifeStats s;Check(infer(handle,&q,&s)==0,"shorter content inference");
+            Check(s.featureReuse==uint64_t(reuse),"shorter content uses the expected engine");
+            images[reuse]=Read(device,context,output);
+            destroy(handle);
+        }
+        double maximum=0;
+        for(size_t i=0;i<size_t(size)*contentHeight*4;++i) maximum=std::max(maximum,std::abs(int(images[0][i])-int(images[1][i]))/255.0);
+        std::cout<<"Shorter content, visible rows max="<<maximum<<std::endl;
+        Check(maximum<.05,"visible rows match the whole model");
+    }
     FreeLibrary(module);std::cout<<"Native GPU: models, precision, pair invalidation and context isolation passed\n";
     } catch(const std::exception& e) {std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
 }

@@ -152,6 +152,17 @@ __global__ void WriteLinearKernel(const T* tensor, unsigned char* output, size_t
         static_cast<unsigned char>(r * 255.0f + 0.5f), 255);
 }
 
+__global__ void InterleaveImageKernel(const unsigned short* image, const unsigned short* features, uint4* target, int width, int height)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    if (x >= width) return;
+    const size_t plane = static_cast<size_t>(width) * height;
+    const size_t pixel = static_cast<size_t>(blockIdx.y) * width + x;
+    const auto two = [](unsigned low, unsigned high) { return low | high << 16; };
+    target[pixel] = make_uint4(two(image[pixel], image[plane + pixel]), two(image[2 * plane + pixel], 0),
+        two(features[pixel], features[plane + pixel]), two(features[2 * plane + pixel], features[3 * plane + pixel]));
+}
+
 cudaError_t CreateTexture(cudaArray_t array, cudaTextureObject_t* texture)
 {
     cudaResourceDesc resource{};
@@ -176,6 +187,15 @@ cudaError_t CreateSurface(cudaArray_t array, cudaSurfaceObject_t* surface)
 }
 
 } // namespace
+
+cudaError_t MpcvrRifeInterleaveImage(const void* image, const void* features, void* target,
+    int width, int height, cudaStream_t stream)
+{
+    if (!image || !features || !target || width <= 0 || height <= 0) return cudaErrorInvalidValue;
+    InterleaveImageKernel<<<dim3((width + 127) / 128, height), 128, 0, stream>>>(static_cast<const unsigned short*>(image),
+        static_cast<const unsigned short*>(features), static_cast<uint4*>(target), width, height);
+    return cudaGetLastError();
+}
 
 cudaError_t MpcvrRifeWriteLinearOutput(const void* tensor, bool fp16, void* output, size_t pitch,
     int width, int height, int paddedWidth, int paddedHeight, cudaStream_t stream)

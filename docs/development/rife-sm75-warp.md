@@ -208,6 +208,73 @@ and 0.0583% against 0.0474% on the pan clip. The same previous runtime measured 
 
 The saving is small at high rates, because a pair with more targets encodes once.
 
+## Loading each texel at once, and keeping only the fine block short, 2026-11-06
+
+At this point the plugin stages were 39% of a reused target. Block 4 and stages 3 and 4 move
+about 141 MB per frame and were the largest single costs, so this round targets memory traffic.
+
+- The warp source is now one 16-byte texel per pixel per image, r g b 0 f0 f1 f2 f3, built
+  once per image by `InterleaveImageKernel`. Seven planar loads per sample became one.
+- Stage 3 has a second output with only the accumulated flow, [1,H,W,4]. Stage 4 had read that
+  flow back from the 64-byte-per-pixel kHWC8 tensor, touching every cache line of it again.
+  This alone took stage 4 from 0.57 to 0.29 ms.
+- Stages 0-2 read and write kHWC8 directly with 16-byte stores, leaving fewer reformats.
+- Arithmetic is FP32, rounded only where a value is stored. It saves no time, but the graph's
+  FP16 `grid + flow * scale` snapped sampling positions to about half a pixel near the
+  picture's sides, and `x + flow` is what that expression means.
+- Fewer rows. At 1080p, 64 of the 1152 rows are padding only the coarse blocks ask for.
+
+Dropping those rows everywhere was fast but wrong. The coarse blocks reach hundreds of pixels,
+so their flow depends on where the picture ends, and a shorter picture moved flow everywhere:
+on the pan clip, values more than 32/255 from the true model rose from 0.021% to 0.249%, and
+vertical motion lost 1 dB in the bottom 120 rows against true in-between frames. So the coarse
+blocks keep the padded height, which costs little at their resolution, and only block 4 and
+stages 3 and 4 run at the content height rounded up to 64. Rows of the coarse levels past that
+height read the last source row, which is black at 1080p. A height already a multiple of 128
+is unaffected, so 4K's 2176 gains nothing, and 720p's 768 is already its content rounded up.
+
+Local build against the distributed previous runtime, per-run minimums over two alternating
+rounds on both clips:
+
+| Runtime with feature reuse | First target, ms | Reused target, ms | Runtime VRAM, MiB |
+| --- | ---: | ---: | ---: |
+| Keeping the shared frame | 6.14-6.50 | 4.36-4.64 | 754 |
+| This change | 5.56-5.80 | 3.62-3.66 | 830 |
+
+The extra VRAM is the warp source. Builder optimization level 5 and all three tiling levels
+were also tried on this graph and gained nothing, so the defaults stay.
+
+Accuracy was measured two ways. Against the model evaluated in FP32 on the CPU, with the same
+padding, on the harness's first target:
+
+| Engine | mandel: mean/255, >8, >32 | pan: mean/255, >8, >32 |
+| --- | --- | --- |
+| Whole model, FP16 | 0.228, 0.597%, 0.094% | 0.314, 0.844%, 0.121% |
+| Keeping the shared frame | 0.229, 0.594%, 0.094% | 0.326, 0.864%, 0.132% |
+| FP32 kernels at the padded height | 0.023, 0.038%, 0.009% | 0.071, 0.120%, 0.021% |
+| FP32 kernels at the content height everywhere | 0.170, 0.298%, 0.129% | 0.403, 0.720%, 0.249% |
+| FP32 kernels, only the fine block short | 0.075, 0.146%, 0.052% | 0.188, 0.354%, 0.094% |
+
+Against true in-between frames, PSNR in dB on six four-frame clips where the runtime is given
+frames 0 and 3: four 1/f-textured moving scenes, `testsrc2` and a fractal zoom.
+
+| Engine | All rows | Bottom 120 rows | Bottom 24 rows |
+| --- | ---: | ---: | ---: |
+| Whole model, FP16 | 21.589 | 23.858 | 20.981 |
+| Keeping the shared frame | 21.585 | 23.857 | 20.986 |
+| FP32 kernels at the padded height | 21.820 | 26.179 | 24.420 |
+| FP32 kernels at the content height everywhere | 21.695 | 27.402 | 24.763 |
+| FP32 kernels, only the fine block short | 21.901 | 28.644 | 26.340 |
+
+`testsrc2`'s nearly static bottom rows dominate the means of those two bottom columns. Per clip
+against the previous runtime, over all rows this change gained 0.16 to 1.00 dB on the four
+moving scenes and lost 0.02 to 0.04 dB on the other two. In the bottom 24 rows it gained on
+the slowest and fastest scenes and lost up to 0.22 dB on the diagonal, vertical and zoom clips.
+
+Two separately built plans that should compute the same thing are not identical: they differed
+by a mean of 0.24 to 0.42/255 on the textured clips, while repeating a run of one build differed
+by exactly zero. Treat smaller differences between plans as noise.
+
 ## Scheduler
 
 The adaptive scheduler's delivery checks and recovery headroom were preserved.
@@ -218,19 +285,18 @@ validation before changing policy.
 ## Correctness and limits
 
 `RifeWarpGpuTest` tests every stage of the production plugin against an independent
-CPU reference at 32x32, 128x64, 640x1152, 1792x1024 and 1920x1152. It checks dynamic
-profiles, serialization/deserialization, finite results and rejected stages and
-sizes. TensorRT's own reformats sit between the plugin and the test's linear buffers,
-so the interleaved layouts are checked as declared. The full-resolution stage and block
-0's input matched exactly, and downscaled warps and state stayed within one FP16 step
-(0.000488). The final stage matched within two steps, from the last bit of the
-exponential, averaging about 2e-9. The graph's two explicit FP16
-coordinate rounding steps are retained; contraction is disabled for this CUDA
-translation unit.
+CPU reference at 128x64, 128x128, 640x1152, 1792x1024, 1920x1088 and 1920x1152. It
+checks dynamic profiles, serialization/deserialization, finite results and rejected
+stages and sizes. TensorRT's own reformats sit between the plugin and the test's linear
+buffers, so the interleaved layouts are checked as declared. Every stage but the last
+matched exactly. The final stage matched within one FP16 step (0.000488), from the last
+bit of the exponential, averaging about 3e-9. The reference evaluates in FP32 as the
+plugin does; contraction is disabled for this CUDA translation unit.
 
 `RifePrecisionGpuTest` passed with all three feature models, BGRA8/16F output,
 pair invalidation, repeated reuse and independent contexts. Whole-model versus
-split-model comparisons at 128x128 stayed below 0.01 normalized maximum error.
+split-model comparisons at 128x128 stayed below 0.01 normalized maximum error, and content
+shorter than its surface stayed below 0.016 in its visible rows on gentle motion.
 
 At full resolution, different TensorRT plans already have sparse large output
 differences. The runtime comparison above measured mean/max differences against
