@@ -130,7 +130,14 @@ $page = (Invoke-WebRequest -Uri 'https://www.codecguide.com/download_k-lite_code
 $kliteUrl = [regex]::Match($page, 'https://[^"]*K-Lite_Codec_Pack_[^"]*_Basic\.exe').Value
 Check ([bool]$kliteUrl) 'Could not find the K-Lite Basic download.'
 Write-Host "K-Lite: $kliteUrl"
-Install-Silently (Get-File $kliteUrl 'K-Lite_Basic.exe')
+$kliteLog = Join-Path $WorkRoot 'klite-setup.log'
+$process = Start-Process -FilePath (Get-File $kliteUrl 'K-Lite_Basic.exe') -ArgumentList '/VERYSILENT', '/NORESTART', '/SUPPRESSMSGBOXES', '/SP-', "/LOG=`"$kliteLog`"" -Wait -PassThru
+Write-Host "K-Lite setup exit code: $($process.ExitCode)"
+if (Test-Path -LiteralPath $kliteLog) { Get-Content -LiteralPath $kliteLog | Select-String -Pattern 'Components|Tasks|Dest filename:.*(mpc-hc|MpcVideoRenderer)|Directory|Exception|Error|rror' | Select-Object -First 40 | ForEach-Object { Write-Host $_.Line } }
+foreach ($folder in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
+    Get-ChildItem -LiteralPath (Join-Path $folder 'K-Lite Codec Pack') -Recurse -File -Include 'mpc-hc*.exe', 'MpcVideoRenderer*.ax' -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "K-Lite file: $($_.FullName)" }
+}
+Get-MPCVRRegistryHint | Where-Object { $_.Kind -eq 'K-Lite' } | ForEach-Object { Write-Host "K-Lite recorded at: $($_.Path)" }
 
 $targets = @(Get-MPCVRPlayerTarget)
 $targets | Format-Table Player, Architecture, LoadMode, Destination -AutoSize | Out-String -Width 220 | Write-Host
