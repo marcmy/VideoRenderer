@@ -89,6 +89,35 @@ __global__ void PackInputKernel(
     RifeStoreInputValue(tensor, 10 * plane + pixel, multiplierY);
 }
 
+template <bool Rgba16>
+__global__ void PackImagesKernel(cudaTextureObject_t first, cudaTextureObject_t second, __half* tensor, int width, int height, float timestep)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+    const size_t plane = static_cast<size_t>(width) * height;
+    const size_t pixel = static_cast<size_t>(y) * width + x;
+    float value[6];
+    if constexpr (Rgba16) {
+        const float4 a = tex2D<float4>(first, x + 0.5f, y + 0.5f), b = tex2D<float4>(second, x + 0.5f, y + 0.5f);
+        value[0] = a.x; value[1] = a.y; value[2] = a.z;
+        value[3] = b.x; value[4] = b.y; value[5] = b.z;
+    } else {
+        const uchar4 a = tex2D<uchar4>(first, x + 0.5f, y + 0.5f), b = tex2D<uchar4>(second, x + 0.5f, y + 0.5f);
+        constexpr float inv255 = 1.0f / 255.0f;
+        value[0] = a.z * inv255; value[1] = a.y * inv255; value[2] = a.x * inv255;
+        value[3] = b.z * inv255; value[4] = b.y * inv255; value[5] = b.x * inv255;
+    }
+#pragma unroll
+    for (int i = 0; i < 6; ++i) tensor[i * plane + pixel] = __float2half_rn(value[i]);
+    if (x == 0 && y == 0) tensor[6 * plane] = __float2half_rn(timestep);
+}
+
+__global__ void UpdateFirstTimestepKernel(__half* slot, float timestep)
+{
+    *slot = __float2half_rn(timestep);
+}
+
 template <typename T>
 __global__ void UpdateTimestepKernel(
     T* tensor, int sourceWidth, int sourceHeight, int paddedWidth, int paddedHeight, float timestep)
@@ -226,7 +255,8 @@ cudaError_t MpcvrRifePackInput(
     cudaStream_t stream,
     cudaTextureObject_t* firstTextureOut,
     cudaTextureObject_t* secondTextureOut,
-    bool rgba16Input)
+    bool rgba16Input,
+    bool imagesOnly)
 {
     if (!first || !second || !tensor || sourceWidth <= 0 || sourceHeight <= 0 ||
         paddedWidth < sourceWidth || paddedHeight < sourceHeight ||
@@ -249,7 +279,12 @@ cudaError_t MpcvrRifePackInput(
 
     const dim3 block(16, 16);
     const dim3 grid((paddedWidth + block.x - 1) / block.x, (paddedHeight + block.y - 1) / block.y);
-    if (tensorIsFp16) {
+    if (imagesOnly) {
+        if (rgba16Input) PackImagesKernel<true><<<grid, block, 0, stream>>>(firstTexture, secondTexture,
+            static_cast<__half*>(tensor), paddedWidth, paddedHeight, timestep);
+        else PackImagesKernel<false><<<grid, block, 0, stream>>>(firstTexture, secondTexture,
+            static_cast<__half*>(tensor), paddedWidth, paddedHeight, timestep);
+    } else if (tensorIsFp16) {
         if (rgba16Input) PackInputKernel<__half, true><<<grid, block, 0, stream>>>(firstTexture, secondTexture,
             static_cast<__half*>(tensor), sourceWidth, sourceHeight, paddedWidth, paddedHeight, timestep);
         else PackInputKernel<__half, false><<<grid, block, 0, stream>>>(firstTexture, secondTexture,
@@ -277,11 +312,16 @@ cudaError_t MpcvrRifePackInput(
 
 cudaError_t MpcvrRifeUpdateTimestep(
     void* tensor, bool tensorIsFp16, int sourceWidth, int sourceHeight,
-    int paddedWidth, int paddedHeight, float timestep, cudaStream_t stream)
+    int paddedWidth, int paddedHeight, float timestep, cudaStream_t stream, bool firstPixelOnly)
 {
     if (!tensor || sourceWidth <= 0 || sourceHeight <= 0 ||
         paddedWidth < sourceWidth || paddedHeight < sourceHeight ||
         !(timestep > 0.0f && timestep < 1.0f)) return cudaErrorInvalidValue;
+
+    if (firstPixelOnly) {
+        UpdateFirstTimestepKernel<<<1, 1, 0, stream>>>(static_cast<__half*>(tensor) + 6 * static_cast<size_t>(paddedWidth) * paddedHeight, timestep);
+        return cudaGetLastError();
+    }
 
     const dim3 block(16, 16);
     const dim3 grid((paddedWidth + block.x - 1) / block.x, (paddedHeight + block.y - 1) / block.y);

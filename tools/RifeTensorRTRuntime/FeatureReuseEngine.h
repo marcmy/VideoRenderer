@@ -15,6 +15,11 @@ static_assert(RifeFusedEngineHeight(720, 768) == 720 / 64 * 64 + 64);
 static_assert(RifeFusedEngineHeight(2160, 2176) == 2176);
 static_assert(RifeFusedEngineHeight(64, 128) == 128);
 
+// How many of a pair's targets share one flow estimate. Off runs every block per target.
+// Coarse runs blocks 0-3 once per pair, at t = 0.5, and block 4 per target. Retime runs
+// every block once per pair and only warps and blends per target. Both change the picture.
+enum class RifeFlowReuse { Off, Coarse, Retime };
+
 // Included after the runtime's internal TensorRT/file helpers. A separate
 // image-only encoder feeds the unchanged synthesis graph. Buffers and graphs
 // belong to one execution context, never to recycled D3D texture addresses.
@@ -67,6 +72,11 @@ public:
         // The whole pair; with secondImage, only the first image.
         EncoderStage encoder;
         EncoderStage secondImage;
+        // Blocks 0-3 at t = 0.5, once per pair, with their result and what each target
+        // makes of it. Only with RifeFlowReuse::Coarse.
+        EncoderStage anchor;
+        void* anchorLevel = nullptr;
+        void* level = nullptr;
         void* features = nullptr;
         size_t imageFeatureBytes = 0;
         // On the fused path, what the synthesis kernels read: each image and its
@@ -86,13 +96,17 @@ public:
         // The synthesis context must be destroyed before this Context.
         void* scratch = nullptr;
         size_t scratchClearBytes = 0;
+        size_t anchorClearBytes = 0;
         ~Context() {
+            anchor.Reset();
             secondImage.Reset();
             encoder.Reset();
             if (encodedEvent) cudaEventDestroy(encodedEvent);
             if (copiedEvent) cudaEventDestroy(copiedEvent);
             if (features) cudaFree(features);
             if (warpSource) cudaFree(warpSource);
+            if (anchorLevel) cudaFree(anchorLevel);
+            if (level) cudaFree(level);
             if (scratch) cudaFree(scratch);
         }
         bool Enqueue(cudaStream_t stream, uint64_t pairId, uint64_t previousPairId, bool& firstKept) {
@@ -106,10 +120,13 @@ public:
             // the previous frame have negligible effect, but encoder data could
             // decode as NaN there. Clear what both can touch once per pair, after
             // the encoder: features live in their own buffer.
-            return encoded && (!scratchClearBytes || cudaMemsetAsync(scratch, 0, scratchClearBytes, stream) == cudaSuccess);
+            if (!encoded || (scratchClearBytes && cudaMemsetAsync(scratch, 0, scratchClearBytes, stream) != cudaSuccess)) return false;
+            return !anchor.context || (anchor.Enqueue(stream)
+                && (!anchorClearBytes || cudaMemsetAsync(scratch, 0, anchorClearBytes, stream) == cudaSuccess));
         }
         bool Prime(cudaStream_t stream) {
-            return encoder.Prime(stream) && (!secondImage.context || secondImage.Prime(stream));
+            return encoder.Prime(stream) && (!secondImage.context || secondImage.Prime(stream))
+                && (!anchor.context || anchor.Prime(stream));
         }
     private:
         bool Interleave(cudaStream_t stream, int image) {
@@ -166,7 +183,8 @@ public:
     }
 
     bool Initialize(const std::filesystem::path& model, const std::filesystem::path& cache,
-        const std::string& modelHash, const std::string& cacheKey, uint32_t width, uint32_t height, uint32_t contentHeight) {
+        const std::string& modelHash, const std::string& cacheKey, uint32_t width, uint32_t height, uint32_t contentHeight,
+        RifeFlowReuse flowReuse) {
         if (!IsValidatedModel(modelHash)) return false;
         // Only the measured SM75/4.25 Lite path uses the fused warp. Keep the
         // native feature engine as a fallback, with its original cache identity.
@@ -176,9 +194,20 @@ public:
             && width % 128 == 0 && height % 128 == 0
             && cudaGetDevice(&device) == cudaSuccess && cudaGetDeviceProperties(&props, device) == cudaSuccess
             && props.major == 7 && props.minor == 5 && RegisterRifeWarpPlugin();
-        if (useWarp && InitializeSize(model, cache, modelHash, cacheKey, width, RifeFusedEngineHeight(contentHeight, height), true)) return true;
-        return InitializeSize(model, cache, modelHash, cacheKey, width, height, false);
+        if (useWarp) {
+            const uint32_t fusedHeight = RifeFusedEngineHeight(contentHeight, height);
+            if (flowReuse != RifeFlowReuse::Off && InitializeSize(model, cache, modelHash, cacheKey, width, fusedHeight, true, flowReuse)) return true;
+            if (InitializeSize(model, cache, modelHash, cacheKey, width, fusedHeight, true, RifeFlowReuse::Off)) return true;
+        }
+        return InitializeSize(model, cache, modelHash, cacheKey, width, height, false, RifeFlowReuse::Off);
     }
+
+    RifeFlowReuse FlowReuse() const { return m_flowReuse; }
+    bool Fused() const { return m_fused; }
+    int LevelRows() const { return static_cast<int>((m_height + 127) / 128 * 128 / 4); }
+    int LevelCols() const { return static_cast<int>(m_width / 4); }
+    // The field plan's output doesn't fit the frame's three planes.
+    size_t OutputBytes() const { return size_t{16} * m_height * m_width; }
 
     // Rows every tensor has; on the fused path, fewer than the padded surface's.
     uint32_t Height() const { return m_height; }
@@ -211,6 +240,10 @@ public:
                 || cudaEventCreate(&result->copiedEvent) != cudaSuccess) return {};
         result->imageFeatureBytes = m_oneImage ? 0 : m_featureBytes / 2;
         result->latest = &m_latest;
+        const auto levelBytes = size_t(LevelRows()) * LevelCols() * 32;
+        if (m_anchor && (cudaMalloc(&result->anchorLevel, levelBytes) != cudaSuccess || cudaMalloc(&result->level, levelBytes) != cudaSuccess
+                || cudaMemset(result->anchorLevel, 0, levelBytes) != cudaSuccess || cudaMemset(result->level, 0, levelBytes) != cudaSuccess
+                || !core->setInputShape(kRifeLevelName, LevelShape()) || !core->setTensorAddress(kRifeLevelName, result->level))) return {};
         if (m_fused) {
             const size_t sourceBytes = size_t{2} * m_height * m_width * 8 * sizeof(uint16_t);
             if (cudaMalloc(&result->warpSource, sourceBytes) != cudaSuccess
@@ -238,29 +271,48 @@ public:
                 && result->encoder.context->setTensorAddress(m_imageName.c_str(), images)
                 && result->encoder.context->setTensorAddress(m_featureName.c_str(), result->features);
         if (!bound) return {};
-        // Both stages have fixed-shape profiles, so the engine sizes are exact.
+        if (m_anchor) {
+            result->anchor.context.reset(m_anchor->createExecutionContext(nvinfer1::ExecutionContextAllocationStrategy::kUSER_MANAGED));
+            if (!result->anchor.context) return {};
+            for (int i = 0; i < m_anchor->getNbIOTensors(); ++i) {
+                const std::string_view name = m_anchor->getIOTensorName(i);
+                void* address = images;
+                nvinfer1::Dims4 shape{1, 11, static_cast<int>(m_height), static_cast<int>(m_width)};
+                if (name == kRifeAnchorLevelName) { result->anchor.context->setTensorAddress(name.data(), result->anchorLevel); continue; }
+                if (name == m_featureName) { address = result->features; shape = {m_featureShape.d[0], m_featureShape.d[1], m_featureShape.d[2], m_featureShape.d[3]}; }
+                else if (name == kImageViewName) { shape = ImageViewShape(); }
+                else if (name == kRifeWarpSourceName) { address = result->warpSource; shape = WarpSourceShape(); }
+                if (!result->anchor.context->setInputShape(name.data(), shape) || !result->anchor.context->setTensorAddress(name.data(), address)) return {};
+            }
+        }
+        // Every stage has fixed-shape profiles, so the engine sizes are exact.
         const int64_t encoderScratch = encoderEngine->getDeviceMemorySizeV2();
         const int64_t coreScratch = m_core->getDeviceMemorySizeV2();
-        const int64_t scratchBytes = std::max(encoderScratch, coreScratch);
+        const int64_t anchorScratch = m_anchor ? m_anchor->getDeviceMemorySizeV2() : 0;
+        const int64_t scratchBytes = std::max({encoderScratch, coreScratch, anchorScratch});
         if (scratchBytes < 0
                 || (scratchBytes && cudaMalloc(&result->scratch, static_cast<size_t>(scratchBytes)) != cudaSuccess)) return {};
-        result->scratchClearBytes = static_cast<size_t>(std::min(encoderScratch, coreScratch));
+        result->scratchClearBytes = static_cast<size_t>(std::min(encoderScratch, m_anchor ? anchorScratch : coreScratch));
+        result->anchorClearBytes = m_anchor ? static_cast<size_t>(std::min(anchorScratch, coreScratch)) : 0;
         result->encoder.context->setDeviceMemoryV2(result->scratch, scratchBytes);
         if (m_oneImage) result->secondImage.context->setDeviceMemoryV2(result->scratch, scratchBytes);
+        if (m_anchor) result->anchor.context->setDeviceMemoryV2(result->scratch, scratchBytes);
         core->setDeviceMemoryV2(result->scratch, scratchBytes);
         return result;
     }
 
 private:
     bool InitializeSize(const std::filesystem::path& model, const std::filesystem::path& cache,
-        const std::string& modelHash, const std::string& cacheKey, uint32_t width, uint32_t height, bool useWarp) {
+        const std::string& modelHash, const std::string& cacheKey, uint32_t width, uint32_t height, bool useWarp, RifeFlowReuse flowReuse) {
         m_core.reset();
+        m_anchor.reset();
         m_oneImage.reset();
         m_encoder.reset();
         m_engineBytes = 0;
         m_imageName.clear();
         m_featureName.clear();
         m_fused = false;
+        m_flowReuse = RifeFlowReuse::Off;
         m_width = width; m_height = height;
         const auto prefix = model.parent_path() / (model.stem().wstring() + L"_"
             + std::wstring(modelHash.begin(), modelHash.begin() + 16));
@@ -292,8 +344,13 @@ private:
         m_featureBytes = volume * sizeof(uint16_t);
         // Keep these suffixes no longer than the native suffix: the atomic writer
         // also appends a unique temporary filename, subject to MAX_PATH.
+        const auto corePlan = flowReuse == RifeFlowReuse::Coarse ? RifeFusedPlan::Tail
+            : flowReuse == RifeFlowReuse::Retime ? RifeFusedPlan::Field : RifeFusedPlan::Whole;
+        const char* coreSuffix = flowReuse == RifeFlowReuse::Coarse ? "_tail_w6" : flowReuse == RifeFlowReuse::Retime ? "_field_w6" : "_synth_w6";
         const bool warpBuilt = useWarp
-            && BuildStage(synthesisPath, cache, cacheKey + suffix + "_synth_w5", false, m_core, true);
+            && BuildStage(synthesisPath, cache, cacheKey + suffix + coreSuffix, false, m_core, true, false, corePlan)
+            && (flowReuse != RifeFlowReuse::Coarse
+                || BuildStage(synthesisPath, cache, cacheKey + suffix + "_anchor_w6", false, m_anchor, true, false, RifeFusedPlan::Anchor));
         // On the same measured path, encoding images one at a time lets consecutive
         // pairs share their common frame. The two-image plan stays the fallback.
         if (warpBuilt && BuildStage(featurePath, cache, cacheKey + suffix + "_encoder1", true, m_oneImage, false, true)
@@ -307,7 +364,8 @@ private:
         if (useWarp && !warpBuilt) return false;
         if (!useWarp && !BuildStage(synthesisPath, cache, cacheKey + suffix + "_synthesis", false, m_core)) return false;
         m_fused = warpBuilt;
-        if (m_core->getNbIOTensors() != (m_fused ? 5 : 4)) return false;
+        m_flowReuse = flowReuse;
+        if (m_core->getNbIOTensors() != (!m_fused ? 4 : flowReuse == RifeFlowReuse::Coarse ? 6 : 5)) return false;
         for (const char* name : {m_featureName.c_str(), kImageViewName}) {
             if (m_core->getTensorIOMode(name) != nvinfer1::TensorIOMode::kINPUT
                     || m_core->getTensorDataType(name) != nvinfer1::DataType::kHALF
@@ -330,6 +388,9 @@ private:
     }
     nvinfer1::Dims4 WarpSourceShape() const {
         return {2, static_cast<int>(m_height), static_cast<int>(m_width), 8};
+    }
+    nvinfer1::Dims4 LevelShape() const {
+        return {1, LevelRows(), LevelCols(), 16};
     }
     // The split graph still reshapes the two input images to 2x3xHxW for the
     // first warp, a step the original graph shares with the removed encoder.
@@ -387,7 +448,8 @@ private:
         return consumers > 0;
     }
     bool BuildStage(const std::filesystem::path& path, const std::filesystem::path& cache,
-        const std::string& key, bool encoder, TrtPtr<nvinfer1::ICudaEngine>& engine, bool fuseWarp = false, bool oneImage = false) {
+        const std::string& key, bool encoder, TrtPtr<nvinfer1::ICudaEngine>& engine, bool fuseWarp = false, bool oneImage = false,
+        RifeFusedPlan fusedPlan = RifeFusedPlan::Whole) {
         const auto model = ReadFile(path);
         if (model.empty()) return false;
         const auto hash = Sha256Hex(model);
@@ -413,7 +475,7 @@ private:
                 || network->getNbInputs() != (encoder ? 1 : 2) || network->getNbOutputs() != 1
                 || (!encoder && !ExposeImageView(*network))
                 || (oneImage && !ExposeOneImage(*network))
-                || (fuseWarp && !FuseRifeSynthesisWarps(*network, fusedWeights))) return false;
+                || (fuseWarp && !FuseRifeSynthesisWarps(*network, fusedWeights, fusedPlan))) return false;
         auto* profile = builder->createOptimizationProfile();
         if (!profile) return false;
         for (int i = 0; i < network->getNbInputs(); ++i) {
@@ -423,6 +485,7 @@ private:
             else if (!encoder && std::string_view(input->getName()) == kImageViewName) dims = ImageViewShape();
             else if (oneImage && std::string_view(input->getName()) == kOneImageName) dims = OneImageShape();
             else if (fuseWarp && std::string_view(input->getName()) == kRifeWarpSourceName) dims = WarpSourceShape();
+            else if (fuseWarp && std::string_view(input->getName()) == kRifeLevelName) dims = LevelShape();
             else dims = nvinfer1::Dims4{1, encoder ? 6 : 11, static_cast<int>(m_height), static_cast<int>(m_width)};
             if (input->getType() != nvinfer1::DataType::kHALF || dims.nbDims != 4) return false;
             input->setAllowedFormats(1u << static_cast<uint32_t>(nvinfer1::TensorFormat::kLINEAR));
@@ -447,9 +510,10 @@ private:
     uint64_t m_engineBytes = 0;
     size_t m_featureBytes = 0;
     bool m_fused = false;
+    RifeFlowReuse m_flowReuse = RifeFlowReuse::Off;
     std::string m_imageName, m_featureName;
     nvinfer1::Dims m_featureShape{};
     TrtPtr<nvinfer1::IRuntime> m_runtime;
-    TrtPtr<nvinfer1::ICudaEngine> m_encoder, m_oneImage, m_core;
+    TrtPtr<nvinfer1::ICudaEngine> m_encoder, m_oneImage, m_core, m_anchor;
     LatestFeatures m_latest;
 };

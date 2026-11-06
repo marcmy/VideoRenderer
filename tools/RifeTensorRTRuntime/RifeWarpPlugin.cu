@@ -13,7 +13,7 @@
 namespace mpcvr_rife_warp {
 using namespace nvinfer1;
 constexpr char kName[] = "MpcvrRifeWarpConcat";
-constexpr char kVersion[] = "5";
+constexpr char kVersion[] = "6";
 constexpr char kNamespace[] = "mpcvr";
 
 // RIFE 4.25 Lite's refinement stages rebuild full-resolution flow and state from
@@ -47,11 +47,27 @@ constexpr char kNamespace[] = "mpcvr";
 // Those rows cost little there. Block 4 reaches only tens of pixels and most of the
 // frame's time is spent in it and in stages 3 and 4, so those run at H. Rows from H to
 // C read the last source row, which FeatureReuseEngine's padding keeps black.
-constexpr int kInputStage = -1, kFullStage = 3, kTailStage = 4;
+//
+// Flow reuse estimates flow once per pair, at t = 0.5, and moves it to each target's
+// time. Motion within a pair is then a straight line, and the model never sees most
+// targets, so this is an approximation the user chooses. Two more plans serve it:
+// Stage 5 ends the anchor plan, in place of stages 3 and 4: inputs as stage 3; output is
+//   level 3's grid with each texel's flow accumulated over blocks 0-3, [1,C/4,W/4,16] as
+//   linear memory, the same bytes as kHWC8's 13 channels padded to 16.
+// Stage 6 is stage 3 fed by one such level, moved to the target's time by
+//   MpcvrRifeRetimeLevel: inputs raw, source and level; outputs as stage 3.
+// Stage 7 ends a plan that also runs block 4 once per pair, in place of stage 4: inputs as
+//   stage 4; output is final flow and mask, [1,H,W,8] as linear memory, F0 F1 m 0 0 0.
+//   MpcvrRifeRetimeFrame then makes each target from it without running any block.
+constexpr int kInputStage = -1, kFullStage = 3, kTailStage = 4, kAnchorStage = 5, kLevelStage = 6, kFieldStage = 7;
 
-constexpr bool ValidStage(int32_t stage) noexcept { return stage >= kInputStage && stage <= kTailStage; }
-constexpr int32_t InputCount(int32_t stage) noexcept { return stage == kInputStage ? 2 : stage == kTailStage ? 4 : 3 + stage; }
-constexpr int32_t OutputScale(int32_t stage) noexcept { return stage == kInputStage ? 32 : stage >= kFullStage ? 1 : 16 >> stage; }
+constexpr bool ValidStage(int32_t stage) noexcept { return stage >= kInputStage && stage <= kFieldStage; }
+constexpr int32_t InputCount(int32_t stage) noexcept
+{
+    return stage == kInputStage ? 2 : stage == kTailStage || stage == kFieldStage ? 4 : stage == kAnchorStage ? 6 : stage == kLevelStage ? 3 : 3 + stage;
+}
+constexpr int32_t OutputCount(int32_t stage) noexcept { return stage == kFullStage || stage == kLevelStage ? 2 : 1; }
+constexpr int32_t OutputScale(int32_t stage) noexcept { return stage == kInputStage ? 32 : stage == kAnchorStage ? 4 : stage >= kFullStage ? 1 : 16 >> stage; }
 constexpr int32_t OutputChannels(int32_t stage) noexcept { return stage == kInputStage ? 15 : stage == kTailStage ? 3 : 28; }
 constexpr int kFullPixelChannels = 32, kTailLowPixelChannels = 24, kTailLowChannels = 20;
 __host__ __device__ constexpr int32_t LevelScale(int32_t level) noexcept { return 32 >> level; }
@@ -69,7 +85,7 @@ __device__ __forceinline__ float Channel(const uint4& v, int c)
 }
 
 // half_pixel coordinates, clamped at the border: x_low = (x + 0.5) / scale - 0.5.
-__device__ __forceinline__ LowSample LocateLow(int x, int y, int scale, int lowWidth, int lowHeight)
+__device__ __forceinline__ LowSample LocateLow(float x, float y, int scale, int lowWidth, int lowHeight)
 {
     const float lx = fminf(fmaxf((x + 0.5f) / scale - 0.5f, 0.0f), float(lowWidth - 1));
     const float ly = fminf(fmaxf((y + 0.5f) / scale - 0.5f, 0.0f), float(lowHeight - 1));
@@ -86,14 +102,14 @@ __device__ __forceinline__ float Lerp2(float tl, float tr, float bl, float br, c
 }
 
 // Accumulated flow for one batch, in full-resolution pixels.
-template <int Stage>
-__device__ __forceinline__ void FlowAt(const LowLevels& levels, int batch, int x, int y, int height, int width,
+template <int Stage, int First = 0>
+__device__ __forceinline__ void FlowAt(const LowLevels& levels, int batch, float x, float y, int height, int width,
     float& flowX, float& flowY)
 {
     flowX = 0;
     flowY = 0;
 #pragma unroll
-    for (int level = 0; level <= Stage; ++level) {
+    for (int level = First; level <= Stage; ++level) {
         const int scale = LevelScale(level), lowWidth = width / scale, lowHeight = CoarseHeight(height) / scale;
         const LowSample s = LocateLow(x, y, scale, lowWidth, lowHeight);
         const unsigned* low = levels.level[level] + batch;
@@ -135,7 +151,9 @@ __device__ __forceinline__ uint4 Pack8(const __half* v)
     return make_uint4(bits(v[0], v[1]), bits(v[2], v[3]), bits(v[4], v[5]), bits(v[6], v[7]));
 }
 
-// Stage 3: every pixel, no downscale. Output is kHWC8, 28 channels padded to 32.
+// Stage 3 reads all four levels. Stage 6 reads one that already holds their sum, as level 3.
+// Every pixel, no downscale. Output is kHWC8, 28 channels padded to 32.
+template <int FirstLevel>
 __global__ void WarpFull(const uint4* source, LowLevels levels, const __half* timestep, __half* output, uint2* flows, int height, int width)
 {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -146,7 +164,7 @@ __global__ void WarpFull(const uint4* source, LowLevels levels, const __half* ti
 #pragma unroll
     for (int batch = 0; batch < 2; ++batch) {
         float flowX, flowY;
-        FlowAt<3>(levels, batch, x, y, height, width, flowX, flowY);
+        FlowAt<3, FirstLevel>(levels, batch, x, y, height, width, flowX, flowY);
         float warped[7] = {};
         AddWarpedPixel(source, flowX, flowY, batch, x, y, height, width, warped);
 #pragma unroll
@@ -219,6 +237,155 @@ __global__ void FinishFrame(const uint4* source, const uint2* flows, const __hal
     output[pixel] = result[0];
     output[plane + pixel] = result[1];
     output[2 * plane + pixel] = result[2];
+}
+
+// Stage 7: stage 4's flow and mask, kept for retiming instead of used.
+__global__ void ComposeField(const uint2* flows, const __half* low, uint4* output, int height, int width)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    if (x >= width) return;
+    const int y = blockIdx.y;
+    const size_t pixel = size_t(y) * width + x;
+    const __half* lowPixel = low + (size_t(y / 2) * (width / 2) + x / 2) * kTailLowPixelChannels + (y & 1) * 2 + (x & 1);
+    const uint2 accumulated = flows[pixel];
+    __half out[8];
+#pragma unroll
+    for (int batch = 0; batch < 2; ++batch) {
+        const unsigned word = batch ? accumulated.y : accumulated.x;
+        out[batch * 2] = __float2half_rn(Half(word & 0xffff) + __half2float(lowPixel[batch * 8]));
+        out[batch * 2 + 1] = __float2half_rn(Half(word >> 16) + __half2float(lowPixel[batch * 8 + 4]));
+    }
+    out[4] = lowPixel[16];
+    out[5] = out[6] = out[7] = __float2half_rn(0.0f);
+    output[pixel] = Pack8(out);
+}
+
+// Stage 5: flow as level 3's unit is full-resolution pixels / 4, so stage 6 can read
+// the result as an ordinary level. State comes from level 3 alone, as in stage 3.
+__global__ void AccumulateLevels(LowLevels levels, uint4* output, int height, int width)
+{
+    const int lowWidth = width / 4;
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    if (x >= lowWidth) return;
+    const int y = blockIdx.y;
+    const size_t texel = (size_t(y) * lowWidth + x) * 2;
+    const auto* low = reinterpret_cast<const uint4*>(levels.level[3]);
+    const uint4 own = low[texel];
+    const auto bits = [](float a, float b) {
+        return unsigned(__half_as_ushort(__float2half_rn(a))) | unsigned(__half_as_ushort(__float2half_rn(b))) << 16;
+    };
+    unsigned words[2];
+#pragma unroll
+    for (int batch = 0; batch < 2; ++batch) {
+        float flowX, flowY;
+        // This texel's centre in full-resolution pixels.
+        FlowAt<2>(levels, batch, x * 4 + 1.5f, y * 4 + 1.5f, height, width, flowX, flowY);
+        const unsigned word = batch ? own.y : own.x;
+        words[batch] = bits(Half(word & 0xffff) + flowX * 0.25f, Half(word >> 16) + flowY * 0.25f);
+    }
+    output[texel] = make_uint4(words[0], words[1], own.z, own.w);
+    output[texel + 1] = low[texel + 1];
+}
+
+// A target's level from the anchor's: each texel reads where its contents were at t = 0.5,
+// and flow scales with the time to each image. Levels are in texels, so F1 - F0 is the
+// motion over the whole pair in the same unit.
+__global__ void RetimeLevelKernel(const uint4* anchor, uint4* level, __half* timestepSlot, float timestep, int height, int width)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    if (x >= width) return;
+    const int y = blockIdx.y;
+    // Stage 6 reads the target's time from here, as stage 3 reads it from the first pixel.
+    if (x == 0 && y == 0) *timestepSlot = __float2half_rn(timestep);
+    const uint4 own = anchor[(size_t(y) * width + x) * 2];
+    const float move = timestep - 0.5f;
+    const float u = fminf(fmaxf(x - move * (Half(own.y & 0xffff) - Half(own.x & 0xffff)), 0.0f), float(width - 1));
+    const float v = fminf(fmaxf(y - move * (Half(own.y >> 16) - Half(own.x >> 16)), 0.0f), float(height - 1));
+    const int x0 = int(u), y0 = int(v);
+    const LowSample s{x0, min(x0 + 1, width - 1), y0, min(y0 + 1, height - 1), u - x0, v - y0};
+    const uint4* t0 = anchor + (size_t(s.y0) * width + s.x0) * 2, *t1 = anchor + (size_t(s.y0) * width + s.x1) * 2;
+    const uint4* b0 = anchor + (size_t(s.y1) * width + s.x0) * 2, *b1 = anchor + (size_t(s.y1) * width + s.x1) * 2;
+    const uint4 tl0 = t0[0], tr0 = t1[0], bl0 = b0[0], br0 = b1[0], tl1 = t0[1], tr1 = t1[1], bl1 = b0[1], br1 = b1[1];
+    __half out[16];
+    const float toFirst = 2 * timestep, toSecond = 2 * (1 - timestep);
+#pragma unroll
+    for (int c = 0; c < 13; ++c) {
+        const float value = c < 8
+            ? Lerp2(Channel(tl0, c), Channel(tr0, c), Channel(bl0, c), Channel(br0, c), s)
+            : Lerp2(Channel(tl1, c - 8), Channel(tr1, c - 8), Channel(bl1, c - 8), Channel(br1, c - 8), s);
+        out[c] = __float2half_rn(c < 2 ? value * toFirst : c < 4 ? value * toSecond : value);
+    }
+    out[13] = out[14] = out[15] = __float2half_rn(0.0f);
+    uint4* target = level + (size_t(y) * width + x) * 2;
+    target[0] = Pack8(out);
+    target[1] = Pack8(out + 8);
+}
+
+enum class FrameTarget { Bgra8, Rgba16, Linear };
+
+// A target from the anchor's final flow and mask: the same warp and blend as stage 4 at
+// flow moved to this time, weighting each image by how close it is in time. At t = 0.5
+// this is stage 4; towards either end it becomes that source image.
+template <FrameTarget Target>
+__global__ void RetimeFrameKernel(const uint4* field, const uint4* source, cudaSurfaceObject_t surface,
+    unsigned char* linear, size_t pitch, float timestep, int height, int width)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    if (x >= width) return;
+    const int y = blockIdx.y;
+    const size_t plane = size_t(height) * width;
+    const uint4 own = field[size_t(y) * width + x];
+    const float move = timestep - 0.5f;
+    const float fieldU = fminf(fmaxf(x - move * (Half(own.y & 0xffff) - Half(own.x & 0xffff)), 0.0f), float(width - 1));
+    const float fieldV = fminf(fmaxf(y - move * (Half(own.y >> 16) - Half(own.x >> 16)), 0.0f), float(height - 1));
+    const int fx0 = int(fieldU), fy0 = int(fieldV);
+    const LowSample s{fx0, min(fx0 + 1, width - 1), fy0, min(fy0 + 1, height - 1), fieldU - fx0, fieldV - fy0};
+    const uint4 tl = field[size_t(s.y0) * width + s.x0], tr = field[size_t(s.y0) * width + s.x1];
+    const uint4 bl = field[size_t(s.y1) * width + s.x0], br = field[size_t(s.y1) * width + s.x1];
+    const float toFirst = 2 * timestep, toSecond = 2 * (1 - timestep);
+    float warped[2][3];
+#pragma unroll
+    for (int batch = 0; batch < 2; ++batch) {
+        const float scale = batch ? toSecond : toFirst;
+        const float flowX = scale * Lerp2(Channel(tl, batch * 2), Channel(tr, batch * 2), Channel(bl, batch * 2), Channel(br, batch * 2), s);
+        const float flowY = scale * Lerp2(Channel(tl, batch * 2 + 1), Channel(tr, batch * 2 + 1), Channel(bl, batch * 2 + 1), Channel(br, batch * 2 + 1), s);
+        const float u = fminf(fmaxf(x + flowX, 0.0f), float(width - 1));
+        const float v = fminf(fmaxf(y + flowY, 0.0f), float(height - 1));
+        const int x0 = int(u), y0 = int(v), x1 = min(x0 + 1, width - 1), y1 = min(y0 + 1, height - 1);
+        const float fx = u - x0, fy = v - y0;
+        const float a = (1 - fx) * (1 - fy), b = fx * (1 - fy), c = (1 - fx) * fy, d = fx * fy;
+        // Only the first eight bytes of each texel hold the image.
+        const auto* image = reinterpret_cast<const uint2*>(source + size_t(batch) * plane);
+        const uint2 itl = image[(size_t(y0) * width + x0) * 2], itr = image[(size_t(y0) * width + x1) * 2];
+        const uint2 ibl = image[(size_t(y1) * width + x0) * 2], ibr = image[(size_t(y1) * width + x1) * 2];
+        const auto rgb = [](const uint2& t, int channel) { return channel == 0 ? Half(t.x & 0xffff) : channel == 1 ? Half(t.x >> 16) : Half(t.y & 0xffff); };
+#pragma unroll
+        for (int channel = 0; channel < 3; ++channel) {
+            warped[batch][channel] = a * rgb(itl, channel) + b * rgb(itr, channel) + c * rgb(ibl, channel) + d * rgb(ibr, channel);
+        }
+    }
+    const float mask = 1.0f / (1.0f + expf(-Lerp2(Channel(tl, 4), Channel(tr, 4), Channel(bl, 4), Channel(br, 4), s)));
+    // The anchor's mask knows only equal distances. Fourth powers of the distance to the
+    // other image favour the nearer one: against true in-betweens, moving objects stay
+    // more solid and the picture sharper than with lower powers, and overall error is level.
+    const float firstSquared = toSecond * toSecond, secondSquared = toFirst * toFirst;
+    const float first = mask * firstSquared * firstSquared, second = (1 - mask) * secondSquared * secondSquared;
+    const float toUnit = 1.0f / fmaxf(first + second, 1e-6f);
+    float result[3];
+#pragma unroll
+    for (int channel = 0; channel < 3; ++channel) {
+        result[channel] = fminf(1.0f, fmaxf(0.0f, (warped[0][channel] * first + warped[1][channel] * second) * toUnit));
+    }
+    if constexpr (Target == FrameTarget::Rgba16) {
+        const ushort4 rgba = make_ushort4(__half_as_ushort(__float2half_rn(result[0])), __half_as_ushort(__float2half_rn(result[1])),
+            __half_as_ushort(__float2half_rn(result[2])), __half_as_ushort(__float2half_rn(1.0f)));
+        surf2Dwrite(rgba, surface, x * int(sizeof(ushort4)), y);
+    } else {
+        const uchar4 bgra = make_uchar4(static_cast<unsigned char>(result[2] * 255.0f + 0.5f), static_cast<unsigned char>(result[1] * 255.0f + 0.5f),
+            static_cast<unsigned char>(result[0] * 255.0f + 0.5f), 255);
+        if constexpr (Target == FrameTarget::Linear) reinterpret_cast<uchar4*>(linear + size_t(y) * pitch)[x] = bgra;
+        else surf2Dwrite(bgra, surface, x * int(sizeof(uchar4)), y);
+    }
 }
 
 // Stages 0-2: each output sample is the mean of the four pixels around its centre,
@@ -310,13 +477,14 @@ __global__ void DownscaleInput(const uint4* source, const __half* timestep, __ha
 
 TensorFormat InputFormat(int32_t stage, int32_t input) noexcept
 {
-    if (stage == kTailStage && input == 2) return TensorFormat::kLINEAR;
-    return input >= 2 ? TensorFormat::kHWC8 : TensorFormat::kLINEAR;
+    if (input < 2 || stage == kLevelStage) return TensorFormat::kLINEAR;
+    if ((stage == kTailStage || stage == kFieldStage) && input == 2) return TensorFormat::kLINEAR;
+    return TensorFormat::kHWC8;
 }
 
 TensorFormat OutputFormat(int32_t stage) noexcept
 {
-    return stage >= 0 && stage <= kFullStage ? TensorFormat::kHWC8 : TensorFormat::kLINEAR;
+    return (stage >= 0 && stage <= kFullStage) || stage == kLevelStage ? TensorFormat::kHWC8 : TensorFormat::kLINEAR;
 }
 
 bool ValidInputs(PluginTensorDesc const* input, int32_t count, int32_t stage) noexcept
@@ -333,18 +501,23 @@ bool ValidInputs(PluginTensorDesc const* input, int32_t count, int32_t stage) no
             if (desc.dims.d[0] != 2 || desc.dims.d[1] != shape.d[2] || desc.dims.d[2] != shape.d[3] || desc.dims.d[3] != 8) return false;
             continue;
         }
-        if (stage == kTailStage && i == 2) {
+        const bool finishing = stage == kTailStage || stage == kFieldStage;
+        if (finishing && i == 2) {
             if (desc.dims.d[0] != 1 || desc.dims.d[1] != shape.d[2] || desc.dims.d[2] != shape.d[3] || desc.dims.d[3] != 4) return false;
             continue;
         }
+        if (stage == kLevelStage && i == 2) {
+            if (desc.dims.d[0] != 1 || desc.dims.d[1] != CoarseHeight(int(shape.d[2])) / 4 || desc.dims.d[2] != shape.d[3] / 4 || desc.dims.d[3] != 16) return false;
+            continue;
+        }
         int scale = 1, channels = 11;
-        if (stage == kTailStage) {
+        if (finishing) {
             if (i) { channels = kTailLowChannels; scale = 2; }
         } else if (i) {
             scale = LevelScale(i - 2);
             channels = 13;
         }
-        const int64_t rows = (stage != kTailStage && i ? CoarseHeight(int(shape.d[2])) : shape.d[2]) / scale;
+        const int64_t rows = (!finishing && i ? CoarseHeight(int(shape.d[2])) : shape.d[2]) / scale;
         if (desc.dims.d[0] != 1 || desc.dims.d[1] != channels
                 || desc.dims.d[2] != rows || desc.dims.d[3] != shape.d[3] / scale) return false;
     }
@@ -367,7 +540,7 @@ public:
     char const* getPluginName() const noexcept override { return kName; }
     char const* getPluginVersion() const noexcept override { return kVersion; }
     char const* getPluginNamespace() const noexcept override { return kNamespace; }
-    int32_t getNbOutputs() const noexcept override { return m_stage == kFullStage ? 2 : 1; }
+    int32_t getNbOutputs() const noexcept override { return OutputCount(m_stage); }
     int32_t configurePlugin(DynamicPluginTensorDesc const*, int32_t inputs,
         DynamicPluginTensorDesc const*, int32_t outputs) noexcept override {
         return inputs == InputCount(m_stage) && outputs == getNbOutputs() ? 0 : -1;
@@ -382,7 +555,24 @@ public:
     int32_t getOutputShapes(DimsExprs const* input, int32_t inputs, DimsExprs const*,
         int32_t shapeInputs, DimsExprs* output, int32_t outputs, IExprBuilder& builder) noexcept override {
         if (inputs != InputCount(m_stage) || outputs != getNbOutputs() || shapeInputs || input[0].nbDims != 4) return -1;
-        if (m_stage == kFullStage) {
+        if (m_stage == kAnchorStage) {
+            output[0].nbDims = 4;
+            output[0].d[0] = builder.constant(1);
+            output[0].d[1] = builder.operation(DimensionOperation::kPROD,
+                *builder.operation(DimensionOperation::kCEIL_DIV, *input[0].d[2], *builder.constant(128)), *builder.constant(32));
+            output[0].d[2] = builder.operation(DimensionOperation::kFLOOR_DIV, *input[0].d[3], *builder.constant(4));
+            output[0].d[3] = builder.constant(16);
+            return 0;
+        }
+        if (m_stage == kFieldStage) {
+            output[0].nbDims = 4;
+            output[0].d[0] = builder.constant(1);
+            output[0].d[1] = input[0].d[2];
+            output[0].d[2] = input[0].d[3];
+            output[0].d[3] = builder.constant(8);
+            return 0;
+        }
+        if (m_stage == kFullStage || m_stage == kLevelStage) {
             output[1].nbDims = 4;
             output[1].d[0] = builder.constant(1);
             output[1].d[1] = input[0].d[2];
@@ -415,7 +605,15 @@ public:
         const auto& source = input[0].dims;
         const auto& shape = output[0].dims;
         const int scale = OutputScale(m_stage);
-        if (m_stage == kFullStage) {
+        if (m_stage == kAnchorStage) {
+            return output[0].type == DataType::kHALF && output[0].format == TensorFormat::kLINEAR && shape.nbDims == 4 && shape.d[0] == 1
+                && shape.d[1] == CoarseHeight(int(source.d[2])) / 4 && shape.d[2] == source.d[3] / 4 && shape.d[3] == 16 ? 0 : -1;
+        }
+        if (m_stage == kFieldStage) {
+            return output[0].type == DataType::kHALF && output[0].format == TensorFormat::kLINEAR && shape.nbDims == 4 && shape.d[0] == 1
+                && shape.d[1] == source.d[2] && shape.d[2] == source.d[3] && shape.d[3] == 8 ? 0 : -1;
+        }
+        if (m_stage == kFullStage || m_stage == kLevelStage) {
             const auto& flows = output[1].dims;
             if (output[1].type != DataType::kHALF || output[1].format != TensorFormat::kLINEAR || flows.nbDims != 4
                     || flows.d[0] != 1 || flows.d[1] != source.d[2] || flows.d[2] != source.d[3] || flows.d[3] != 4) return -1;
@@ -430,7 +628,10 @@ public:
         const auto* timestep = static_cast<const __half*>(input[0]) + 6 * size_t(height) * width;
         const auto* source = static_cast<const uint4*>(input[1]);
         LowLevels levels{};
-        for (int level = 0; level <= m_stage && level < 4; ++level) levels.level[level] = static_cast<const unsigned*>(input[2 + level]);
+        if (m_stage == kLevelStage) levels.level[3] = static_cast<const unsigned*>(input[2]);
+        else if (m_stage <= kFullStage || m_stage == kAnchorStage) {
+            for (int level = 0; level < InputCount(m_stage) - 2 && level < 4; ++level) levels.level[level] = static_cast<const unsigned*>(input[2 + level]);
+        }
         auto* result = static_cast<__half*>(output[0]);
         const int scale = OutputScale(m_stage);
         const dim3 blocks((unsigned(width / scale) + 127) / 128, unsigned((scale > 1 ? CoarseHeight(height) : height) / scale), 1);
@@ -439,7 +640,10 @@ public:
         case 0: WarpDown<0><<<blocks, 128, 0, stream>>>(source, levels, timestep, result, height, width); break;
         case 1: WarpDown<1><<<blocks, 128, 0, stream>>>(source, levels, timestep, result, height, width); break;
         case 2: WarpDown<2><<<blocks, 128, 0, stream>>>(source, levels, timestep, result, height, width); break;
-        case kFullStage: WarpFull<<<blocks, 128, 0, stream>>>(source, levels, timestep, result, static_cast<uint2*>(output[1]), height, width); break;
+        case kFullStage: WarpFull<0><<<blocks, 128, 0, stream>>>(source, levels, timestep, result, static_cast<uint2*>(output[1]), height, width); break;
+        case kLevelStage: WarpFull<3><<<blocks, 128, 0, stream>>>(source, levels, timestep, result, static_cast<uint2*>(output[1]), height, width); break;
+        case kAnchorStage: AccumulateLevels<<<blocks, 128, 0, stream>>>(levels, static_cast<uint4*>(output[0]), height, width); break;
+        case kFieldStage: ComposeField<<<blocks, 128, 0, stream>>>(static_cast<const uint2*>(input[2]), static_cast<const __half*>(input[3]), static_cast<uint4*>(output[0]), height, width); break;
         default: FinishFrame<<<blocks, 128, 0, stream>>>(source, static_cast<const uint2*>(input[2]), static_cast<const __half*>(input[3]), result, height, width); break;
         }
         return cudaPeekAtLastError() == cudaSuccess ? 0 : -1;
@@ -522,7 +726,49 @@ bool RegisterRifeWarpPlugin() noexcept
     return registration.registered;
 }
 
-bool FuseRifeSynthesisWarps(nvinfer1::INetworkDefinition& network, std::vector<uint16_t>& weightStorage) noexcept
+cudaError_t MpcvrRifeRetimeLevel(const void* anchor, void* level, int levelHeight, int levelWidth, float timestep, void* timestepSlot, cudaStream_t stream) noexcept
+{
+    using namespace mpcvr_rife_warp;
+    RetimeLevelKernel<<<dim3((levelWidth + 127) / 128, levelHeight), 128, 0, stream>>>(static_cast<const uint4*>(anchor), static_cast<uint4*>(level),
+        static_cast<__half*>(timestepSlot), timestep, levelHeight, levelWidth);
+    return cudaGetLastError();
+}
+
+cudaError_t MpcvrRifeRetimeFrame(const void* field, const void* source, cudaArray* output, bool rgba16, int height, int width,
+    float timestep, cudaStream_t stream, cudaSurfaceObject_t* surfaceOut) noexcept
+{
+    using namespace mpcvr_rife_warp;
+    cudaResourceDesc resource{};
+    resource.resType = cudaResourceTypeArray;
+    resource.res.array.array = output;
+    cudaSurfaceObject_t surface = 0;
+    cudaError_t result = cudaCreateSurfaceObject(&surface, &resource);
+    if (result != cudaSuccess) return result;
+    const dim3 blocks((width + 127) / 128, height);
+    const auto* flowField = static_cast<const uint4*>(field);
+    const auto* images = static_cast<const uint4*>(source);
+    if (rgba16) RetimeFrameKernel<FrameTarget::Rgba16><<<blocks, 128, 0, stream>>>(flowField, images, surface, nullptr, 0, timestep, height, width);
+    else RetimeFrameKernel<FrameTarget::Bgra8><<<blocks, 128, 0, stream>>>(flowField, images, surface, nullptr, 0, timestep, height, width);
+    result = cudaGetLastError();
+    if (result != cudaSuccess) {
+        cudaDestroySurfaceObject(surface);
+        return result;
+    }
+    // The caller owns it until its request's stream completion point.
+    *surfaceOut = surface;
+    return cudaSuccess;
+}
+
+cudaError_t MpcvrRifeRetimeFrameLinear(const void* field, const void* source, void* output, size_t pitch, int height, int width,
+    float timestep, cudaStream_t stream) noexcept
+{
+    using namespace mpcvr_rife_warp;
+    RetimeFrameKernel<FrameTarget::Linear><<<dim3((width + 127) / 128, height), 128, 0, stream>>>(static_cast<const uint4*>(field),
+        static_cast<const uint4*>(source), 0, static_cast<unsigned char*>(output), pitch, timestep, height, width);
+    return cudaGetLastError();
+}
+
+bool FuseRifeSynthesisWarps(nvinfer1::INetworkDefinition& network, std::vector<uint16_t>& weightStorage, RifeFusedPlan plan) noexcept
 {
     using namespace mpcvr_rife_warp;
     // Exact export names are safe only behind the model hash gate in
@@ -534,8 +780,9 @@ bool FuseRifeSynthesisWarps(nvinfer1::INetworkDefinition& network, std::vector<u
         "/block2/lastconv/lastconv.1/DepthToSpace_output_0", "/block3/lastconv/lastconv.1/DepthToSpace_output_0"};
     constexpr std::array<const char*, 5> replacedOutputs{"/block0/Resize_output_0", "/block1/Resize_output_0",
         "/block2/Resize_output_0", "/block3/Resize_output_0", "/Concat_5_output_0"};
-    constexpr std::array<const char*, 6> pluginNames{"mpcvr_rife_input", "mpcvr_rife_warp0",
-        "mpcvr_rife_warp1", "mpcvr_rife_warp2", "mpcvr_rife_warp3", "mpcvr_rife_finish"};
+    constexpr std::array<const char*, 9> pluginNames{"mpcvr_rife_input", "mpcvr_rife_warp0",
+        "mpcvr_rife_warp1", "mpcvr_rife_warp2", "mpcvr_rife_warp3", "mpcvr_rife_finish",
+        "mpcvr_rife_anchor", "mpcvr_rife_warp_level", "mpcvr_rife_field"};
     auto* raw = FindTensor(network, "input");
     if (!raw || !FindTensor(network, "/encode/cnn3/ConvTranspose_output_0") || network.getNbOutputs() != 1) return false;
     std::array<ITensor*, 4> levels{};
@@ -586,25 +833,44 @@ bool FuseRifeSynthesisWarps(nvinfer1::INetworkDefinition& network, std::vector<u
     pruned->setNbGroups(1);
     auto* warpSource = network.addInput(kRifeWarpSourceName, DataType::kHALF, Dims4{2, -1, -1, 8});
     if (!warpSource) return false;
+    ITensor* level = nullptr;
+    if (plan == RifeFusedPlan::Tail) {
+        level = network.addInput(kRifeLevelName, DataType::kHALF, Dims4{1, -1, -1, 16});
+        if (!level) return false;
+    }
+    // Which stages each plan holds, in the order they run. Layers no stage needs are
+    // removed by TensorRT with the rest.
+    constexpr std::array<int, 6> wholeStages{kInputStage, 0, 1, 2, kFullStage, kTailStage};
+    constexpr std::array<int, 5> anchorStages{kInputStage, 0, 1, 2, kAnchorStage};
+    constexpr std::array<int, 2> tailStages{kLevelStage, kTailStage};
+    constexpr std::array<int, 6> fieldStages{kInputStage, 0, 1, 2, kFullStage, kFieldStage};
+    const int* stages = plan == RifeFusedPlan::Whole ? wholeStages.data() : plan == RifeFusedPlan::Anchor ? anchorStages.data()
+        : plan == RifeFusedPlan::Tail ? tailStages.data() : fieldStages.data();
+    const size_t stageCount = plan == RifeFusedPlan::Whole ? wholeStages.size() : plan == RifeFusedPlan::Anchor ? anchorStages.size()
+        : plan == RifeFusedPlan::Tail ? tailStages.size() : fieldStages.size();
     ITensor* flows = nullptr;
-    for (int stage = kInputStage; stage <= kTailStage; ++stage) {
+    for (size_t i = 0; i < stageCount; ++i) {
+        const int stage = stages[i];
+        const bool finishing = stage == kTailStage || stage == kFieldStage;
         ITensor* input[6]{raw, warpSource, levels[0], levels[1], levels[2], levels[3]};
-        if (stage == kTailStage) {
+        if (finishing) {
             input[2] = flows;
             input[3] = pruned->getOutput(0);
+        } else if (stage == kLevelStage) {
+            input[2] = level;
         }
         WarpPlugin plugin(stage);
         auto* fused = network.addPluginV3(input, InputCount(stage), nullptr, 0, plugin);
         if (!fused) return false;
         // addPluginV3 clones the plugin; the network owns that clone.
         fused->setName(pluginNames[stage + 1]);
-        if (stage < kTailStage) {
-            ReplaceTensor(network, replaced[stage + 1], *fused->getOutput(0));
-            if (stage == kFullStage) flows = fused->getOutput(1);
+        if (stage <= kFullStage || stage == kLevelStage) {
+            ReplaceTensor(network, replaced[stage == kLevelStage ? 4 : stage + 1], *fused->getOutput(0));
+            if (OutputCount(stage) == 2) flows = fused->getOutput(1);
         } else {
             // Callers bind the output by name, so the new tensor takes it over.
             auto* output = network.getOutput(0);
-            const std::string name = output->getName();
+            const std::string name = plan == RifeFusedPlan::Anchor ? kRifeAnchorLevelName : output->getName();
             network.unmarkOutput(*output);
             output->setName("mpcvr_rife_replaced_output");
             fused->getOutput(0)->setName(name.c_str());

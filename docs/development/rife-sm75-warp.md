@@ -275,6 +275,84 @@ Two separately built plans that should compute the same thing are not identical:
 by a mean of 0.24 to 0.42/255 on the textured clips, while repeating a run of one build differed
 by exactly zero. Treat smaller differences between plans as noise.
 
+## Sharing flow within a pair, 2026-11-06
+
+Everything above computes what the model would. This is the first change that doesn't, so it
+is a setting, off by default, and a different kind of result to report.
+
+At 8x a pair has seven targets, and most of a target's time goes to estimating flow that
+barely depends on which target it is. **Flow reuse** runs the flow estimate once per pair, at
+t = 0.5, and moves it to each target's time. Motion within a pair becomes a straight line.
+
+For a target at t, each pixel reads the anchor's field where its contents were at the anchor,
+x - (t - 0.5)(F1 - F0), and flow scales with the time to each image: F0 by 2t, F1 by 2(1 - t).
+
+- **Coarse** runs blocks 0-3 once per pair, then stage 6, block 4 and stage 4 per target from
+  one level holding the accumulated flow. `MpcvrRifeRetimeLevel` moves that level.
+- **Retime** runs every block once per pair and keeps final flow and mask.
+  `MpcvrRifeRetimeFrame` then warps, blends and writes the surface, with no block and no
+  TensorRT. Since the anchor's mask knows only equal distances, each image's weight is
+  multiplied by the fourth power of the distance to the other image. At t = 0.5 this is
+  stage 4 exactly, and towards either end it becomes that source image.
+
+Each mode has its own plans, built on first use. Neither plan contains what the mode skips.
+
+Other exact savings in this change: the fused pack writes only the images and the first
+pixel's timestep, a reused target stores only that pixel, and the whole-model plan, which
+named the tensors and served as the fallback, is released once the fused contexts exist.
+
+Isolated runtime through the ABI, local build, 1920x1080 in 1920x1152, 8x with one first and
+six later targets per pair on a textured moving clip. Median of three alternating runs, each
+the minimum per run. Wall is `totalRuntimeMs`, median.
+
+| Runtime | First, ms | Later, ms | Mean of 7, ms | Wall mean, ms | VRAM alone, MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| r2923 | 6.03 | 3.83 | 4.14 | 4.51 | 906 |
+| Off | 5.77 | 3.67 | 3.97 | 4.32 | 890 |
+| Coarse | 5.70 | 2.53 | 2.98 | 3.44 | 914 |
+| Retime | 5.99 | 0.32 | 1.13 | 1.35 | 930 |
+
+At 3840x2160 in 3840x2176, with the same clip doubled, one run each:
+
+| Mode | First, ms | Later, ms | Mean of 7, ms | Wall mean, ms | VRAM, MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Off | 21.0 | 13.1 | 14.2 | 16.0 | 3120 |
+| Coarse | 22.0 | 10.3 | 12.0 | 12.8 | 3186 |
+| Retime | 22.0 | 1.09 | 4.08 | 4.53 | 3292 |
+
+Coarse gains little at 4K, where block 4 dominates even more.
+
+### What it does to the picture
+
+Seven nine-frame clips with true in-betweens at every eighth of a pair, frames 0 and 8 given:
+motion of 8 to 110 pixels per pair, a tracking shot, 60 crossing objects, accelerating motion
+and rotation. All synthetic. PSNR in dB, SSIM, and sharpness as a percentage of the truth's,
+averaged over the seven targets and the clips, from the production runtime:
+
+| Mode | PSNR | SSIM | Sharpness |
+| --- | ---: | ---: | ---: |
+| Off | 22.23 | 0.655 | 86.8% |
+| Coarse | 23.60 | 0.722 | 86.7% |
+| Retime | 23.90 | 0.739 | 86.5% |
+
+Those numbers favour reuse, and they should not be read alone:
+
+- Mostly this measures how badly the model places things away from t = 0.5 on these clips,
+  more than how good reuse is. On the tracking shot the model's t = 7/8 had warped arcs across
+  the background that retiming didn't. Its own output at t = 0.5 is what reuse inherits.
+- Crops show the opposite on moving edges. The model keeps a solid object, slightly misplaced;
+  reuse places it better with a more translucent or streaked edge. On the accelerating clip its
+  disc went visibly translucent, and SSIM didn't notice, because a straight line is wrong there.
+- The clips' motion is mostly linear, which is what this assumes. Real acceleration within one
+  source frame is usually far smaller than that clip's, but this has not been measured on real
+  footage, which is why the mode is the user's to choose.
+
+Tried and dropped: splatting flow forward to each target, choosing the winner of a collision by
+how far the two warped images disagree, or by speed. It was meant to fix leading edges and
+changed PSNR by 0.03 dB and the crops by nothing visible. Anchors at 0.25 and 0.75 scored
+worse than one at 0.5 (20.7 against 22.4 dB on an earlier set), consistent with the model's
+off-centre results being its weaker ones; that wasn't investigated further.
+
 ## Scheduler
 
 The adaptive scheduler's delivery checks and recovery headroom were preserved.
@@ -292,6 +370,15 @@ buffers, so the interleaved layouts are checked as declared. Every stage but the
 matched exactly. The final stage matched within one FP16 step (0.000488), from the last
 bit of the exponential, averaging about 3e-9. The reference evaluates in FP32 as the
 plugin does; contraction is disabled for this CUDA translation unit.
+
+Stages 5, 6 and 7, which split the graph for flow reuse, have the same CPU reference, and
+`MpcvrRifeRetimeLevel` and `MpcvrRifeRetimeFrame` are checked against it on linear, BGRA8 and
+RGBA16F targets.
+
+`RifePrecisionGpuTest` compares each flow reuse mode with the whole model. At t = 0.5 they
+agreed within 0.0039 on BGRA8 and 0.00049 on RGBA16F, a repeated target matched exactly, and
+t = 0.25 and 0.75 stayed within 0.0078 of the truth on its gentle test motion. That is a check
+of the mechanics. What reuse does to real motion is the section above.
 
 `RifePrecisionGpuTest` passed with all three feature models, BGRA8/16F output,
 pair invalidation, repeated reuse and independent contexts. Whole-model versus

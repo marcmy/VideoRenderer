@@ -408,8 +408,11 @@ public:
                 && (params.flags & MPCVR_RIFE_CREATE_FEATURE_REUSE) && m_inputIsFp16 && m_outputIsFp16) {
             auto features = std::make_unique<FeatureReuseEngine>();
             const auto hash = Sha256Hex(ReadFile(m_modelPath));
+            const auto flowReuse = (params.flags & MPCVR_RIFE_CREATE_FLOW_REUSE_RETIME) ? RifeFlowReuse::Retime
+                : (params.flags & MPCVR_RIFE_CREATE_FLOW_REUSE_COARSE) ? RifeFlowReuse::Coarse : RifeFlowReuse::Off;
             if (hash.size() >= 16 && features->Initialize(m_modelPath, m_cachePath, hash,
-                    BuildCacheKey(hash), m_paddedWidth, m_paddedHeight, m_contentHeight)) {
+                    BuildCacheKey(hash), m_paddedWidth, m_paddedHeight, m_contentHeight, flowReuse)) {
+                m_wholeEngineBytes = m_engineBytes;
                 m_engineBytes += features->EngineBytes();
                 m_tensorHeight = features->Height();
                 m_features = std::move(features);
@@ -422,6 +425,12 @@ public:
             m_features.reset();
             m_tensorHeight = m_paddedHeight;
             if (!PrepareContexts()) return MPCVR_RIFE_TENSORRT_FAILURE;
+        }
+        // The fused path never runs the whole-model plan, which served only to name the
+        // tensors and as the fallback just passed, so its memory can go back.
+        if (m_features && m_features->Fused()) {
+            m_engineBytes -= m_wholeEngineBytes;
+            m_engine.reset();
         }
         return MPCVR_RIFE_OK;
     }
@@ -445,6 +454,7 @@ public:
         const uint64_t inputPairId = request.inputPairId;
         const bool reusePackedInput = state.packedInput.Begin(inputPairId, request.first, request.second);
         const bool linear = linearOutput != nullptr;
+        const RifeFlowReuse flowReuse = m_features ? m_features->FlowReuse() : RifeFlowReuse::Off;
         if (linear && m_highPrecision) return MPCVR_RIFE_UNSUPPORTED;
         if (!request.first || !request.second || (!linear && !request.output)
                 || !(request.timestep > 0.0f && request.timestep < 1.0f)) {
@@ -623,7 +633,9 @@ public:
             if (MpcvrRifePackInput(firstArray, secondArray, state.input, m_inputIsFp16,
                     static_cast<int>(m_paddedWidth), static_cast<int>(m_tensorHeight),
                     static_cast<int>(m_paddedWidth), static_cast<int>(m_tensorHeight),
-                    request.timestep, state.stream, &firstTexture, &secondTexture, m_highPrecision) != cudaSuccess) {
+                    // Shared flow is always estimated halfway between the images.
+                    flowReuse != RifeFlowReuse::Off ? 0.5f : request.timestep,
+                    state.stream, &firstTexture, &secondTexture, m_highPrecision, m_features && m_features->Fused()) != cudaSuccess) {
                 releaseInputs(state.stream);
                 finishStream();
                 return MPCVR_RIFE_CUDA_FAILURE;
@@ -668,10 +680,11 @@ public:
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
             const auto packHostStart = Clock::now();
-            if (MpcvrRifeUpdateTimestep(state.input, m_inputIsFp16,
+            // With shared flow, the retiming kernels take the target's time instead.
+            if (flowReuse == RifeFlowReuse::Off && MpcvrRifeUpdateTimestep(state.input, m_inputIsFp16,
                     static_cast<int>(m_paddedWidth), static_cast<int>(m_tensorHeight),
                     static_cast<int>(m_paddedWidth), static_cast<int>(m_tensorHeight),
-                    request.timestep, state.stream) != cudaSuccess) {
+                    request.timestep, state.stream, m_features && m_features->Fused()) != cudaSuccess) {
                 finishStream();
                 return MPCVR_RIFE_CUDA_FAILURE;
             }
@@ -712,9 +725,14 @@ public:
         bool firstFeaturesKept = false;
         const bool featureSubmitted = !state.features || reusePackedInput
             || state.features->Enqueue(state.stream, inputPairId, request.previousPairId, firstFeaturesKept);
-        const bool tensorRtSubmitted = featureSubmitted && (graphUsed
+        // The field plan runs once per pair. The tail plan needs its level moved first.
+        const bool coreRuns = flowReuse != RifeFlowReuse::Retime || !reusePackedInput;
+        const bool levelReady = flowReuse != RifeFlowReuse::Coarse || (featureSubmitted
+            && MpcvrRifeRetimeLevel(state.features->anchorLevel, state.features->level, m_features->LevelRows(), m_features->LevelCols(),
+                request.timestep, static_cast<uint16_t*>(state.input) + 6 * size_t(m_tensorHeight) * m_paddedWidth, state.stream) == cudaSuccess);
+        const bool tensorRtSubmitted = featureSubmitted && levelReady && (!coreRuns || (graphUsed
             ? cudaGraphLaunch(state.tensorRtGraphExec, state.stream) == cudaSuccess
-            : state.context->enqueueV3(state.stream));
+            : state.context->enqueueV3(state.stream)));
         stats.tensorRtSubmitMs = elapsedMs(tensorRtSubmitStart, Clock::now());
         stats.tensorRtGraphUsed = graphUsed ? 1u : 0u;
         if (!tensorRtSubmitted
@@ -725,7 +743,12 @@ public:
         }
 
         const auto writeHostStart = Clock::now();
-        const cudaError_t writeResult = linear
+        const cudaError_t writeResult = flowReuse == RifeFlowReuse::Retime
+            ? (linear ? MpcvrRifeRetimeFrameLinear(state.output, state.features->warpSource, linearOutput, linearPitch,
+                    static_cast<int>(m_tensorHeight), static_cast<int>(m_paddedWidth), request.timestep, state.stream)
+                : MpcvrRifeRetimeFrame(state.output, state.features->warpSource, outputArray, m_highPrecision,
+                    static_cast<int>(m_tensorHeight), static_cast<int>(m_paddedWidth), request.timestep, state.stream, &outputSurface))
+            : linear
             ? MpcvrRifeWriteLinearOutput(state.output, m_outputIsFp16, linearOutput, linearPitch,
                 static_cast<int>(m_paddedWidth), static_cast<int>(m_tensorHeight),
                 static_cast<int>(m_paddedWidth), static_cast<int>(m_tensorHeight), state.stream)
@@ -852,6 +875,7 @@ public:
         state.packedInput.Commit(inputPairId, request.first, request.second);
         stats.inputPairReuse = reusePackedInput ? 2u : 1u;
         stats.featureReuse = !state.features ? 0u : reusePackedInput ? 2u : firstFeaturesKept ? 3u : 1u;
+        stats.flowReuse = static_cast<uint64_t>(flowReuse);
         return MPCVR_RIFE_OK;
     }
 
@@ -1132,7 +1156,8 @@ private:
         const nvinfer1::Dims4 inputShape{1, 11, static_cast<int>(m_tensorHeight), static_cast<int>(m_paddedWidth)};
         const nvinfer1::Dims4 outputShape{1, 3, static_cast<int>(m_tensorHeight), static_cast<int>(m_paddedWidth)};
         const size_t inputBytes = Volume(inputShape) * DataTypeBytes(m_engine->getTensorDataType(m_inputName.c_str()));
-        const size_t outputBytes = Volume(outputShape) * DataTypeBytes(m_engine->getTensorDataType(m_outputName.c_str()));
+        const size_t frameBytes = Volume(outputShape) * DataTypeBytes(m_engine->getTensorDataType(m_outputName.c_str()));
+        const size_t outputBytes = m_features && m_features->FlowReuse() == RifeFlowReuse::Retime ? std::max(frameBytes, m_features->OutputBytes()) : frameBytes;
         if (!inputBytes || !outputBytes) return false;
 
         for (uint32_t i = 0; i < m_contextCount; ++i) {
@@ -1254,6 +1279,7 @@ private:
     std::string m_inputName;
     std::string m_outputName;
     uint64_t m_engineBytes = 0;
+    uint64_t m_wholeEngineBytes = 0;
     int m_initializationFailure = MPCVR_RIFE_TENSORRT_FAILURE;
     TrtPtr<nvinfer1::IRuntime> m_runtime;
     TrtPtr<nvinfer1::ICudaEngine> m_engine;
@@ -1282,7 +1308,7 @@ private:
 
 extern "C" __declspec(dllexport) uint32_t WINAPI MpcvrRifeGetCapabilities()
 {
-    return MPCVR_RIFE_CAP_HIGH_PRECISION | MPCVR_RIFE_CAP_FEATURE_REUSE;
+    return MPCVR_RIFE_CAP_HIGH_PRECISION | MPCVR_RIFE_CAP_FEATURE_REUSE | MPCVR_RIFE_CAP_FLOW_REUSE;
 }
 
 extern "C" __declspec(dllexport) uint32_t WINAPI MpcvrRifeGetAbiVersion()

@@ -77,7 +77,7 @@ int wmain(int argc,wchar_t** argv) {
     if (!module) std::cerr << "LoadLibrary error " << GetLastError() << '\n';
     Check(module!=nullptr,"load runtime");
     auto capabilities=reinterpret_cast<MpcvrRifeGetCapabilitiesFn>(GetProcAddress(module,"MpcvrRifeGetCapabilities"));
-    Check(capabilities && capabilities()==3,"runtime capabilities");
+    Check(capabilities && capabilities()==(MPCVR_RIFE_CAP_HIGH_PRECISION|MPCVR_RIFE_CAP_FEATURE_REUSE|MPCVR_RIFE_CAP_FLOW_REUSE),"runtime capabilities");
     auto create=reinterpret_cast<MpcvrRifeCreateFn>(GetProcAddress(module,"MpcvrRifeCreate"));
     auto infer=reinterpret_cast<MpcvrRifeInterpolateFn>(GetProcAddress(module,"MpcvrRifeInterpolate"));
     auto destroy=reinterpret_cast<MpcvrRifeDestroyFn>(GetProcAddress(module,"MpcvrRifeDestroy"));Check(create&&infer&&destroy,"exports");
@@ -221,6 +221,55 @@ int wmain(int argc,wchar_t** argv) {
         for(size_t i=0;i<size_t(size)*contentHeight*4;++i) maximum=std::max(maximum,std::abs(int(images[0][i])-int(images[1][i]))/255.0);
         std::cout<<"Shorter content, visible rows max="<<maximum<<std::endl;
         Check(maximum<.05,"visible rows match the whole model");
+    }
+    // Shared flow: at the time it was estimated each mode must match the whole model, and at
+    // other times gentle motion must land where it truly is. Only the measured path shares it.
+    for(const bool precise : {false,true}) {
+        constexpr int size=256;constexpr int shift=8;
+        const auto model=(std::filesystem::path(argv[2])/L"rife_v4.25_lite.onnx").wstring();
+        const auto frame=[&](int offset) {
+            std::vector<uchar4> bytes(size_t(size)*size);std::vector<ushort4> floats(bytes.size());
+            for(int y=0;y<size;++y) for(int x=0;x<size;++x) {
+                const float g=float(y)/(size-1),r=float(x+offset)/(size+shift-1);
+                bytes[size_t(y)*size+x]=make_uchar4(128,static_cast<unsigned char>(g*255),static_cast<unsigned char>(r*255),255);
+                floats[size_t(y)*size+x]=make_ushort4(__half_as_ushort(__float2half(r)),__half_as_ushort(__float2half(g)),__half_as_ushort(__float2half(128.f/255)),__half_as_ushort(__float2half(1.f)));
+            }
+            return Texture(device,size,size,precise,precise?static_cast<const void*>(floats.data()):static_cast<const void*>(bytes.data()));
+        };
+        auto a=frame(0);auto b=frame(shift);
+        auto output=Texture(device,size,size,precise);
+        std::vector<uint8_t> whole;
+        const auto run=[&](void* handle,float t,uint64_t expectedFlow,bool reusedPair) {
+            MpcvrRifeRequest q;q.first=a;q.second=b;q.output=output;q.timestep=t;q.inputPairId=1;
+            MpcvrRifeStats s;Check(infer(handle,&q,&s)==0,"flow reuse inference");
+            Check(s.flowReuse==expectedFlow,"flow reuse reported");
+            Check(s.inputPairReuse==(reusedPair?2u:1u),"flow reuse keeps the pair");
+            return Read(device,context,output);
+        };
+        for(uint32_t mode=0;mode<3;++mode) {
+            MpcvrRifeCreateParams p;p.device=device;p.width=p.height=p.contentWidth=p.contentHeight=size;p.contextCount=2;p.performanceBoost=1;
+            p.modelPath=model.c_str();p.cachePath=argv[3];
+            p.flags=(precise?MPCVR_RIFE_CREATE_HIGH_PRECISION:0u)|MPCVR_RIFE_CREATE_FEATURE_REUSE
+                |(mode==1?MPCVR_RIFE_CREATE_FLOW_REUSE_COARSE:mode==2?MPCVR_RIFE_CREATE_FLOW_REUSE_RETIME:0u);
+            void* handle=nullptr;Check(create(&p,&handle)==0&&handle,"flow reuse create");
+            MpcvrRifeRequest probe;probe.first=a;probe.second=b;probe.output=output;probe.timestep=.5f;probe.inputPairId=99;
+            MpcvrRifeStats reported;Check(infer(handle,&probe,&reported)==0,"flow reuse probe");
+            const bool shared=reported.flowReuse==mode;
+            if(mode && !shared) {std::cout<<"Flow reuse mode "<<mode<<" not on this GPU's measured path\n";Check(reported.flowReuse==0,"unavailable flow reuse falls back");destroy(handle);continue;}
+            const auto midpoint=run(handle,.5f,mode,false);
+            if(!mode) whole=midpoint;
+            const auto early=run(handle,.25f,mode,true);
+            const auto again=run(handle,.5f,mode,true);
+            const auto late=run(handle,.75f,mode,true);
+            const double toWhole=MaxDifference(midpoint,whole,precise),repeated=MaxDifference(midpoint,again,precise);
+            auto truth=[&](int offset) {auto texture=frame(offset);return Read(device,context,texture);};
+            const double toEarly=MaxDifference(early,truth(shift/4),precise),toLate=MaxDifference(late,truth(shift*3/4),precise);
+            std::cout<<"Flow reuse mode "<<mode<<(precise?" RGBA16F":" BGRA8")<<": t=.5 vs whole max="<<toWhole<<", repeated max="<<repeated<<", t=.25/.75 vs truth max="<<toEarly<<"/"<<toLate<<std::endl;
+            Check(toWhole<.03,"shared flow matches the model where it was estimated");
+            Check(repeated<(mode==2?1e-6:.02),"a target doesn't depend on the ones before it");
+            Check(toEarly<.06&&toLate<.06,"shared flow lands gentle motion where it truly is");
+            destroy(handle);
+        }
     }
     FreeLibrary(module);std::cout<<"Native GPU: models, precision, pair invalidation and context isolation passed\n";
     } catch(const std::exception& e) {std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}

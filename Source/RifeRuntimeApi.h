@@ -57,10 +57,16 @@ enum MpcvrRifeCreateFlags : uint32_t {
     MPCVR_RIFE_CREATE_DEFER_INPUT_RELEASE = 1u << 0,
     MPCVR_RIFE_CREATE_FEATURE_REUSE = 1u << 1,
     MPCVR_RIFE_CREATE_HIGH_PRECISION = 1u << 2,
+    // Share one flow estimate among a pair's targets, where the runtime's measured
+    // path allows it; otherwise ignored. COARSE still runs the finest block per target,
+    // RETIME runs none. Both change the picture. Require FEATURE_REUSE.
+    MPCVR_RIFE_CREATE_FLOW_REUSE_COARSE = 1u << 3,
+    MPCVR_RIFE_CREATE_FLOW_REUSE_RETIME = 1u << 4,
 };
 
 inline constexpr uint32_t MPCVR_RIFE_CAP_HIGH_PRECISION = 1u << 0;
 inline constexpr uint32_t MPCVR_RIFE_CAP_FEATURE_REUSE = 1u << 1;
+inline constexpr uint32_t MPCVR_RIFE_CAP_FLOW_REUSE = 1u << 2;
 using MpcvrRifeGetCapabilitiesFn = uint32_t(WINAPI*)();
 
 struct MpcvrRifeRequest {
@@ -128,6 +134,8 @@ struct MpcvrRifeStats {
     // Optional tail: 0 = original engine, 1 = fresh encoder, 2 = reused encoder,
     // 3 = encoded only the second image, keeping the first from the previous pair.
     uint64_t featureReuse = 0;
+    // Optional tail: flow actually shared within a pair, 0 = none, 1 = coarse, 2 = all.
+    uint64_t flowReuse = 0;
 };
 
 using MpcvrRifeGetAbiVersionFn = uint32_t(WINAPI*)();

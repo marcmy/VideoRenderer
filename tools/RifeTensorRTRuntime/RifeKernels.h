@@ -27,7 +27,9 @@ cudaError_t MpcvrRifePackInput(
     cudaStream_t stream,
     cudaTextureObject_t* firstTextureOut,
     cudaTextureObject_t* secondTextureOut,
-    bool rgba16Input = false);
+    bool rgba16Input = false,
+    // The fused plans read only the images and the first pixel's timestep.
+    bool imagesOnly = false);
 
 cudaError_t MpcvrRifeUpdateTimestep(
     void* tensor,
@@ -37,7 +39,8 @@ cudaError_t MpcvrRifeUpdateTimestep(
     int paddedWidth,
     int paddedHeight,
     float timestep,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    bool firstPixelOnly = false);
 
 cudaError_t MpcvrRifeWriteOutput(
     const void* tensor,
