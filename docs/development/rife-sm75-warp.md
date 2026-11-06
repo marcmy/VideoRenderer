@@ -145,15 +145,18 @@ slower, 0.37 against 0.24 ms, and gained 0.03 ms between stages 0 and 1. Writing
 final image as `kCHW4` made no difference, and neither did block widths of 32 or 256 in
 place of 128. Stage 4 took about 0.51 ms in all of them, and without its exponential.
 
-In the same harness, median across four alternating runs on the two clips, each run
-reporting its minimum over 59 repetitions. The previous runtime is the distributed
-build and the new one is local, so the distributed comparison in the test build's
-results is the one to quote.
+Both distributed runtimes, built by the pinned toolchain, in the same harness: median
+across eight alternating runs on the two clips, each run reporting its minimum over 59
+repetitions. The minimums did not overlap.
 
-| Runtime with feature reuse | First target, ms | Reused target, ms |
-| --- | ---: | ---: |
-| Low-resolution flow | 9.96 | 6.29 |
-| Finished in one kernel | 7.91 | 4.70 |
+| Runtime with feature reuse | First target, ms | Reused target, ms | One first and two reused, mean ms |
+| --- | ---: | ---: | ---: |
+| Low-resolution flow | 9.58 | 6.17 | 7.31 |
+| Finished in one kernel | 7.67 | 4.41 | 5.49 |
+
+The last column is the workload of 30-to-120 FPS playback: about 25% less TensorRT time,
+or 33% more inference capacity. These are best-case isolated figures, not playback
+measurements or sustained rates.
 
 Synthesis scratch fell from 271 to 168 MiB, but the encoder's 270 MiB scratch shares that
 allocation and sets its size, so runtime VRAM reads about the same.
