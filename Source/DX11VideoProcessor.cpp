@@ -4497,6 +4497,36 @@ HRESULT CDX11VideoProcessor::UpdateConvertColorShader()
 
 void CDX11VideoProcessor::UpdateBitmapShader()
 {
+	if (m_bPGSSubtitles && SourceIsHDR10()) {
+		if (m_bHdrDisplayModeEnabled) {
+			float SDR_peak_lum;
+			switch (m_iHdrOsdBrightness) {
+				default:
+					SDR_peak_lum = 100;
+					break;
+				case 1:
+					SDR_peak_lum = 50;
+					break;
+				case 2:
+					SDR_peak_lum = 30;
+					break;
+			}
+
+			m_pPS_BitmapToFrame = m_pPS_Simple;
+			m_dwStatsTextColor = TransferPQ(D3DCOLOR_XRGB(255, 255, 255), SDR_peak_lum);
+		} else {
+			if (m_bConvertToSdr) {
+				m_pPS_BitmapToFrame.Release();
+				EXECUTE_ASSERT(S_OK == CreatePShaderFromResource(&m_pPS_BitmapToFrame, IDF_PS_11_CONVERT_PQ_TO_SDR));
+			} else {
+				m_pPS_BitmapToFrame = m_pPS_Simple;
+			}
+			m_dwStatsTextColor = D3DCOLOR_XRGB(255, 255, 255);
+		}
+
+		return;
+	}
+
 	if (m_bHdrDisplayModeEnabled
 			&& (SourceIsHDR() || m_bVPUseRTXVideoHDR)) {
 		UINT resid;
@@ -4883,6 +4913,9 @@ void CDX11VideoProcessor::DrawSubtitles(ID3D11Texture2D* pRenderTarget)
 				m_pDeviceContext->IASetInputLayout(m_pVSimpleInputLayout);
 				m_pDeviceContext->VSSetShader(m_pVS_Simple, nullptr, 0);
 				m_pDeviceContext->PSSetShader(m_pPS_BitmapToFrame, nullptr, 0);
+				if (m_bPGSSubtitles && SourceIsHDR10() && m_bConvertToSdr && m_pCorrectionConstants) {
+					m_pDeviceContext->PSSetConstantBuffers(0, 1, &m_pCorrectionConstants.p);
+				}
 
 				// call the function for drawing subtitles
 				hr = pSubPic->AlphaBlt(&rcSource, &rcDest, nullptr);
@@ -4906,6 +4939,9 @@ void CDX11VideoProcessor::DrawSubtitles(ID3D11Texture2D* pRenderTarget)
 			m_pDeviceContext->IASetInputLayout(m_pVSimpleInputLayout);
 			m_pDeviceContext->VSSetShader(m_pVS_Simple, nullptr, 0);
 			m_pDeviceContext->PSSetShader(m_pPS_BitmapToFrame, nullptr, 0);
+			if (m_bPGSSubtitles && SourceIsHDR10() && m_bConvertToSdr && m_pCorrectionConstants) {
+				m_pDeviceContext->PSSetConstantBuffers(0, 1, &m_pCorrectionConstants.p);
+			}
 
 			// call the function for drawing subtitles
 			hr = m_pFilter->m_pSub11CallBack->Render11(rtStart, 0, m_rtAvgTimePerFrame, rDstVid, rDstVid, rSrcPri,
@@ -6757,5 +6793,14 @@ void CDX11VideoProcessor::SwitchFullScreen(bool set)
 	if (HandleHDRToggle()) {
 		InitMediaType(&m_pFilter->m_inputMT);
 		InitSwapChain(false);
+	}
+}
+
+void CDX11VideoProcessor::SetPGSSubtitles(bool bPGSSubtitles) {
+	if (bPGSSubtitles != m_bPGSSubtitles) {
+		m_bPGSSubtitles = bPGSSubtitles;
+
+		CAutoLock cRendererLock(&m_pFilter->m_RendererLock);
+		UpdateBitmapShader();
 	}
 }

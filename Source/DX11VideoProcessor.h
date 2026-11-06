@@ -548,6 +548,8 @@ public:
 
 	void SwitchFullScreen(bool set) override;
 
+	void SetPGSSubtitles(bool bPGSSubtitles) override;
+
 private:
 	bool IsFrameInterpolationEligible(REFERENCE_TIME frameDuration);
 	HRESULT RenderPreparedFrame(const bool interpolated, const REFERENCE_TIME frameStartTime);
