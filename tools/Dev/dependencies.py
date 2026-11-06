@@ -157,6 +157,17 @@ def recipe(component):
 def asset_url(tag, name):
     return f'https://github.com/{REPO}/releases/download/{tag}/{urllib.parse.quote(name)}'
 
+# A runtime build changes MPCVR-RIFE-Runtime.zip only; the TensorRT libraries stay
+# in their own package so an unchanged one is reused by hash. Published releases
+# and older setups keep MPCVR-RIFE-Common.zip, so verification accepts both.
+RUNTIME_LAYOUTS = (['MPCVR-RIFE-Runtime.zip','MPCVR-RIFE-Libraries.zip'],['MPCVR-RIFE-Common.zip'])
+
+def runtime_layout(files):
+    matches=[layout for layout in RUNTIME_LAYOUTS if any(name in files for name in layout)]
+    if len(matches)!=1 or not set(matches[0]).issubset(files):
+        raise ValueError('RIFE runtime must use either the split runtime/library packages or the legacy common package')
+    return matches[0]
+
 def validate_manifest(manifest, expected=None):
     if manifest.get('schemaVersion') != 1: raise ValueError('Unsupported dependency manifest schema')
     if not re.fullmatch(r'[a-f0-9]{64}',manifest.get('sourceFingerprint','')): raise ValueError('Invalid source fingerprint')
@@ -172,11 +183,29 @@ def validate_manifest(manifest, expected=None):
         suffix = url.path.split('/releases/download/',1)[1].split('/')
         if len(suffix) != 2 or not re.fullmatch(r'mpcvr-deps-(?:rife-runtime|rife-models|maxine)-[a-f0-9]{16}',suffix[0]) or urllib.parse.unquote(suffix[1]) != name:
             raise ValueError('Dependency URL is not pinned to the named asset')
-    required = {'rife-runtime':['MPCVR-RIFE-Common.zip','runtime-manifest.json','SHA256SUMS.txt',
+    required = {'rife-runtime':['runtime-manifest.json','SHA256SUMS.txt',
                                'MPCVR-RIFE-sm75.zip','MPCVR-RIFE-sm86.zip','MPCVR-RIFE-sm89.zip','MPCVR-RIFE-sm120.zip'],
                 'rife-models':['MPCVR-RIFE-Models.zip'], 'maxine':['MPCVR-Maxine-Runtime.zip']}
     if not set(required[manifest['component']]).issubset(manifest.get('files',{})): raise ValueError('Incomplete dependency component')
+    if manifest['component']=='rife-runtime': runtime_layout(manifest['files'])
     return manifest
+
+def pack(source, output):
+    """Write a ZIP whose bytes depend only on file names and contents.
+
+    Unchanged libraries must hash identically across builds to be reused, so
+    file times, directory order and the build host never reach the archive.
+    """
+    source=Path(source)
+    names=sorted(path.relative_to(source).as_posix() for path in source.rglob('*') if path.is_file())
+    if not names: raise ValueError('Nothing to package: '+str(source))
+    with zipfile.ZipFile(output,'x',zipfile.ZIP_DEFLATED) as archive:
+        for name in names:
+            entry=zipfile.ZipInfo(name,date_time=(1980,1,1,0,0,0))
+            entry.compress_type=zipfile.ZIP_DEFLATED
+            entry.create_system=0
+            entry.external_attr=0o644<<16
+            archive.writestr(entry,(source/name).read_bytes(),compresslevel=9)
 
 def file_entry(path, tag):
     path = Path(path)
@@ -413,7 +442,7 @@ def prepare_component(component, directory):
     if component=='rife-models':
         license_path=directory/'LICENSES/RIFE-model-license.txt'
         if license_path.exists(): shutil.copyfile(license_path,directory/'RIFE-model-license.txt')
-    required={'rife-runtime':['MPCVR-RIFE-Common.zip','runtime-manifest.json','SHA256SUMS.txt']+
+    required={'rife-runtime':RUNTIME_LAYOUTS[0]+['runtime-manifest.json','SHA256SUMS.txt']+
                              ['MPCVR-RIFE-'+a+'.zip' for a in ['sm75','sm86','sm89','sm120']],
               'rife-models':['MPCVR-RIFE-Models.zip','model-manifest.json','RIFE-model-license.txt'],
               'maxine':['MPCVR-Maxine-Runtime.zip','Maxine-SDK-License.pdf']}[component]
@@ -428,6 +457,9 @@ def prepare_component(component, directory):
         if key in reusable:
             entry['url']=reusable[key]
             print('Reusing unchanged published dependency asset: '+name)
+        elif name=='MPCVR-RIFE-Libraries.zip':
+            # Expected once, and after a TensorRT update; otherwise installers re-download it.
+            print('::warning::Publishing a new TensorRT library package ('+str(entry['bytes'])+' bytes): no published asset has these bytes.')
     manifest=dict(info,schemaVersion=1,sourceRepository=SOURCE_REPO,sourceCommit=git('rev-parse','HEAD').decode().strip(),
                   provenance={'operation':'validated dependency build','repackaged':True},
                   compatibility={'platform':'windows-x64','gpuVendor':'NVIDIA','runtimeAbi':2,'architectures':['sm75','sm86','sm89','sm120']},
@@ -445,6 +477,7 @@ def main():
     p=commands.add_parser('check');p.add_argument('--lock',required=True);p.add_argument('--published',action='store_true');p.add_argument('--directory',default='_artifacts/dependency-verification')
     p=commands.add_parser('prepare-component');p.add_argument('--component',choices=RECIPES,required=True);p.add_argument('--directory',required=True)
     p=commands.add_parser('plan');p.add_argument('--directory',required=True);p.add_argument('--github-output')
+    p=commands.add_parser('pack');p.add_argument('--source',required=True);p.add_argument('--output',required=True)
     p=commands.add_parser('approve-source');p.add_argument('--source-ref',required=True);p.add_argument('--approved-ref',required=True)
     p=commands.add_parser('approve-workflow');p.add_argument('--source-ref',required=True);p.add_argument('--component',choices=RECIPES)
     commands.add_parser('keys')
@@ -458,6 +491,7 @@ def main():
         if args.published:check_published_lock(value,args.directory)
         else:check_lock(value);print('Pinned dependency recipes and manifest hashes verified.')
     elif args.command=='prepare-component':prepare_component(args.component,args.directory)
+    elif args.command=='pack':pack(args.source,args.output)
     elif args.command=='plan':plan(args.directory,args.github_output)
     elif args.command=='approve-source':print(approve_publish_source(args.source_ref,args.approved_ref))
     elif args.command=='approve-workflow':

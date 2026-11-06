@@ -21,37 +21,38 @@ function Get-PowerShellExecutable {
     throw 'Neither PowerShell 7 (pwsh.exe) nor Windows PowerShell (powershell.exe) was found.'
 }
 
-$sourceUpdater = Join-Path $PSScriptRoot 'Update-KLiteMPCVR.ps1'
-if (-not (Test-Path -LiteralPath $sourceUpdater -PathType Leaf)) {
-    throw 'Update-KLiteMPCVR.ps1 was not found beside this installer.'
-}
-$sourceModule = Join-Path $PSScriptRoot 'KLiteRendererInstall.psm1'
-if (-not (Test-Path -LiteralPath $sourceModule -PathType Leaf)) {
-    throw 'KLiteRendererInstall.psm1 was not found beside this installer.'
+$payload = @('Update-MPCVR.ps1', 'Update-KLiteMPCVR.ps1', 'MPCVRPlayerInstall.psm1')
+foreach ($name in $payload) {
+    if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $name) -PathType Leaf)) {
+        throw "$name was not found beside this installer."
+    }
 }
 
 $installDirectory = Join-Path $env:LOCALAPPDATA 'MPCVR Custom Updater'
-$installedUpdater = Join-Path $installDirectory 'Update-KLiteMPCVR.ps1'
-$installedModule = Join-Path $installDirectory 'KLiteRendererInstall.psm1'
+$installedUpdater = Join-Path $installDirectory 'Update-MPCVR.ps1'
+$installedModule = Join-Path $installDirectory 'MPCVRPlayerInstall.psm1'
 $desktop = [Environment]::GetFolderPath('Desktop')
 $shortcutPath = Join-Path $desktop 'Restore MPC-VR Maxine + RIFE.lnk'
 $legacyShortcutPath = Join-Path $desktop 'Restore MPC-VR Maxine.lnk'
 $powerShellExecutable = Get-PowerShellExecutable
 
 New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
-Copy-Item -LiteralPath $sourceUpdater -Destination $installedUpdater -Force
-Copy-Item -LiteralPath $sourceModule -Destination $installedModule -Force
+foreach ($name in $payload) {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $installDirectory $name) -Force
+}
+Remove-Item -LiteralPath (Join-Path $installDirectory 'KLiteRendererInstall.psm1') -Force -ErrorAction SilentlyContinue
+Import-Module $installedModule -Force
 
 $wshShell = New-Object -ComObject WScript.Shell
 $shortcut = $wshShell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $powerShellExecutable
 $shortcut.Arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $installedUpdater
 $shortcut.WorkingDirectory = $installDirectory
-$shortcut.Description = 'Download and restore the latest custom MPC Video Renderer Maxine + RIFE build in K-Lite Codec Pack'
+$shortcut.Description = 'Download and restore the latest custom MPC Video Renderer Maxine + RIFE build in MPC-HC, MPC-BE and K-Lite Codec Pack'
 
-$mpcIcon = 'C:\Program Files (x86)\K-Lite Codec Pack\MPC-HC64\mpc-hc64.exe'
-if (Test-Path -LiteralPath $mpcIcon -PathType Leaf) {
-    $shortcut.IconLocation = "$mpcIcon,0"
+$mpcIcon = @(Get-MPCVRPlayerTarget | Where-Object { $_.Executable -and (Test-Path -LiteralPath $_.Executable -PathType Leaf) } | Select-Object -First 1)
+if ($mpcIcon.Count) {
+    $shortcut.IconLocation = "$($mpcIcon[0].Executable),0"
 }
 
 $shortcut.Save()
@@ -66,8 +67,8 @@ Write-Host 'Installed the updater and created this desktop shortcut:' -Foregroun
 Write-Host $shortcutPath
 Write-Host
 Write-Host "PowerShell host: $powerShellExecutable"
-Write-Host 'Double-click the shortcut after K-Lite updates overwrite your custom MPC-VR files.'
-Write-Host 'The updater will request administrator permission, download the newest Maxine + RIFE build, verify its SHA-256, and transactionally replace both K-Lite copies.'
+Write-Host 'Double-click the shortcut after a player or K-Lite update overwrites your custom MPC-VR files, or after installing another player.'
+Write-Host 'The updater will request administrator permission, download the newest Maxine + RIFE build, verify its SHA-256, and transactionally install it for each detected player.'
 
 if (-not $NoPause) {
     Write-Host

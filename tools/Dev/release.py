@@ -82,7 +82,7 @@ def package(version_path, architecture, output):
     sources = {
         'MaxineRuntimeInstaller':['Install-MPCVRMaxineRuntime.ps1'],
         'RifeRuntimeInstaller':['Install-MPCVRRifeRuntime.ps1','Test-MPCVRRifePreflight.ps1','RifeRuntimeManifest.psm1'],
-        'KLiteMaxineUpdater':['Install-KLiteMPCVRUpdater.ps1','Update-KLiteMPCVR.ps1','KLiteRendererInstall.psm1'],
+        'MPCVRUpdater':['Install-MPCVRUpdater.ps1','Update-MPCVR.ps1','Update-KLiteMPCVR.ps1','MPCVRPlayerInstall.psm1'],
     }
     for directory,names in sources.items():
         for name in names: payload[name]=(ROOT/'tools'/directory/name).read_bytes()
@@ -121,7 +121,7 @@ def verify_package(directory, expected_commit=None, release=False):
         sums={name:sha for sha,name in (line.split(maxsplit=1) for line in archive.read('payload/PAYLOAD-SHA256SUMS.txt').decode().splitlines())}
         for name,sha in sums.items():
             if hashlib.sha256(archive.read('payload/'+name)).hexdigest()!=sha: raise ValueError('Setup payload checksum mismatch')
-        forbidden=['payload/MPCVR-Maxine-Runtime.zip','payload/MPCVR-RIFE-Common.zip','payload/MPCVR-RIFE-Models.zip']
+        forbidden=['payload/MPCVR-Maxine-Runtime.zip','payload/MPCVR-RIFE-Common.zip','payload/MPCVR-RIFE-Runtime.zip','payload/MPCVR-RIFE-Libraries.zip','payload/MPCVR-RIFE-Models.zip']
         if any(name in archive.namelist() for name in forbidden): raise ValueError('Normal setup must not embed large dependencies')
     return version
 

@@ -14,6 +14,64 @@ import dependencies
 import release
 
 
+class RuntimePackageSplitTests(unittest.TestCase):
+    def manifest(self,*shared):
+        names=list(shared)+['runtime-manifest.json','SHA256SUMS.txt','MPCVR-RIFE-sm75.zip','MPCVR-RIFE-sm86.zip','MPCVR-RIFE-sm89.zip','MPCVR-RIFE-sm120.zip']
+        tag='mpcvr-deps-rife-runtime-'+'a'*16
+        return {'schemaVersion':1,'sourceFingerprint':'a'*64,'component':'rife-runtime',
+                'files':{name:{'sha256':'b'*64,'bytes':1,'url':dependencies.asset_url(tag,name)} for name in names}}
+
+    def test_only_complete_single_layouts_are_valid(self):
+        # Retention re-verifies older releases, so the common layout must stay valid.
+        dependencies.validate_manifest(self.manifest('MPCVR-RIFE-Common.zip'))
+        dependencies.validate_manifest(self.manifest('MPCVR-RIFE-Runtime.zip','MPCVR-RIFE-Libraries.zip'))
+        for shared in ((),('MPCVR-RIFE-Runtime.zip',),('MPCVR-RIFE-Libraries.zip',),
+                       ('MPCVR-RIFE-Common.zip','MPCVR-RIFE-Runtime.zip','MPCVR-RIFE-Libraries.zip')):
+            with self.assertRaises(ValueError,msg=shared): dependencies.validate_manifest(self.manifest(*shared))
+
+    def test_pack_ignores_file_times_and_build_location(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            archives=[]
+            for index,stamp in enumerate((1000000000,1700000000)):
+                source=root/f'source-{index}'
+                (source/'nested').mkdir(parents=True)
+                # Different creation order: directory listing must not reach the archive.
+                for name in (['b.dll','nested/a.txt'] if index==0 else ['nested/a.txt','b.dll']):
+                    (source/name).write_bytes(name.encode()*100)
+                    os.utime(source/name,(stamp,stamp))
+                archives.append(root/f'{index}.zip')
+                dependencies.pack(source,archives[-1])
+            self.assertEqual(archives[0].read_bytes(),archives[1].read_bytes())
+            with zipfile.ZipFile(archives[0]) as archive:
+                self.assertEqual(archive.namelist(),['b.dll','nested/a.txt'])
+                self.assertEqual(archive.read('b.dll'),b'b.dll'*100)
+            with self.assertRaises(FileExistsError): dependencies.pack(source,archives[0])
+            (root/'empty').mkdir()
+            with self.assertRaises(ValueError): dependencies.pack(root/'empty',root/'empty.zip')
+
+    def test_new_runtime_build_reuses_the_published_library_package(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory=Path(temporary)
+            for name in dependencies.RUNTIME_LAYOUTS[0]+['runtime-manifest.json','SHA256SUMS.txt','MPCVR-RIFE-sm75.zip','MPCVR-RIFE-sm86.zip','MPCVR-RIFE-sm89.zip','MPCVR-RIFE-sm120.zip']:
+                (directory/name).write_bytes(name.encode())
+            library=directory/'MPCVR-RIFE-Libraries.zip'
+            older='mpcvr-deps-rife-runtime-'+'c'*16
+            pages=[[{'draft':False,'immutable':True,'assets':[
+                {'name':library.name,'size':library.stat().st_size,'digest':'sha256:'+dependencies.digest(library),
+                 'browser_download_url':dependencies.asset_url(older,library.name)}]}]]
+            real=subprocess.check_output
+            def response(command,*args,**kwargs):
+                return json.dumps(pages).encode() if command[0]=='gh' else real(command,*args,**kwargs)
+            with patch.object(dependencies.subprocess,'check_output',side_effect=response):
+                dependencies.prepare_component('rife-runtime',directory)
+            files=json.loads((directory/'rife-runtime.json').read_text())['files']
+            self.assertEqual(files[library.name]['url'],dependencies.asset_url(older,library.name))
+            tag=dependencies.recipe('rife-runtime')['releaseTag']
+            self.assertEqual(files['MPCVR-RIFE-Runtime.zip']['url'],dependencies.asset_url(tag,'MPCVR-RIFE-Runtime.zip'))
+            self.assertNotIn('MPCVR-RIFE-Common.zip',files)
+
+
 class PublicationTests(unittest.TestCase):
     def test_retention_is_disabled_without_explicit_policy(self):
         with patch.dict(os.environ,{},clear=True), patch.object(release,'gh') as call:
@@ -268,7 +326,7 @@ class PackageTests(unittest.TestCase):
     def test_single_architecture_and_full_setup_integrity(self):
         with tempfile.TemporaryDirectory(prefix='mpcvr-release-test-') as directory:
             root=Path(directory)/'source'; root.mkdir()
-            for name in ['distrib','tools/MaxineSetup','tools/MaxineRuntimeInstaller','tools/RifeRuntimeInstaller','tools/KLiteMaxineUpdater']:
+            for name in ['distrib','tools/MaxineSetup','tools/MaxineRuntimeInstaller','tools/RifeRuntimeInstaller','tools/MPCVRUpdater']:
                 shutil.copytree(release.ROOT/name,root/name,ignore=shutil.ignore_patterns('__pycache__','*.exe','*.zip'))
             for name in ['Readme.md','history.txt','LICENSE.txt','dependencies.lock.json']:
                 shutil.copyfile(release.ROOT/name,root/name)

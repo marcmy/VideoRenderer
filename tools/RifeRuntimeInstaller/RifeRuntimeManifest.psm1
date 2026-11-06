@@ -58,19 +58,47 @@ function Get-RifeExpectedArchitectures {
     )
 }
 
-function Get-RifeCommonRuntimeFileNames {
+function Get-RifeRuntimeBuildFileNames {
     @(
         'MPCVRRifeRuntime64.dll',
-        'nvinfer_11.dll',
-        'nvonnxparser_11.dll',
-        'nvinfer_builder_resource_ptx_11.dll',
         'BUILD-INFO.txt'
     )
 }
 
+function Get-RifeLibraryFileNames {
+    @(
+        'nvinfer_11.dll',
+        'nvonnxparser_11.dll',
+        'nvinfer_builder_resource_ptx_11.dll'
+    )
+}
+
+function Get-RifeCommonRuntimeFileNames {
+    @(Get-RifeRuntimeBuildFileNames) + @(Get-RifeLibraryFileNames)
+}
+
+function Get-RifeSharedArchiveNames([string[]]$AvailableNames) {
+    # Published dependency releases are immutable, so a legacy common package can
+    # still be pinned; a package set with parts of both layouts is never valid.
+    $split = @('MPCVR-RIFE-Runtime.zip', 'MPCVR-RIFE-Libraries.zip')
+    $legacy = 'MPCVR-RIFE-Common.zip'
+    $presentSplit = @($split | Where-Object { $AvailableNames -contains $_ })
+    if ($AvailableNames -contains $legacy) {
+        if ($presentSplit.Count -ne 0) {
+            throw "RIFE runtime lists both $legacy and $($presentSplit -join ', ')."
+        }
+        return @($legacy)
+    }
+    if ($presentSplit.Count -ne $split.Count) {
+        throw "RIFE runtime is missing $(@($split | Where-Object { $presentSplit -notcontains $_ }) -join ', ')."
+    }
+    $split
+}
+
 function Get-RifeRuntimeArchiveNames {
     @(
-        'MPCVR-RIFE-Common.zip',
+        'MPCVR-RIFE-Runtime.zip',
+        'MPCVR-RIFE-Libraries.zip',
         'MPCVR-RIFE-sm75.zip',
         'MPCVR-RIFE-sm86.zip',
         'MPCVR-RIFE-sm89.zip',
@@ -231,7 +259,10 @@ Export-ModuleMember -Function @(
     'ConvertTo-RifeArchitectureKeyFromCapability',
     'Get-RifeBuilderResourceName',
     'Get-RifeExpectedArchitectures',
+    'Get-RifeRuntimeBuildFileNames',
+    'Get-RifeLibraryFileNames',
     'Get-RifeCommonRuntimeFileNames',
+    'Get-RifeSharedArchiveNames',
     'Get-RifeRuntimeArchiveNames',
     'Get-RifeGpuInventory',
     'Get-RifeArchitectureKeysForInventory',

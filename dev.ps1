@@ -94,6 +94,8 @@ function Test-Renderer {
         if ($LASTEXITCODE -ne 0) { throw "$hostName version tests failed." }
         & $hostName -NoLogo -NoProfile -ExecutionPolicy Bypass -File tools/Dev/Test-Dependencies.ps1
         if ($LASTEXITCODE -ne 0) { throw "$hostName dependency tests failed." }
+        & $hostName -NoLogo -NoProfile -ExecutionPolicy Bypass -File tools/MPCVRUpdater/Test-PlayerInstall.ps1
+        if ($LASTEXITCODE -ne 0) { throw "$hostName player install tests failed." }
     }
     $pythonTests=@('rife-receive-pacing-test/test_receive_pacing.py','rife-lifecycle-test/test_rife_lifecycle.py','rife-spatial-contract-test/test_rife_vsr_routing.py','rife-presentation-preparation-test/test_preparation_contract.py','rife-spatial-contract-test/test_rife_spatial_contract.py','sdr-enhance-test/test_sdr_enhance_contract.py','feature-hotkeys-test/test_feature_hotkeys_contract.py')
     foreach ($path in $pythonTests) { Run-Python @("tools/$path") }

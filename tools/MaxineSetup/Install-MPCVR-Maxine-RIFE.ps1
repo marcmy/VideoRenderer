@@ -18,8 +18,8 @@ $payloadChecksums = Join-Path $payloadRoot 'PAYLOAD-SHA256SUMS.txt'
 $maxineRuntimeInstaller = Join-Path $payloadRoot 'Install-MPCVRMaxineRuntime.ps1'
 $rifeRuntimeInstaller = Join-Path $payloadRoot 'Install-MPCVRRifeRuntime.ps1'
 $rifePreflight = Join-Path $payloadRoot 'Test-MPCVRRifePreflight.ps1'
-$updaterInstaller = Join-Path $payloadRoot 'Install-KLiteMPCVRUpdater.ps1'
-$rendererUpdater = Join-Path $payloadRoot 'Update-KLiteMPCVR.ps1'
+$updaterInstaller = Join-Path $payloadRoot 'Install-MPCVRUpdater.ps1'
+$rendererUpdater = Join-Path $payloadRoot 'Update-MPCVR.ps1'
 
 $rendererArchive = Join-Path $payloadRoot 'MpcVideoRenderer-Maxine-RIFE.zip'
 $maxineRuntimeArchive = Join-Path $payloadRoot 'MPCVR-Maxine-Runtime.zip'
@@ -34,9 +34,10 @@ $requiredPayloadNames = @(
     'Install-MPCVRRifeRuntime.ps1',
     'Test-MPCVRRifePreflight.ps1',
     'RifeRuntimeManifest.psm1',
-    'Install-KLiteMPCVRUpdater.ps1',
+    'Install-MPCVRUpdater.ps1',
+    'Update-MPCVR.ps1',
     'Update-KLiteMPCVR.ps1',
-    'KLiteRendererInstall.psm1',
+    'MPCVRPlayerInstall.psm1',
     'MpcVideoRenderer-Maxine-RIFE.zip',
     'MPCVR-Maxine-Runtime.zip',
     'MPCVR-RIFE-Common.zip',
@@ -258,7 +259,8 @@ function Assert-RifeRuntimeDownloadContract {
 
     $checksums = Read-RifeChecksumList -Path $rifeRuntimeChecksums
     $needsDownload = $false
-    foreach ($archiveName in @('MPCVR-RIFE-Common.zip') + @($ArchitectureKeys | ForEach-Object { "MPCVR-RIFE-$_.zip" })) {
+    $sharedArchiveNames = @(Get-RifeSharedArchiveNames -AvailableNames @($checksums.Keys))
+    foreach ($archiveName in $sharedArchiveNames + @($ArchitectureKeys | ForEach-Object { "MPCVR-RIFE-$_.zip" })) {
         if (-not $checksums.ContainsKey($archiveName)) {
             throw "RIFE runtime checksum list is missing $archiveName."
         }
@@ -266,7 +268,7 @@ function Assert-RifeRuntimeDownloadContract {
         if ($hash -notmatch '^[0-9a-fA-F]{64}$') {
             throw "RIFE runtime checksum is invalid for $archiveName."
         }
-        if (($archiveName -ne 'MPCVR-RIFE-Common.zip') -and
+        if (($archiveName -notin $sharedArchiveNames) -and
                 (-not (Test-Path -LiteralPath (Join-Path $payloadRoot $archiveName) -PathType Leaf))) {
             $needsDownload = $true
         }
@@ -288,10 +290,12 @@ function New-RifeRuntimeBundle {
     $checksums = Read-RifeChecksumList -Path $rifeRuntimeChecksums
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
 
-    $commonArchiveName = 'MPCVR-RIFE-Common.zip'
-    $commonArchive = Join-Path $Destination $commonArchiveName
-    Copy-Item -LiteralPath (Join-Path $payloadRoot $commonArchiveName) -Destination $commonArchive
-    [void](Assert-RifeFileHash -Path $commonArchive -ExpectedHash ([string]$checksums[$commonArchiveName]) -DisplayName $commonArchiveName)
+    $sharedArchiveNames = @(Get-RifeSharedArchiveNames -AvailableNames @($checksums.Keys))
+    foreach ($archiveName in $sharedArchiveNames) {
+        $archivePath = Join-Path $Destination $archiveName
+        Copy-Item -LiteralPath (Join-Path $payloadRoot $archiveName) -Destination $archivePath
+        [void](Assert-RifeFileHash -Path $archivePath -ExpectedHash ([string]$checksums[$archiveName]) -DisplayName $archiveName)
+    }
 
     foreach ($architectureKey in $ArchitectureKeys) {
         $archiveName = "MPCVR-RIFE-$architectureKey.zip"
@@ -323,10 +327,33 @@ function New-RifeRuntimeBundle {
 
     Copy-Item -LiteralPath $rifeRuntimeManifest -Destination (Join-Path $Destination 'runtime-manifest.json')
     @(
-        foreach ($archiveName in @($commonArchiveName) + @($ArchitectureKeys | ForEach-Object { "MPCVR-RIFE-$_.zip" })) {
+        foreach ($archiveName in $sharedArchiveNames + @($ArchitectureKeys | ForEach-Object { "MPCVR-RIFE-$_.zip" })) {
             "{0}  {1}" -f ([string]$checksums[$archiveName]), $archiveName
         }
     ) | Set-Content -LiteralPath (Join-Path $Destination 'SHA256SUMS.txt') -Encoding ASCII
+}
+
+function Remove-SupersededDownloads {
+    # Keeps this build's downloads and the last build's. Cleanup never decides
+    # whether setup succeeded.
+    try {
+        if (-not (Save-MPCVRDownloadRetention -Lock $dependencyLock -InstalledHashes $installedArchiveHashes)) { return }
+        $result = Remove-MPCVRSupersededDownload -Lock $dependencyLock
+        if ($result.Count -gt 0) {
+            Write-Host ('Removed {0} superseded downloads, {1:N1} MiB.' -f $result.Count, ($result.Bytes / 1MB))
+        }
+    }
+    catch {
+        Write-Warning "Download cleanup skipped: $($_.Exception.Message)"
+    }
+}
+
+function Assert-PlayerInstalled {
+    # Before any large download: without a player there is nowhere to install the renderer.
+    Import-Module (Join-Path $payloadRoot 'MPCVRPlayerInstall.psm1') -Force
+    foreach ($target in @(Get-MPCVRRequiredPlayerTarget)) {
+        Write-Host "Detected $($target.Player) ($($target.Architecture)): $($target.Destination)"
+    }
 }
 
 function Assert-MaxinePreflight {
@@ -376,6 +403,7 @@ $tempRoot = $null
 $exitCode = 0
 $reuseMaxine = $false
 $reuseRife = $false
+$installedArchiveHashes = @()
 $maxineInstallRoot = Join-Path $env:LOCALAPPDATA 'MPCVR Maxine Runtime'
 $rifeInstallRoot = Join-Path $env:LOCALAPPDATA 'MPCVideoRenderer\RIFE'
 try {
@@ -383,6 +411,7 @@ try {
 
     Write-Host 'Verified all declared Maxine + RIFE setup payload hashes.' -ForegroundColor Green
     Import-Module $rifeManifestModule -Force
+    if (-not $ValidateOnly) { Assert-PlayerInstalled }
 
     if ($thinSetup) {
         Import-Module (Join-Path $payloadRoot 'DependencyDownloads.psm1') -Force
@@ -401,6 +430,7 @@ try {
         $inventory=@(Get-RifeGpuInventory -GpuInventoryJson $GpuInventoryJson)
         $keys=@(Get-RifeArchitectureKeysForInventory -GpuInventory $inventory)
         Write-Host 'Checking installed dependency versions and file hashes...'
+        $installedArchiveHashes=@(Get-MPCVRInstalledArchiveHash -InstallRoot $rifeInstallRoot)
         $reuseMaxine=Test-MPCVRInstalledDependency -Lock $dependencyLock -Component maxine -InstallRoot $maxineInstallRoot -ArchitectureKeys $keys
         if ($reuseMaxine) {
             try { [void](Assert-MaxinePreflight) } catch { $reuseMaxine=$false }
@@ -462,12 +492,13 @@ try {
         Complete-Run -ExitCode 0
     }
 
-    if (Get-Process -Name 'mpc-hc', 'mpc-hc64' -ErrorAction SilentlyContinue) {
-        Write-Host 'MPC-HC is open. Close it to continue installation automatically (Ctrl+C to cancel).' -ForegroundColor Yellow
-        while (Get-Process -Name 'mpc-hc', 'mpc-hc64' -ErrorAction SilentlyContinue) {
+    $playerProcesses = @('mpc-hc', 'mpc-hc64', 'mpc-be', 'mpc-be64')
+    if (Get-Process -Name $playerProcesses -ErrorAction SilentlyContinue) {
+        Write-Host 'MPC-HC or MPC-BE is open. Close it to continue installation automatically (Ctrl+C to cancel).' -ForegroundColor Yellow
+        while (Get-Process -Name $playerProcesses -ErrorAction SilentlyContinue) {
             Start-Sleep -Milliseconds 500
         }
-        Write-Host 'MPC-HC has closed. Continuing installation...' -ForegroundColor Green
+        Write-Host 'The player has closed. Continuing installation...' -ForegroundColor Green
     }
 
     if ($PSVersionTable.PSEdition -eq 'Desktop') {
@@ -516,12 +547,12 @@ try {
     }
 
     Invoke-SetupStep `
-        -Name '3/4 Installing K-Lite restore shortcut...' `
+        -Name '3/4 Installing the restore shortcut...' `
         -ScriptPath $updaterInstaller `
         -Parameters @{ NoPause = $true }
 
     Invoke-SetupStep `
-        -Name '4/4 Installing custom MPC Video Renderer into K-Lite...' `
+        -Name '4/4 Installing custom MPC Video Renderer for each detected player...' `
         -ScriptPath $rendererUpdater `
         -Parameters @{
             PackageArchive = $rendererArchive
@@ -538,12 +569,13 @@ try {
     if ($thinSetup) {
         Save-MPCVRInstalledDependency -Lock $dependencyLock -Component maxine -InstallRoot $maxineInstallRoot -ArchitectureKeys $architectureKeys
         Save-MPCVRInstalledDependency -Lock $dependencyLock -Component rife -InstallRoot $rifeInstallRoot -ArchitectureKeys $architectureKeys
+        Remove-SupersededDownloads
     }
 
     Write-Host
     Write-Host 'MPCVR Maxine + RIFE Setup completed successfully.' -ForegroundColor Green
     Write-Host
-    Write-Host 'Open MPC-HC and play a video.'
+    Write-Host 'Open MPC-HC or MPC-BE and play a video.'
     Write-Host 'Press Ctrl+J and confirm:'
     Write-Host "  Maxine runtime: $maxineRuntimePath"
     Write-Host '  RIFE runtime: ready'

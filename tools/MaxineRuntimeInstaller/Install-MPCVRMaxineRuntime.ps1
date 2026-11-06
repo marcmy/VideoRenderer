@@ -128,7 +128,7 @@ namespace MpcVrMaxine
     }
     catch {
         Write-Warning "The user environment variable was updated, but Windows did not accept the live refresh notification: $($_.Exception.Message)"
-        Write-Warning 'Restarting MPC-HC after a Windows sign-out, restart, or Explorer restart will still apply it.'
+        Write-Warning 'Restarting the player after a Windows sign-out, restart, or Explorer restart will still apply it.'
     }
 }
 
@@ -162,12 +162,12 @@ if ($ValidateOnly) {
     Complete-Run -ExitCode 0
 }
 
-if (Get-Process -Name 'mpc-hc', 'mpc-hc64' -ErrorAction SilentlyContinue) {
-    Write-Host 'MPC-HC is open. Close it to continue installation automatically (Ctrl+C to cancel).' -ForegroundColor Yellow
-    while (Get-Process -Name 'mpc-hc', 'mpc-hc64' -ErrorAction SilentlyContinue) {
+if (Get-Process -Name 'mpc-hc', 'mpc-hc64', 'mpc-be', 'mpc-be64' -ErrorAction SilentlyContinue) {
+    Write-Host 'MPC-HC or MPC-BE is open. Close it to continue installation automatically (Ctrl+C to cancel).' -ForegroundColor Yellow
+    while (Get-Process -Name 'mpc-hc', 'mpc-hc64', 'mpc-be', 'mpc-be64' -ErrorAction SilentlyContinue) {
         Start-Sleep -Milliseconds 500
     }
-    Write-Host 'MPC-HC has closed. Continuing installation...' -ForegroundColor Green
+    Write-Host 'The player has closed. Continuing installation...' -ForegroundColor Green
 }
 
 if ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12) {
@@ -274,7 +274,7 @@ try {
         Write-Host "User variable NV_VIDEO_EFFECTS_PATH: $runtimeDirectory"
     }
     Write-Host
-    Write-Host 'Restart MPC-HC before testing Maxine. Ctrl+J should report the loaded Maxine runtime path.'
+    Write-Host 'Restart the player before testing Maxine. Ctrl+J should report the loaded Maxine runtime path.'
 
     $requiredFiles | ForEach-Object {
         $item = Get-Item -LiteralPath (Join-Path $runtimeDirectory $_)

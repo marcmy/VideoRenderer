@@ -1,14 +1,16 @@
 # MPCVR Setup
 
-Download **MPCVR-Setup.zip**, extract it, close MPC-HC, and run `Install-MPCVR-Maxine-RIFE.cmd`.
+Download **MPCVR-Setup.zip**, extract it, close MPC-HC and MPC-BE, and run `Install-MPCVR-Maxine-RIFE.cmd`.
 
-The small ZIP includes the exact x86/x64 renderer and installation scripts. Before installation it detects the NVIDIA GPU, resolves `dependencies.lock.json`, and downloads the required Maxine runtime, RIFE models, common TensorRT/CUDA runtime, and only the applicable SM75/SM86/SM89/SM120 architecture packs. All dependency URLs use exact immutable releases in `marcmy/VideoRenderer-Dependencies`; sizes and SHA-256 hashes are checked before use.
+The small ZIP includes the exact x86/x64 renderer and installation scripts. Before installation it detects the players and stops if there are none, then detects the NVIDIA GPU, resolves `dependencies.lock.json`, and downloads the required Maxine runtime, RIFE models, RIFE runtime, TensorRT libraries, and only the applicable SM75/SM86/SM89/SM120 architecture packs. All dependency URLs use exact immutable releases in `marcmy/VideoRenderer-Dependencies`; sizes and SHA-256 hashes are checked before use.
 
 Verified downloads are cached under `%LOCALAPPDATA%\MPCVideoRenderer\downloads`. Setup checks the installed Maxine and RIFE files against their pinned dependencies and skips components that already match, including download, extraction and runtime installation. Renderer and updater installation still proceed. A small `dependency-receipt.json` in each runtime root records the dependency identity and expected file hashes; setup rechecks the files on every update. Missing or damaged files, changed pins or a newly required GPU pack cause the affected component to be installed using the existing transactional installer.
 
+After each successful setup, downloads older than the current and previous builds are permanently deleted from that folder; the kept set is recorded in `retained-pins.json`. Partial downloads abandoned by an interrupted setup are removed once they are a day old, other files are left alone, and a removed file is downloaded again from its release if an older setup needs it.
+
 Older installations without receipts can be adopted without reinstallation when their original verified archives remain in the download cache. If neither a valid receipt nor the matching cached archives are available, setup installs the component once to establish verified state. Existing RIFE engine caches remain subject to their existing version/compatibility checks; skipped components and their engine caches are left in place.
 
-Setup installs the Maxine runtime and its NVIDIA notices, the RIFE runtime and models, the K-Lite restore/update shortcut, and finally the custom renderer using the existing transactional installers. It preserves their backup/rollback behavior and performs runtime preflight afterward. RIFE models include 4.4, 4.6, 4.15 Lite, 4.25 and 4.25 Lite; the current default remains 4.25. NVIDIA components retain their separate license terms.
+Setup installs the Maxine runtime and its NVIDIA notices, the RIFE runtime and models, the restore/update shortcut, and finally the custom renderer for every detected player (standalone MPC-HC, MPC-BE, and MPC-HC from K-Lite Codec Pack; see `tools/MPCVRUpdater/README.md` in the source) using the existing transactional installers. It preserves their backup/rollback behavior and performs runtime preflight afterward. RIFE models include 4.4, 4.6, 4.15 Lite, 4.25 and 4.25 Lite; the current default remains 4.25. NVIDIA components retain their separate license terms.
 
 **MPCVR-Portable.zip** contains renderer files for manual installation. **SHA256SUMS.txt** verifies both downloads. There is no per-renderer runtime prerelease and no duplicate renderer ZIP alias.
 

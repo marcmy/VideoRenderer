@@ -2,6 +2,18 @@
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
+function Get-MPCVRRifeSharedArchiveNames {
+    # Immutable releases and older locks keep the common package; a new runtime
+    # build ships separately from its unchanged libraries.
+    param([Parameter(Mandatory=$true)]$Manifest)
+    $hasCommon=[bool]$Manifest.files.PSObject.Properties['MPCVR-RIFE-Common.zip']
+    $hasRuntime=[bool]$Manifest.files.PSObject.Properties['MPCVR-RIFE-Runtime.zip']
+    $hasLibraries=[bool]$Manifest.files.PSObject.Properties['MPCVR-RIFE-Libraries.zip']
+    if ($hasCommon -and -not ($hasRuntime -or $hasLibraries)) { return @('MPCVR-RIFE-Common.zip') }
+    if ($hasRuntime -and $hasLibraries -and -not $hasCommon) { return @('MPCVR-RIFE-Runtime.zip','MPCVR-RIFE-Libraries.zip') }
+    throw 'Incomplete rife-runtime pin: expected the split runtime and library packages, or the legacy common package.'
+}
+
 function Read-MPCVRDependencyLock {
     param([Parameter(Mandatory=$true)][string]$Path)
     $lock = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
@@ -21,7 +33,7 @@ function Read-MPCVRDependencyLock {
             if ($name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -or $entry.sha256 -notmatch '^[a-f0-9]{64}$' -or [long]$entry.bytes -le 0 -or $entry.url -cnotmatch $assetPattern) { throw "Invalid pinned dependency: $name" }
         }
         $required = switch ($component) {
-            'rife-runtime' { @('MPCVR-RIFE-Common.zip','runtime-manifest.json','SHA256SUMS.txt','MPCVR-RIFE-sm75.zip','MPCVR-RIFE-sm86.zip','MPCVR-RIFE-sm89.zip','MPCVR-RIFE-sm120.zip') }
+            'rife-runtime' { @(Get-MPCVRRifeSharedArchiveNames -Manifest $manifest) + @('runtime-manifest.json','SHA256SUMS.txt','MPCVR-RIFE-sm75.zip','MPCVR-RIFE-sm86.zip','MPCVR-RIFE-sm89.zip','MPCVR-RIFE-sm120.zip') }
             'rife-models' { @('MPCVR-RIFE-Models.zip','RIFE-model-license.txt','model-manifest.json') }
             'maxine' { @('MPCVR-Maxine-Runtime.zip','Maxine-SDK-License.pdf') }
         }
@@ -109,7 +121,7 @@ function Get-MPCVRInstalledDependencyInventory {
         $archives=switch ($componentName) {
             'maxine' { @('MPCVR-Maxine-Runtime.zip') }
             'rife-models' { @('MPCVR-RIFE-Models.zip') }
-            'rife-runtime' { @('MPCVR-RIFE-Common.zip') + @($keys | ForEach-Object { "MPCVR-RIFE-$_.zip" }) }
+            'rife-runtime' { @(Get-MPCVRRifeSharedArchiveNames -Manifest $manifest) + @($keys | ForEach-Object { "MPCVR-RIFE-$_.zip" }) }
         }
         foreach ($name in $archives) {
             $entry=$manifest.files.PSObject.Properties[$name].Value
@@ -168,8 +180,19 @@ function Get-MPCVRInstalledDependencyInventory {
         $metadata=Get-Content -LiteralPath $installedManifest -Raw | ConvertFrom-Json
         $runtimePin=$Lock.components.PSObject.Properties['rife-runtime'].Value.manifest
         if ($metadata.schemaVersion -ne 2 -or $metadata.runtimeAbi -ne $runtimePin.compatibility.runtimeAbi -or
-            [string]$metadata.tensorRtVersion -notmatch '^\d+\.\d+(\.\d+){0,2}$' -or
-            $metadata.commonRuntimeArchiveSha256 -ine $runtimePin.files.PSObject.Properties['MPCVR-RIFE-Common.zip'].Value.sha256) { return $null }
+            [string]$metadata.tensorRtVersion -notmatch '^\d+\.\d+(\.\d+){0,2}$') { return $null }
+        $sharedNames=@(Get-MPCVRRifeSharedArchiveNames -Manifest $runtimePin)
+        # Installs made from the common package recorded one hash under its own name.
+        if ($metadata.PSObject.Properties['sharedRuntimeArchives']) {
+            $recorded=@($metadata.sharedRuntimeArchives)
+        } elseif ($metadata.PSObject.Properties['commonRuntimeArchiveSha256']) {
+            $recorded=@([pscustomobject]@{archive='MPCVR-RIFE-Common.zip';sha256=$metadata.commonRuntimeArchiveSha256})
+        } else { return $null }
+        if ($recorded.Count -ne $sharedNames.Count) { return $null }
+        foreach ($sharedName in $sharedNames) {
+            $selected=@($recorded | Where-Object { $_.archive -eq $sharedName })
+            if ($selected.Count -ne 1 -or $selected[0].sha256 -ine $runtimePin.files.PSObject.Properties[$sharedName].Value.sha256) { return $null }
+        }
         foreach ($key in $keys) {
             $selected=@($metadata.architectures | Where-Object { $_.key -eq $key })
             $archiveName="MPCVR-RIFE-$key.zip"
@@ -233,4 +256,101 @@ function Save-MPCVRInstalledDependency {
     } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
 }
 
-Export-ModuleMember -Function Read-MPCVRDependencyLock,Get-MPCVRVerifiedDownload,Resolve-MPCVRDependencies,Test-MPCVRInstalledDependency,Save-MPCVRInstalledDependency
+function Get-MPCVRLockDownloadHash {
+    param([Parameter(Mandatory=$true)]$Lock)
+    @($Lock.components.PSObject.Properties | ForEach-Object {
+        $_.Value.manifest.files.PSObject.Properties | ForEach-Object { ([string]$_.Value.sha256).ToLowerInvariant() }
+    } | Sort-Object -Unique)
+}
+
+function Read-MPCVRDownloadRetention {
+    # Missing means nothing has been recorded yet; malformed data must stop pruning.
+    param([Parameter(Mandatory=$true)][string]$CacheRoot)
+    $path=Join-Path $CacheRoot 'retained-pins.json'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    $retention=Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    if ($retention.schemaVersion -ne 1) { throw 'Unsupported download retention record.' }
+    foreach ($hash in @($retention.current)+@($retention.previous)) {
+        if ([string]$hash -cnotmatch '^[a-f0-9]{64}$') { throw 'Invalid download retention record.' }
+    }
+    return $retention
+}
+
+function Get-MPCVRInstalledArchiveHash {
+    # The archives behind the current RIFE install, read before setup replaces it.
+    # They identify the last build the first time no retention record exists.
+    param([Parameter(Mandatory=$true)][string]$InstallRoot)
+    try {
+        $metadata=Get-Content -LiteralPath (Join-Path $InstallRoot 'installed-manifest.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+        $hashes=@($metadata.architectures | ForEach-Object { $_.sha256 })
+        if ($metadata.PSObject.Properties['sharedRuntimeArchives']) { $hashes+=@($metadata.sharedRuntimeArchives | ForEach-Object { $_.sha256 }) }
+        if ($metadata.PSObject.Properties['commonRuntimeArchiveSha256']) { $hashes+=$metadata.commonRuntimeArchiveSha256 }
+        return @($hashes | ForEach-Object { ([string]$_).ToLowerInvariant() } | Where-Object { $_ -cmatch '^[a-f0-9]{64}$' })
+    } catch { return @() }
+}
+
+function Save-MPCVRDownloadRetention {
+    # Called after a successful setup, so "previous" is always a set that installed.
+    # Returns $false when an unreadable record was replaced: this run cannot tell
+    # which files the last build used, so it must not delete anything.
+    param([Parameter(Mandatory=$true)]$Lock,
+          [AllowEmptyCollection()][string[]]$InstalledHashes=@(),
+          [string]$CacheRoot=(Join-Path $env:LOCALAPPDATA 'MPCVideoRenderer\downloads'))
+    $current=@(Get-MPCVRLockDownloadHash -Lock $Lock)
+    $recorded=$null; $readable=$true
+    try { $recorded=Read-MPCVRDownloadRetention -CacheRoot $CacheRoot } catch {
+        $readable=$false
+        Write-Warning "Replacing an unreadable download retention record; keeping all downloads this time: $($_.Exception.Message)"
+    }
+    $previous=@($InstalledHashes)
+    if ($recorded) {
+        $previous=@($recorded.previous)
+        if (@(Compare-Object -ReferenceObject @($recorded.current) -DifferenceObject $current).Count -ne 0) { $previous=@($recorded.current) }
+    }
+    New-Item -ItemType Directory -Force -Path $CacheRoot | Out-Null
+    $path=Join-Path $CacheRoot 'retained-pins.json'
+    $temporary=$path+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
+    try {
+        ConvertTo-Json -InputObject ([ordered]@{schemaVersion=1;current=$current;previous=$previous}) | Set-Content -LiteralPath $temporary -Encoding ASCII
+        Move-Item -LiteralPath $temporary -Destination $path -Force
+    } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
+    return $readable
+}
+
+function Get-MPCVRSupersededDownload {
+    # Only exact verified-download names qualify, plus this module's own temporary
+    # files abandoned by a killed setup. The age limit spares a setup still running.
+    # Other names, the retention record, folders and links are never candidates.
+    param([Parameter(Mandatory=$true)]$Lock,
+          [string]$CacheRoot=(Join-Path $env:LOCALAPPDATA 'MPCVideoRenderer\downloads'))
+    if (-not (Test-Path -LiteralPath $CacheRoot -PathType Container)) { return @() }
+    $keep=@{}
+    foreach ($hash in @(Get-MPCVRLockDownloadHash -Lock $Lock)) { $keep[$hash]=$true }
+    $retention=Read-MPCVRDownloadRetention -CacheRoot $CacheRoot
+    if ($retention) { foreach ($hash in @($retention.current)+@($retention.previous)) { $keep[[string]$hash]=$true } }
+    $abandonedBefore=(Get-Date).AddDays(-1)
+    @(Get-ChildItem -LiteralPath $CacheRoot -File | Where-Object {
+        -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and (
+            ($_.Name -cmatch '^[a-f0-9]{64}$' -and -not $keep.ContainsKey($_.Name)) -or
+            ($_.Name -cmatch '^([a-f0-9]{64}\.[a-f0-9]{32}\.partial|retained-pins\.json\.[a-f0-9]{32}\.tmp)$' -and $_.LastWriteTime -lt $abandonedBefore)
+        )
+    } | Sort-Object Name)
+}
+
+function Remove-MPCVRSupersededDownload {
+    # Permanent, and safe because every candidate can be downloaded again from its
+    # immutable release. Setup calls this only after it has fully succeeded.
+    param([Parameter(Mandatory=$true)]$Lock,
+          [string]$CacheRoot=(Join-Path $env:LOCALAPPDATA 'MPCVideoRenderer\downloads'))
+    $removed=0; $bytes=[long]0
+    foreach ($file in @(Get-MPCVRSupersededDownload -Lock $Lock -CacheRoot $CacheRoot)) {
+        try {
+            $length=$file.Length
+            Remove-Item -LiteralPath $file.FullName -Force
+            $removed++; $bytes+=$length
+        } catch { Write-Warning "Could not remove $($file.Name): $($_.Exception.Message)" }
+    }
+    [pscustomobject]@{Count=$removed;Bytes=$bytes}
+}
+
+Export-ModuleMember -Function Read-MPCVRDependencyLock,Get-MPCVRVerifiedDownload,Resolve-MPCVRDependencies,Test-MPCVRInstalledDependency,Save-MPCVRInstalledDependency,Get-MPCVRInstalledArchiveHash,Save-MPCVRDownloadRetention,Get-MPCVRSupersededDownload,Remove-MPCVRSupersededDownload
