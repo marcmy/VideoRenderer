@@ -108,6 +108,9 @@ assert "workerState.inferenceOutputs" in acquire_output and "CreateInferenceSurf
     "CUDA outputs must come from a stable per-context pool instead of creating a registered texture every frame"
 )
 process_pair = function_body(rife_pipeline, "void ProcessPairJob(")
+assert "iRifeModel                      = RIFE_MODEL_425_LITE;" in (repo / "Source" / "IVideoRenderer.h").read_text(encoding="utf-8"), (
+    "4.25 Lite is the default model, as the fastest and the one every speedup applies to"
+)
 # Imported surfaces have no map to order them: D3D11 copies are ordered by a fence, and a worker
 # must wait for the last copy before reading. Without this, CUDA reads half-copied frames.
 assert "WaitRifeCopyFence(second.processor->LastRifeCopyFence())" in process_pair, (

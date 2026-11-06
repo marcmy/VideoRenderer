@@ -336,7 +336,7 @@ void LoadRifeSettings(Settings_t& settings)
 			settings.iRifeModel = static_cast<int>(dw);
 			break;
 		default:
-			settings.iRifeModel = RIFE_MODEL_425;
+			settings.iRifeModel = RIFE_MODEL_425_LITE;
 			break;
 		}
 	}

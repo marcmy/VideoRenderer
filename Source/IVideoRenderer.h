@@ -475,7 +475,7 @@ struct Settings_t {
 		iRifeMode                       = RIFE_MODE_Disabled;
 		iRifeCustomFps                  = RIFE_CUSTOM_FPS_DEF;
 		iRifeGpuThreads                 = RIFE_GPU_THREADS_DEF;
-		iRifeModel                      = RIFE_MODEL_425;
+		iRifeModel                      = RIFE_MODEL_425_LITE;
 		iRifeGPU                        = RIFE_GPU_Auto;
 		bRifePerformanceBoost           = false;
 		bRifePreservePrecision          = false;
