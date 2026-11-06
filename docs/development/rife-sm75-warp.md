@@ -365,7 +365,7 @@ blit-model swap chain presenting with vsync, one Coarse request took:
 | Beside Present | 0.07 | 1.41 | 2.54 | 4.21 |
 
 Nearly all of the gap between isolated and playback timing was that wait, and it grows with the
-time Present blocks, which is longest at the highest output rates. Nothing was computing.
+time Present blocks. Nothing was computing.
 
 So the surfaces CUDA uses every frame are now created shared, and the runtime imports each once
 with `cudaImportExternalMemory`. No request takes the device lock, and the registration lookup that
@@ -406,13 +406,34 @@ fractional bits, the one place the path that was exact is now not: against the w
 at most 0.0054 on random noise, and at most one 8-bit step on the moving test images. Scores against
 true in-betweens didn't change in any digit shown above.
 
-On a local build, 1920x1080 in 1920x1152, 8x, alone:
+Distributed runtimes through the ABI, 1920x1080 in 1920x1152, 8x, the new one on shared surfaces.
+Median of three alternating runs, GPU times each the minimum per run. Alone:
 
-| Mode | First, ms | Later, ms | Mean of 7, ms | Wall mean, ms |
-| --- | ---: | ---: | ---: | ---: |
-| Off | 5.50 | 3.43 | 3.73 | 3.79 |
-| Coarse | 5.32 | 2.28 | 2.72 | 2.76 |
-| Retime | 5.68 | 0.16 | 0.95 | 0.98 |
+| Mode | Runtime | First, ms | Later, ms | Mean of 7, ms | Wall mean, ms |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Off | r2926 | 5.76 | 3.69 | 3.99 | 4.17 |
+| Off | This | 5.53 | 3.50 | 3.79 | 3.86 |
+| Coarse | r2926 | 5.63 | 2.52 | 2.96 | 3.13 |
+| Coarse | This | 5.37 | 2.31 | 2.75 | 2.83 |
+| Retime | r2926 | 5.93 | 0.31 | 1.11 | 1.33 |
+| Retime | This | 5.70 | 0.15 | 0.95 | 0.99 |
+
+Beside a 480x270 swap chain presenting with vsync, each Present blocking about 3 ms, GPU now the
+median, since the point is what overlap does:
+
+| Mode | Runtime | Unmap, ms | GPU mean of 7, ms | Wall mean, ms |
+| --- | --- | ---: | ---: | ---: |
+| Off | r2926 | 0.50 | 4.18 | 4.84 |
+| Off | This | 0 | 4.44 | 4.50 |
+| Coarse | r2926 | 1.36 | 3.11 | 4.76 |
+| Coarse | This | 0 | 3.43 | 3.48 |
+| Retime | r2926 | 0.83 | 1.25 | 1.73 |
+| Retime | This | 0 | 1.14 | 1.17 |
+
+Now wall and GPU nearly agree. GPU time rose in Off and Coarse because CUDA no longer stops during
+Present and shares the GPU with whatever D3D11 is doing, so it is no longer a floor to compare
+across this change. This swap chain only presents. It has no presenter's copies or shaders, so
+playback's own figures will be higher, and this hasn't been measured in the player.
 
 The per-pair copy of the shared frame was left alone. It costs about 0.03 ms a generated frame at
 8x, and removing it means a ring both contexts bind, which every warp would have to index.
