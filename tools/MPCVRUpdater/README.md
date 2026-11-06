@@ -16,7 +16,7 @@ The updater first looks for the small `MPCVR-Setup.zip`, which updates pinned de
 | Player | How it finds the renderer | File the updater installs |
 | --- | --- | --- |
 | MPC-HC (standalone) | Loads `<player folder>\MPCVR\<renderer>` by path if present, whatever is registered | `<player folder>\MPCVR\MpcVideoRenderer64.ax`, or `MpcVideoRenderer.ax` for 32-bit |
-| K-Lite Codec Pack (MPC-HC) | The same | `<pack>\MPC-HC64\MPCVR\MpcVideoRenderer64.ax`, `<pack>\MPC-HC\MPCVR\MpcVideoRenderer.ax` for its 32-bit MPC-HC, and any shared `<pack>\Filters\MPCVR` or `Filters64\MPCVR` renderer it has |
+| K-Lite Codec Pack (MPC-HC) | The same | `<pack>\MPC-HC64\MPCVR\MpcVideoRenderer64.ax`, `<pack>\MPC-HC\MPCVR\MpcVideoRenderer.ax` for its 32-bit MPC-HC, and any shared `<pack>\Filters\MPCVR` renderer it has, which is where K-Lite keeps both architectures when installed without MPC-HC |
 | MPC-BE | Only the registered DirectShow filter | `<player folder>\Filters\MpcVideoRenderer64.ax`, or `MpcVideoRenderer.ax` for 32-bit |
 
 Players are found from their installers' records, the folder the player itself recorded, and the default folders under Program Files. K-Lite in a custom folder is recognized and its MPC-HC isn't treated as standalone. A portable copy that left no record isn't found: copy the renderer from `MPCVR-Portable.zip` using the table above.

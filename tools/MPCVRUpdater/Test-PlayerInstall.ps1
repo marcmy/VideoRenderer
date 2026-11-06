@@ -61,6 +61,12 @@ try {
     Check ($kliteTargets.Count -eq 2) "Default K-Lite should give two targets, got $($kliteTargets.Count)"
     Check (@($kliteTargets | Where-Object { $_.LoadMode -eq 'PlayerFolder' -and $_.Architecture -eq 'x64' -and $_.Player -like 'K-Lite*' -and $_.Destination -like '*\MPC-HC64\MPCVR\MpcVideoRenderer64.ax' }).Count -eq 1) 'K-Lite x64 target'
     Check (@($kliteTargets | Where-Object { $_.LoadMode -eq 'SharedFilter' -and $_.Architecture -eq 'x86' -and $_.Destination -like '*\Filters\MPCVR\MpcVideoRenderer.ax' }).Count -eq 1) 'K-Lite x86 filter target'
+    # K-Lite without its MPC-HC keeps both renderers in the shared folder.
+    $noPlayer = Join-Path $root 'no-player'
+    Touch (Join-Path $noPlayer 'K-Lite Codec Pack\Filters\MPCVR\MpcVideoRenderer.ax')
+    Touch (Join-Path $noPlayer 'K-Lite Codec Pack\Filters\MPCVR\MpcVideoRenderer64.ax')
+    $shared = @(Get-MPCVRPlayerTarget -ProgramRoot @($noPlayer) -Hint @())
+    Check ($shared.Count -eq 2 -and @($shared | Where-Object { $_.LoadMode -eq 'SharedFilter' }).Count -eq 2 -and @($shared | Where-Object { $_.Architecture -eq 'x64' -and $_.FileName -eq 'MpcVideoRenderer64.ax' }).Count -eq 1) 'K-Lite shared filters of both architectures'
     $x64Only = Join-Path $root 'x64-only'
     Touch (Join-Path $x64Only 'K-Lite Codec Pack\MPC-HC64\MPCVR\MpcVideoRenderer64.ax')
     Check (@(Get-MPCVRPlayerTarget -ProgramRoot @($x64Only) -Hint @()).Count -eq 1) 'A 64-bit-only K-Lite installation should give only its x64 renderer'

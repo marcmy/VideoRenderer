@@ -144,7 +144,7 @@ function Get-MPCVRPlayerTarget {
         # The pack's shared filters, used by whatever else plays through DirectShow. Only replaced, never added.
         foreach ($filter in @(
             @{ Path = 'Filters\MPCVR\MpcVideoRenderer.ax'; Architecture = 'x86' },
-            @{ Path = 'Filters64\MPCVR\MpcVideoRenderer64.ax'; Architecture = 'x64' }
+            @{ Path = 'Filters\MPCVR\MpcVideoRenderer64.ax'; Architecture = 'x64' }
         )) {
             $destination = Join-Path $root $filter.Path
             if (Test-Path -LiteralPath $destination -PathType Leaf) {

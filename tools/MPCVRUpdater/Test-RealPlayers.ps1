@@ -117,7 +117,23 @@ function Expected([string]$Architecture) { if ($Architecture -eq 'x64') { $custo
 Check ($LASTEXITCODE -ne 0) 'The updater succeeded with no player installed'
 'PASS: no player is refused.'
 
-# --- The real players, MPC-BE first, so K-Lite ends up owning the x64 registration.
+# --- The real players, K-Lite first since it may hold back its MPC-HC when it finds another player.
+# Its silent install selects no player by default and ignores /COMPONENTS; an INF names them.
+$page = (Invoke-WebRequest -Uri 'https://www.codecguide.com/download_k-lite_codec_pack_mega.htm' -UseBasicParsing -UserAgent 'Mozilla/5.0').Content
+$kliteUrl = [regex]::Match($page, 'https://[^"]*K-Lite_Codec_Pack_[^"]*_Mega\.exe').Value
+Check ([bool]$kliteUrl) 'Could not find the K-Lite Mega download.'
+Write-Host "K-Lite: $kliteUrl"
+$kliteInf = Join-Path $WorkRoot 'klite.ini'
+@(
+    '[Setup]', 'Lang=en', "Dir=${env:ProgramFiles(x86)}\K-Lite Codec Pack", 'Group=K-Lite Codec Pack', 'NoIcons=0', 'SetupType=custom',
+    'Components=player,player\mpchc,player\mpchc\x64,video,video\lav,audio,audio\lav,sourcefilter,sourcefilter\lav,other,other\mpcvr',
+    'Tasks='
+) | Set-Content -LiteralPath $kliteInf -Encoding ASCII
+$kliteLog = Join-Path $WorkRoot 'klite-setup.log'
+$process = Start-Process -FilePath (Get-File $kliteUrl 'K-Lite_Mega.exe') -ArgumentList '/VERYSILENT', '/NORESTART', '/SUPPRESSMSGBOXES', '/SP-', "/LOADINF=`"$kliteInf`"", "/LOG=`"$kliteLog`"" -Wait -PassThru
+Check ($process.ExitCode -eq 0) "K-Lite setup failed with exit code $($process.ExitCode)"
+Get-Content -LiteralPath $kliteLog | Select-String -Pattern 'Selected components' | ForEach-Object { Write-Host $_.Line }
+
 $hc = Get-ReleaseAsset 'clsid2/mpc-hc' 'MPC-HC.*.x64.exe'
 Install-Silently $hc
 foreach ($pattern in @('MPC-BE.*.x64-installer.zip', 'MPC-BE.*.x86-installer.zip')) {
@@ -126,31 +142,21 @@ foreach ($pattern in @('MPC-BE.*.x64-installer.zip', 'MPC-BE.*.x86-installer.zip
     Expand-Archive -LiteralPath $zip -DestinationPath $folder -Force
     Install-Silently (@(Get-ChildItem -LiteralPath $folder -Recurse -Filter '*.exe')[0].FullName)
 }
-$page = (Invoke-WebRequest -Uri 'https://www.codecguide.com/download_k-lite_codec_pack_mega.htm' -UseBasicParsing -UserAgent 'Mozilla/5.0').Content
-$kliteUrl = [regex]::Match($page, 'https://[^"]*K-Lite_Codec_Pack_[^"]*_Mega\.exe').Value
-Check ([bool]$kliteUrl) 'Could not find the K-Lite Mega download.'
-Write-Host "K-Lite: $kliteUrl"
-$kliteLog = Join-Path $WorkRoot 'klite-setup.log'
-# A silent K-Lite install selects no player by default, so name the components a player needs.
-$kliteComponents = 'player,player\mpchc,player\mpchc\x64,other,other\mpcvr,video,video\lav,audio,audio\lav,sourcefilter,sourcefilter\lav'
-$process = Start-Process -FilePath (Get-File $kliteUrl 'K-Lite_Mega.exe') -ArgumentList '/VERYSILENT', '/NORESTART', '/SUPPRESSMSGBOXES', '/SP-', "/COMPONENTS=`"$kliteComponents`"", "/LOG=`"$kliteLog`"" -Wait -PassThru
-Write-Host "K-Lite setup exit code: $($process.ExitCode)"
-if (Test-Path -LiteralPath $kliteLog) { Get-Content -LiteralPath $kliteLog | Select-String -Pattern 'Selected components|Exception|rror' | Select-Object -First 20 | ForEach-Object { Write-Host $_.Line } }
-foreach ($folder in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
-    Get-ChildItem -LiteralPath (Join-Path $folder 'K-Lite Codec Pack') -Recurse -File -Include 'mpc-hc*.exe', 'MpcVideoRenderer*.ax' -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "K-Lite file: $($_.FullName)" }
-}
-Get-MPCVRRegistryHint | Where-Object { $_.Kind -eq 'K-Lite' } | ForEach-Object { Write-Host "K-Lite recorded at: $($_.Path)" }
 
 $targets = @(Get-MPCVRPlayerTarget)
 $targets | Format-Table Player, Architecture, LoadMode, Destination -AutoSize | Out-String -Width 220 | Write-Host
-foreach ($player in @('K-Lite Codec Pack (MPC-HC)', 'MPC-HC', 'MPC-BE')) {
+# K-Lite decides its own selection, so if it still left MPC-HC out, say so and test what it did install.
+if (-not @($targets | Where-Object { $_.Player -eq 'K-Lite Codec Pack (MPC-HC)' }).Count) {
+    Write-Host '::warning::K-Lite silently left out its MPC-HC; its shared filters are tested instead of its player.'
+    Check (@($targets | Where-Object { $_.Player -eq 'K-Lite Codec Pack (filter)' }).Count -gt 0) 'K-Lite installed neither MPC-HC nor a renderer'
+}
+foreach ($player in @('MPC-HC', 'MPC-BE')) {
     Check (@($targets | Where-Object { $_.Player -eq $player -and $_.Architecture -eq 'x64' }).Count -eq 1) "Real $player x64 was not detected exactly once"
 }
 Check (@($targets | Where-Object { $_.Player -eq 'MPC-BE' -and $_.Architecture -eq 'x86' }).Count -eq 1) 'Real MPC-BE x86 was not detected'
 foreach ($target in @($targets | Where-Object { $_.Player -eq 'MPC-BE' })) {
     Check (Test-Path -LiteralPath $target.Destination -PathType Leaf) "MPC-BE's bundled renderer is not where this expects it: $($target.Destination)"
 }
-$kliteHc = @($targets | Where-Object { $_.Player -like 'K-Lite*MPC-HC*' -and $_.Architecture -eq 'x64' })[0]
 $beX64 = @($targets | Where-Object { $_.Player -eq 'MPC-BE' -and $_.Architecture -eq 'x64' })[0]
 
 # Keep a stock renderer, to make it the registered one below.
