@@ -301,18 +301,18 @@ Other exact savings in this change: the fused pack writes only the images and th
 pixel's timestep, a reused target stores only that pixel, and the whole-model plan, which
 named the tensors and served as the fallback, is released once the fused contexts exist.
 
-Isolated runtime through the ABI, local build, 1920x1080 in 1920x1152, 8x with one first and
-six later targets per pair on a textured moving clip. Median of three alternating runs, each
-the minimum per run. Wall is `totalRuntimeMs`, median.
+Distributed runtimes through the ABI, 1920x1080 in 1920x1152, 8x with one first and six later
+targets per pair on a textured moving clip. Median of three alternating runs, each the minimum
+per run. Wall is `totalRuntimeMs`, median. VRAM is one mode alone in a fresh process.
 
 | Runtime | First, ms | Later, ms | Mean of 7, ms | Wall mean, ms | VRAM alone, MiB |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| r2923 | 6.03 | 3.83 | 4.14 | 4.51 | 906 |
-| Off | 5.77 | 3.67 | 3.97 | 4.32 | 890 |
-| Coarse | 5.70 | 2.53 | 2.98 | 3.44 | 914 |
-| Retime | 5.99 | 0.32 | 1.13 | 1.35 | 930 |
+| r2923 | 6.04 | 3.85 | 4.17 | 4.33 | 906 |
+| Off | 5.77 | 3.70 | 3.99 | 4.18 | 890 |
+| Coarse | 5.64 | 2.56 | 3.00 | 3.15 | 914 |
+| Retime | 5.92 | 0.32 | 1.12 | 1.26 | 930 |
 
-At 3840x2160 in 3840x2176, with the same clip doubled, one run each:
+At 3840x2160 in 3840x2176, with the same clip doubled, on a local build, one run each:
 
 | Mode | First, ms | Later, ms | Mean of 7, ms | Wall mean, ms | VRAM, MiB |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -327,7 +327,7 @@ Coarse gains little at 4K, where block 4 dominates even more.
 Seven nine-frame clips with true in-betweens at every eighth of a pair, frames 0 and 8 given:
 motion of 8 to 110 pixels per pair, a tracking shot, 60 crossing objects, accelerating motion
 and rotation. All synthetic. PSNR in dB, SSIM, and sharpness as a percentage of the truth's,
-averaged over the seven targets and the clips, from the production runtime:
+averaged over the seven targets and the clips, from a local build of this runtime:
 
 | Mode | PSNR | SSIM | Sharpness |
 | --- | ---: | ---: | ---: |
