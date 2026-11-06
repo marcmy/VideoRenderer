@@ -43,7 +43,7 @@ public:
         uint32_t contextCount,
         bool performanceBoost,
         const std::wstring& modelPath,
-        const std::wstring& cachePath, bool highPrecision = false, bool featureReuse = false);
+        const std::wstring& cachePath, bool highPrecision = false, bool featureReuse = false, uint32_t flowReuseFlags = 0);
 
     bool Interpolate(
         uint32_t contextIndex,
@@ -80,7 +80,7 @@ private:
         bool performanceBoost,
         const std::wstring& modelPath,
         const std::wstring& cachePath,
-        bool* abiCompatibleRuntime = nullptr, bool highPrecision = false, bool featureReuse = false);
+        bool* abiCompatibleRuntime = nullptr, bool highPrecision = false, bool featureReuse = false, uint32_t flowReuseFlags = 0);
 
     HMODULE m_module = nullptr;
     void* m_handle = nullptr;

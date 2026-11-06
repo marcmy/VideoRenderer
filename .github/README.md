@@ -243,6 +243,18 @@ model package; they leave original models and old plans intact. The first use
 builds separate fixed-resolution stage plans. A new pair, seek, drain or failed
 request invalidates reuse. Missing/incompatible sidecars fall back to the
 original engine; detailed Ctrl+J reports whether features are actually active.
+
+**Flow reuse** goes further, on 4.25 Lite with Feature reuse on, and needs an
+RTX 20 series or GTX 16 series card (compute capability 7.5, like the fused warp). It estimates
+motion once per source pair, halfway between the two frames, and moves that estimate to
+each target time. *Coarse* still runs the finest network block per target; *Retime* runs
+none and only warps and blends. Motion within a pair then becomes a straight line, so
+this is an approximation you choose, not a rounding difference: it is off by default.
+On an RTX 2070 SUPER at 1080p and 8x, mean GPU time per generated frame measured 3.97 ms
+with it off, 2.98 ms with Coarse and 1.13 ms with Retime. Against true in-between frames
+of synthetic clips, positions were more accurate than the model's own off-centre output,
+but moving edges looked more translucent. Judge it on your own footage. Each mode builds
+its own plans on first use. Detailed Ctrl+J reports which mode is actually active.
 This is experimental: compare delivered FPS and picture quality at identical
 settings. Encoder reuse does not guarantee a throughput improvement.
 

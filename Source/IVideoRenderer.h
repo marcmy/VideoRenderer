@@ -186,6 +186,19 @@ constexpr inline bool RifeModelSupportsFeatureReuse(const int model) noexcept
 	return model == RIFE_MODEL_415_LITE || model == RIFE_MODEL_425 || model == RIFE_MODEL_425_LITE;
 }
 
+// Shared flow: estimated once per source pair, on the measured 4.25 Lite path only.
+// Faster than estimating per target, but motion within a pair becomes a straight line.
+enum RifeFlowReuse_t {
+	RIFE_FLOW_REUSE_Off = 0,
+	RIFE_FLOW_REUSE_Coarse,	// blocks 0-3 per pair, the finest block per target
+	RIFE_FLOW_REUSE_Retime,	// every block per pair, only warp and blend per target
+};
+
+constexpr inline bool RifeModelSupportsFlowReuse(const int model) noexcept
+{
+	return model == RIFE_MODEL_425_LITE;
+}
+
 constexpr inline int RIFE_GPU_Auto = -1;
 constexpr inline int RIFE_CUSTOM_FPS_DEF = 60;
 constexpr inline int RIFE_CUSTOM_FPS_MIN = 24;
@@ -375,6 +388,7 @@ struct Settings_t {
 	int iMaxineLastOperation;
 	int iRifeLastMode;
 	int iSdrEnhanceLastMode;
+	int iRifeFlowReuse;
 
 	Settings_t() {
 		SetDefault();
@@ -466,6 +480,7 @@ struct Settings_t {
 		bRifePerformanceBoost           = false;
 		bRifePreservePrecision          = false;
 		bRifeFeatureReuse               = false;
+		iRifeFlowReuse                  = RIFE_FLOW_REUSE_Off;
 		iRifeSceneDetection             = RIFE_SCENE_SVPflow1;
 		iRifeProcessingResolution       = RIFE_RESOLUTION_Source;
 		iRifeProcessingLimit            = RifeProcessingLimitDefault;

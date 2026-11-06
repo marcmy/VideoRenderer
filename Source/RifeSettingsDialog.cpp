@@ -349,6 +349,7 @@ void CopyRifeSettings(Settings_t& dst, const Settings_t& src)
 	dst.bRifePerformanceBoost = src.bRifePerformanceBoost;
 	dst.bRifePreservePrecision = src.bRifePreservePrecision;
 	dst.bRifeFeatureReuse = src.bRifeFeatureReuse;
+	dst.iRifeFlowReuse = src.iRifeFlowReuse;
 	dst.iRifeProcessingResolution = src.iRifeProcessingResolution;
 	dst.iRifeProcessingLimit = src.iRifeProcessingLimit;
 	dst.iRifeSceneDetection = src.iRifeSceneDetection;
@@ -368,6 +369,7 @@ bool RifeSettingsEqual(const Settings_t& a, const Settings_t& b)
 		&& a.iRifeGPU == b.iRifeGPU
 		&& a.bRifePreservePrecision == b.bRifePreservePrecision
 		&& a.bRifeFeatureReuse == b.bRifeFeatureReuse
+		&& a.iRifeFlowReuse == b.iRifeFlowReuse
 		&& a.bRifePerformanceBoost == b.bRifePerformanceBoost
 		&& a.iRifeProcessingResolution == b.iRifeProcessingResolution
 		&& a.iRifeProcessingLimit == b.iRifeProcessingLimit
@@ -403,6 +405,10 @@ void EnableControls(HWND hwnd)
 	const auto model = ComboValue(hwnd, IDC_RIFE_MODEL);
 	EnableWindow(GetDlgItem(hwnd, IDC_RIFE_FEATURE_REUSE), enabled
 		&& RifeModelSupportsFeatureReuse(static_cast<int>(model)));
+	const BOOL flowReuseEnabled = enabled && RifeModelSupportsFlowReuse(static_cast<int>(model))
+		&& IsDlgButtonChecked(hwnd, IDC_RIFE_FEATURE_REUSE) == BST_CHECKED;
+	EnableWindow(GetDlgItem(hwnd, IDC_RIFE_FLOW_REUSE), flowReuseEnabled);
+	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_RIFE_FLOW_REUSE), flowReuseEnabled);
 	const BOOL imageEnabled = enabled && ComboValue(hwnd, IDC_RIFE_SCENE_DETECTION) == RIFE_SCENE_Image;
 	EnableWindow(GetDlgItem(hwnd, IDC_RIFE_SCENE_THRESHOLD), imageEnabled);
 	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_RIFE_SCENE_THRESHOLD), imageEnabled);
@@ -424,6 +430,7 @@ void SetControls(HWND hwnd, const Settings_t& settings)
 		settings.bRifePerformanceBoost ? BST_CHECKED : BST_UNCHECKED);
 	CheckDlgButton(hwnd, IDC_RIFE_PRESERVE_PRECISION, settings.bRifePreservePrecision ? BST_CHECKED : BST_UNCHECKED);
 	CheckDlgButton(hwnd, IDC_RIFE_FEATURE_REUSE, settings.bRifeFeatureReuse ? BST_CHECKED : BST_UNCHECKED);
+	SelectComboValue(hwnd, IDC_RIFE_FLOW_REUSE, settings.iRifeFlowReuse);
 	CheckDlgButton(hwnd, IDC_DETAILED_STATS,
 		settings.bDetailedStats ? BST_CHECKED : BST_UNCHECKED);
 	SelectComboValue(hwnd, IDC_RIFE_SCENE_DETECTION, settings.iRifeSceneDetection);
@@ -469,6 +476,11 @@ void InitializeDialog(HWND hwnd, const Settings_t& settings)
 		{L"GPU 0", 0}, {L"GPU 1", 1}, {L"GPU 2", 2}, {L"GPU 3", 3},
 		{L"GPU 4", 4}, {L"GPU 5", 5}, {L"GPU 6", 6}, {L"GPU 7", 7},
 	});
+	PopulateCombo(hwnd, IDC_RIFE_FLOW_REUSE, {
+		{L"Off", RIFE_FLOW_REUSE_Off},
+		{L"Coarse (faster)", RIFE_FLOW_REUSE_Coarse},
+		{L"Retime (fastest)", RIFE_FLOW_REUSE_Retime},
+	});
 	PopulateCombo(hwnd, IDC_RIFE_SCENE_DETECTION, {
 		{L"SVPflow1 motion vectors", RIFE_SCENE_SVPflow1},
 		{L"NVOF motion vectors", RIFE_SCENE_NVOF},
@@ -499,6 +511,7 @@ bool ReadControls(HWND hwnd, Settings_t& settings)
 	settings.iRifeGPU = static_cast<int>(ComboValue(hwnd, IDC_RIFE_GPU));
 	settings.bRifePreservePrecision = IsDlgButtonChecked(hwnd, IDC_RIFE_PRESERVE_PRECISION) == BST_CHECKED;
 	settings.bRifeFeatureReuse = IsDlgButtonChecked(hwnd, IDC_RIFE_FEATURE_REUSE) == BST_CHECKED;
+	settings.iRifeFlowReuse = static_cast<int>(ComboValue(hwnd, IDC_RIFE_FLOW_REUSE));
 	settings.bRifePerformanceBoost = IsDlgButtonChecked(hwnd, IDC_RIFE_PERFORMANCE_BOOST) == BST_CHECKED;
 	settings.iRifeProcessingResolution = static_cast<int>(ComboValue(hwnd, IDC_RIFE_PROCESSING_RESOLUTION));
 	BOOL limitValid = FALSE;
@@ -564,6 +577,12 @@ INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 		case IDC_RIFE_SCENE_DETECTION:
 		case IDC_RIFE_PROCESSING_RESOLUTION:
 			if (HIWORD(wParam) == CBN_SELCHANGE) {
+				EnableControls(hwnd);
+				return TRUE;
+			}
+			break;
+		case IDC_RIFE_FEATURE_REUSE:
+			if (HIWORD(wParam) == BN_CLICKED) {
 				EnableControls(hwnd);
 				return TRUE;
 			}

@@ -37,7 +37,7 @@ Routine confirmed changes can use normal commits on canonical master. Larger cha
 ## RIFE throughput comparisons
 
 Compare **GPU threads: 1** and **2** using the same clip segment, model, processing
-size, precision, feature reuse, scene detector, presentation size and requested
+size, precision, feature and flow reuse, scene detector, presentation size and requested
 rate. Run RIFE alone first, then repeat with identical Maxine settings. Keep other
 GPU workloads idle and capture statistics without an OCR overlay disrupting playback.
 Measure delivered FPS, late/stale-drop changes over the same interval, presentation

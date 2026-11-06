@@ -199,6 +199,12 @@ struct RuntimeBuildState {
     std::atomic_uint64_t retryAfterTick = 0;
 };
 
+// Shared flow needs the encoder's features, so it follows that setting.
+constexpr int RequestedFlowReuse(const Settings_t& settings) noexcept
+{
+    return settings.bRifeFeatureReuse && RifeModelSupportsFlowReuse(settings.iRifeModel) ? settings.iRifeFlowReuse : RIFE_FLOW_REUSE_Off;
+}
+
 struct RuntimeKey {
     ID3D11Device* device = nullptr;
     UINT width = 0;
@@ -210,6 +216,7 @@ struct RuntimeKey {
     int model = RIFE_MODEL_425;
     bool performanceBoost = false;
     bool featureReuse = false;
+    int flowReuse = RIFE_FLOW_REUSE_Off;
     DXGI_FORMAT format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
     bool operator==(const RuntimeKey& other) const noexcept
@@ -218,6 +225,7 @@ struct RuntimeKey {
             && contentWidth == other.contentWidth && contentHeight == other.contentHeight
             && gpu == other.gpu && contexts == other.contexts && model == other.model
             && performanceBoost == other.performanceBoost && featureReuse == other.featureReuse
+            && flowReuse == other.flowReuse
             && format == other.format;
     }
 };
@@ -476,6 +484,7 @@ struct CRifePlaybackPipeline::Impl
     std::atomic_uint64_t featuresKeptFirst = 0;
     std::atomic_bool inputPairReuseAvailable = false;
     std::atomic_bool encoderFeaturesActive = false;
+    std::atomic_uint64_t flowReuseActive = 0;
     std::atomic_uint64_t lastInputUnmapUs = 0;
     std::atomic_uint64_t lastOutputMapUs = 0;
     std::atomic_uint64_t lastTensorRtUs = 0;
@@ -1234,7 +1243,11 @@ struct CRifePlaybackPipeline::Impl
         key.format = TextureFormat(frame.texture);
         key.featureReuse = frame.settings.bRifeFeatureReuse
             && RifeModelSupportsFeatureReuse(key.model);
-        if (!runtimeKey || !(*runtimeKey == key)) encoderFeaturesActive.store(false, std::memory_order_relaxed);
+        key.flowReuse = RequestedFlowReuse(frame.settings);
+        if (!runtimeKey || !(*runtimeKey == key)) {
+            encoderFeaturesActive.store(false, std::memory_order_relaxed);
+            flowReuseActive.store(0, std::memory_order_relaxed);
+        }
 
         if (runtimeKey && RifeRuntimeCacheConflicts(*runtimeKey, key)) {
             runtimeBuild.reset();
@@ -1306,7 +1319,9 @@ struct CRifePlaybackPipeline::Impl
             const bool ok = runtime->Initialize(
                 L"", device, width, height, key.contentWidth, key.contentHeight, gpuIndex,
                 static_cast<uint32_t>(key.contexts), key.performanceBoost,
-                model.wstring(), cache.wstring(), key.format == DXGI_FORMAT_R16G16B16A16_FLOAT, key.featureReuse);
+                model.wstring(), cache.wstring(), key.format == DXGI_FORMAT_R16G16B16A16_FLOAT, key.featureReuse,
+                key.flowReuse == RIFE_FLOW_REUSE_Coarse ? MPCVR_RIFE_CREATE_FLOW_REUSE_COARSE
+                    : key.flowReuse == RIFE_FLOW_REUSE_Retime ? MPCVR_RIFE_CREATE_FLOW_REUSE_RETIME : 0u);
             device->Release();
 
             {
@@ -1464,6 +1479,7 @@ struct CRifePlaybackPipeline::Impl
         }
         inputPairReuseAvailable.store(stats.inputPairReuse != 0, std::memory_order_relaxed);
         encoderFeaturesActive.store(stats.featureReuse != 0, std::memory_order_relaxed);
+        flowReuseActive.store(stats.flowReuse, std::memory_order_relaxed);
         if (stats.inputPairReuse == 1) inputPairPacks.fetch_add(1, std::memory_order_relaxed);
         if (stats.inputPairReuse == 2) inputPairReuses.fetch_add(1, std::memory_order_relaxed);
         if (stats.featureReuse == 1) featuresEncodedBoth.fetch_add(1, std::memory_order_relaxed);
@@ -1932,6 +1948,11 @@ struct CRifePlaybackPipeline::Impl
                     && owner->m_Sets.iRifeModel != RIFE_MODEL_46) {
                 diagnostics += encoderFeaturesActive.load(std::memory_order_relaxed) ? L", features On" : L", features inactive";
             }
+            if (RequestedFlowReuse(owner->m_Sets) != RIFE_FLOW_REUSE_Off) {
+                const auto activeFlow = flowReuseActive.load(std::memory_order_relaxed);
+                diagnostics += activeFlow == RIFE_FLOW_REUSE_Coarse ? L", flow Coarse"
+                    : activeFlow == RIFE_FLOW_REUSE_Retime ? L", flow Retime" : L", flow inactive";
+            }
         }
         const auto requested = adaptiveRequestedOutputFpsMilli.load(std::memory_order_relaxed);
         const auto cap = adaptiveOutputCapFpsMilli.load(std::memory_order_relaxed);
@@ -2265,6 +2286,7 @@ struct CRifePlaybackPipeline::Impl
                     || runtimeKey->format != desc.Format
                     || runtimeKey->featureReuse != (currentFrame->settings.bRifeFeatureReuse
                         && RifeModelSupportsFeatureReuse(currentFrame->settings.iRifeModel))
+                    || runtimeKey->flowReuse != RequestedFlowReuse(currentFrame->settings)
                     || runtimeKey->performanceBoost != currentFrame->settings.bRifePerformanceBoost);
             if (runtimeSettingsChanged) {
                 // Retire all work using the previous runtime before switching a

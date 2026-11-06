@@ -69,7 +69,7 @@ assert "FeatureHotkeyCaptureActive()" in proc, "hotkeys must pause while their s
 # Settings: appended after the SDR enhancement settings, loaded, saved, clamped.
 layout = body(settings, "int iSdrEnhanceSkinProtection;", "Settings_t() {")
 fields = ["iHotkeyMaxine", "iHotkeyRife", "iHotkeySdrEnhance", "iMaxineLastOperation", "iRifeLastMode", "iSdrEnhanceLastMode"]
-assert re.findall(r"int (\w+);", layout)[1:] == fields, "hotkey settings must be appended in order"
+assert re.findall(r"int (\w+);", layout)[1:len(fields) + 1] == fields, "hotkey settings must be appended in order"
 for option in ("HotkeyMaxine", "HotkeyRife", "HotkeySdrEnhance", "MaxineLastOperation", "RifeLastMode", "SdrEnhanceLastMode"):
     assert f"QueryDWORDValue(OPT_{option}," in rife and f"SetDWORDValue(OPT_{option}," in rife, f"{option} must be loaded and saved"
 set_settings = body(rife, "STDMETHODIMP_(void) CMpcVideoRenderer::SetSettings(", "\nSTDMETHODIMP CMpcVideoRenderer::SaveSettings")

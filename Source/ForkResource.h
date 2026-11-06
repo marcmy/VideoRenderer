@@ -43,6 +43,8 @@
 #define IDC_RIFE_DUPLICATE_REMOVAL             20032
 #define IDC_RIFE_PRESERVE_PRECISION            20033
 #define IDC_RIFE_FEATURE_REUSE                 20034
+#define IDC_RIFE_FLOW_REUSE                    20083
+#define IDC_STATIC_RIFE_FLOW_REUSE             20084
 #define IDC_RIFE_MODEL                         20035
 #define IDC_STATIC_RIFE_CUSTOM_FPS             20036
 #define IDC_RIFE_RULES_ENABLED                 20037

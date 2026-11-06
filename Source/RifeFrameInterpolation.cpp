@@ -196,7 +196,7 @@ bool CRifeFrameInterpolation::Initialize(
     const uint32_t contextCount,
     const bool performanceBoost,
     const std::wstring& modelPath,
-    const std::wstring& cachePath, const bool highPrecision, const bool featureReuse)
+    const std::wstring& cachePath, const bool highPrecision, const bool featureReuse, const uint32_t flowReuseFlags)
 {
     if (m_liveCudaLeases.load(std::memory_order_acquire)) return false;
     Reset();
@@ -216,7 +216,7 @@ bool CRifeFrameInterpolation::Initialize(
         bool abiCompatibleRuntime = false;
         if (LoadAndCreate(
                 AbsoluteModulePath(directory).wstring(), device, width, height, contentWidth, contentHeight, gpuIndex,
-                contextCount, performanceBoost, modelPath, cachePath, &abiCompatibleRuntime, highPrecision, featureReuse)) {
+                contextCount, performanceBoost, modelPath, cachePath, &abiCompatibleRuntime, highPrecision, featureReuse, flowReuseFlags)) {
             return true;
         }
         if (abiCompatibleRuntime) {
@@ -246,7 +246,7 @@ bool CRifeFrameInterpolation::LoadAndCreate(
     const bool performanceBoost,
     const std::wstring& modelPath,
     const std::wstring& cachePath,
-    bool* abiCompatibleRuntime, const bool highPrecision, const bool featureReuse)
+    bool* abiCompatibleRuntime, const bool highPrecision, const bool featureReuse, const uint32_t flowReuseFlags)
 {
     if (abiCompatibleRuntime) {
         *abiCompatibleRuntime = false;
@@ -280,9 +280,10 @@ bool CRifeFrameInterpolation::LoadAndCreate(
     const auto getCapabilities = reinterpret_cast<MpcvrRifeGetCapabilitiesFn>(GetProcAddress(module, "MpcvrRifeGetCapabilities"));
     const uint32_t capabilities = getCapabilities ? getCapabilities() : 0u;
     const uint32_t required = (highPrecision ? MPCVR_RIFE_CAP_HIGH_PRECISION : 0u)
-        | (featureReuse ? MPCVR_RIFE_CAP_FEATURE_REUSE : 0u);
+        | (featureReuse ? MPCVR_RIFE_CAP_FEATURE_REUSE : 0u)
+        | (flowReuseFlags ? MPCVR_RIFE_CAP_FLOW_REUSE : 0u);
     if ((capabilities & required) != required) {
-        m_status = L"Update the RIFE runtime to use precision or encoder feature reuse";
+        m_status = L"Update the RIFE runtime to use precision, feature reuse or flow reuse";
         FreeLibrary(module);
         return false;
     }
@@ -302,7 +303,8 @@ bool CRifeFrameInterpolation::LoadAndCreate(
     // renderer can safely retire a context before switching runtime instances.
     params.flags = (exports.drainContext ? MPCVR_RIFE_CREATE_DEFER_INPUT_RELEASE : 0u)
         | (highPrecision ? MPCVR_RIFE_CREATE_HIGH_PRECISION : 0u)
-        | (featureReuse ? MPCVR_RIFE_CREATE_FEATURE_REUSE : 0u);
+        | (featureReuse ? MPCVR_RIFE_CREATE_FEATURE_REUSE : 0u)
+        | flowReuseFlags;
 
     void* handle = nullptr;
     const int result = exports.create(&params, &handle);
