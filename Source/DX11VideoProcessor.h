@@ -20,6 +20,8 @@
 
 #pragma once
 
+#include <memory>
+#include <mutex>
 #include "RifeSpatialPolicy.h"
 #include "RifePresentationPreparation.h"
 #include "RifeFrameInterpolation.h"
@@ -352,6 +354,10 @@ private:
 	std::array<FrameInterpolationPresentationSurface, FrameInterpolationSurfaceCount> m_FrameInterpolationPresentationSurfaces;
 	std::atomic_uint64_t m_RifePresentationRetireLastUs = 0;
 	std::atomic_uint64_t m_RifePresentationRetireMaxUs = 0;
+	struct RifeCopyFence;
+	std::shared_ptr<RifeCopyFence> GetRifeCopyFence();
+	std::mutex m_RifeCopyFenceMutex;
+	std::shared_ptr<RifeCopyFence> m_RifeCopyFence;
 	std::atomic_uint64_t m_RifePresentationRetireCount = 0;
 	std::atomic_uint64_t m_RifePresentationRetireBusyChecks = 0;
 	CRollingTimingWindow<256> m_RifePresentationRetireTiming;
@@ -564,6 +570,14 @@ public:
 	bool PrepareRifeSource(IMediaSample* pSample, ID3D11Texture2D* target, REFERENCE_TIME& sourceTime, UINT alignment = 32u);
 	bool AcquireRifePresentationSurface(UINT width, UINT height, ID3D11Texture2D** target, UINT& sourceSurface);
 	bool ReserveRifePresentationSurface(ID3D11Texture2D* source, UINT& sourceSurface, CSize contentSize);
+	// Surfaces shared with CUDA stay imported, so nothing between D3D11 copies and CUDA work
+	// takes the device lock. Each copy signals this fence and a worker reads it without the lock.
+	bool EnsureRifeCopyFence();
+	uint64_t SignalRifeCopyFence();
+	void FlushRifeCopies();
+	uint64_t LastRifeCopyFence();
+	uint64_t CompletedRifeCopyFence();
+	void WaitRifeCopyFence(uint64_t value);
 	bool ReserveRifeCudaPresentationSurface(const std::shared_ptr<RifeCudaOutputLease>& source, UINT& sourceSurface, CSize contentSize);
 	bool CanUseRifeCudaOutput();
 	REFERENCE_TIME RifePresentationPreparationLeadTime(REFERENCE_TIME frameInterval) override;

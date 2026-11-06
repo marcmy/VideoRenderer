@@ -173,7 +173,7 @@ bool SameTextureShape(ID3D11Texture2D* texture, ID3D11Device* device, UINT width
 }
 
 HRESULT CreateBgraTexture(ID3D11Device* device, UINT width, UINT height, ID3D11Texture2D** texture,
-    DXGI_FORMAT format = DXGI_FORMAT_B8G8R8A8_UNORM)
+    DXGI_FORMAT format = DXGI_FORMAT_B8G8R8A8_UNORM, UINT miscFlags = 0)
 {
     if (!device || !width || !height || !texture) {
         return E_INVALIDARG;
@@ -187,7 +187,19 @@ HRESULT CreateBgraTexture(ID3D11Device* device, UINT width, UINT height, ID3D11T
     desc.SampleDesc.Count = 1;
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    desc.MiscFlags = miscFlags;
     return device->CreateTexture2D(&desc, nullptr, texture);
+}
+
+// A surface CUDA uses every frame. Shared, the runtime imports it once instead of mapping it,
+// which needs the device lock that Present holds. The fallback maps as before.
+HRESULT CreateInferenceSurface(ID3D11Device* device, UINT width, UINT height, ID3D11Texture2D** texture,
+    DXGI_FORMAT format, bool shared)
+{
+    if (shared && SUCCEEDED(CreateBgraTexture(device, width, height, texture, format, D3D11_RESOURCE_MISC_SHARED))) {
+        return S_OK;
+    }
+    return CreateBgraTexture(device, width, height, texture, format);
 }
 
 struct RuntimeBuildState {
@@ -251,6 +263,8 @@ struct CRifePlaybackPipeline::Impl
         CComPtr<ID3D11Texture2D> inferenceAsSecond;
         CComPtr<ID3D11Query> inputCopyAsFirstReadyQuery;
         CComPtr<ID3D11Query> inputCopyAsSecondReadyQuery;
+        uint64_t inputCopyAsFirstFence = 0;
+        uint64_t inputCopyAsSecondFence = 0;
         CDX11VideoProcessor* processor = nullptr;
         REFERENCE_TIME time = INVALID_TIME;
         REFERENCE_TIME frameDuration = 0;
@@ -418,6 +432,8 @@ struct CRifePlaybackPipeline::Impl
     std::atomic_uint32_t adaptiveOutputCapFpsMilli = 0;
     std::atomic_uint32_t adaptiveLoadSamples = 0;
     std::atomic_uint32_t adaptiveHeadroomPermille = 970;
+    std::atomic_bool sharedInferenceSurfaces = false;
+    std::atomic_uint32_t importedSurfaces = 0;
     std::atomic_bool adaptivePressureDetected = false;
     std::atomic_uint32_t adaptivePressurePhase =
         static_cast<uint32_t>(FrameInterpolationPressurePhase::Open);
@@ -570,31 +586,45 @@ struct CRifePlaybackPipeline::Impl
 
     std::optional<bool> ProbeInputCopyQueries(const SourceFrame& first, const SourceFrame& second)
     {
-        ID3D11Query* firstQuery = first.inputCopyAsFirstReadyQuery;
-        ID3D11Query* secondQuery = second.inferenceAsSecond
-            ? second.inputCopyAsSecondReadyQuery.p : second.inputCopyAsFirstReadyQuery.p;
-        if (!firstQuery || !secondQuery || !second.processor) {
+        if (!second.processor) {
             return std::nullopt;
         }
+        bool firstReady = false;
+        bool secondReady = false;
+        const uint64_t firstFence = first.inputCopyAsFirstFence;
+        const uint64_t secondFence = second.inferenceAsSecond ? second.inputCopyAsSecondFence : second.inputCopyAsFirstFence;
+        if (firstFence && secondFence) {
+            // Queries would take the device lock, which Present can hold for most of a frame.
+            const uint64_t completed = second.processor->CompletedRifeCopyFence();
+            firstReady = completed >= firstFence;
+            secondReady = completed >= secondFence;
+        } else {
+            ID3D11Query* firstQuery = first.inputCopyAsFirstReadyQuery;
+            ID3D11Query* secondQuery = second.inferenceAsSecond
+                ? second.inputCopyAsSecondReadyQuery.p : second.inputCopyAsFirstReadyQuery.p;
+            if (!firstQuery || !secondQuery) {
+                return std::nullopt;
+            }
 
-        ID3D11Device* device = second.processor->GetRifeDevice();
-        if (!device) {
-            return std::nullopt;
+            ID3D11Device* device = second.processor->GetRifeDevice();
+            if (!device) {
+                return std::nullopt;
+            }
+            CComPtr<ID3D11DeviceContext> context;
+            device->GetImmediateContext(&context);
+            if (!context) {
+                return std::nullopt;
+            }
+
+            const auto queryReady = [&](ID3D11Query* query, const UINT flags) -> HRESULT {
+                BOOL complete = FALSE;
+                const HRESULT hr = context->GetData(query, &complete, sizeof(complete), flags);
+                return hr == S_OK && complete ? S_OK : hr == S_OK ? S_FALSE : hr;
+            };
+
+            firstReady = queryReady(firstQuery, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+            secondReady = queryReady(secondQuery, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
         }
-        CComPtr<ID3D11DeviceContext> context;
-        device->GetImmediateContext(&context);
-        if (!context) {
-            return std::nullopt;
-        }
-
-        const auto queryReady = [&](ID3D11Query* query, const UINT flags) -> HRESULT {
-            BOOL complete = FALSE;
-            const HRESULT hr = context->GetData(query, &complete, sizeof(complete), flags);
-            return hr == S_OK && complete ? S_OK : hr == S_OK ? S_FALSE : hr;
-        };
-
-        const bool firstReady = queryReady(firstQuery, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
-        const bool secondReady = queryReady(secondQuery, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
         lastInputCopyFirstReady.store(firstReady, std::memory_order_relaxed);
         lastInputCopySecondReady.store(secondReady, std::memory_order_relaxed);
         inputCopyReadyChecks.fetch_add(1, std::memory_order_relaxed);
@@ -727,16 +757,17 @@ struct CRifePlaybackPipeline::Impl
                     continue;
                 }
             }
+            const bool sharedInputs = sharedInferenceSurfaces.load(std::memory_order_relaxed);
             if (!SameTextureShape(slot.inferenceAsFirst, device, width, height, format)) {
                 slot.inferenceAsFirst.Release();
-                if (FAILED(CreateBgraTexture(device, width, height, &slot.inferenceAsFirst, format))) {
+                if (FAILED(CreateInferenceSurface(device, width, height, &slot.inferenceAsFirst, format, sharedInputs))) {
                     continue;
                 }
             }
             if (parallelInputs) {
                 if (!SameTextureShape(slot.inferenceAsSecond, device, width, height, format)) {
                     slot.inferenceAsSecond.Release();
-                    if (FAILED(CreateBgraTexture(device, width, height, &slot.inferenceAsSecond, format))) {
+                    if (FAILED(CreateInferenceSurface(device, width, height, &slot.inferenceAsSecond, format, sharedInputs))) {
                         continue;
                     }
                 }
@@ -901,6 +932,7 @@ struct CRifePlaybackPipeline::Impl
         CComPtr<ID3D11Texture2D> inferenceAsSecond;
         CComPtr<ID3D11Query> inputCopyAsFirstReadyQuery;
         CComPtr<ID3D11Query> inputCopyAsSecondReadyQuery;
+        sharedInferenceSurfaces.store(processor->EnsureRifeCopyFence(), std::memory_order_relaxed);
         if (!AcquireSourceSlot(device, static_cast<UINT>(size.cx), static_cast<UINT>(size.cy),
                 processor->GetRifeSurfaceFormat(), inferenceContextCount > 1, slot, &texture, &inferenceAsFirst, &inferenceAsSecond,
                 &inputCopyAsFirstReadyQuery, &inputCopyAsSecondReadyQuery)) {
@@ -937,15 +969,22 @@ struct CRifePlaybackPipeline::Impl
         // immediately as the second input of A/B. Queue that role first. Its
         // first-input copy is only needed by the future B/C pair one source
         // interval later, so it can safely trail the latency-critical copy.
+        uint64_t inputCopyAsSecondFence = 0;
         if (inferenceAsSecond) {
             inputCopyContext->CopyResource(inferenceAsSecond, texture);
             if (inputCopyAsSecondReadyQuery) {
                 inputCopyContext->End(inputCopyAsSecondReadyQuery);
             }
+            inputCopyAsSecondFence = processor->SignalRifeCopyFence();
         }
         inputCopyContext->CopyResource(inferenceAsFirst, texture);
         if (inputCopyAsFirstReadyQuery) {
             inputCopyContext->End(inputCopyAsFirstReadyQuery);
+        }
+        const uint64_t inputCopyAsFirstFence = processor->SignalRifeCopyFence();
+        // A mapped surface flushed these when CUDA mapped it; a worker now only reads the fence.
+        if (inputCopyAsFirstFence) {
+            inputCopyContext->Flush();
         }
         lastInputCopySubmitUs.store(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - inputCopyStart).count()), std::memory_order_relaxed);
@@ -957,6 +996,8 @@ struct CRifePlaybackPipeline::Impl
         frame.inferenceAsSecond = inferenceAsSecond;
         frame.inputCopyAsFirstReadyQuery = inputCopyAsFirstReadyQuery;
         frame.inputCopyAsSecondReadyQuery = inputCopyAsSecondReadyQuery;
+        frame.inputCopyAsFirstFence = inputCopyAsFirstFence;
+        frame.inputCopyAsSecondFence = inputCopyAsSecondFence;
         frame.processor = processor;
         frame.time = sourceTime;
         frame.frameDuration = frameDuration;
@@ -1418,7 +1459,8 @@ struct CRifePlaybackPipeline::Impl
         auto& output = workerState.inferenceOutputs[index];
         if (!SameTextureShape(output, device, width, height, format)) {
             output.Release();
-            if (FAILED(CreateBgraTexture(device, width, height, &output, format))) {
+            if (FAILED(CreateInferenceSurface(device, width, height, &output, format,
+                    sharedInferenceSurfaces.load(std::memory_order_relaxed)))) {
                 return nullptr;
             }
         }
@@ -1480,6 +1522,7 @@ struct CRifePlaybackPipeline::Impl
         inputPairReuseAvailable.store(stats.inputPairReuse != 0, std::memory_order_relaxed);
         encoderFeaturesActive.store(stats.featureReuse != 0, std::memory_order_relaxed);
         flowReuseActive.store(stats.flowReuse, std::memory_order_relaxed);
+        importedSurfaces.fetch_or(static_cast<uint32_t>(stats.persistentOutput), std::memory_order_relaxed);
         if (stats.inputPairReuse == 1) inputPairPacks.fetch_add(1, std::memory_order_relaxed);
         if (stats.inputPairReuse == 2) inputPairReuses.fetch_add(1, std::memory_order_relaxed);
         if (stats.featureReuse == 1) featuresEncodedBoth.fetch_add(1, std::memory_order_relaxed);
@@ -1604,6 +1647,11 @@ struct CRifePlaybackPipeline::Impl
         // readiness probe only; blocking here serializes the CPU before CUDA
         // work has even been queued and duplicates part of the interop wait.
         const auto copiesReadyAtWorkerStart = ProbeInputCopyQueries(first, second);
+        // Imported surfaces have no map to do that. This job reads staged inputs copied before
+        // it was dispatched, and rewrites outputs whose previous job was fully queued by then.
+        if (second.processor) {
+            second.processor->WaitRifeCopyFence(second.processor->LastRifeCopyFence());
+        }
 
         bool hasTimelySyntheticTarget = false;
         for (const auto& target : job.targets) {
@@ -1913,6 +1961,10 @@ struct CRifePlaybackPipeline::Impl
                 && !job.presentationFinalized) {
             job.presentationFinalized = true;
             progressed = true;
+            // The next job on this worker rewrites these outputs and waits for their copies.
+            if (second.processor) {
+                second.processor->FlushRifeCopies();
+            }
         }
         if (job.presentationFinalized && !job.targets.empty() && !job.queuedOutput && IsCurrent(second)) {
             if (QueueTexture(second, second.texture, second.time, false)) {
@@ -1948,6 +2000,9 @@ struct CRifePlaybackPipeline::Impl
                     && owner->m_Sets.iRifeModel != RIFE_MODEL_46) {
                 diagnostics += encoderFeaturesActive.load(std::memory_order_relaxed) ? L", features On" : L", features inactive";
             }
+            const uint32_t imported = importedSurfaces.load(std::memory_order_relaxed);
+            diagnostics += imported == 3 ? L", surfaces imported" : imported == 2 ? L", inputs imported"
+                : imported == 1 ? L", output imported" : L", surfaces mapped";
             if (RequestedFlowReuse(owner->m_Sets) != RIFE_FLOW_REUSE_Off) {
                 const auto activeFlow = flowReuseActive.load(std::memory_order_relaxed);
                 diagnostics += activeFlow == RIFE_FLOW_REUSE_Coarse ? L", flow Coarse"

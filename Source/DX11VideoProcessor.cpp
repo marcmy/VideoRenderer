@@ -893,6 +893,10 @@ void CDX11VideoProcessor::ReleaseDevice()
 {
 	DLog(L"CDX11VideoProcessor::ReleaseDevice()");
 
+	{
+		std::lock_guard lock(m_RifeCopyFenceMutex);
+		m_RifeCopyFence.reset();
+	}
 	ReleaseVP();
 	m_D3D11VP.ReleaseVideoDevice();
 	m_RifeVsrConvertVP.ReleaseVideoDevice();
