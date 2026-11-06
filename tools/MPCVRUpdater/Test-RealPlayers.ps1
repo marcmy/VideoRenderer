@@ -44,7 +44,49 @@ function Invoke-Updater {
     & $hostExecutable -NoLogo -NoProfile -ExecutionPolicy Bypass -File $updater -PackageArchive $PackageArchive -ChecksumFile $ChecksumFile -NoPause
     Check ($LASTEXITCODE -eq 0) "The updater failed with exit code $LASTEXITCODE"
 }
-function Stop-Players { Get-Process -Name (Get-MPCVRPlayerProcessName) -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }
+function Stop-Players {
+    # Asked first, so a player can save its state and the next one doesn't start after a crash.
+    $running = @(Get-Process -Name (Get-MPCVRPlayerProcessName) -ErrorAction SilentlyContinue)
+    foreach ($player in $running) { [void]$player.CloseMainWindow() }
+    foreach ($player in $running) {
+        if (-not $player.WaitForExit(10000)) { $player | Stop-Process -Force -ErrorAction SilentlyContinue; [void]$player.WaitForExit(5000) }
+    }
+}
+function Get-WindowReport([int]$ProcessId) {
+    if (-not ('RealPlayerTest.Windows' -as [type])) {
+        Add-Type -TypeDefinition @"
+using System; using System.Collections.Generic; using System.Runtime.InteropServices; using System.Text;
+namespace RealPlayerTest { public static class Windows {
+  delegate bool Callback(IntPtr window, IntPtr data);
+  [DllImport("user32.dll")] static extern bool EnumWindows(Callback callback, IntPtr data);
+  [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, Callback callback, IntPtr data);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint id);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder text, int size);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder text, int size);
+  static string Describe(IntPtr window) { var a = new StringBuilder(512); var b = new StringBuilder(128); GetWindowText(window, a, 512); GetClassName(window, b, 128); return b + ":" + a; }
+  public static List<string> Report(int id) {
+    var lines = new List<string>();
+    EnumWindows((window, data) => { uint owner; GetWindowThreadProcessId(window, out owner);
+      if (owner == id && IsWindowVisible(window)) { lines.Add(Describe(window));
+        EnumChildWindows(window, (child, unused) => { if (IsWindowVisible(child)) { var text = Describe(child); if (!text.EndsWith(":")) lines.Add("  " + text); } return true; }, IntPtr.Zero); }
+      return true; }, IntPtr.Zero);
+    return lines; } } }
+"@
+    }
+    return [RealPlayerTest.Windows]::Report($ProcessId) -join ' | '
+}
+function Save-Screenshot([string]$Name) {
+    # Best effort, for the uploaded artifact.
+    try {
+        Add-Type -AssemblyName System.Drawing
+        $bitmap = New-Object Drawing.Bitmap 1920, 1080
+        $graphics = [Drawing.Graphics]::FromImage($bitmap)
+        $graphics.CopyFromScreen(0, 0, 0, 0, $bitmap.Size)
+        $bitmap.Save((Join-Path $WorkRoot "$Name.png"))
+        $graphics.Dispose(); $bitmap.Dispose()
+    } catch { Write-Host "No screenshot: $($_.Exception.Message)" }
+}
 
 function New-TestClip([string]$Path) {
     # Two seconds of uncompressed 64x64 RGB24 AVI; no decoder or download needed.
@@ -101,7 +143,8 @@ function Get-LoadedRenderer([string]$Executable, [string]$Clip, [int]$TimeoutSec
         $modules = @($process.Modules | ForEach-Object { $_.ModuleName } | Where-Object { $_ -match '^(evr|quartz|d3d9|d3d11|mpc|LAV)' }) -join ', '
         $renderer = (Get-ItemProperty -Path 'HKCU:\Software\MPC-HC\MPC-HC\Settings' -Name 'DSVidRen' -ErrorAction SilentlyContinue).DSVidRen
         $ini = @(Get-ChildItem -LiteralPath ([IO.Path]::GetDirectoryName($Executable)) -Filter '*.ini' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }) -join ', '
-        throw "$Executable did not load MPC Video Renderer within $TimeoutSeconds seconds. Window: '$($process.MainWindowTitle)'. DSVidRen: $renderer. INI: '$ini'. Modules: $modules"
+        Save-Screenshot ('timeout-' + [IO.Path]::GetFileNameWithoutExtension($Executable))
+        throw "$Executable did not load MPC Video Renderer within $TimeoutSeconds seconds. Windows: $(Get-WindowReport $process.Id). DSVidRen: $renderer. INI: '$ini'. Modules: $modules"
     }
     finally {
         Stop-Players

@@ -64,6 +64,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: ./tools/MPCVRUpdater/Test-RealPlayers.ps1 -PackageArchive release/MPCVR-Portable.zip -ChecksumFile release/SHA256SUMS.txt -WorkRoot $env:RUNNER_TEMP/real-players
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: real-player-screenshots
+          path: ${{ runner.temp }}/real-players/*.png
+          if-no-files-found: ignore
+          retention-days: 7
   validate-maxine-installer:
     uses: ./.github/workflows/validate-maxine-runtime-installer.yml
   validate-rife-installer:
