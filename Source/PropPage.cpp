@@ -273,6 +273,22 @@ bool ReadMaxineDialog(HWND hwnd, Settings_t& settings)
 	return true;
 }
 
+constexpr SettingsTooltip kMaxineTooltips[] = {
+	{IDC_MAXINE_OPERATION, L"What Maxine does: upscale, with optional cleanup passes, or only denoise or deblur at the source's resolution."},
+	{IDC_MAXINE_SOURCE_MODE, L"Which upscaling model to use. Standard suits compressed video and High bitrate suits clean sources. Automatic chooses by the reported bitrate. Bicubic has no AI, for comparison."},
+	{IDC_MAXINE_QUALITY, L"Higher levels use more of the GPU and may process more strongly. High is the recommended starting point."},
+	{IDC_MAXINE_AMOUNT, L"How much of Maxine's result to use: 0 is a normal resize and 100 is all Maxine."},
+	{IDC_MAXINE_SCALE, L"The size Maxine upscales to. Match player output avoids making a frame larger than the player needs."},
+	{IDC_MAXINE_OVERSAMPLE, L"Upscales above the player's output, then downsamples to fit. It can improve fine detail, but uses much more GPU and VRAM. Needs Output size set to Match player output."},
+	{IDC_MAXINE_SOURCE_LIMIT, L"Video larger than this skips Maxine, so sources that are already sharp don't cost GPU time."},
+	{IDC_MAXINE_DENOISE, L"Removes noise and compression artifacts. Strong settings can also remove real texture, so start low."},
+	{IDC_MAXINE_DEBLUR, L"Reduces blur. Strong settings can exaggerate edges or add halos, so start low."},
+	{IDC_MAXINE_PIPELINE, L"The order of the passes. Cleaning before upscaling stops artifacts being enlarged, and cleaning after gives the filters more pixels to work with."},
+	{IDC_MAXINE_GPU, L"Which NVIDIA GPU runs Maxine. Auto suits a single-GPU system. The number may differ from Task Manager's."},
+	{IDC_MAXINE_AUTO_BITRATE, L"With Source type on Automatic, video at or above this bitrate uses High bitrate. Lower bitrates, and video that reports none, use Standard."},
+	{IDC_BUTTON_MAXINE_DEFAULTS, L"Put these settings back to their defaults. Nothing is saved until you press OK."},
+};
+
 INT_PTR CALLBACK MaxineSettingsDlgProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	auto* settings = reinterpret_cast<Settings_t*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -282,6 +298,7 @@ INT_PTR CALLBACK MaxineSettingsDlgProc(HWND hwnd, UINT message, WPARAM wParam, L
 		settings = reinterpret_cast<Settings_t*>(lParam);
 		SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(settings));
 		InitializeSettingsDialogTheme(hwnd);
+		AddSettingsTooltips(hwnd, kMaxineTooltips);
 		InitializeMaxineDialog(hwnd, *settings);
 		return TRUE;
 

@@ -274,3 +274,57 @@ void InitializeSettingsDialogTheme(HWND dialog)
     DwmSetWindowAttribute(dialog, DWMWA_TEXT_COLOR, &theme->text, sizeof(theme->text));
     theme.release(); // Owned by the dialog subclass until WM_NCDESTROY.
 }
+
+void AddSettingsTooltips(HWND dialog, const SettingsTooltip* tips, size_t count)
+{
+	HWND tooltip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+		WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+		dialog, nullptr, nullptr, nullptr);
+	if (!tooltip) {
+		return;
+	}
+	SendMessageW(tooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, MAKELONG(20000, 0));
+	SendMessageW(tooltip, TTM_SETDELAYTIME, TTDT_INITIAL, MAKELONG(400, 0));
+	RECT width{0, 0, 220, 0};
+	MapDialogRect(dialog, &width);
+	SendMessageW(tooltip, TTM_SETMAXTIPWIDTH, 0, width.right);
+
+	// A disabled control and a plain label get no mouse input of their own: it reaches the
+	// dialog, so those are tools over that part of the dialog.
+	UINT_PTR regionId = 1;
+	const auto addRegion = [&](HWND window, const wchar_t* text) {
+		TOOLINFOW info{};
+		info.cbSize = sizeof(info);
+		info.uFlags = TTF_SUBCLASS;
+		info.hwnd = dialog;
+		info.uId = regionId++;
+		info.lpszText = const_cast<LPWSTR>(text);
+		GetWindowRect(window, &info.rect);
+		MapWindowPoints(nullptr, dialog, reinterpret_cast<POINT*>(&info.rect), 2);
+		SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&info));
+	};
+	for (size_t i = 0; i < count; ++i) {
+		HWND control = GetDlgItem(dialog, tips[i].id);
+		if (!control) {
+			continue;
+		}
+		TOOLINFOW info{};
+		info.cbSize = sizeof(info);
+		info.uFlags = TTF_SUBCLASS | TTF_IDISHWND;
+		info.hwnd = dialog;
+		info.uId = reinterpret_cast<UINT_PTR>(control);
+		info.lpszText = const_cast<LPWSTR>(tips[i].text);
+		SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&info));
+		addRegion(control, tips[i].text);
+
+		wchar_t className[16]{};
+		GetClassNameW(control, className, 16);
+		if (_wcsicmp(className, L"Button") == 0) {
+			continue;
+		}
+		HWND label = GetWindow(control, GW_HWNDPREV);
+		if (label && GetClassNameW(label, className, 16) && _wcsicmp(className, L"Static") == 0) {
+			addRegion(label, tips[i].text);
+		}
+	}
+}
