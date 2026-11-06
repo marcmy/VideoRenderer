@@ -256,4 +256,77 @@ function Save-MPCVRInstalledDependency {
     } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
 }
 
-Export-ModuleMember -Function Read-MPCVRDependencyLock,Get-MPCVRVerifiedDownload,Resolve-MPCVRDependencies,Test-MPCVRInstalledDependency,Save-MPCVRInstalledDependency
+function Get-MPCVRLockDownloadHash {
+    param([Parameter(Mandatory=$true)]$Lock)
+    @($Lock.components.PSObject.Properties | ForEach-Object {
+        $_.Value.manifest.files.PSObject.Properties | ForEach-Object { ([string]$_.Value.sha256).ToLowerInvariant() }
+    } | Sort-Object -Unique)
+}
+
+function Read-MPCVRDownloadRetention {
+    # Missing means nothing has been recorded yet; malformed data must stop pruning.
+    param([Parameter(Mandatory=$true)][string]$CacheRoot)
+    $path=Join-Path $CacheRoot 'retained-pins.json'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    $retention=Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    if ($retention.schemaVersion -ne 1) { throw 'Unsupported download retention record.' }
+    foreach ($hash in @($retention.current)+@($retention.previous)) {
+        if ([string]$hash -cnotmatch '^[a-f0-9]{64}$') { throw 'Invalid download retention record.' }
+    }
+    return $retention
+}
+
+function Save-MPCVRDownloadRetention {
+    # Called after a successful setup, so "previous" is always a set that installed.
+    param([Parameter(Mandatory=$true)]$Lock,
+          [string]$CacheRoot=(Join-Path $env:LOCALAPPDATA 'MPCVideoRenderer\downloads'))
+    $current=@(Get-MPCVRLockDownloadHash -Lock $Lock)
+    $recorded=$null
+    try { $recorded=Read-MPCVRDownloadRetention -CacheRoot $CacheRoot } catch { Write-Warning "Replacing an unreadable download retention record: $($_.Exception.Message)" }
+    $previous=@()
+    if ($recorded) {
+        $previous=@($recorded.previous)
+        if (@(Compare-Object -ReferenceObject @($recorded.current) -DifferenceObject $current).Count -ne 0) { $previous=@($recorded.current) }
+    }
+    New-Item -ItemType Directory -Force -Path $CacheRoot | Out-Null
+    $path=Join-Path $CacheRoot 'retained-pins.json'
+    $temporary=$path+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
+    try {
+        ConvertTo-Json -InputObject ([ordered]@{schemaVersion=1;current=$current;previous=$previous}) | Set-Content -LiteralPath $temporary -Encoding ASCII
+        Move-Item -LiteralPath $temporary -Destination $path -Force
+    } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
+}
+
+function Get-MPCVRSupersededDownload {
+    # Only exact verified-download names qualify. Partial downloads, the retention
+    # record, folders and links are never candidates.
+    param([Parameter(Mandatory=$true)]$Lock,
+          [string]$CacheRoot=(Join-Path $env:LOCALAPPDATA 'MPCVideoRenderer\downloads'))
+    if (-not (Test-Path -LiteralPath $CacheRoot -PathType Container)) { return @() }
+    $keep=@{}
+    foreach ($hash in @(Get-MPCVRLockDownloadHash -Lock $Lock)) { $keep[$hash]=$true }
+    $retention=Read-MPCVRDownloadRetention -CacheRoot $CacheRoot
+    if ($retention) { foreach ($hash in @($retention.current)+@($retention.previous)) { $keep[[string]$hash]=$true } }
+    @(Get-ChildItem -LiteralPath $CacheRoot -File | Where-Object {
+        $_.Name -cmatch '^[a-f0-9]{64}$' -and -not $keep.ContainsKey($_.Name) -and
+        -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint)
+    } | Sort-Object Name)
+}
+
+function Remove-MPCVRSupersededDownload {
+    # The caller shows this list and gets the user's answer first. Each pass
+    # recomputes the candidates, so a stale list can only delete fewer files.
+    param([Parameter(Mandatory=$true)]$Lock,
+          [string]$CacheRoot=(Join-Path $env:LOCALAPPDATA 'MPCVideoRenderer\downloads'))
+    $removed=0; $bytes=[long]0
+    foreach ($file in @(Get-MPCVRSupersededDownload -Lock $Lock -CacheRoot $CacheRoot)) {
+        try {
+            $length=$file.Length
+            Remove-Item -LiteralPath $file.FullName -Force
+            $removed++; $bytes+=$length
+        } catch { Write-Warning "Could not remove $($file.Name): $($_.Exception.Message)" }
+    }
+    [pscustomobject]@{Count=$removed;Bytes=$bytes}
+}
+
+Export-ModuleMember -Function Read-MPCVRDependencyLock,Get-MPCVRVerifiedDownload,Resolve-MPCVRDependencies,Test-MPCVRInstalledDependency,Save-MPCVRInstalledDependency,Save-MPCVRDownloadRetention,Get-MPCVRSupersededDownload,Remove-MPCVRSupersededDownload

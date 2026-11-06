@@ -4,7 +4,8 @@
 param(
     [switch]$NoPause,
     [switch]$ValidateOnly,
-    [string]$GpuInventoryJson
+    [string]$GpuInventoryJson,
+    [switch]$PruneDownloads
 )
 
 Set-StrictMode -Version 2.0
@@ -332,6 +333,37 @@ function New-RifeRuntimeBundle {
     ) | Set-Content -LiteralPath (Join-Path $Destination 'SHA256SUMS.txt') -Encoding ASCII
 }
 
+function Invoke-DownloadPrune {
+    # Disk cleanup never decides whether setup succeeded.
+    try {
+        $superseded = @(Get-MPCVRSupersededDownload -Lock $dependencyLock)
+        if ($superseded.Count -eq 0) {
+            Write-Host 'No superseded downloads to remove.'
+            return
+        }
+        $total = ($superseded | Measure-Object -Property Length -Sum).Sum
+        Write-Host
+        Write-Host ('{0} superseded downloads, {1:N1} MiB, are not needed by this setup or the previous one:' -f $superseded.Count, ($total / 1MB))
+        foreach ($file in $superseded) {
+            Write-Host ('  {0}  {1:N1} MiB  {2:yyyy-MM-dd}' -f $file.Name, ($file.Length / 1MB), $file.LastWriteTime)
+        }
+        Write-Host 'Each one can be downloaded again from its release if an older setup needs it.'
+        if ($NoPause) {
+            Write-Host 'Nothing was removed: run without -NoPause to confirm.'
+            return
+        }
+        if ((Read-Host "Type yes to delete these files") -cne 'yes') {
+            Write-Host 'Nothing was removed.'
+            return
+        }
+        $result = Remove-MPCVRSupersededDownload -Lock $dependencyLock
+        Write-Host ('Removed {0} downloads, {1:N1} MiB.' -f $result.Count, ($result.Bytes / 1MB)) -ForegroundColor Green
+    }
+    catch {
+        Write-Warning "Download cleanup skipped: $($_.Exception.Message)"
+    }
+}
+
 function Assert-MaxinePreflight {
     $runtimePath = Join-Path $env:LOCALAPPDATA 'MPCVR Maxine Runtime\nvvfx\libs'
     foreach ($fileName in @(
@@ -541,6 +573,8 @@ try {
     if ($thinSetup) {
         Save-MPCVRInstalledDependency -Lock $dependencyLock -Component maxine -InstallRoot $maxineInstallRoot -ArchitectureKeys $architectureKeys
         Save-MPCVRInstalledDependency -Lock $dependencyLock -Component rife -InstallRoot $rifeInstallRoot -ArchitectureKeys $architectureKeys
+        try { Save-MPCVRDownloadRetention -Lock $dependencyLock }
+        catch { Write-Warning "Could not record the downloads this setup uses: $($_.Exception.Message)" }
     }
 
     Write-Host
@@ -552,6 +586,9 @@ try {
     Write-Host '  RIFE runtime: ready'
     Write-Host '  RIFE models: 4.4, 4.6, 4.15 Lite, 4.25, 4.25 Lite (default: 4.25)'
     Write-Host 'First playback may build a TensorRT engine under %LOCALAPPDATA%\MPCVideoRenderer\RIFE\cache.'
+    if ($PruneDownloads) {
+        if ($thinSetup) { Invoke-DownloadPrune } else { Write-Host 'This setup has no download cache to clean.' }
+    }
 }
 catch {
     $exitCode = 1

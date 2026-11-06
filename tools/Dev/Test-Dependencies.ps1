@@ -208,6 +208,70 @@ exit $LASTEXITCODE
     Check ($steps.Count -eq 3 -and $steps[0] -like '3/4 *' -and $steps[1] -like '4/4 *' -and $steps[2] -like 'Running RIFE post-install preflight*') 'Reuse skipped renderer/updater installation or post-install checks'
     Check (Test-Path -LiteralPath $profileCache -PathType Container) 'Setup failed to repair a missing empty cache directory during RIFE reuse'
     'PASS: installed dependency reuse, cached legacy adoption, independent components, corruption and GPU/pin changes.'
+    # -PruneDownloads through the real coordinator in the isolated profile. Stale
+    # names are fixtures; the "keep" and "previous" files prove what must survive.
+    $profileDownloads=Join-Path $profile 'MPCVideoRenderer/downloads'
+    New-Item -ItemType Directory $profileDownloads -Force | Out-Null
+    $hexName={ param($Seed) -join ((Get-FileHash -InputStream ([IO.MemoryStream]::new([Text.Encoding]::ASCII.GetBytes($Seed))) -Algorithm SHA256).Hash.ToLowerInvariant()) }
+    $pinnedName=$reuseLock.components.PSObject.Properties['maxine'].Value.manifest.files.PSObject.Properties['MPCVR-Maxine-Runtime.zip'].Value.sha256
+    $staleName=& $hexName 'stale'
+    $otherFiles=@(($staleName+'.partial'),'notes.txt',(& $hexName 'upper').ToUpperInvariant(),'abc123')
+    foreach ($name in @($pinnedName,$staleName)+$otherFiles) { [IO.File]::WriteAllText((Join-Path $profileDownloads $name),'fixture') }
+    New-Item -ItemType Directory (Join-Path $profileDownloads (& $hexName 'folder')) | Out-Null
+    $pruneRunner=Join-Path $fixture 'run-coordinator-prune.ps1'
+    @'
+param($Setup,$Profile,$Steps,$Answer,[switch]$NoPause)
+$env:LOCALAPPDATA=$Profile
+$env:MPCVR_SETUP_TEST_STEPS=$Steps
+function global:Get-Process { param($Name,$ErrorAction) return $null }
+function global:Invoke-WebRequest { throw 'A current installation attempted a network download.' }
+function global:Read-Host { param($Prompt) if ($Prompt -like 'Type yes*') { return $Answer } return '' }
+& $Setup -NoPause:$NoPause -PruneDownloads -GpuInventoryJson '[{"Name":"fixture GPU","ComputeCapability":"7.5"}]'
+exit $LASTEXITCODE
+'@ | Set-Content $pruneRunner -Encoding UTF8
+    $pruneHost=if ($PSVersionTable.PSEdition -eq 'Core') {(Get-Command pwsh.exe).Source} else {Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'}
+    function Invoke-PruneSetup($Answer,[switch]$NoPause) {
+        $output=@(& $pruneHost -NoLogo -NoProfile -ExecutionPolicy Bypass -File $pruneRunner -Setup $coordinatorPath -Profile $profile -Steps $stepsPath -Answer $Answer @(if ($NoPause) {'-NoPause'}) 2>&1 | ForEach-Object { "$_" })
+        if ($LASTEXITCODE -ne 0) { $output | ForEach-Object { Write-Host $_ }; throw 'Setup with -PruneDownloads failed' }
+        return $output -join "`n"
+    }
+    $text=Invoke-PruneSetup 'yes' -NoPause
+    Check ($text -like "*$staleName*" -and (Test-Path (Join-Path $profileDownloads $staleName))) '-NoPause must list superseded downloads and delete nothing'
+    Check (Test-Path (Join-Path $profileDownloads 'retained-pins.json')) 'Setup did not record the downloads it uses'
+    [void](Invoke-PruneSetup 'y')
+    Check (Test-Path (Join-Path $profileDownloads $staleName)) 'An answer other than yes deleted a download'
+    [void](Invoke-PruneSetup 'yes')
+    Check (-not (Test-Path (Join-Path $profileDownloads $staleName))) 'Confirmed cleanup kept a superseded download'
+    Check (Test-Path (Join-Path $profileDownloads $pinnedName)) 'Cleanup deleted a download the current lock pins'
+    foreach ($name in $otherFiles+@((& $hexName 'folder'),'retained-pins.json')) {
+        Check (Test-Path (Join-Path $profileDownloads $name)) "Cleanup touched something that is not a superseded download: $name"
+    }
+    # A new pin moves the installed set to "previous"; the set before that goes.
+    $pruneCache=Join-Path $fixture 'prune-cache'; New-Item -ItemType Directory $pruneCache | Out-Null
+    $pinLock=Get-Content $lockPath -Raw | ConvertFrom-Json
+    $pinAsset=$pinLock.components.PSObject.Properties['rife-runtime'].Value.manifest.files.PSObject.Properties['SHA256SUMS.txt'].Value
+    $generations=@('generation one','generation two','generation three' | ForEach-Object { & $hexName $_ })
+    foreach ($generation in $generations) { [IO.File]::WriteAllText((Join-Path $pruneCache $generation),'fixture') }
+    $superseded={ @(Get-MPCVRSupersededDownload -Lock $pinLock -CacheRoot $pruneCache | ForEach-Object Name) }
+    $pinAsset.sha256=$generations[0]
+    Save-MPCVRDownloadRetention -Lock $pinLock -CacheRoot $pruneCache
+    Save-MPCVRDownloadRetention -Lock $pinLock -CacheRoot $pruneCache
+    $pinAsset.sha256=$generations[1]
+    Check (@(& $superseded).Count -eq 1 -and (& $superseded) -eq $generations[2]) 'The recorded set was not kept before setup succeeded on the new pin'
+    Save-MPCVRDownloadRetention -Lock $pinLock -CacheRoot $pruneCache
+    Save-MPCVRDownloadRetention -Lock $pinLock -CacheRoot $pruneCache
+    Check (@(& $superseded).Count -eq 1 -and (& $superseded) -eq $generations[2]) 'Rerunning the same setup forgot the previous pin'
+    $pinAsset.sha256=$generations[2]
+    Save-MPCVRDownloadRetention -Lock $pinLock -CacheRoot $pruneCache
+    Check (@(& $superseded).Count -eq 1 -and (& $superseded) -eq $generations[0]) 'Cleanup did not keep exactly the current and previous pins'
+    $removal=Remove-MPCVRSupersededDownload -Lock $pinLock -CacheRoot $pruneCache
+    Check ($removal.Count -eq 1 -and $removal.Bytes -eq 7 -and -not (Test-Path (Join-Path $pruneCache $generations[0]))) 'Cleanup did not report what it removed'
+    [IO.File]::WriteAllText((Join-Path $pruneCache (& $hexName 'after damage')),'fixture')
+    [IO.File]::WriteAllText((Join-Path $pruneCache 'retained-pins.json'),'invalid JSON')
+    $rejected=$false
+    try { Remove-MPCVRSupersededDownload -Lock $pinLock -CacheRoot $pruneCache | Out-Null } catch { $rejected=$true }
+    Check ($rejected -and (Test-Path (Join-Path $pruneCache (& $hexName 'after damage')))) 'An unreadable retention record allowed deletion'
+    'PASS: -PruneDownloads asks first, keeps current and previous pins, and removes only superseded verified downloads.'
     # A new runtime build must cost only its own small package. Mock the network and
     # count what it asks for; Libraries is already cached from the previous build.
     $split=Join-Path $fixture 'split'; $splitCache=Join-Path $split 'cache'
