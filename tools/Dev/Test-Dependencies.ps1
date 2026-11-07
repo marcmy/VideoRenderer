@@ -56,6 +56,14 @@ try {
     # Repeated setup must leave intact dependencies and engine caches alone.
     # Tiny ZIPs exercise the real archive-to-install mapping without loading DLLs.
     $reuseLock=Get-Content $lockPath -Raw | ConvertFrom-Json
+    # These fixtures start from the combined layout whichever one is pinned; the split layout's tests convert it below.
+    $reuseFiles=$reuseLock.components.PSObject.Properties['rife-runtime'].Value.manifest.files
+    if ($reuseFiles.PSObject.Properties['MPCVR-RIFE-Runtime.zip']) {
+        $reuseFiles | Add-Member -NotePropertyName 'MPCVR-RIFE-Common.zip' -NotePropertyValue $reuseFiles.PSObject.Properties['MPCVR-RIFE-Runtime.zip'].Value
+        $reuseFiles.PSObject.Properties['MPCVR-RIFE-Common.zip'].Value.url=$reuseFiles.PSObject.Properties['MPCVR-RIFE-Common.zip'].Value.url -replace 'MPCVR-RIFE-Runtime\.zip','MPCVR-RIFE-Common.zip'
+        $reuseFiles.PSObject.Properties.Remove('MPCVR-RIFE-Runtime.zip')
+        $reuseFiles.PSObject.Properties.Remove('MPCVR-RIFE-Libraries.zip')
+    }
     $reuseCache=Join-Path $fixture 'reuse-cache'; New-Item -ItemType Directory $reuseCache | Out-Null
     function New-ReuseArchive($Component,$Name,$Files) {
         $source=Join-Path $fixture ([guid]::NewGuid().ToString('N'))
@@ -369,7 +377,7 @@ param($InstallRoot,$GpuInventoryJson,[switch]$ThrowOnFailure)
 if ($env:MPCVR_TEST_FAIL_PREFLIGHT) { throw 'fixture preflight failure' }
 '@ | Set-Content (Join-Path $installer 'Test-MPCVRRifePreflight.ps1') -Encoding UTF8
     $modelRoot=Join-Path $split 'models'; New-Item -ItemType Directory $modelRoot | Out-Null
-    $modelEntries=foreach ($model in @(@('RIFE 4.4','rife_v4.4.onnx'),@('RIFE 4.6','rife_v4.6.onnx'),@('RIFE 4.15 Lite','rife_v4.15_lite.onnx'),@('RIFE 4.25','rife_v4.25.onnx'),@('RIFE 4.25 Lite','rife_v4.25_lite.onnx'))) {
+    $modelEntries=foreach ($model in @(@('RIFE 4.4','rife_v4.4.onnx'),@('RIFE 4.6','rife_v4.6.onnx'),@('RIFE 4.15 Lite','rife_v4.15_lite.onnx'),@('RIFE 4.25 Lite','rife_v4.25_lite.onnx'))) {
         [IO.File]::WriteAllText((Join-Path $modelRoot $model[1]),"fixture $($model[1])")
         [pscustomobject]@{model=$model[0];file=$model[1];sourceRelease='fixture';sourceArchive='fixture.7z';sourceArchiveSha256='a'*64;sourceModel='fixture.onnx';input=@(1,11,'H','W');output=@(1,3,'H','W');precision='mixed-fp16-fp32'}
     }

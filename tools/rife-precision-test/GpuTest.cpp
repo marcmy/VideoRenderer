@@ -83,7 +83,7 @@ int wmain(int argc,wchar_t** argv) {
     auto infer=reinterpret_cast<MpcvrRifeInterpolateFn>(GetProcAddress(module,"MpcvrRifeInterpolate"));
     auto destroy=reinterpret_cast<MpcvrRifeDestroyFn>(GetProcAddress(module,"MpcvrRifeDestroy"));Check(create&&infer&&destroy,"exports");
     std::filesystem::create_directories(argv[3]);
-    for(const auto name:{L"rife_v4.15_lite.onnx",L"rife_v4.25.onnx",L"rife_v4.25_lite.onnx"}) {
+    for(const auto name:{L"rife_v4.15_lite.onnx",L"rife_v4.25_lite.onnx"}) {
         const auto model=(std::filesystem::path(argv[2])/name).wstring();
         // Every bundled model with an image encoder must keep feature reuse active.
         constexpr bool supported = true;
@@ -283,7 +283,7 @@ int wmain(int argc,wchar_t** argv) {
         uint64_t fenceValue=0;
         constexpr int size=256,shift=16;
         // Other models write through a different path from the fused one, on every GPU.
-        for(const auto name:{L"rife_v4.25_lite.onnx",L"rife_v4.25.onnx",L"rife_v4.15_lite.onnx",L"rife_v4.6.onnx",L"rife_v4.4.onnx"})
+        for(const auto name:{L"rife_v4.25_lite.onnx",L"rife_v4.15_lite.onnx",L"rife_v4.6.onnx",L"rife_v4.4.onnx"})
         for(const bool precise:{false,true}) {
             const auto model=(std::filesystem::path(argv[2])/name).wstring();
             const std::wstring modelName(name);

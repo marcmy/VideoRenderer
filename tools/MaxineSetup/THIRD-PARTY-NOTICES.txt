@@ -25,7 +25,7 @@ Pinned repository snapshot: tools/RifeRuntimeInstaller/licenses/TensorRT-SLA.htm
 Snapshot SHA-256: eea91074c3bb4db31015e9c4bece1a1ff7db3ca59bdc3ad0d5b3c344aeb5cba4
 Bundled notice: TensorRT-SLA.html
 
-RIFE 4.4, 4.6, 4.15 Lite, 4.25, and 4.25 Lite models
+RIFE 4.4, 4.6, 4.15 Lite, and 4.25 Lite models
 Model source releases: https://github.com/AmusementClub/vs-mlrt/releases/tag/model-20220923 and https://github.com/AmusementClub/vs-mlrt/releases/tag/external-models
 Model license source commit: https://github.com/hzwer/Practical-RIFE/tree/bbfd2ea90910789a860ea3e2b32a240cd577b75e
 Bundled notice: LICENSES/RIFE-model-license.txt

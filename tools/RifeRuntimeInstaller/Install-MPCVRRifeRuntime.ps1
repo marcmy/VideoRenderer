@@ -65,7 +65,6 @@ function Test-ModelPackage {
         [pscustomobject]@{ Model = 'RIFE 4.4'; File = 'rife_v4.4.onnx' },
         [pscustomobject]@{ Model = 'RIFE 4.6'; File = 'rife_v4.6.onnx' },
         [pscustomobject]@{ Model = 'RIFE 4.15 Lite'; File = 'rife_v4.15_lite.onnx' },
-        [pscustomobject]@{ Model = 'RIFE 4.25'; File = 'rife_v4.25.onnx' },
         [pscustomobject]@{ Model = 'RIFE 4.25 Lite'; File = 'rife_v4.25_lite.onnx' }
     )
     foreach ($required in @($checksumPath, $manifestPath) + @($expectedModels | ForEach-Object { Join-Path $Root $_.File })) {

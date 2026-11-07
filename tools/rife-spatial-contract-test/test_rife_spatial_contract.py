@@ -218,8 +218,8 @@ assert f'kValidatedModelsRelease = "{models_release}"' in feature_engine, (
 validated_start = feature_engine.find("static bool IsValidatedModel(")
 validated_end = feature_engine.find("\n    }\n", validated_start)
 assert validated_start != -1 and validated_end != -1, "IsValidatedModel() was not found"
-assert len(set(re.findall(r'"([0-9a-f]{64})"', feature_engine[validated_start:validated_end]))) == 3, (
-    "every bundled model with an image encoder (4.15 Lite, 4.25, 4.25 Lite) must be listed"
+assert len(set(re.findall(r'"([0-9a-f]{64})"', feature_engine[validated_start:validated_end]))) == 2, (
+    "every bundled model with an image encoder (4.15 Lite, 4.25 Lite) must be listed"
 )
 assert "ExposeImageView(*network)" in feature_engine and "setTensorAddress(kImageViewName, images)" in feature_engine, (
     "the synthesis stage must take the image view as an input sharing the packed input buffer; "

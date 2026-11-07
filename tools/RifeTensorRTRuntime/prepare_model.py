@@ -45,12 +45,6 @@ MODEL_SPECS = {
         "sourceRelease": "external-models",
         "sourceMember": "rife/rife_v4.15_lite.onnx",
     },
-    "4.25": {
-        "model": "RIFE 4.25",
-        "file": "rife_v4.25.onnx",
-        "sourceRelease": "external-models",
-        "sourceMember": "rife/rife_v4.25.onnx",
-    },
     "4.25-lite": {
         "model": "RIFE 4.25 Lite",
         "file": "rife_v4.25_lite.onnx",

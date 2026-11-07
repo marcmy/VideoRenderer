@@ -175,7 +175,6 @@ enum :int {
 	RIFE_MODEL_46 = 46,
 	RIFE_MODEL_44 = 44,
 	RIFE_MODEL_415_LITE = 4151,
-	RIFE_MODEL_425 = 425,
 	RIFE_MODEL_425_LITE = 4251,
 };
 
@@ -183,7 +182,7 @@ enum :int {
 // every target time of one source pair (4.4 and 4.6 have none).
 constexpr inline bool RifeModelSupportsFeatureReuse(const int model) noexcept
 {
-	return model == RIFE_MODEL_415_LITE || model == RIFE_MODEL_425 || model == RIFE_MODEL_425_LITE;
+	return model == RIFE_MODEL_415_LITE || model == RIFE_MODEL_425_LITE;
 }
 
 // Shared flow: estimated once per source pair, on the measured 4.25 Lite path only.

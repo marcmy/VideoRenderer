@@ -70,7 +70,6 @@ models\
   rife_v4.4.onnx
   rife_v4.6.onnx
   rife_v4.15_lite.onnx
-  rife_v4.25.onnx
   rife_v4.25_lite.onnx
 cache\
 installed-manifest.json

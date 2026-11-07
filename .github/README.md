@@ -232,12 +232,12 @@ Maxine's current BGRA8 input remains an 8-bit boundary and the BGRA CUDA handoff
 is bypassed for this precision path. Larger surfaces can cost memory/bandwidth.
 
 **Feature reuse**, on by default, runs the image encoder once per immutable source pair and
-execution context for the pinned 4.15 Lite, 4.25 and 4.25 Lite exports. 4.4 and
+execution context for the pinned 4.15 Lite and 4.25 Lite exports. 4.4 and
 4.6 lack that encoder. Only the image encoder is shared: each target time still
 runs the full flow/synthesis network, so the output matches the original engine
 to within FP16 rounding. On an RTX 2070 SUPER at 1080p, TensorRT time per
 frame without and with reuse (first / later targets of a pair) measured 17.9 and
-18.8 / 14.8 ms for 4.25 Lite, 23.1 and 23.9 / 19.8 ms for 4.25, and 17.5 and
+18.8 / 14.8 ms for 4.25 Lite, and 17.5 and
 18.3 / 14.3 ms for 4.15 Lite. The fixed-size stages also needed about 1.2 GB
 instead of 4.1 GB of runtime VRAM with two GPU threads. Hash-qualified
 encoder/synthesis sidecars are included in the

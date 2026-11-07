@@ -253,7 +253,6 @@ jobs:
           Set-Content -LiteralPath (Join-Path $model 'rife_v4.4.onnx') -Value 'mock RIFE 4.4 model' -Encoding ASCII
           Set-Content -LiteralPath (Join-Path $model 'rife_v4.6.onnx') -Value 'mock RIFE 4.6 model' -Encoding ASCII
           Set-Content -LiteralPath (Join-Path $model 'rife_v4.15_lite.onnx') -Value 'mock RIFE 4.15 Lite model' -Encoding ASCII
-          Set-Content -LiteralPath (Join-Path $model 'rife_v4.25.onnx') -Value 'mock RIFE 4.25 model' -Encoding ASCII
           Set-Content -LiteralPath (Join-Path $model 'rife_v4.25_lite.onnx') -Value 'mock RIFE 4.25 Lite model' -Encoding ASCII
           New-Item -ItemType Directory -Path (Join-Path $model 'LICENSES') -Force | Out-Null
           Set-Content -LiteralPath (Join-Path $model 'SOURCE.txt') -Value 'mock provenance' -Encoding ASCII
@@ -295,17 +294,6 @@ jobs:
                 precision = 'mixed-fp16-fp32'
               },
               [pscustomobject]@{
-                model = 'RIFE 4.25'
-                file = 'rife_v4.25.onnx'
-                sourceRelease = 'external-models'
-                sourceArchive = 'rife_v4.25.7z'
-                sourceArchiveSha256 = ('c' * 64)
-                sourceModel = 'rife/rife_v4.25.onnx'
-                input = @(1, 11, 'H', 'W')
-                output = @(1, 3, 'H', 'W')
-                precision = 'mixed-fp16-fp32'
-              },
-              [pscustomobject]@{
                 model = 'RIFE 4.25 Lite'
                 file = 'rife_v4.25_lite.onnx'
                 sourceRelease = 'external-models'
@@ -320,7 +308,7 @@ jobs:
           } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $model 'model-manifest.json') -Encoding UTF8
 
           @(
-            foreach ($file in @('rife_v4.4.onnx', 'rife_v4.6.onnx', 'rife_v4.15_lite.onnx', 'rife_v4.25.onnx', 'rife_v4.25_lite.onnx', 'model-manifest.json', 'SOURCE.txt', 'LICENSES/RIFE-model-license.txt')) {
+            foreach ($file in @('rife_v4.4.onnx', 'rife_v4.6.onnx', 'rife_v4.15_lite.onnx', 'rife_v4.25_lite.onnx', 'model-manifest.json', 'SOURCE.txt', 'LICENSES/RIFE-model-license.txt')) {
               $nativePath = $file.Replace('/', [IO.Path]::DirectorySeparatorChar)
               $hash = (Get-FileHash -LiteralPath (Join-Path $model $nativePath) -Algorithm SHA256).Hash.ToLowerInvariant()
               "$hash  $file"

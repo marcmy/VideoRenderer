@@ -174,12 +174,11 @@ public:
     // Exports checked on the native GPU path, as published in this rife-models
     // dependency release. A model package with other hashes keeps its original
     // engine; update both together after validating the new exports.
-    static constexpr const char* kValidatedModelsRelease = "mpcvr-deps-rife-models-cc46eaca0cda87fa";
+    static constexpr const char* kValidatedModelsRelease = "mpcvr-deps-rife-models-e55a4d4a2a29e5e6";
     static bool IsValidatedModel(const std::string& modelHash) {
         for (const char* validated : {
-                "f25f9da57fc6e8ecdeac5f9e3ab90b340004b11b9fadb6e805fbecc2431d9ea9",   // RIFE 4.15 Lite
-                "a8daec071d3adb1b784647dea111094b939e9feb0a89bb163f34d9c4d017551b",   // RIFE 4.25
-                "15e6177e5469924c1b3a70d360d0d807bd87f0a2be4c94188184b47f886a0563"}) { // RIFE 4.25 Lite
+                "553f56a833d883b737e40a4ac64e3a24de974aa564c107712322a5ee33741936",   // RIFE 4.15 Lite
+                "9aa603c79ba48037009244ceef4607bb18d7b9f122926a269b22b55d9dcfef1c"}) { // RIFE 4.25 Lite
             if (modelHash == validated) return true;
         }
         return false;
@@ -193,7 +192,7 @@ public:
         // native feature engine as a fallback, with its original cache identity.
         int device = 0;
         cudaDeviceProp props{};
-        const bool useWarp = modelHash == "15e6177e5469924c1b3a70d360d0d807bd87f0a2be4c94188184b47f886a0563"
+        const bool useWarp = modelHash == "9aa603c79ba48037009244ceef4607bb18d7b9f122926a269b22b55d9dcfef1c"
             && width % 128 == 0 && height % 128 == 0
             && cudaGetDevice(&device) == cudaSuccess && cudaGetDeviceProperties(&props, device) == cudaSuccess
             && props.major == 7 && props.minor == 5 && RegisterRifeWarpPlugin();
