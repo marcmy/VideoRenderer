@@ -56,6 +56,14 @@ try {
     # Repeated setup must leave intact dependencies and engine caches alone.
     # Tiny ZIPs exercise the real archive-to-install mapping without loading DLLs.
     $reuseLock=Get-Content $lockPath -Raw | ConvertFrom-Json
+    # These fixtures start from the combined layout whichever one is pinned; the split layout's tests convert it below.
+    $reuseFiles=$reuseLock.components.PSObject.Properties['rife-runtime'].Value.manifest.files
+    if ($reuseFiles.PSObject.Properties['MPCVR-RIFE-Runtime.zip']) {
+        $reuseFiles | Add-Member -NotePropertyName 'MPCVR-RIFE-Common.zip' -NotePropertyValue $reuseFiles.PSObject.Properties['MPCVR-RIFE-Runtime.zip'].Value
+        $reuseFiles.PSObject.Properties['MPCVR-RIFE-Common.zip'].Value.url=$reuseFiles.PSObject.Properties['MPCVR-RIFE-Common.zip'].Value.url -replace 'MPCVR-RIFE-Runtime\.zip','MPCVR-RIFE-Common.zip'
+        $reuseFiles.PSObject.Properties.Remove('MPCVR-RIFE-Runtime.zip')
+        $reuseFiles.PSObject.Properties.Remove('MPCVR-RIFE-Libraries.zip')
+    }
     $reuseCache=Join-Path $fixture 'reuse-cache'; New-Item -ItemType Directory $reuseCache | Out-Null
     function New-ReuseArchive($Component,$Name,$Files) {
         $source=Join-Path $fixture ([guid]::NewGuid().ToString('N'))
