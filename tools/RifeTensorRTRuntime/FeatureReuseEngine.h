@@ -174,7 +174,7 @@ public:
     // Exports checked on the native GPU path, as published in this rife-models
     // dependency release. A model package with other hashes keeps its original
     // engine; update both together after validating the new exports.
-    static constexpr const char* kValidatedModelsRelease = "mpcvr-deps-rife-models-cc46eaca0cda87fa";
+    static constexpr const char* kValidatedModelsRelease = "mpcvr-deps-rife-models-e55a4d4a2a29e5e6";
     static bool IsValidatedModel(const std::string& modelHash) {
         for (const char* validated : {
                 "f25f9da57fc6e8ecdeac5f9e3ab90b340004b11b9fadb6e805fbecc2431d9ea9",   // RIFE 4.15 Lite
