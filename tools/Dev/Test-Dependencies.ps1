@@ -569,6 +569,26 @@ exit $LASTEXITCODE
         Check ((Get-Command nasm.exe -ErrorAction Stop).Source -ieq $assembler -and $env:PATH -like '*C:\fixture-developer-tools*') 'Build PATH repair failed after developer-shell replacement'
     } finally { $env:PATH=$savedPath }
     'PASS: build PATH restores Windows utilities and pinned NASM before/after developer-shell replacement.'
+    # Stale engine plans: a removed model's always go, and every plan goes when the runtime changes.
+    $planRoot=Join-Path $fixture 'plan-cleanup'
+    New-Item -ItemType Directory -Force (Join-Path $planRoot 'cache'),(Join-Path $planRoot 'runtime') | Out-Null
+    $planManifest=Join-Path $planRoot 'installed-manifest.json'
+    $currentModel='a'*64
+    @{models=@(@{modelSha256=$currentModel})} | ConvertTo-Json -Depth 4 | Set-Content $planManifest
+    [IO.File]::WriteAllText((Join-Path $planRoot 'runtime\MPCVRRifeRuntime64.dll'),'runtime one')
+    $planFile={param($Name) Join-Path $planRoot "cache\$Name"}
+    $kept="rife46_$('a'*16)_abi2_w7.plan"; $stale="rife46_$('b'*16)_abi2_w7.plan"; $unknown='rife46_notahash.plan'; $other='notes.txt'
+    foreach ($name in @($kept,$stale,$unknown,$other)) { [IO.File]::WriteAllText((& $planFile $name),'plan') }
+    $planResult=Remove-MPCVRStaleEnginePlan -InstallRoot $planRoot
+    Check ($planResult.Count -eq 1 -and (Test-Path (& $planFile $kept)) -and -not (Test-Path (& $planFile $stale))) 'A first cleanup did not remove only the removed model''s plans'
+    Check ((Test-Path (& $planFile $unknown)) -and (Test-Path (& $planFile $other))) 'Cleanup removed a file it does not recognise'
+    Check ((Remove-MPCVRStaleEnginePlan -InstallRoot $planRoot).Count -eq 0 -and (Test-Path (& $planFile $kept))) 'Setup with the same runtime removed current plans'
+    [IO.File]::WriteAllText((Join-Path $planRoot 'runtime\MPCVRRifeRuntime64.dll'),'runtime two')
+    Check ((Remove-MPCVRStaleEnginePlan -InstallRoot $planRoot).Count -eq 1 -and -not (Test-Path (& $planFile $kept)) -and (Test-Path (& $planFile $unknown))) 'A new runtime kept plans built for the old one'
+    [IO.File]::WriteAllText((& $planFile $stale),'plan')
+    '{"models":[]}' | Set-Content $planManifest
+    Check ((Remove-MPCVRStaleEnginePlan -InstallRoot $planRoot).Count -eq 0 -and (Test-Path (& $planFile $stale))) 'Cleanup removed plans without knowing the installed models'
+
     'Dependency contract passed: four architecture selections, exact URLs, offline cache reuse and failure isolation.'
 } finally {
     $resolved=[IO.Path]::GetFullPath($fixture)
