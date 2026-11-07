@@ -175,7 +175,9 @@ BEGIN
 
     GROUPBOX        "RIFE",IDC_STATIC,7,63,314,145
     LTEXT           "Neural network engine:",IDC_STATIC,16,78,82,8
-    LTEXT           "NVIDIA TensorRT",IDC_STATIC,105,78,92,8
+    LTEXT           "NVIDIA TensorRT",IDC_STATIC,105,78,66,8
+    LTEXT           "Flow reuse:",IDC_STATIC_RIFE_FLOW_REUSE,174,78,42,8
+    COMBOBOX        IDC_RIFE_FLOW_REUSE,220,75,91,60,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "GPU threads:",IDC_STATIC,16,98,76,8
     COMBOBOX        IDC_RIFE_GPU_THREADS,101,95,55,60,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "AI model:",IDC_STATIC,174,98,42,8
@@ -191,7 +193,7 @@ BEGIN
     CONTROL         "Performance boost",IDC_RIFE_PERFORMANCE_BOOST,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,16,179,82,10
     CONTROL         "Preserve 10-bit",IDC_RIFE_PRESERVE_PRECISION,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,105,179,105,10
     CONTROL         "Feature reuse",IDC_RIFE_FEATURE_REUSE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,221,179,90,10
-    LTEXT           "Boost: per-resolution cache. Feature reuse: 4.15 Lite / 4.25.",IDC_STATIC,16,193,296,9,SS_LEFT
+    LTEXT           "Boost: per-resolution cache. Feature reuse: 4.15 Lite / 4.25 / 4.25 Lite. Flow reuse: 4.25 Lite; estimates flow once per source pair, faster but with motion in straight lines.",IDC_STATIC,16,191,296,16,SS_LEFT
 
     GROUPBOX        "Miscellaneous options",IDC_STATIC,7,214,314,94
     LTEXT           "Scene change detection:",IDC_STATIC,16,229,87,8

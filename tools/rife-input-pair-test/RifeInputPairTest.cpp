@@ -125,17 +125,22 @@ void TestCompatibility()
     Check(CopyRifeRuntimeRequest(reinterpret_cast<const MpcvrRifeRequest*>(&old.request), normalized),
         "old ABI-2 request prefix must be accepted");
     Check(normalized.contextIndex == 2 && normalized.first == old.request.first
-        && normalized.timestep == 0.25f && normalized.inputPairId == 0,
+        && normalized.timestep == 0.25f && normalized.inputPairId == 0 && normalized.previousPairId == 0,
         "old ABI-2 request must preserve fields and disable reuse");
 
     MpcvrRifeRequest request;
     request.inputPairId = 123456;
+    request.previousPairId = 123455;
     for (uint32_t size = 0; size <= sizeof(request); ++size) {
         request.size = size;
         const bool accepted = CopyRifeRuntimeRequest(&request, normalized);
         Check(accepted == (size >= sizeof(OldRequest)), "request size compatibility must follow legacy prefix");
-        if (accepted) Check(normalized.inputPairId == (size == sizeof(request) ? request.inputPairId : 0),
-            "partial generation field must never enable reuse");
+        if (accepted) {
+            Check(normalized.inputPairId == (size >= offsetof(MpcvrRifeRequest, previousPairId) ? request.inputPairId : 0),
+                "partial generation field must never enable reuse");
+            Check(normalized.previousPairId == (size == sizeof(request) ? request.previousPairId : 0),
+                "partial previous-pair field must never promise a shared frame");
+        }
     }
     Check(!CopyRifeRuntimeRequest(nullptr, normalized), "null request must be rejected");
 

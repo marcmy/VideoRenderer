@@ -104,10 +104,30 @@ assert "state->context->setTensorAddress" in rife_runtime and "PrepareContexts()
     "fixed per-context tensor buffers should be bound during runtime preparation"
 )
 acquire_output = function_body(rife_pipeline, "ID3D11Texture2D* AcquireInferenceOutput(")
-assert "workerState.inferenceOutputs" in acquire_output and "CreateBgraTexture" in acquire_output, (
+assert "workerState.inferenceOutputs" in acquire_output and "CreateInferenceSurface" in acquire_output, (
     "CUDA outputs must come from a stable per-context pool instead of creating a registered texture every frame"
 )
 process_pair = function_body(rife_pipeline, "void ProcessPairJob(")
+assert "iRifeModel                      = RIFE_MODEL_425_LITE;" in (repo / "Source" / "IVideoRenderer.h").read_text(encoding="utf-8"), (
+    "4.25 Lite is the default model, as the fastest and the one every speedup applies to"
+)
+# Imported surfaces have no map to order them: D3D11 copies are ordered by a fence, and a worker
+# must wait for the last copy before reading. Without this, CUDA reads half-copied frames.
+assert "WaitRifeCopyFence(second.processor->LastRifeCopyFence())" in process_pair, (
+    "a worker must wait for staged D3D11 copies before CUDA reads imported surfaces"
+)
+assert "SignalRifeCopyFence" in rife_pipeline and "FlushRifeCopies" in rife_pipeline, (
+    "staged input copies must signal and flush the copy fence"
+)
+assert "SignalRifeCopyFence" in rife_bridge, (
+    "presentation copies out of an imported output must signal the copy fence"
+)
+assert "D3D11_RESOURCE_MISC_SHARED" in rife_pipeline and "CreateBgraTexture(device, width, height, texture, format);" in rife_pipeline, (
+    "inference surfaces are shared to import them, falling back to a plain texture when they can't be"
+)
+assert "class PersistentSurfaces" in rife_runtime and "cudaImportExternalMemory" in rife_runtime, (
+    "shared surfaces are imported once, with no map, unmap or device lock per request"
+)
 assert "first.inferenceAsFirst" in process_pair and "second.inferenceAsSecond" in process_pair
 assert "second.inferenceAsFirst" in process_pair, (
     "single-context mode must fall back to the one staged input copy"

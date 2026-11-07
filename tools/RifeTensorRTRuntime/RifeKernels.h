@@ -2,6 +2,11 @@
 
 #include <cuda_runtime_api.h>
 
+// One image's warp source: r g b 0 f0 f1 f2 f3 per pixel, from its three image planes
+// and four feature planes, all FP16.
+cudaError_t MpcvrRifeInterleaveImage(const void* image, const void* features, void* target,
+    int width, int height, cudaStream_t stream);
+
 // Exact BGRA8 quantization, including padded pixels needed by D3D fallback.
 cudaError_t MpcvrRifeWriteLinearOutput(const void* tensor, bool fp16, void* output, size_t pitch,
     int width, int height, int paddedWidth, int paddedHeight, cudaStream_t stream);
@@ -22,7 +27,9 @@ cudaError_t MpcvrRifePackInput(
     cudaStream_t stream,
     cudaTextureObject_t* firstTextureOut,
     cudaTextureObject_t* secondTextureOut,
-    bool rgba16Input = false);
+    bool rgba16Input = false,
+    // The fused plans read only the images and the first pixel's timestep.
+    bool imagesOnly = false);
 
 cudaError_t MpcvrRifeUpdateTimestep(
     void* tensor,
@@ -32,7 +39,8 @@ cudaError_t MpcvrRifeUpdateTimestep(
     int paddedWidth,
     int paddedHeight,
     float timestep,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    bool firstPixelOnly = false);
 
 cudaError_t MpcvrRifeWriteOutput(
     const void* tensor,

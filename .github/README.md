@@ -223,7 +223,7 @@ Displays the renderer debug overlay. MPC-HC also toggles this overlay with **Ctr
 
 ## RIFE processing size
 
-RIFE has two independent, opt-in options. **Preserve 10-bit** uses RGBA16F working
+RIFE has two independent options. **Preserve 10-bit**, off by default, uses RGBA16F working
 and output surfaces when the source and video-conversion path retain more than
 8 bits. Explicit 8-bit conversion stays 8-bit. Models still use their existing
 mixed FP16/FP32 arithmetic; this option avoids the BGRA8 input/output bottleneck.
@@ -231,15 +231,32 @@ Normal rendering retains precision until its existing output conversion/dither.
 Maxine's current BGRA8 input remains an 8-bit boundary and the BGRA CUDA handoff
 is bypassed for this precision path. Larger surfaces can cost memory/bandwidth.
 
-**Feature reuse** runs the image encoder once per immutable source pair and
-execution context for the pinned 4.15 Lite and 4.25 exports. 4.4 and 4.6 lack
-that encoder. 4.25 Lite keeps its original engine because the split produced a
-reproducible border artifact in native GPU validation. Hash-qualified
+**Feature reuse**, on by default, runs the image encoder once per immutable source pair and
+execution context for the pinned 4.15 Lite, 4.25 and 4.25 Lite exports. 4.4 and
+4.6 lack that encoder. Only the image encoder is shared: each target time still
+runs the full flow/synthesis network, so the output matches the original engine
+to within FP16 rounding. On an RTX 2070 SUPER at 1080p, TensorRT time per
+frame without and with reuse (first / later targets of a pair) measured 17.9 and
+18.8 / 14.8 ms for 4.25 Lite, 23.1 and 23.9 / 19.8 ms for 4.25, and 17.5 and
+18.3 / 14.3 ms for 4.15 Lite. The fixed-size stages also needed about 1.2 GB
+instead of 4.1 GB of runtime VRAM with two GPU threads. Hash-qualified
 encoder/synthesis sidecars are included in the
 model package; they leave original models and old plans intact. The first use
 builds separate fixed-resolution stage plans. A new pair, seek, drain or failed
 request invalidates reuse. Missing/incompatible sidecars fall back to the
 original engine; detailed Ctrl+J reports whether features are actually active.
+
+**Flow reuse** goes further, on 4.25 Lite with Feature reuse on, and needs an
+RTX 20 series or GTX 16 series card (compute capability 7.5, like the fused warp). It estimates
+motion once per source pair, halfway between the two frames, and moves that estimate to
+each target time. *Coarse* still runs the finest network block per target; *Retime* runs
+none and only warps and blends. Motion within a pair then becomes a straight line, so
+this is an approximation you choose, not a rounding difference: it is off by default.
+On an RTX 2070 SUPER at 1080p and 8x, mean GPU time per generated frame measured 3.79 ms
+with it off, 2.75 ms with Coarse and 0.95 ms with Retime. Against true in-between frames
+of synthetic clips, positions were more accurate than the model's own off-centre output,
+but moving edges looked more translucent. Judge it on your own footage. Each mode builds
+its own plans on first use. Detailed Ctrl+J reports which mode is actually active.
 This is experimental: compare delivered FPS and picture quality at identical
 settings. Encoder reuse does not guarantee a throughput improvement.
 

@@ -10,6 +10,7 @@
 #include "RifePrecision.h"
 #include "RifeVideoProcessorPolicy.h"
 #include "RifeVsrInputProbe.h"
+#include <d3d11_4.h>
 
 DWORD CDX11VideoProcessor::GetRifeVsrInputProbeMode()
 {
@@ -541,6 +542,7 @@ bool CDX11VideoProcessor::ReserveRifePresentationSurface(
     // when enabled, while the ordinary D3D presentation path is ordered by the
     // immediate context itself.
     m_pDeviceContext->CopyResource(surface.texture.pTexture, source);
+    SignalRifeCopyFence();
     surface.inUse = true;
     sourceSurface = freeSurface;
     return true;
@@ -549,6 +551,96 @@ bool CDX11VideoProcessor::ReserveRifePresentationSurface(
     UNREFERENCED_PARAMETER(contentSize);
     return false;
 #endif
+}
+
+struct CDX11VideoProcessor::RifeCopyFence {
+    CComPtr<ID3D11Fence> fence;
+    CComPtr<ID3D11DeviceContext4> context;
+    // Values must reach the context in order, or a waiter could see the fence go backwards.
+    std::mutex signalMutex;
+    std::atomic_uint64_t value = 0;
+};
+
+std::shared_ptr<CDX11VideoProcessor::RifeCopyFence> CDX11VideoProcessor::GetRifeCopyFence()
+{
+    std::lock_guard lock(m_RifeCopyFenceMutex);
+    return m_RifeCopyFence;
+}
+
+bool CDX11VideoProcessor::EnsureRifeCopyFence()
+{
+    if (GetRifeCopyFence()) {
+        return true;
+    }
+    CComQIPtr<ID3D11Device5> device(m_pDevice);
+    CComQIPtr<ID3D11DeviceContext4> context(m_pDeviceContext);
+    if (!device || !context) {
+        return false;
+    }
+    auto created = std::make_shared<RifeCopyFence>();
+    created->context = context;
+    if (FAILED(device->CreateFence(0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(&created->fence)))) {
+        return false;
+    }
+    std::lock_guard lock(m_RifeCopyFenceMutex);
+    if (!m_RifeCopyFence) {
+        m_RifeCopyFence = std::move(created);
+    }
+    return true;
+}
+
+uint64_t CDX11VideoProcessor::SignalRifeCopyFence()
+{
+    const auto copyFence = GetRifeCopyFence();
+    if (!copyFence) {
+        return 0;
+    }
+    std::lock_guard lock(copyFence->signalMutex);
+    const uint64_t value = copyFence->value.load(std::memory_order_relaxed) + 1;
+    if (FAILED(copyFence->context->Signal(copyFence->fence, value))) {
+        return 0;
+    }
+    copyFence->value.store(value, std::memory_order_release);
+    return value;
+}
+
+void CDX11VideoProcessor::FlushRifeCopies()
+{
+    if (const auto copyFence = GetRifeCopyFence()) {
+        copyFence->context->Flush();
+    }
+}
+
+uint64_t CDX11VideoProcessor::LastRifeCopyFence()
+{
+    const auto copyFence = GetRifeCopyFence();
+    return copyFence ? copyFence->value.load(std::memory_order_acquire) : 0;
+}
+
+uint64_t CDX11VideoProcessor::CompletedRifeCopyFence()
+{
+    const auto copyFence = GetRifeCopyFence();
+    return copyFence ? copyFence->fence->GetCompletedValue() : 0;
+}
+
+void CDX11VideoProcessor::WaitRifeCopyFence(const uint64_t value)
+{
+    const auto copyFence = GetRifeCopyFence();
+    if (!copyFence || !value || copyFence->fence->GetCompletedValue() >= value) {
+        return;
+    }
+    const HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!event) {
+        return;
+    }
+    if (SUCCEEDED(copyFence->fence->SetEventOnCompletion(value, event))
+            && WaitForSingleObject(event, 8) == WAIT_TIMEOUT) {
+        // A signal still sits in the context's buffer: this is the only path that takes the
+        // device lock, and it is rare, since the copies were flushed as their job finished.
+        copyFence->context->Flush();
+        WaitForSingleObject(event, 100);
+    }
+    CloseHandle(event);
 }
 
 bool CDX11VideoProcessor::AcquireRifePresentationSurface(

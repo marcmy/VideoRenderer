@@ -294,6 +294,47 @@ bool ReadRuleControls(HWND hwnd, RifeRateRule& rule)
 	return true;
 }
 
+constexpr SettingsTooltip kRuleTooltips[] = {
+	{IDC_RIFE_RULE_ENABLED, L"Use this rule. A disabled rule is kept but never matches."},
+	{IDC_RIFE_RULE_OFF, L"Turn RIFE off for video this rule matches, instead of capping it."},
+	{IDC_RIFE_RULE_MIN_LONG, L"Smallest width of the video's longer side to match, in pixels. Blank means no minimum."},
+	{IDC_RIFE_RULE_MAX_LONG, L"Largest width of the video's longer side to match, in pixels. Blank means no maximum."},
+	{IDC_RIFE_RULE_MIN_SHORT, L"Smallest size of the video's shorter side to match, in pixels. Blank means no minimum."},
+	{IDC_RIFE_RULE_MAX_SHORT, L"Largest size of the video's shorter side to match, in pixels. Blank means no maximum."},
+	{IDC_RIFE_RULE_MIN_FPS, L"Lowest source frame rate to match. Blank means no minimum."},
+	{IDC_RIFE_RULE_MAX_FPS, L"Highest source frame rate to match. Blank means no maximum."},
+	{IDC_RIFE_RULE_MAX_MULTIPLIER, L"Never multiply matching video's frame rate by more than this."},
+	{IDC_RIFE_RULE_MAX_OUTPUT_FPS, L"Never output matching video above this frame rate."},
+};
+
+constexpr SettingsTooltip kRifeTooltips[] = {
+	{IDC_RIFE_MODE, L"How many frames to show. To screen matches the display's refresh rate, Movie multiplies the source's frame rate, and the others aim for a fixed rate. Audio and source timing don't change."},
+	{IDC_RIFE_CUSTOM_FPS, L"The frame rate to aim for when the interpolation rate is Custom."},
+	{IDC_RIFE_FLOW_REUSE, L"Estimates motion once per source pair instead of once per generated frame, which is much faster. Motion within a pair becomes a straight line. Coarse still refines each frame; Retime is fastest, but very fast or repetitive motion can jump. Needs 4.25 Lite, Feature reuse and an RTX 20 or GTX 16 series card."},
+	{IDC_RIFE_GPU_THREADS, L"How many source pairs RIFE can work on at once. More uses more VRAM, and adds little speed once the GPU is fully busy."},
+	{IDC_RIFE_MODEL, L"The AI model. 4.25 Lite is the fastest, and gets the most from Feature reuse on an RTX 20 or GTX 16 series card. It is the only one with Flow reuse. 4.4 and 4.6 can't use Feature reuse."},
+	{IDC_RIFE_GPU, L"Which NVIDIA GPU runs RIFE. Auto suits a single-GPU system. The number may differ from Task Manager's."},
+	{IDC_RIFE_PROCESSING_RESOLUTION, L"The size RIFE works at. Source resolution keeps all detail. Match displayed size and Custom limit work smaller when they can, trading detail for speed."},
+	{IDC_RIFE_PROCESSING_LIMIT, L"The largest short edge RIFE works at when the processing size is Custom limit, in pixels."},
+	{IDC_RIFE_PERFORMANCE_BOOST, L"Builds and caches an engine for each resolution instead of one that handles any size. Faster, but the first play at a new resolution waits for the build."},
+	{IDC_RIFE_PRESERVE_PRECISION, L"Keeps more than 8 bits through RIFE when the source and conversion path have them. Uses more memory and bandwidth."},
+	{IDC_RIFE_FEATURE_REUSE, L"Reads each source pair's images once instead of once per generated frame. The picture stays the same apart from rounding, and it is faster and uses less VRAM. Available on 4.15 Lite, 4.25 and 4.25 Lite. The first use at a size builds an engine."},
+	{IDC_RIFE_SCENE_DETECTION, L"How RIFE spots a cut, so it doesn't morph one scene into the next. SVPflow1 and NVOF use motion vectors, and Image comparison compares the pictures."},
+	{IDC_RIFE_SCENE_THRESHOLD, L"How different two frames must be to count as a cut when using Image comparison. Lower detects more cuts."},
+	{IDC_RIFE_SCENE_PROCESSING, L"What to show across a detected cut, in place of generated frames: repeat a frame, or blend the two either side of the cut."},
+	{IDC_RIFE_DUPLICATE_REMOVAL, L"For video where every other frame is a repeat. Removing those lets RIFE generate real motion in their place."},
+	{IDC_RIFE_RULES_ENABLED, L"Apply the rules below, which change RIFE's rate or turn it off depending on the video."},
+	{IDC_RIFE_RULES_LIST, L"Rules are checked from the top, and the first enabled rule that matches wins."},
+	{IDC_RIFE_RULE_ADD, L"Add a new rule."},
+	{IDC_RIFE_RULE_EDIT, L"Edit the selected rule."},
+	{IDC_RIFE_RULE_REMOVE, L"Remove the selected rule."},
+	{IDC_RIFE_RULE_UP, L"Check the selected rule earlier."},
+	{IDC_RIFE_RULE_DOWN, L"Check the selected rule later."},
+	{IDC_RIFE_RULE_EXAMPLE, L"Replace the rules with an example set and turn them on. Nothing is saved until you press OK."},
+	{IDC_BUTTON_RIFE_DEFAULTS, L"Put these settings back to their defaults. Nothing is saved until you press OK."},
+	{IDC_DETAILED_STATS, L"Adds RIFE's timing and engine details to the Ctrl+J statistics."},
+};
+
 INT_PTR CALLBACK RuleDialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	auto* rule = reinterpret_cast<RifeRateRule*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -301,6 +342,7 @@ INT_PTR CALLBACK RuleDialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
 	case WM_INITDIALOG:
 		rule = reinterpret_cast<RifeRateRule*>(lParam);
 		SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(rule));
+		AddSettingsTooltips(hwnd, kRuleTooltips);
 		InitializeSettingsDialogTheme(hwnd);
 		SetRuleControls(hwnd, *rule);
 		return TRUE;
@@ -349,6 +391,7 @@ void CopyRifeSettings(Settings_t& dst, const Settings_t& src)
 	dst.bRifePerformanceBoost = src.bRifePerformanceBoost;
 	dst.bRifePreservePrecision = src.bRifePreservePrecision;
 	dst.bRifeFeatureReuse = src.bRifeFeatureReuse;
+	dst.iRifeFlowReuse = src.iRifeFlowReuse;
 	dst.iRifeProcessingResolution = src.iRifeProcessingResolution;
 	dst.iRifeProcessingLimit = src.iRifeProcessingLimit;
 	dst.iRifeSceneDetection = src.iRifeSceneDetection;
@@ -368,6 +411,7 @@ bool RifeSettingsEqual(const Settings_t& a, const Settings_t& b)
 		&& a.iRifeGPU == b.iRifeGPU
 		&& a.bRifePreservePrecision == b.bRifePreservePrecision
 		&& a.bRifeFeatureReuse == b.bRifeFeatureReuse
+		&& a.iRifeFlowReuse == b.iRifeFlowReuse
 		&& a.bRifePerformanceBoost == b.bRifePerformanceBoost
 		&& a.iRifeProcessingResolution == b.iRifeProcessingResolution
 		&& a.iRifeProcessingLimit == b.iRifeProcessingLimit
@@ -402,7 +446,11 @@ void EnableControls(HWND hwnd)
 	}
 	const auto model = ComboValue(hwnd, IDC_RIFE_MODEL);
 	EnableWindow(GetDlgItem(hwnd, IDC_RIFE_FEATURE_REUSE), enabled
-		&& (model == RIFE_MODEL_415_LITE || model == RIFE_MODEL_425));
+		&& RifeModelSupportsFeatureReuse(static_cast<int>(model)));
+	const BOOL flowReuseEnabled = enabled && RifeModelSupportsFlowReuse(static_cast<int>(model))
+		&& IsDlgButtonChecked(hwnd, IDC_RIFE_FEATURE_REUSE) == BST_CHECKED;
+	EnableWindow(GetDlgItem(hwnd, IDC_RIFE_FLOW_REUSE), flowReuseEnabled);
+	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_RIFE_FLOW_REUSE), flowReuseEnabled);
 	const BOOL imageEnabled = enabled && ComboValue(hwnd, IDC_RIFE_SCENE_DETECTION) == RIFE_SCENE_Image;
 	EnableWindow(GetDlgItem(hwnd, IDC_RIFE_SCENE_THRESHOLD), imageEnabled);
 	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_RIFE_SCENE_THRESHOLD), imageEnabled);
@@ -424,6 +472,7 @@ void SetControls(HWND hwnd, const Settings_t& settings)
 		settings.bRifePerformanceBoost ? BST_CHECKED : BST_UNCHECKED);
 	CheckDlgButton(hwnd, IDC_RIFE_PRESERVE_PRECISION, settings.bRifePreservePrecision ? BST_CHECKED : BST_UNCHECKED);
 	CheckDlgButton(hwnd, IDC_RIFE_FEATURE_REUSE, settings.bRifeFeatureReuse ? BST_CHECKED : BST_UNCHECKED);
+	SelectComboValue(hwnd, IDC_RIFE_FLOW_REUSE, settings.iRifeFlowReuse);
 	CheckDlgButton(hwnd, IDC_DETAILED_STATS,
 		settings.bDetailedStats ? BST_CHECKED : BST_UNCHECKED);
 	SelectComboValue(hwnd, IDC_RIFE_SCENE_DETECTION, settings.iRifeSceneDetection);
@@ -469,6 +518,11 @@ void InitializeDialog(HWND hwnd, const Settings_t& settings)
 		{L"GPU 0", 0}, {L"GPU 1", 1}, {L"GPU 2", 2}, {L"GPU 3", 3},
 		{L"GPU 4", 4}, {L"GPU 5", 5}, {L"GPU 6", 6}, {L"GPU 7", 7},
 	});
+	PopulateCombo(hwnd, IDC_RIFE_FLOW_REUSE, {
+		{L"Off", RIFE_FLOW_REUSE_Off},
+		{L"Coarse (faster)", RIFE_FLOW_REUSE_Coarse},
+		{L"Retime (fastest)", RIFE_FLOW_REUSE_Retime},
+	});
 	PopulateCombo(hwnd, IDC_RIFE_SCENE_DETECTION, {
 		{L"SVPflow1 motion vectors", RIFE_SCENE_SVPflow1},
 		{L"NVOF motion vectors", RIFE_SCENE_NVOF},
@@ -499,6 +553,7 @@ bool ReadControls(HWND hwnd, Settings_t& settings)
 	settings.iRifeGPU = static_cast<int>(ComboValue(hwnd, IDC_RIFE_GPU));
 	settings.bRifePreservePrecision = IsDlgButtonChecked(hwnd, IDC_RIFE_PRESERVE_PRECISION) == BST_CHECKED;
 	settings.bRifeFeatureReuse = IsDlgButtonChecked(hwnd, IDC_RIFE_FEATURE_REUSE) == BST_CHECKED;
+	settings.iRifeFlowReuse = static_cast<int>(ComboValue(hwnd, IDC_RIFE_FLOW_REUSE));
 	settings.bRifePerformanceBoost = IsDlgButtonChecked(hwnd, IDC_RIFE_PERFORMANCE_BOOST) == BST_CHECKED;
 	settings.iRifeProcessingResolution = static_cast<int>(ComboValue(hwnd, IDC_RIFE_PROCESSING_RESOLUTION));
 	BOOL limitValid = FALSE;
@@ -555,6 +610,7 @@ INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 		SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(settings));
 		InitializeSettingsDialogTheme(hwnd);
 		InitializeDialog(hwnd, *settings);
+		AddSettingsTooltips(hwnd, kRifeTooltips);
 		return TRUE;
 
 	case WM_COMMAND:
@@ -564,6 +620,12 @@ INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 		case IDC_RIFE_SCENE_DETECTION:
 		case IDC_RIFE_PROCESSING_RESOLUTION:
 			if (HIWORD(wParam) == CBN_SELCHANGE) {
+				EnableControls(hwnd);
+				return TRUE;
+			}
+			break;
+		case IDC_RIFE_FEATURE_REUSE:
+			if (HIWORD(wParam) == BN_CLICKED) {
 				EnableControls(hwnd);
 				return TRUE;
 			}

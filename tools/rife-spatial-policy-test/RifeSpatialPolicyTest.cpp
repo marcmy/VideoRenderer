@@ -8,7 +8,12 @@ int main()
 {
     assert((ResolveRifeWorkingSize({1920, 1080}, {1280, 720}, RIFE_RESOLUTION_Source, 720) == RifeSpatialSize{1920, 1080}));
     assert((ResolveRifeWorkingSize({1920, 1080}, {1280, 720}, RIFE_RESOLUTION_Display, 720) == RifeSpatialSize{1280, 720}));
-    assert((ResolveRifeWorkingSize({1080, 1920}, {608, 1080}, RIFE_RESOLUTION_Display, 720) == RifeSpatialSize{607, 1080}));
+    assert((ResolveRifeWorkingSize({1080, 1920}, {608, 1080}, RIFE_RESOLUTION_Display, 720) == RifeSpatialSize{608, 1080}));
+    assert((ResolveRifeWorkingSize({1920, 1080}, {1080, 608}, RIFE_RESOLUTION_Display, 720) == RifeSpatialSize{1080, 608}));
+    // Round a half pixel to the fitted display extent, but never exceed a
+    // smaller destination, enlarge the source, or change custom-limit policy.
+    assert((ResolveRifeWorkingSize({1080, 1920}, {607, 1080}, RIFE_RESOLUTION_Display, 720) == RifeSpatialSize{607, 1079}));
+    assert((ResolveRifeWorkingSize({1080, 1920}, {608, 1080}, RIFE_RESOLUTION_Source, 720) == RifeSpatialSize{1080, 1920}));
     assert((ResolveRifeWorkingSize({1920, 1080}, {}, RIFE_RESOLUTION_Display, 720) == RifeSpatialSize{1920, 1080}));
     assert((ResolveRifeWorkingSize({854, 480}, {1920, 1080}, RIFE_RESOLUTION_Display, 720) == RifeSpatialSize{854, 480}));
     assert((ResolveRifeWorkingSize({1080, 1920}, {}, RIFE_RESOLUTION_Limit, 720) == RifeSpatialSize{720, 1280}));
@@ -30,11 +35,11 @@ int main()
         const auto fit = ResolveRifeWorkingSize(source, display, RIFE_RESOLUTION_Display, 720);
         assert(fit.width && fit.height && fit.width <= source.width && fit.height <= source.height);
         assert(fit.width <= display.width && fit.height <= display.height);
-        // Less than one pixel of aspect rounding (minimum-one-pixel thin images excepted).
+        // At most half a pixel of aspect rounding (minimum-one-pixel thin images excepted).
         if (fit.width > 1 && fit.height > 1) {
             const int64_t error = static_cast<int64_t>(fit.width) * source.height
                 - static_cast<int64_t>(fit.height) * source.width;
-            assert(error < source.width && error > -static_cast<int64_t>(source.height));
+            assert(std::abs(error) * 2 <= std::max(source.width, source.height));
         }
         assert(ResolveRifeWorkingSize(source, display, RIFE_RESOLUTION_Source, 720) == source);
         const int limit = 64 + static_cast<int>(random() % (4320u - 64u + 1u));

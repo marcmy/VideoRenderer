@@ -77,8 +77,8 @@ void require(bool ok, const char* why) { if (!ok) throw std::runtime_error(why);
 int main() {
     try {
         int cases=0;
-        // User's exact discrepancy: the same fitted player rectangle should
-        // select the portrait output class for raw anamorphic and RIFE input.
+        // Raw input keeps the portrait resolution-class policy. RIFE input is
+        // already presentation-oriented and must match the fitted rectangle.
         for (int rotation : {0,180}) {
             CDX11VideoProcessor renderer; renderer.m_iRotation=rotation;
             CSize paused, playing; bool up=false;
@@ -89,8 +89,8 @@ int main() {
                     "RIFE anamorphic Maxine path was ineligible");
             std::cout << "Anamorphic targets: raw " << paused.cx << 'x' << paused.cy
                       << ", RIFE " << playing.cx << 'x' << playing.cy << '\n';
-            require(paused==CSize{1080,1865} && paused==playing,
-                    "Paused/source and RIFE choose different portrait output classes");
+            require(paused==CSize{1080,1865} && playing==CSize{630,1080},
+                    "RIFE Match output must use the fitted player rectangle");
             ++cases;
         }
         // Quarter turns require targets in each actual input's orientation.
@@ -102,9 +102,9 @@ int main() {
             CSize raw, oriented; bool up=false;
             require(renderer.GetMaxineVSRTargetSize({608,1080},raw,up)
                     && raw==CSize{1920,1080}, "Raw rotation target changed");
-            require(renderer.GetMaxineVSRTargetSizeForInput({608,1080},
+            require(!renderer.GetMaxineVSRTargetSizeForInput({608,1080},
                     renderer.GetRifeSourceContentSize(),true,oriented,up)
-                    && oriented==CSize{1080,1920}, "Oriented rotation target changed");
+                    && !up, "Full-size rotated RIFE input must not be upscaled for a smaller output");
             ++cases;
         }
         // Ordinary landscape and already-portrait paths retain their targets.
@@ -115,14 +115,45 @@ int main() {
             renderer.m_srcAnamorphic=false; renderer.m_iMaxineOversample=oversample;
             CSize raw, oriented; bool up=false;
             const CRect fitted=portrait?CRect{608,1080}:CRect{1920,1080};
-            require(renderer.GetMaxineVSRTargetSize(fitted,raw,up)
-                    && renderer.GetMaxineVSRTargetSizeForInput(fitted,
-                        renderer.GetRifeSourceContentSize(),true,oriented,up)
-                    && raw==oriented, "Square-pixel target paths diverged");
+            require(renderer.GetMaxineVSRTargetSize(fitted,raw,up), "Raw square-pixel path ineligible");
             require(raw==(portrait?CSize{(1080*oversample+50)/100,(1920*oversample+50)/100}
                                   :CSize{(1920*oversample+50)/100,(1080*oversample+50)/100}),
                     "Existing square-pixel oversampling policy changed");
+            const bool eligible = renderer.GetMaxineVSRTargetSizeForInput(fitted,
+                renderer.GetRifeSourceContentSize(),true,oriented,up);
+            const CSize expected{(fitted.Width()*oversample+50)/100,
+                                 (fitted.Height()*oversample+50)/100};
+            const bool needsUpscale = expected.cx > static_cast<int>(renderer.m_srcRectWidth)
+                || expected.cy > static_cast<int>(renderer.m_srcRectHeight);
+            require(eligible==needsUpscale && up==needsUpscale,
+                    "RIFE Match output eligibility ignores actual fitted target");
+            if (eligible) require(oriented==expected, "RIFE oversampling must scale the fitted output");
             ++cases;
+        }
+        // Exact portrait report: display-sized interpolation must not be
+        // enlarged to 1080x1922 and then shrunk back for presentation.
+        for (int oversample : {100,133,150,200}) {
+            CDX11VideoProcessor renderer;
+            renderer.m_srcRectWidth=1080; renderer.m_srcRectHeight=1920;
+            renderer.m_srcAnamorphic=false; renderer.m_iMaxineOversample=oversample;
+            CSize target; bool up=false;
+            require(renderer.GetMaxineVSRTargetSizeForInput({608,1080},
+                {607,1080},true,target,up) && up,
+                "Display-sized RIFE input should upscale to the requested fitted output");
+            require(target==CSize{(608*oversample+50)/100,(1080*oversample+50)/100},
+                "Portrait RIFE target exceeds fitted output and explicit oversampling"); ++cases;
+            if (oversample==100) {
+                const auto working=ResolveRifeWorkingSize({1080,1920},{608,1080},
+                    RIFE_RESOLUTION_Display,720);
+                require(working==RifeSpatialSize{608,1080}, "Display-fit RIFE geometry truncates a half pixel");
+                require(!renderer.GetMaxineVSRTargetSizeForInput({608,1080},
+                    {static_cast<int>(working.width),static_cast<int>(working.height)},true,target,up) && !up,
+                    "Equal-size RIFE output must bypass VSR when cleanup is off"); ++cases;
+                renderer.m_iMaxineDenoise=MAXINE_FILTER_Low;
+                require(renderer.GetMaxineVSRTargetSizeForInput({608,1080},
+                    {608,1080},true,target,up) && !up && target==CSize{608,1080},
+                    "Equal-size RIFE output must preserve selected cleanup passes"); ++cases;
+            }
         }
         // Explicit scale is intentionally relative to the actual Maxine input.
         CDX11VideoProcessor renderer;

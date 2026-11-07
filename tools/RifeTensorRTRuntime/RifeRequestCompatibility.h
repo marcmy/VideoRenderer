@@ -13,7 +13,8 @@ inline bool CopyRifeRuntimeRequest(const MpcvrRifeRequest* source, MpcvrRifeRequ
     std::memcpy(&request, source, std::min<size_t>(source->size, sizeof(request)));
     // A truncated optional field is not a valid generation, even if its low
     // bytes happen to match a previous request.
-    if (source->size < sizeof(request)) request.inputPairId = 0;
+    if (source->size < offsetof(MpcvrRifeRequest, previousPairId)) request.inputPairId = 0;
+    if (source->size < sizeof(request)) request.previousPairId = 0;
     return true;
 }
 

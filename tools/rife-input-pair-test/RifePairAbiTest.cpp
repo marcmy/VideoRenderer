@@ -14,9 +14,9 @@ int wmain()
     check(current.Initialize(L"pair-runtime", nullptr, 320, 576, 320, 570, UINT32_MAX, 2,
         false, L"model.onnx", L"cache"), "new fake runtime must load without GPU work");
     MpcvrRifeStats stats;
-    check(current.Interpolate(1, first, second, output, 0.25f, stats, 987654321),
+    check(current.Interpolate(1, first, second, output, 0.25f, stats, 987654321, 987654320),
         "renderer must call the current ABI-2 runtime");
-    check(stats.engineBytes == 987654321 && stats.inputPairReuse == 1,
+    check(stats.engineBytes == 987654321 && stats.inputPairReuse == 1 && stats.registrationMs == 987654320.0,
         "pair generation and new stats tail must cross the real renderer loader");
     check(current.DrainContext(1), "optional drain export must remain available");
     check(legacy.Initialize(L"legacy-runtime", nullptr, 320, 576, 320, 570, UINT32_MAX, 2,

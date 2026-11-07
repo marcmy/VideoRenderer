@@ -196,7 +196,7 @@ bool CRifeFrameInterpolation::Initialize(
     const uint32_t contextCount,
     const bool performanceBoost,
     const std::wstring& modelPath,
-    const std::wstring& cachePath, const bool highPrecision, const bool featureReuse)
+    const std::wstring& cachePath, const bool highPrecision, const bool featureReuse, const uint32_t flowReuseFlags)
 {
     if (m_liveCudaLeases.load(std::memory_order_acquire)) return false;
     Reset();
@@ -216,7 +216,7 @@ bool CRifeFrameInterpolation::Initialize(
         bool abiCompatibleRuntime = false;
         if (LoadAndCreate(
                 AbsoluteModulePath(directory).wstring(), device, width, height, contentWidth, contentHeight, gpuIndex,
-                contextCount, performanceBoost, modelPath, cachePath, &abiCompatibleRuntime, highPrecision, featureReuse)) {
+                contextCount, performanceBoost, modelPath, cachePath, &abiCompatibleRuntime, highPrecision, featureReuse, flowReuseFlags)) {
             return true;
         }
         if (abiCompatibleRuntime) {
@@ -246,7 +246,7 @@ bool CRifeFrameInterpolation::LoadAndCreate(
     const bool performanceBoost,
     const std::wstring& modelPath,
     const std::wstring& cachePath,
-    bool* abiCompatibleRuntime, const bool highPrecision, const bool featureReuse)
+    bool* abiCompatibleRuntime, const bool highPrecision, const bool featureReuse, const uint32_t flowReuseFlags)
 {
     if (abiCompatibleRuntime) {
         *abiCompatibleRuntime = false;
@@ -280,9 +280,10 @@ bool CRifeFrameInterpolation::LoadAndCreate(
     const auto getCapabilities = reinterpret_cast<MpcvrRifeGetCapabilitiesFn>(GetProcAddress(module, "MpcvrRifeGetCapabilities"));
     const uint32_t capabilities = getCapabilities ? getCapabilities() : 0u;
     const uint32_t required = (highPrecision ? MPCVR_RIFE_CAP_HIGH_PRECISION : 0u)
-        | (featureReuse ? MPCVR_RIFE_CAP_FEATURE_REUSE : 0u);
+        | (featureReuse ? MPCVR_RIFE_CAP_FEATURE_REUSE : 0u)
+        | (flowReuseFlags ? MPCVR_RIFE_CAP_FLOW_REUSE : 0u);
     if ((capabilities & required) != required) {
-        m_status = L"Update the RIFE runtime to use precision or encoder feature reuse";
+        m_status = L"Update the RIFE runtime to use precision, feature reuse or flow reuse";
         FreeLibrary(module);
         return false;
     }
@@ -302,7 +303,8 @@ bool CRifeFrameInterpolation::LoadAndCreate(
     // renderer can safely retire a context before switching runtime instances.
     params.flags = (exports.drainContext ? MPCVR_RIFE_CREATE_DEFER_INPUT_RELEASE : 0u)
         | (highPrecision ? MPCVR_RIFE_CREATE_HIGH_PRECISION : 0u)
-        | (featureReuse ? MPCVR_RIFE_CREATE_FEATURE_REUSE : 0u);
+        | (featureReuse ? MPCVR_RIFE_CREATE_FEATURE_REUSE : 0u)
+        | flowReuseFlags;
 
     void* handle = nullptr;
     const int result = exports.create(&params, &handle);
@@ -371,7 +373,8 @@ bool CRifeFrameInterpolation::Interpolate(
     ID3D11Texture2D* output,
     const float timestep,
     MpcvrRifeStats& stats,
-    const uint64_t inputPairId)
+    const uint64_t inputPairId,
+    const uint64_t previousPairId)
 {
     if (!IsReady() || !first || !second || !output || !(timestep > 0.0f && timestep < 1.0f)) {
         return false;
@@ -384,6 +387,7 @@ bool CRifeFrameInterpolation::Interpolate(
     request.output = output;
     request.timestep = timestep;
     request.inputPairId = inputPairId;
+    request.previousPairId = previousPairId;
 
     stats = {};
     const int result = m_interpolate(m_handle, &request, &stats);
@@ -457,7 +461,7 @@ RifeCudaOutputLease::~RifeCudaOutputLease()
 }
 
 bool RifeCudaOutputLease::Interpolate(uint32_t contextIndex, ID3D11Texture2D* first,
-    ID3D11Texture2D* second, float timestep, MpcvrRifeStats& stats, uint64_t inputPairId)
+    ID3D11Texture2D* second, float timestep, MpcvrRifeStats& stats, uint64_t inputPairId, uint64_t previousPairId)
 {
     if (!m_image.leaseId || !first || !second || !(timestep > 0.0f && timestep < 1.0f)) return false;
     MpcvrRifeRequest request{};
@@ -466,6 +470,7 @@ bool RifeCudaOutputLease::Interpolate(uint32_t contextIndex, ID3D11Texture2D* fi
     request.second = second;
     request.timestep = timestep;
     request.inputPairId = inputPairId;
+    request.previousPairId = previousPairId;
     stats = {};
     return m_owner->m_interpolateCuda(m_owner->m_handle, &request, m_image.leaseId, &stats) == MPCVR_RIFE_OK;
 }

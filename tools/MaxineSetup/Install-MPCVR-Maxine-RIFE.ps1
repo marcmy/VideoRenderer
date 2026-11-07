@@ -579,7 +579,7 @@ try {
     Write-Host 'Press Ctrl+J and confirm:'
     Write-Host "  Maxine runtime: $maxineRuntimePath"
     Write-Host '  RIFE runtime: ready'
-    Write-Host '  RIFE models: 4.4, 4.6, 4.15 Lite, 4.25, 4.25 Lite (default: 4.25)'
+    Write-Host '  RIFE models: 4.4, 4.6, 4.15 Lite, 4.25, 4.25 Lite (default: 4.25 Lite)'
     Write-Host 'First playback may build a TensorRT engine under %LOCALAPPDATA%\MPCVideoRenderer\RIFE\cache.'
 }
 catch {
