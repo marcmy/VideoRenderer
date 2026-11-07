@@ -310,9 +310,9 @@ constexpr SettingsTooltip kRuleTooltips[] = {
 constexpr SettingsTooltip kRifeTooltips[] = {
 	{IDC_RIFE_MODE, L"How many frames to show. To screen matches the display's refresh rate, Movie multiplies the source's frame rate, and the others aim for a fixed rate. Audio and source timing don't change."},
 	{IDC_RIFE_CUSTOM_FPS, L"The frame rate to aim for when the interpolation rate is Custom."},
-	{IDC_RIFE_FLOW_REUSE, L"Estimates motion once per source pair instead of once per generated frame, which is much faster. Motion within a pair becomes a straight line. Coarse still refines each frame; Retime is fastest, but very fast or repetitive motion can jump. Needs 4.25 Lite, Feature reuse and an RTX 20 or GTX 16 series card."},
+	{IDC_RIFE_FLOW_REUSE, L"Estimates motion once per source pair instead of once per generated frame, which is much faster. Motion within a pair becomes a straight line. Coarse still refines each frame; Retime is fastest, but very fast or repetitive motion can jump. Needs 4.25 Lite and Feature reuse."},
 	{IDC_RIFE_GPU_THREADS, L"How many source pairs RIFE can work on at once. More uses more VRAM, and adds little speed once the GPU is fully busy."},
-	{IDC_RIFE_MODEL, L"The AI model. 4.25 Lite is the fastest, and gets the most from Feature reuse on an RTX 20 or GTX 16 series card. It is the only one with Flow reuse. 4.4 and 4.6 can't use Feature reuse."},
+	{IDC_RIFE_MODEL, L"The AI model. 4.25 Lite is the fastest, and gets the most from Feature reuse. It is the only one with Flow reuse. 4.4 and 4.6 can't use Feature reuse."},
 	{IDC_RIFE_GPU, L"Which NVIDIA GPU runs RIFE. Auto suits a single-GPU system. The number may differ from Task Manager's."},
 	{IDC_RIFE_PROCESSING_RESOLUTION, L"The size RIFE works at. Source resolution keeps all detail. Match displayed size and Custom limit work smaller when they can, trading detail for speed."},
 	{IDC_RIFE_PROCESSING_LIMIT, L"The largest short edge RIFE works at when the processing size is Custom limit, in pixels."},

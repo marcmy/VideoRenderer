@@ -7,9 +7,11 @@ border sampling, reshaping and concatenation into one CUDA plugin per refinement
 stage. A simple GridSample-only replacement was rejected: its extra copies erased
 the kernel's gain (18.7 ms versus 18.3 ms for the complete model).
 
-The fused path is restricted to SM75 and the already validated 4.25 Lite model
-hash in `FeatureReuseEngine.h`. It requires Feature reuse. Other models, GPU
-architectures and the ordinary dynamic engine keep their existing paths. A failed
+The fused path runs on every compute capability the runtime accepts (SM75, SM86,
+SM89 and SM120), for the already validated 4.25 Lite model hash in
+`FeatureReuseEngine.h`. The measurements below are all from SM75; the others share
+the source and were enabled without a measurement of their own. It requires Feature
+reuse. Other models and the ordinary dynamic engine keep their existing paths. A failed
 fused build falls back to the native feature engine. ABI 2 is unchanged.
 
 A `_synth_wN` cache suffix distinguishes plugin plans from native plans and from

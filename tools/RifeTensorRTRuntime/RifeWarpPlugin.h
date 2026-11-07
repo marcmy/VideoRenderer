@@ -21,7 +21,7 @@ inline constexpr char kRifeAnchorLevelName[] = "mpcvr_rife_anchor_level";
 // Whole does. Field: every block, ending in final flow and mask.
 enum class RifeFusedPlan { Whole, Anchor, Tail, Field };
 
-// Only called for the hash-validated 4.25 Lite synthesis graph on SM75.
+// Only called for the hash-validated 4.25 Lite synthesis graph.
 // Registration must precede deserializing plans containing this plugin.
 bool RegisterRifeWarpPlugin() noexcept;
 // TensorRT holds layer weights by reference: weightStorage must outlive the build.

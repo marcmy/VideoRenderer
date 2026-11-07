@@ -135,7 +135,7 @@ int wmain(int argc,wchar_t** argv) {
             q.contextIndex=1;Check(infer(handle,&q,&s)==0 && s.featureReuse==uint64_t(reuse&&supported?1:0),"contexts own independent features");
             if(reuse&&supported) {
                 // Consecutive pairs may keep the frame they share, across contexts, but
-                // only when the IDs promise it. Only 4.25 Lite on SM75 currently does.
+                // only when the IDs promise it. Only 4.25 Lite on the fused path currently does.
                 const auto run=[&](uint32_t index,ID3D11Texture2D* first,ID3D11Texture2D* second,ID3D11Texture2D* target,uint64_t id,uint64_t previous){
                     MpcvrRifeRequest r;r.contextIndex=index;r.first=first;r.second=second;r.output=target;r.timestep=.5f;r.inputPairId=id;r.previousPairId=previous;
                     MpcvrRifeStats rs;Check(infer(handle,&r,&rs)==0,"consecutive pair inference");return rs.featureReuse;};
@@ -191,7 +191,7 @@ int wmain(int argc,wchar_t** argv) {
         Check(maximum<.02,"GPU precision parity within FP16 tactic tolerance");
         }
     }
-    // Content shorter than the padded surface: on SM75 the fused 4.25 Lite plan works on
+    // Content shorter than the padded surface: the fused 4.25 Lite plan works on
     // fewer rows than the surface has, and the visible rows must still match the whole model.
     {
         constexpr int size=256,contentHeight=190;
@@ -224,7 +224,7 @@ int wmain(int argc,wchar_t** argv) {
         Check(maximum<.05,"visible rows match the whole model");
     }
     // Shared flow: at the time it was estimated each mode must match the whole model, and at
-    // other times gentle motion must land where it truly is. Only the measured path shares it.
+    // other times gentle motion must land where it truly is. Only the fused path shares it.
     for(const bool precise : {false,true}) {
         constexpr int size=256;constexpr int shift=8;
         const auto model=(std::filesystem::path(argv[2])/L"rife_v4.25_lite.onnx").wstring();
@@ -256,7 +256,7 @@ int wmain(int argc,wchar_t** argv) {
             MpcvrRifeRequest probe;probe.first=a;probe.second=b;probe.output=output;probe.timestep=.5f;probe.inputPairId=99;
             MpcvrRifeStats reported;Check(infer(handle,&probe,&reported)==0,"flow reuse probe");
             const bool shared=reported.flowReuse==mode;
-            if(mode && !shared) {std::cout<<"Flow reuse mode "<<mode<<" not on this GPU's measured path\n";Check(reported.flowReuse==0,"unavailable flow reuse falls back");destroy(handle);continue;}
+            if(mode && !shared) {std::cout<<"Flow reuse mode "<<mode<<" not on the fused path\n";Check(reported.flowReuse==0,"unavailable flow reuse falls back");destroy(handle);continue;}
             const auto midpoint=run(handle,.5f,mode,false);
             if(!mode) whole=midpoint;
             const auto early=run(handle,.25f,mode,true);

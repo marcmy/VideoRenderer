@@ -30,7 +30,7 @@ int wmain(int argc, wchar_t** argv)
     settings.iRifeMode = RIFE_MODE_Movie4x;
     assert(!settings.bRifePreservePrecision && settings.bRifeFeatureReuse);
     settings.bRifePreservePrecision = settings.bRifeFeatureReuse = true;
-    assert(settings.iRifeFlowReuse == RIFE_FLOW_REUSE_Off);
+    assert(settings.iRifeFlowReuse == RIFE_FLOW_REUSE_Coarse);
     settings.iRifeFlowReuse = RIFE_FLOW_REUSE_Retime;
     const HWND dialog = CreateDialogIndirectParamW(module, resourceTemplate, nullptr, DialogProc,
         reinterpret_cast<LPARAM>(&settings));
