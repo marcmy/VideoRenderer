@@ -318,7 +318,7 @@ constexpr SettingsTooltip kRifeTooltips[] = {
 	{IDC_RIFE_PROCESSING_LIMIT, L"The largest short edge RIFE works at when the processing size is Custom limit, in pixels."},
 	{IDC_RIFE_PERFORMANCE_BOOST, L"Builds and caches an engine for each resolution instead of one that handles any size. Faster, but the first play at a new resolution waits for the build."},
 	{IDC_RIFE_PRESERVE_PRECISION, L"Keeps more than 8 bits through RIFE when the source and conversion path have them. Uses more memory and bandwidth."},
-	{IDC_RIFE_FEATURE_REUSE, L"Reads each source pair's images once instead of once per generated frame. The picture stays the same apart from rounding, and it is faster and uses less VRAM. Available on 4.15 Lite, 4.25 and 4.25 Lite. The first use at a size builds an engine."},
+	{IDC_RIFE_FEATURE_REUSE, L"Reads each source pair's images once instead of once per generated frame. The picture stays the same apart from rounding, and it is faster and uses less VRAM. Available on 4.15 Lite and 4.25 Lite. The first use at a size builds an engine."},
 	{IDC_RIFE_SCENE_DETECTION, L"How RIFE spots a cut, so it doesn't morph one scene into the next. SVPflow1 and NVOF use motion vectors, and Image comparison compares the pictures."},
 	{IDC_RIFE_SCENE_THRESHOLD, L"How different two frames must be to count as a cut when using Image comparison. Lower detects more cuts."},
 	{IDC_RIFE_SCENE_PROCESSING, L"What to show across a detected cut, in place of generated frames: repeat a frame, or blend the two either side of the cut."},
@@ -507,7 +507,6 @@ void InitializeDialog(HWND hwnd, const Settings_t& settings)
 		{L"1", 1}, {L"2", 2}, {L"3", 3},
 	});
 	PopulateCombo(hwnd, IDC_RIFE_MODEL, {
-		{L"4.25", RIFE_MODEL_425},
 		{L"4.25 Lite", RIFE_MODEL_425_LITE},
 		{L"4.4", RIFE_MODEL_44},
 		{L"4.6", RIFE_MODEL_46},

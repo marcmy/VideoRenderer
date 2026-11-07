@@ -178,7 +178,6 @@ public:
     static bool IsValidatedModel(const std::string& modelHash) {
         for (const char* validated : {
                 "f25f9da57fc6e8ecdeac5f9e3ab90b340004b11b9fadb6e805fbecc2431d9ea9",   // RIFE 4.15 Lite
-                "a8daec071d3adb1b784647dea111094b939e9feb0a89bb163f34d9c4d017551b",   // RIFE 4.25
                 "15e6177e5469924c1b3a70d360d0d807bd87f0a2be4c94188184b47f886a0563"}) { // RIFE 4.25 Lite
             if (modelHash == validated) return true;
         }

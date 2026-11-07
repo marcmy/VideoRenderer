@@ -124,7 +124,6 @@ const wchar_t* RifeModelFileName(const int model) noexcept
     switch (model) {
     case RIFE_MODEL_44:       return L"rife_v4.4.onnx";
     case RIFE_MODEL_415_LITE: return L"rife_v4.15_lite.onnx";
-    case RIFE_MODEL_425:      return L"rife_v4.25.onnx";
     case RIFE_MODEL_425_LITE: return L"rife_v4.25_lite.onnx";
     case RIFE_MODEL_46:
     default:                  return L"rife_v4.6.onnx";
@@ -136,7 +135,6 @@ const wchar_t* RifeModelDisplayName(const int model) noexcept
     switch (model) {
     case RIFE_MODEL_44:       return L"4.4";
     case RIFE_MODEL_415_LITE: return L"4.15 Lite";
-    case RIFE_MODEL_425:      return L"4.25";
     case RIFE_MODEL_425_LITE: return L"4.25 Lite";
     case RIFE_MODEL_46:
     default:                  return L"4.6";
@@ -225,7 +223,7 @@ struct RuntimeKey {
     UINT contentHeight = 0;
     int gpu = RIFE_GPU_Auto;
     int contexts = RIFE_GPU_THREADS_DEF;
-    int model = RIFE_MODEL_425;
+    int model = RIFE_MODEL_425_LITE;
     bool performanceBoost = false;
     bool featureReuse = false;
     int flowReuse = RIFE_FLOW_REUSE_Off;

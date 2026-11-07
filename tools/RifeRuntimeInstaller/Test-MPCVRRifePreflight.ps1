@@ -138,7 +138,6 @@ function Invoke-RifePreflight {
         [pscustomobject]@{ Model = 'RIFE 4.4'; File = 'models/rife_v4.4.onnx' },
         [pscustomobject]@{ Model = 'RIFE 4.6'; File = 'models/rife_v4.6.onnx' },
         [pscustomobject]@{ Model = 'RIFE 4.15 Lite'; File = 'models/rife_v4.15_lite.onnx' },
-        [pscustomobject]@{ Model = 'RIFE 4.25'; File = 'models/rife_v4.25.onnx' },
         [pscustomobject]@{ Model = 'RIFE 4.25 Lite'; File = 'models/rife_v4.25_lite.onnx' }
     )
     $installedModels = @(Get-RequiredProperty $manifest 'models' 'installed manifest')

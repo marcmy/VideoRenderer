@@ -35,11 +35,11 @@ int wmain(int argc, wchar_t** argv)
     const HWND dialog = CreateDialogIndirectParamW(module, resourceTemplate, nullptr, DialogProc,
         reinterpret_cast<LPARAM>(&settings));
     assert(dialog && !IsWindowVisible(dialog));
-    for (const int model : {RIFE_MODEL_44, RIFE_MODEL_46, RIFE_MODEL_415_LITE, RIFE_MODEL_425, RIFE_MODEL_425_LITE}) {
+    for (const int model : {RIFE_MODEL_44, RIFE_MODEL_46, RIFE_MODEL_415_LITE, RIFE_MODEL_425_LITE}) {
         SelectComboValue(dialog, IDC_RIFE_MODEL, model);
         EnableControls(dialog);
         assert(!!IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_FEATURE_REUSE))
-            == (model == RIFE_MODEL_415_LITE || model == RIFE_MODEL_425 || model == RIFE_MODEL_425_LITE));
+            == (model == RIFE_MODEL_415_LITE || model == RIFE_MODEL_425_LITE));
         assert(!!IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_FLOW_REUSE)) == (model == RIFE_MODEL_425_LITE));
         Settings_t readback;
         assert(ReadControls(dialog, readback));

@@ -331,7 +331,6 @@ void LoadRifeSettings(Settings_t& settings)
 		case RIFE_MODEL_44:
 		case RIFE_MODEL_46:
 		case RIFE_MODEL_415_LITE:
-		case RIFE_MODEL_425:
 		case RIFE_MODEL_425_LITE:
 			settings.iRifeModel = static_cast<int>(dw);
 			break;

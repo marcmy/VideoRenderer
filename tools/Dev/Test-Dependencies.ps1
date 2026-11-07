@@ -369,7 +369,7 @@ param($InstallRoot,$GpuInventoryJson,[switch]$ThrowOnFailure)
 if ($env:MPCVR_TEST_FAIL_PREFLIGHT) { throw 'fixture preflight failure' }
 '@ | Set-Content (Join-Path $installer 'Test-MPCVRRifePreflight.ps1') -Encoding UTF8
     $modelRoot=Join-Path $split 'models'; New-Item -ItemType Directory $modelRoot | Out-Null
-    $modelEntries=foreach ($model in @(@('RIFE 4.4','rife_v4.4.onnx'),@('RIFE 4.6','rife_v4.6.onnx'),@('RIFE 4.15 Lite','rife_v4.15_lite.onnx'),@('RIFE 4.25','rife_v4.25.onnx'),@('RIFE 4.25 Lite','rife_v4.25_lite.onnx'))) {
+    $modelEntries=foreach ($model in @(@('RIFE 4.4','rife_v4.4.onnx'),@('RIFE 4.6','rife_v4.6.onnx'),@('RIFE 4.15 Lite','rife_v4.15_lite.onnx'),@('RIFE 4.25 Lite','rife_v4.25_lite.onnx'))) {
         [IO.File]::WriteAllText((Join-Path $modelRoot $model[1]),"fixture $($model[1])")
         [pscustomobject]@{model=$model[0];file=$model[1];sourceRelease='fixture';sourceArchive='fixture.7z';sourceArchiveSha256='a'*64;sourceModel='fixture.onnx';input=@(1,11,'H','W');output=@(1,3,'H','W');precision='mixed-fp16-fp32'}
     }

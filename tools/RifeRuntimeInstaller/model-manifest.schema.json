@@ -9,8 +9,8 @@
     "schemaVersion": { "const": 3 },
     "models": {
       "type": "array",
-      "minItems": 5,
-      "maxItems": 5,
+      "minItems": 4,
+      "maxItems": 4,
       "prefixItems": [
         {
           "allOf": [
@@ -42,17 +42,6 @@
               "file": { "const": "rife_v4.15_lite.onnx" },
               "sourceRelease": { "const": "external-models" },
               "sourceModel": { "const": "rife/rife_v4.15_lite.onnx" }
-            }}
-          ]
-        },
-        {
-          "allOf": [
-            { "$ref": "#/$defs/model" },
-            { "properties": {
-              "model": { "const": "RIFE 4.25" },
-              "file": { "const": "rife_v4.25.onnx" },
-              "sourceRelease": { "const": "external-models" },
-              "sourceModel": { "const": "rife/rife_v4.25.onnx" }
             }}
           ]
         },

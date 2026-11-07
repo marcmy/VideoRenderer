@@ -4,7 +4,7 @@
 
 ## Runtime contract
 
-The runtime accepts the original 11-channel Practical-RIFE representation used by the bundled RIFE 4.4, 4.6, 4.15 Lite, 4.25, and 4.25 Lite ONNX models, with one NCHW input and one NCHW output:
+The runtime accepts the original 11-channel Practical-RIFE representation used by the bundled RIFE 4.4, 4.6, 4.15 Lite, and 4.25 Lite ONNX models, with one NCHW input and one NCHW output:
 
 - input: `[1, 11, H, W]`
 - output: `[1, 3, H, W]`
