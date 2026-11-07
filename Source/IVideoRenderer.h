@@ -479,7 +479,7 @@ struct Settings_t {
 		bRifePerformanceBoost           = false;
 		bRifePreservePrecision          = false;
 		bRifeFeatureReuse               = true;
-		iRifeFlowReuse                  = RIFE_FLOW_REUSE_Off;
+		iRifeFlowReuse                  = RIFE_FLOW_REUSE_Coarse;
 		iRifeSceneDetection             = RIFE_SCENE_SVPflow1;
 		iRifeProcessingResolution       = RIFE_RESOLUTION_Source;
 		iRifeProcessingLimit            = RifeProcessingLimitDefault;

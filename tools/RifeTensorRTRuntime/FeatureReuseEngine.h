@@ -188,14 +188,10 @@ public:
         const std::string& modelHash, const std::string& cacheKey, uint32_t width, uint32_t height, uint32_t contentHeight,
         RifeFlowReuse flowReuse) {
         if (!IsValidatedModel(modelHash)) return false;
-        // Only the measured SM75/4.25 Lite path uses the fused warp. Keep the
-        // native feature engine as a fallback, with its original cache identity.
-        int device = 0;
-        cudaDeviceProp props{};
+        // 4.25 Lite uses the fused warp on every compute capability the runtime accepts.
+        // Keep the native feature engine as a fallback, with its original cache identity.
         const bool useWarp = modelHash == "9aa603c79ba48037009244ceef4607bb18d7b9f122926a269b22b55d9dcfef1c"
-            && width % 128 == 0 && height % 128 == 0
-            && cudaGetDevice(&device) == cudaSuccess && cudaGetDeviceProperties(&props, device) == cudaSuccess
-            && props.major == 7 && props.minor == 5 && RegisterRifeWarpPlugin();
+            && width % 128 == 0 && height % 128 == 0 && RegisterRifeWarpPlugin();
         if (useWarp) {
             const uint32_t fusedHeight = RifeFusedEngineHeight(contentHeight, height);
             if (flowReuse != RifeFlowReuse::Off && InitializeSize(model, cache, modelHash, cacheKey, width, fusedHeight, true, flowReuse)) return true;
@@ -355,7 +351,7 @@ private:
             && BuildStage(synthesisPath, cache, cacheKey + suffix + coreSuffix, false, m_core, true, false, corePlan)
             && (flowReuse != RifeFlowReuse::Coarse
                 || BuildStage(synthesisPath, cache, cacheKey + suffix + "_anchor_w7", false, m_anchor, true, false, RifeFusedPlan::Anchor));
-        // On the same measured path, encoding images one at a time lets consecutive
+        // On the fused path, encoding images one at a time lets consecutive
         // pairs share their common frame. The two-image plan stays the fallback.
         if (warpBuilt && BuildStage(featurePath, cache, cacheKey + suffix + "_encoder1", true, m_oneImage, false, true)
                 && m_oneImage->getNbIOTensors() == 3) {

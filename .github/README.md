@@ -246,12 +246,12 @@ builds separate fixed-resolution stage plans. A new pair, seek, drain or failed
 request invalidates reuse. Missing/incompatible sidecars fall back to the
 original engine; detailed Ctrl+J reports whether features are actually active.
 
-**Flow reuse** goes further, on 4.25 Lite with Feature reuse on, and needs an
-RTX 20 series or GTX 16 series card (compute capability 7.5, like the fused warp). It estimates
+**Flow reuse** goes further, on 4.25 Lite with Feature reuse on, and is on by default in its
+Coarse mode. Like the fused warp, it runs on every supported card; only the RTX 2070 SUPER below has been measured. It estimates
 motion once per source pair, halfway between the two frames, and moves that estimate to
 each target time. *Coarse* still runs the finest network block per target; *Retime* runs
 none and only warps and blends. Motion within a pair then becomes a straight line, so
-this is an approximation you choose, not a rounding difference: it is off by default.
+this is an approximation, not a rounding difference. Settings saved before it became the default keep their choice.
 On an RTX 2070 SUPER at 1080p and 8x, mean GPU time per generated frame measured 3.79 ms
 with it off, 2.75 ms with Coarse and 0.95 ms with Retime. Against true in-between frames
 of synthetic clips, positions were more accurate than the model's own off-centre output,
