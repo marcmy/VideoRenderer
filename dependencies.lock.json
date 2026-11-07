@@ -3,9 +3,9 @@
   "repository": "marcmy/VideoRenderer-Dependencies",
   "components": {
     "rife-runtime": {
-      "releaseTag": "mpcvr-deps-rife-runtime-b51539fb70610753",
-      "manifestSha256": "6f5fc2f0e0382c6138bd7aab988044a9651bcfdce8aa3f973108de5b194391f5",
-      "manifestUrl": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-b51539fb70610753/rife-runtime.json",
+      "releaseTag": "mpcvr-deps-rife-runtime-e7d460497ae230e7",
+      "manifestSha256": "bc90030171d3a789152886b95d8cf8ac0b0440870560ac633c10d48738b98f0e",
+      "manifestUrl": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-e7d460497ae230e7/rife-runtime.json",
       "manifest": {
         "component": "rife-runtime",
         "recipeVersion": 1,
@@ -40,7 +40,7 @@
           "tools/RifeTensorRTRuntime/D3D11InteropLock.h": "4e81bae03303b2123ad629086b89ff19a147fdd9",
           "tools/RifeTensorRTRuntime/EngineCacheFile.h": "c0c6e988d5ea7707ad01cbda1683ea631dcbcd6f",
           "tools/RifeTensorRTRuntime/EngineProfile.h": "4f96784e4f8010d0fb8f8e4181947e51fab8029b",
-          "tools/RifeTensorRTRuntime/FeatureReuseEngine.h": "38993bf5f5a9db18b4ed66d858af561517611ff8",
+          "tools/RifeTensorRTRuntime/FeatureReuseEngine.h": "40a88e9e2326c772069d61f6ffb1f535cc657b92",
           "tools/RifeTensorRTRuntime/PackedInputReuse.h": "ea7c71c7fcf4562c428b7d7857137b2d8ae252a4",
           "tools/RifeTensorRTRuntime/RifeInputTimestep.h": "b99d8ef851ebab01a6bac3bf39a1464c774db37f",
           "tools/RifeTensorRTRuntime/RifeKernels.cu": "6d271f8774325b7d71f160d540a00021bea00dba",
@@ -51,11 +51,11 @@
           "tools/RifeTensorRTRuntime/RifeWarpPlugin.h": "28e194ef3c44b432439763e1a47219325287f0e8",
           "tools/RifeTensorRTRuntime/RuntimeCreation.h": "0e47a5682445cf2b52755eb02b0e385834ce790d"
         },
-        "sourceFingerprint": "b51539fb70610753d2da6c7cfdd9e6507efab48881520eef5aa21cec8b5c7dd7",
-        "releaseTag": "mpcvr-deps-rife-runtime-b51539fb70610753",
+        "sourceFingerprint": "e7d460497ae230e7e85b9d1c22519b29c0cd59c52b910c87966c709b4dafa39c",
+        "releaseTag": "mpcvr-deps-rife-runtime-e7d460497ae230e7",
         "schemaVersion": 1,
         "sourceRepository": "marcmy/VideoRenderer",
-        "sourceCommit": "4b13624ab93f6d22c303a025e7ec95c4323213a4",
+        "sourceCommit": "c011a1e29a05bf243dea77b6cde243861946d26d",
         "provenance": {
           "operation": "validated dependency build",
           "repackaged": true
@@ -72,10 +72,15 @@
           ]
         },
         "files": {
-          "MPCVR-RIFE-Common.zip": {
-            "sha256": "8c28f20de46f986b24d99a440ad4b847fe35b4e813389a241bea466039dfe273",
-            "bytes": 422003928,
-            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-b51539fb70610753/MPCVR-RIFE-Common.zip"
+          "MPCVR-RIFE-Runtime.zip": {
+            "sha256": "3791f37650f3ad80e5d9e6a5be144540cc557d896d1a559eb6805c3bade619e0",
+            "bytes": 962681,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-e7d460497ae230e7/MPCVR-RIFE-Runtime.zip"
+          },
+          "MPCVR-RIFE-Libraries.zip": {
+            "sha256": "eb45102a56ba7c7bb4bd5aae2f74d7ae907a0681f78b6858544888541ea1ffd9",
+            "bytes": 417943081,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-e7d460497ae230e7/MPCVR-RIFE-Libraries.zip"
           },
           "runtime-manifest.json": {
             "sha256": "f77a557f42f91fb8aac87c300058f87b6b9cb5e5d5bffebdf2ce086a7883c48c",
@@ -83,9 +88,9 @@
             "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-71fee94d17720fcc/runtime-manifest.json"
           },
           "SHA256SUMS.txt": {
-            "sha256": "8d6d966ecf984da7bbaa5f57cb2d0ccb5008b993365e63a4bdeeb1290f4a0436",
-            "bytes": 438,
-            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-b51539fb70610753/SHA256SUMS.txt"
+            "sha256": "2af493756afb1bcad04b795f855ba1173afdc9d8ed924aa468d98b31922ea62a",
+            "bytes": 531,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-runtime-e7d460497ae230e7/SHA256SUMS.txt"
           },
           "MPCVR-RIFE-sm75.zip": {
             "sha256": "c394833e9d53c0e8276cd9aaea80d4f63161041f634962be9fa91a6cd46a482d",
@@ -121,16 +126,16 @@
       }
     },
     "rife-models": {
-      "releaseTag": "mpcvr-deps-rife-models-cc46eaca0cda87fa",
-      "manifestSha256": "41d44754cc33e61f3ada6829dc9c1e4689e9ed9f0e6d2145a0af88ebea5b49f4",
-      "manifestUrl": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-models-cc46eaca0cda87fa/rife-models.json",
+      "releaseTag": "mpcvr-deps-rife-models-e55a4d4a2a29e5e6",
+      "manifestSha256": "d01bb1d69896a4269acd1157517eac53f63ad5692d69f66bdb478cb5c9d0441e",
+      "manifestUrl": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-models-e55a4d4a2a29e5e6/rife-models.json",
       "manifest": {
         "component": "rife-models",
         "recipeVersion": 1,
         "buildRecipe": {
           "Install model preparation dependencies": "run: python -m pip install --upgrade \"nvidia-modelopt[onnx]\" py7zr",
-          "Download and verify pinned RIFE sources and license": "shell: bash\n        run: |\n          set -euo pipefail\n          mkdir -p _rife-model/output/LICENSES\n\n          curl --fail --location --retry 3 \\\n            --output _rife-model/rife_v8.7z \\\n            https://github.com/AmusementClub/vs-mlrt/releases/download/model-20220923/rife_v8.7z\n          echo \"$RIFE_LEGACY_SOURCE_SHA256  _rife-model/rife_v8.7z\" | sha256sum --check --strict\n          test \"$(stat -c%s _rife-model/rife_v8.7z)\" = \"$RIFE_LEGACY_SOURCE_BYTES\"\n\n          curl --fail --location --retry 3 \\\n            --output _rife-model/rife_v4.15_lite.7z \\\n            https://github.com/AmusementClub/vs-mlrt/releases/download/external-models/rife_v4.15_lite.7z\n          echo \"$RIFE_415_LITE_SOURCE_SHA256  _rife-model/rife_v4.15_lite.7z\" | sha256sum --check --strict\n          test \"$(stat -c%s _rife-model/rife_v4.15_lite.7z)\" = \"$RIFE_415_LITE_SOURCE_BYTES\"\n\n          curl --fail --location --retry 3 \\\n            --output _rife-model/rife_v4.25.7z \\\n            https://github.com/AmusementClub/vs-mlrt/releases/download/external-models/rife_v4.25.7z\n          echo \"$RIFE_425_SOURCE_SHA256  _rife-model/rife_v4.25.7z\" | sha256sum --check --strict\n          test \"$(stat -c%s _rife-model/rife_v4.25.7z)\" = \"$RIFE_425_SOURCE_BYTES\"\n\n          curl --fail --location --retry 3 \\\n            --output _rife-model/rife_v4.25_lite.7z \\\n            https://github.com/AmusementClub/vs-mlrt/releases/download/external-models/rife_v4.25_lite.7z\n          echo \"$RIFE_425_LITE_SOURCE_SHA256  _rife-model/rife_v4.25_lite.7z\" | sha256sum --check --strict\n          test \"$(stat -c%s _rife-model/rife_v4.25_lite.7z)\" = \"$RIFE_425_LITE_SOURCE_BYTES\"\n\n          curl --fail --location --retry 3 \\\n            --output _rife-model/output/LICENSES/RIFE-model-license.txt \\\n            \"https://raw.githubusercontent.com/hzwer/Practical-RIFE/$RIFE_LICENSE_COMMIT/LICENSE\"\n          echo \"$RIFE_LICENSE_SHA256  _rife-model/output/LICENSES/RIFE-model-license.txt\" | sha256sum --check --strict",
-          "Convert RIFE variants to mixed FP16": "shell: bash\n        run: |\n          set -euo pipefail\n          python tools/RifeTensorRTRuntime/prepare_model.py \\\n            --model 4.4 _rife-model/rife_v8.7z _rife-model/output/rife_v4.4.onnx\n          python tools/RifeTensorRTRuntime/prepare_model.py \\\n            --model 4.6 _rife-model/rife_v8.7z _rife-model/output/rife_v4.6.onnx\n          python tools/RifeTensorRTRuntime/prepare_model.py \\\n            --model 4.15-lite _rife-model/rife_v4.15_lite.7z _rife-model/output/rife_v4.15_lite.onnx\n          python tools/RifeTensorRTRuntime/prepare_model.py \\\n            --model 4.25 _rife-model/rife_v4.25.7z _rife-model/output/rife_v4.25.onnx\n          python tools/RifeTensorRTRuntime/prepare_model.py \\\n            --model 4.25-lite _rife-model/rife_v4.25_lite.7z _rife-model/output/rife_v4.25_lite.onnx\n          python tools/RifeTensorRTRuntime/prepare_model.py \\\n            --write-manifest _rife-model/output \\\n            --source-archive 4.4=_rife-model/rife_v8.7z \\\n            --source-archive 4.6=_rife-model/rife_v8.7z \\\n            --source-archive 4.15-lite=_rife-model/rife_v4.15_lite.7z \\\n            --source-archive 4.25=_rife-model/rife_v4.25.7z \\\n            --source-archive 4.25-lite=_rife-model/rife_v4.25_lite.7z",
+          "Download and verify pinned RIFE sources and license": "shell: bash\n        run: |\n          set -euo pipefail\n          mkdir -p _rife-model/output/LICENSES\n\n          curl --fail --location --retry 3 \\\n            --output _rife-model/rife_v8.7z \\\n            https://github.com/AmusementClub/vs-mlrt/releases/download/model-20220923/rife_v8.7z\n          echo \"$RIFE_LEGACY_SOURCE_SHA256  _rife-model/rife_v8.7z\" | sha256sum --check --strict\n          test \"$(stat -c%s _rife-model/rife_v8.7z)\" = \"$RIFE_LEGACY_SOURCE_BYTES\"\n\n          curl --fail --location --retry 3 \\\n            --output _rife-model/rife_v4.15_lite.7z \\\n            https://github.com/AmusementClub/vs-mlrt/releases/download/external-models/rife_v4.15_lite.7z\n          echo \"$RIFE_415_LITE_SOURCE_SHA256  _rife-model/rife_v4.15_lite.7z\" | sha256sum --check --strict\n          test \"$(stat -c%s _rife-model/rife_v4.15_lite.7z)\" = \"$RIFE_415_LITE_SOURCE_BYTES\"\n\n          curl --fail --location --retry 3 \\\n            --output _rife-model/rife_v4.25_lite.7z \\\n            https://github.com/AmusementClub/vs-mlrt/releases/download/external-models/rife_v4.25_lite.7z\n          echo \"$RIFE_425_LITE_SOURCE_SHA256  _rife-model/rife_v4.25_lite.7z\" | sha256sum --check --strict\n          test \"$(stat -c%s _rife-model/rife_v4.25_lite.7z)\" = \"$RIFE_425_LITE_SOURCE_BYTES\"\n\n          curl --fail --location --retry 3 \\\n            --output _rife-model/output/LICENSES/RIFE-model-license.txt \\\n            \"https://raw.githubusercontent.com/hzwer/Practical-RIFE/$RIFE_LICENSE_COMMIT/LICENSE\"\n          echo \"$RIFE_LICENSE_SHA256  _rife-model/output/LICENSES/RIFE-model-license.txt\" | sha256sum --check --strict",
+          "Convert RIFE variants to mixed FP16": "shell: bash\n        run: |\n          set -euo pipefail\n          python tools/RifeTensorRTRuntime/prepare_model.py \\\n            --model 4.4 _rife-model/rife_v8.7z _rife-model/output/rife_v4.4.onnx\n          python tools/RifeTensorRTRuntime/prepare_model.py \\\n            --model 4.6 _rife-model/rife_v8.7z _rife-model/output/rife_v4.6.onnx\n          python tools/RifeTensorRTRuntime/prepare_model.py \\\n            --model 4.15-lite _rife-model/rife_v4.15_lite.7z _rife-model/output/rife_v4.15_lite.onnx\n          python tools/RifeTensorRTRuntime/prepare_model.py \\\n            --model 4.25-lite _rife-model/rife_v4.25_lite.7z _rife-model/output/rife_v4.25_lite.onnx\n          python tools/RifeTensorRTRuntime/prepare_model.py \\\n            --write-manifest _rife-model/output \\\n            --source-archive 4.4=_rife-model/rife_v8.7z \\\n            --source-archive 4.6=_rife-model/rife_v8.7z \\\n            --source-archive 4.15-lite=_rife-model/rife_v4.15_lite.7z \\\n            --source-archive 4.25-lite=_rife-model/rife_v4.25_lite.7z",
           "Prepare and verify reusable encoder stages": "run: |\n          python -m pip install onnxruntime\n          python tools/RifeTensorRTRuntime/prepare_feature_models.py --models _rife-model/output --output _rife-model/output --verify",
           "pins": [
             "      RIFE_415_LITE_SOURCE_BYTES: 9710109",
@@ -139,9 +144,6 @@
             "      RIFE_425_LITE_SOURCE_BYTES: 20936472",
             "      RIFE_425_LITE_SOURCE_RELEASE: external-models",
             "      RIFE_425_LITE_SOURCE_SHA256: 7d53e29fff5e67345b19f4ce97dfd1e34b490eedc752df2236904fda1a13842c",
-            "      RIFE_425_SOURCE_BYTES: 21026388",
-            "      RIFE_425_SOURCE_RELEASE: external-models",
-            "      RIFE_425_SOURCE_SHA256: 172fe975c1775134bb87108e4ec6d1a89e861cc5d3be2ac23bf08afe5ed626b8",
             "      RIFE_LEGACY_SOURCE_BYTES: 195245748",
             "      RIFE_LEGACY_SOURCE_RELEASE: model-20220923",
             "      RIFE_LEGACY_SOURCE_SHA256: 1a18614e72164c61d60861199fc8be6b0003110f747646b3dafb9acd632f6ef7",
@@ -151,19 +153,18 @@
         },
         "toolchain": {},
         "inputs": {
-          "tools/RifeRuntimeInstaller/model-manifest.schema.json": "fb4bba40d8e212c10ce1000b576e862c62cc192d",
+          "tools/RifeRuntimeInstaller/model-manifest.schema.json": "653a84a4482bcaa364a8f4839870833c8530e5b3",
           "tools/RifeTensorRTRuntime/prepare_feature_models.py": "befd1b6b8f88141059795e55f79511e1010254dd",
-          "tools/RifeTensorRTRuntime/prepare_model.py": "2de01556ecf74f0fa6f649512d269ea455a04e67"
+          "tools/RifeTensorRTRuntime/prepare_model.py": "472b7cfec04edaf71d5c17e2adba33928d2cfbea"
         },
-        "sourceFingerprint": "cc46eaca0cda87fa19f7d48a113b1da94186ddbc7ce32e387351b455c1b92d94",
-        "releaseTag": "mpcvr-deps-rife-models-cc46eaca0cda87fa",
+        "sourceFingerprint": "e55a4d4a2a29e5e64f1f1713c436b2ea00914361e773ce8233828dea0e135784",
+        "releaseTag": "mpcvr-deps-rife-models-e55a4d4a2a29e5e6",
         "schemaVersion": 1,
         "sourceRepository": "marcmy/VideoRenderer",
-        "sourceCommit": "bea5902b1a98488fce1cfc9df9480d388a6bc2af",
+        "sourceCommit": "0fe38d491475557390da4ff90e60fb7fb33a4185",
         "provenance": {
-          "rendererRelease": "maxine-rife-1322-1-bea5902b",
-          "runtimeRelease": "maxine-rife-1322-1-bea5902b-rife-runtime",
-          "repackaged": false
+          "operation": "validated dependency build",
+          "repackaged": true
         },
         "compatibility": {
           "platform": "windows-x64",
@@ -178,19 +179,19 @@
         },
         "files": {
           "MPCVR-RIFE-Models.zip": {
-            "sha256": "34e47e6afd6b41aaefe67ea739008c8bc93d173835c34c300691c88c84bc40bb",
-            "bytes": 71093316,
-            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-models-cc46eaca0cda87fa/MPCVR-RIFE-Models.zip"
+            "sha256": "326d0cbf51b88b9f668fd4923a0b6e41d727adc5bb0330699e76e88f49193351",
+            "bytes": 50004404,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-models-e55a4d4a2a29e5e6/MPCVR-RIFE-Models.zip"
+          },
+          "model-manifest.json": {
+            "sha256": "acd5ef82edda8ae233a0d21312bf09c62bf9d0b28eafa551110dc076898c4ebb",
+            "bytes": 2001,
+            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-models-e55a4d4a2a29e5e6/model-manifest.json"
           },
           "RIFE-model-license.txt": {
             "sha256": "7932fb49341512b959b1744a6d9cbb39e5a1ec89da438a34d0454d5d8df9fecd",
             "bytes": 1062,
             "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-models-cc46eaca0cda87fa/RIFE-model-license.txt"
-          },
-          "model-manifest.json": {
-            "sha256": "d582fdcf3afa2ffe90c60945bd5cecac9aabc25355cb997c6414241ede78a6ed",
-            "bytes": 2484,
-            "url": "https://github.com/marcmy/VideoRenderer-Dependencies/releases/download/mpcvr-deps-rife-models-cc46eaca0cda87fa/model-manifest.json"
           }
         }
       }
