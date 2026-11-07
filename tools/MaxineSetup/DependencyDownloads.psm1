@@ -353,4 +353,40 @@ function Remove-MPCVRSupersededDownload {
     [pscustomobject]@{Count=$removed;Bytes=$bytes}
 }
 
-Export-ModuleMember -Function Read-MPCVRDependencyLock,Get-MPCVRVerifiedDownload,Resolve-MPCVRDependencies,Test-MPCVRInstalledDependency,Save-MPCVRInstalledDependency,Get-MPCVRInstalledArchiveHash,Save-MPCVRDownloadRetention,Get-MPCVRSupersededDownload,Remove-MPCVRSupersededDownload
+function Remove-MPCVRStaleEnginePlan {
+    # Engine plans can always be rebuilt, at the cost of a pause on first play. A plan names the
+    # model hash it was built from, so one for a model no longer installed can never load again.
+    # A different runtime may have changed how plans are built, so when the recorded runtime
+    # differs, every plan goes. With nothing recorded, only the model rule applies, since the
+    # plans may already suit this runtime. Setup calls this only after it has fully succeeded.
+    param([Parameter(Mandatory=$true)][string]$InstallRoot)
+    $none=[pscustomobject]@{Count=0;Bytes=[long]0}
+    $cache=Join-Path $InstallRoot 'cache'
+    $runtime=Join-Path $InstallRoot 'runtime\MPCVRRifeRuntime64.dll'
+    if (-not (Test-Path -LiteralPath $cache -PathType Container) -or -not (Test-Path -LiteralPath $runtime -PathType Leaf)) { return $none }
+    $metadata=Get-Content -LiteralPath (Join-Path $InstallRoot 'installed-manifest.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+    $models=@($metadata.models | ForEach-Object { ([string]$_.modelSha256).ToLowerInvariant() } | Where-Object { $_ -cmatch '^[a-f0-9]{64}$' } | ForEach-Object { $_.Substring(0,16) })
+    # Without the installed models, this can't tell which plans are stale.
+    if ($models.Count -eq 0) { return $none }
+    $runtimeHash=(Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash.ToLowerInvariant()
+    $marker=Join-Path $cache 'plans-runtime.txt'
+    $recorded=if (Test-Path -LiteralPath $marker -PathType Leaf) { ([IO.File]::ReadAllText($marker)).Trim() } else { '' }
+    $removed=0; $bytes=[long]0; $failed=$false
+    foreach ($file in @(Get-ChildItem -LiteralPath $cache -File -Filter 'rife46_*.plan')) {
+        $model=if ($file.Name -cmatch '^rife46_([a-f0-9]{16})_') { $Matches[1] } else { $null }
+        # A name this doesn't understand isn't known to be stale.
+        if (-not $model) { continue }
+        if (($recorded -and $recorded -ne $runtimeHash) -or $model -notin $models) {
+            try {
+                $length=$file.Length
+                Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+                $removed++; $bytes+=$length
+            } catch { $failed=$true; Write-Warning "Could not remove $($file.Name): $($_.Exception.Message)" }
+        }
+    }
+    # A plan left behind keeps the old record, so the next setup tries again.
+    if (-not $failed) { [IO.File]::WriteAllText($marker,$runtimeHash) }
+    [pscustomobject]@{Count=$removed;Bytes=$bytes}
+}
+
+Export-ModuleMember -Function Remove-MPCVRStaleEnginePlan,Read-MPCVRDependencyLock,Get-MPCVRVerifiedDownload,Resolve-MPCVRDependencies,Test-MPCVRInstalledDependency,Save-MPCVRInstalledDependency,Get-MPCVRInstalledArchiveHash,Save-MPCVRDownloadRetention,Get-MPCVRSupersededDownload,Remove-MPCVRSupersededDownload

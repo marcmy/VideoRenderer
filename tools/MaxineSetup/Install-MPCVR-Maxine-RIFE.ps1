@@ -333,6 +333,19 @@ function New-RifeRuntimeBundle {
     ) | Set-Content -LiteralPath (Join-Path $Destination 'SHA256SUMS.txt') -Encoding ASCII
 }
 
+function Remove-StaleEnginePlans {
+    # Cleanup never decides whether setup succeeded.
+    try {
+        $result = Remove-MPCVRStaleEnginePlan -InstallRoot $rifeInstallRoot
+        if ($result.Count -gt 0) {
+            Write-Host ('Removed {0} outdated RIFE engine plans, {1:N1} MiB. First playback at each size rebuilds its engine.' -f $result.Count, ($result.Bytes / 1MB))
+        }
+    }
+    catch {
+        Write-Warning "Engine plan cleanup skipped: $($_.Exception.Message)"
+    }
+}
+
 function Remove-SupersededDownloads {
     # Keeps this build's downloads and the last build's. Cleanup never decides
     # whether setup succeeded.
@@ -571,6 +584,7 @@ try {
         Save-MPCVRInstalledDependency -Lock $dependencyLock -Component rife -InstallRoot $rifeInstallRoot -ArchitectureKeys $architectureKeys
         Remove-SupersededDownloads
     }
+    Remove-StaleEnginePlans
 
     Write-Host
     Write-Host 'MPCVR Maxine + RIFE Setup completed successfully.' -ForegroundColor Green
