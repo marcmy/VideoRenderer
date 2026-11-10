@@ -41,24 +41,12 @@ jobs:
           }
           git merge -Xrenormalize --no-ff --no-commit upstream/master
           if ($LASTEXITCODE -ne 0) {
-            New-Item -ItemType Directory -Force _artifacts/upstream-conflict | Out-Null
-            git diff --binary | Out-File _artifacts/upstream-conflict/conflicts.patch -Encoding utf8
-            git diff --name-only --diff-filter=U | Out-File _artifacts/upstream-conflict/files.txt -Encoding utf8
-            git ls-files -u | Out-File _artifacts/upstream-conflict/unmerged-stages.txt -Encoding utf8
-            "$original`n$upstream" | Out-File _artifacts/upstream-conflict/source-commits.txt -Encoding ascii
-            $files=@(Get-Content _artifacts/upstream-conflict/files.txt | Where-Object { $_ })
+            '::warning::Upstream merge has conflicts; opening a pull request to resolve them.'
+            git diff --name-only --diff-filter=U
             git merge --abort
-            $title="Upstream merge needs review: $($upstream.Substring(0,12))"
-            $fileList=($files | ForEach-Object { "- ``$_``" }) -join "`n"
-            $runUrl="$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
-            $body="The scheduled three-way merge needs manual resolution. The verified fork master and its release were not changed.`n`nFork commit: $original`nUpstream commit: $upstream`n`nConflicting files:`n$fileList`n`n[Sync run and downloadable conflict artifact]($runUrl)`n`nResolve against the current fork master, preserve fork functionality, run both architecture builds and regressions, and submit a reviewable integration PR."
-            $existing=@(gh issue list --repo marcmy/VideoRenderer --state open --limit 200 --json number,title | ConvertFrom-Json | Where-Object { $_.title -eq $title })
-            if ($LASTEXITCODE -ne 0) { throw 'Cannot check existing upstream integration issues; conflict artifacts are preserved.' }
-            if ($existing.Count -eq 0) {
-              gh issue create --repo marcmy/VideoRenderer --title $title --body $body
-              if ($LASTEXITCODE -ne 0) { throw 'Could not create the upstream integration issue; conflict artifacts are preserved.' }
-            }
-            throw 'Unknown upstream conflict requires review; the issue and CI conflict artifact identify the required integration.'
+            "original=$original" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+            'conflict=true' | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
           }
           ./tools/Dev/Version.ps1 -RecordUpstream $upstream
           git add upstream.version.json
@@ -85,9 +73,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Normal fast-forward push rejected; preserve and reconcile the newer source.' }
           gh workflow run main.yml --repo marcmy/VideoRenderer --ref master
           if ($LASTEXITCODE -ne 0) { throw 'Merged source pushed, but release dispatch failed; rerun main.yml on master.' }
-      - uses: actions/upload-artifact@v7
-        if: failure()
-        with:
-          name: upstream-integration-review
-          path: _artifacts/upstream-conflict/
-          if-no-files-found: ignore
+      - name: Open conflict pull request
+        if: steps.merge.outputs.conflict == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          FORK_BRANCH: master
+          BASE_SHA: ${{ steps.merge.outputs.original }}
+          UPSTREAM_REF: upstream/master
+          UPSTREAM_NAME: Aleksoid1978/VideoRenderer@master
+          KEEP_FORK_PATHS: .github/workflows
+          MERGE_OPTS: -Xrenormalize
+          PR_NOTE: >-
+            After this PR is merged, the next **Sync upstream** run won't build or release it, because master
+            already contains upstream. Run `main.yml` on master by hand to build both architectures and release.
+        # Windows checkouts may convert the script to CRLF, which bash can't run
+        run: |
+          tr -d '\r' < .github/scripts/sync-conflict-pr.sh > "$RUNNER_TEMP/sync-conflict-pr.sh"
+          bash "$RUNNER_TEMP/sync-conflict-pr.sh"
