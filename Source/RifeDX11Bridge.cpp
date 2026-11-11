@@ -280,8 +280,9 @@ DXGI_FORMAT CDX11VideoProcessor::GetRifeSurfaceFormat() const
         ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM;
 }
 
-// Experiment: RTXVSRBeforeRife = 1 runs RIFE at the monitor size, so RTX VSR
-// upscales each source frame once before RIFE instead of every output frame.
+// Experiment: RTXVSRBeforeRife = 1 lets RIFE's processing size enlarge the
+// source, so RTX VSR upscales each source frame once before RIFE instead of
+// every output frame.
 static bool RifeVsrBeforeRifeRequested()
 {
     // Called from the renderer and the RIFE pipeline threads.
@@ -303,19 +304,28 @@ CSize CDX11VideoProcessor::GetRifeContentSize() const
 {
     const auto source = GetRifeSourceContentSize();
     const auto& settings = m_pFilter->m_Sets;
-    // Fit to the monitor, not the video rectangle: Zoom, pan-and-scan and window
-    // resizing then keep one RIFE size and engine, and the final pass scales.
-    const LONG displayW = m_DisplaySize.cx, displayH = m_DisplaySize.cy;
+    // The processing size setting decides how large RIFE works. With VSR first,
+    // Match displayed size and Custom limit may also enlarge the source, and the
+    // main processor's RTX VSR does that upscale before RIFE.
     if (RifeVsrBeforeRifeRequested() && m_VendorId == PCIV_NVIDIA && m_bVPScaling && m_bVPUseSuperRes
-            && m_iMaxineOperation == MAXINE_OPERATION_Disabled
-            && source.cx > 0 && source.cy > 0 && displayW > 0 && displayH > 0
-            && source.cx < displayW && source.cy < displayH) {
-        // Fit the source aspect inside the monitor, growing only.
-        const bool widthBound = static_cast<int64_t>(displayW) * source.cy <= static_cast<int64_t>(displayH) * source.cx;
-        const int64_t num = widthBound ? displayW : displayH;
-        const int64_t den = widthBound ? source.cx : source.cy;
-        return CSize(static_cast<int>((source.cx * num + den / 2) / den),
-            static_cast<int>((source.cy * num + den / 2) / den));
+            && m_iMaxineOperation == MAXINE_OPERATION_Disabled && source.cx > 0 && source.cy > 0) {
+        auto scaled = [&source](int64_t num, int64_t den) {
+            return CSize(static_cast<int>((source.cx * num + den / 2) / den),
+                static_cast<int>((source.cy * num + den / 2) / den));
+        };
+        const LONG boundW = m_videoRect.Width(), boundH = m_videoRect.Height();
+        if (settings.iRifeProcessingResolution == RIFE_RESOLUTION_Display && boundW > 0 && boundH > 0
+                && source.cx < boundW && source.cy < boundH) {
+            // Fit the source aspect inside the video rectangle, growing.
+            const bool widthBound = static_cast<int64_t>(boundW) * source.cy <= static_cast<int64_t>(boundH) * source.cx;
+            return widthBound ? scaled(boundW, source.cx) : scaled(boundH, source.cy);
+        }
+        const LONG shortEdge = std::min(source.cx, source.cy);
+        const int limit = settings.iRifeProcessingLimit;
+        if (settings.iRifeProcessingResolution == RIFE_RESOLUTION_Limit
+                && limit >= RifeProcessingLimitMin && limit <= RifeProcessingLimitMax && shortEdge < limit) {
+            return scaled(limit, shortEdge);
+        }
     }
     const auto size = ResolveRifeWorkingSize(
         {static_cast<uint32_t>(std::max<LONG>(0, source.cx)), static_cast<uint32_t>(std::max<LONG>(0, source.cy))},
