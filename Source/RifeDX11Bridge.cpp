@@ -32,7 +32,12 @@ DWORD CDX11VideoProcessor::GetRifeVsrInputProbeMode()
 void CDX11VideoProcessor::UpdateRifeVsrSourceRequest(const bool rifeSourcePreparation)
 {
     bool suppress = false;
-    if (rifeSourcePreparation) {
+    // Source VSR stays requested during RIFE. The NVIDIA Control Panel reports
+    // RTX Video status from this processor only, so turning it off here showed
+    // "inactive" while the final upscale was running VSR, and keeping it on
+    // measured faster on an RTX 2070 SUPER. Only the input probe, a test build,
+    // needs it off so the two driver inputs can be compared.
+    if (rifeSourcePreparation && GetRifeVsrInputProbeMode()) {
         // Disable the source request only when the final RIFE path is eligible
         // to own VSR. At 1:1 size, downscaling, or unsupported precision/HDR,
         // that path is skipped; retain the working source request instead.
@@ -169,7 +174,8 @@ bool CDX11VideoProcessor::TryRifeVideoProcessorUpscale(Tex2D_t& input,
                 outputFormat, CSize(nv12Size.width, nv12Size.height), true);
         }
         if (SUCCEEDED(hr)) hr = m_RifeVsrConvertVP.InitInputTextures(m_pDevice, false);
-        if (SUCCEEDED(hr)) hr = m_RifeVsrConvertVP.SetSuperRes(SUPERRES_Disable);
+        // No VSR request here: a new processor has VSR off, and an explicit off
+        // request is one more thing the driver could report as inactive.
         if (SUCCEEDED(hr)) {
             DXVA2_ExtendedFormat nv12Color = {};
             nv12Color.NominalRange = DXVA2_NominalRange_16_235;
