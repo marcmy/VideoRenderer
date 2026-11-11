@@ -20,8 +20,9 @@ assert 'if (!rifeSourcePreparation)' in process[:process.index('if (m_pFrameInte
 # policy as final presentation, with content geometry and the real video rect.
 # Successful disable returns S_FALSE, so restoration must track SUCCEEDED.
 source_request = bridge[bridge.index('void CDX11VideoProcessor::UpdateRifeVsrSourceRequest('):bridge.index('bool CDX11VideoProcessor::GetRifeVsrProbeDecoderInput(')]
-assert 'GetRifeVsrInputProbeMode' not in source_request
-assert 'if (rifeSourcePreparation)' in source_request
+# Source VSR stays on during RIFE: the NVIDIA Control Panel reports RTX Video
+# status from this processor. Only the test-build input probe suppresses it.
+assert 'if (rifeSourcePreparation && GetRifeVsrInputProbeMode())' in source_request
 assert 'GetRifeContentSize()' in source_request
 assert 'CanUseRifeVideoProcessorUpscale(requested, maxineSelected, rgbSdr,' in source_request
 assert 'm_videoRect.Width()' in source_request and 'm_videoRect.Height()' in source_request
@@ -61,6 +62,7 @@ assert 'nv12Color.VideoTransferMatrix = DXVA2_VideoTransferMatrix_BT709' in nati
 assert 'nv12Color.VideoTransferFunction = DXVA2_VideoTransFunc_22' in native
 assert 'Tex2D_DefaultRTarget' in native
 assert 'activity unverified' in native
+assert 'm_RifeVsrConvertVP.SetSuperRes' not in native, 'An off request on the conversion VP is not needed'
 assert 'SuperResolution*' not in dx
 assert 'if (nv12Output)' in vp
 assert 'DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709' in vp

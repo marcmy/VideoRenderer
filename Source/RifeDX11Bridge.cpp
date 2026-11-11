@@ -29,28 +29,15 @@ DWORD CDX11VideoProcessor::GetRifeVsrInputProbeMode()
 #endif
 }
 
-// Experiment: which RIFE "VSR off" request makes the NVIDIA Control Panel report
-// RTX Video as inactive. 0 = normal; 1 = no off request on the NV12 conversion
-// processor; 2 = also none on the main processor, so VSR may upscale RIFE's input.
-static DWORD GetRifeVsrStatusProbeMode()
-{
-    static DWORD mode = 0;
-    static ULONGLONG readTick = 0;
-    const auto now = GetTickCount64();
-    if (!readTick || now - readTick >= 1000) {
-        DWORD value = 0, bytes = sizeof(value);
-        if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\MPC Video Renderer\\Diagnostics",
-                L"RTXVSRStatusProbe", RRF_RT_REG_DWORD, nullptr, &value, &bytes) != ERROR_SUCCESS) value = 0;
-        mode = value <= 2 ? value : 0;
-        readTick = now;
-    }
-    return mode;
-}
-
 void CDX11VideoProcessor::UpdateRifeVsrSourceRequest(const bool rifeSourcePreparation)
 {
     bool suppress = false;
-    if (rifeSourcePreparation) {
+    // Source VSR stays requested during RIFE. The NVIDIA Control Panel reports
+    // RTX Video status from this processor only, so turning it off here showed
+    // "inactive" while the final upscale was running VSR, and keeping it on
+    // measured faster on an RTX 2070 SUPER. Only the input probe, a test build,
+    // needs it off so the two driver inputs can be compared.
+    if (rifeSourcePreparation && GetRifeVsrInputProbeMode()) {
         // Disable the source request only when the final RIFE path is eligible
         // to own VSR. At 1:1 size, downscaling, or unsupported precision/HDR,
         // that path is skipped; retain the working source request instead.
@@ -63,7 +50,6 @@ void CDX11VideoProcessor::UpdateRifeVsrSourceRequest(const bool rifeSourcePrepar
             {static_cast<uint32_t>(std::max<LONG>(0, content.cx)), static_cast<uint32_t>(std::max<LONG>(0, content.cy))},
             {static_cast<uint32_t>(std::max<LONG>(0, m_videoRect.Width())), static_cast<uint32_t>(std::max<LONG>(0, m_videoRect.Height()))});
     }
-    if (suppress && GetRifeVsrStatusProbeMode() >= 2) suppress = false;
     if (suppress) {
         // S_FALSE means the extension was accepted with enhancement disabled.
         // Retain the requested final-upscale flag and track successful disable
@@ -107,10 +93,6 @@ bool CDX11VideoProcessor::TryRifeVideoProcessorUpscale(Tex2D_t& input,
     auto nv12Size = RifeVsrNv12SurfaceSize(restoreEncodedGrid
         ? driverContent : RifeSpatialSize{input.desc.Width, input.desc.Height});
     const DWORD probeMode = GetRifeVsrInputProbeMode();
-    static DWORD lastStatusProbe = MAXDWORD;
-    const DWORD statusProbe = GetRifeVsrStatusProbeMode();
-    const bool statusProbeChanged = statusProbe != lastStatusProbe;
-    lastStatusProbe = statusProbe;
     CComPtr<ID3D11Texture2D> decodedInput;
     CComPtr<IMediaSample> decodedOwner;
     UINT decodedSlice = 0;
@@ -151,7 +133,7 @@ bool CDX11VideoProcessor::TryRifeVideoProcessorUpscale(Tex2D_t& input,
     const CSize storageSize(nv12Size.width, nv12Size.height);
     const CRect driverRect = restoreEncodedGrid || probeMode
         ? CRect(0, 0, driverSize.cx, driverSize.cy) : contentRect;
-    const bool changed = !m_bRifeUpscaleAttempted || statusProbeChanged
+    const bool changed = !m_bRifeUpscaleAttempted
         || input.desc.Width != m_RifeUpscaleInputDesc.Width
         || input.desc.Height != m_RifeUpscaleInputDesc.Height
         || input.desc.Format != m_RifeUpscaleInputDesc.Format
@@ -192,7 +174,8 @@ bool CDX11VideoProcessor::TryRifeVideoProcessorUpscale(Tex2D_t& input,
                 outputFormat, CSize(nv12Size.width, nv12Size.height), true);
         }
         if (SUCCEEDED(hr)) hr = m_RifeVsrConvertVP.InitInputTextures(m_pDevice, false);
-        if (SUCCEEDED(hr) && statusProbe == 0) hr = m_RifeVsrConvertVP.SetSuperRes(SUPERRES_Disable);
+        // No VSR request here: a new processor has VSR off, and an explicit off
+        // request is one more thing the driver could report as inactive.
         if (SUCCEEDED(hr)) {
             DXVA2_ExtendedFormat nv12Color = {};
             nv12Color.NominalRange = DXVA2_NominalRange_16_235;
@@ -281,10 +264,6 @@ bool CDX11VideoProcessor::TryRifeVideoProcessorUpscale(Tex2D_t& input,
     // Extension acceptance is a request, not a driver activity query.
     m_strRifeUpscaleStatus = std::format(L"requested per frame after RIFE (NV12 {}x{}; activity unverified)",
         driverSize.cx, driverSize.cy);
-    if (statusProbe) {
-        m_strRifeUpscaleStatus += std::format(L" [status probe {}{}]", statusProbe,
-            statusProbe >= 2 ? L", source VSR left on" : L"");
-    }
     if (probeMode) {
         m_strRifeUpscaleStatus = std::format(L"probe {}: {} NV12 {}x{} [{}x{}]; activity unverified",
             probeMode == 1 ? L"A" : L"B", probeMode == 1 ? L"decoded" : L"RIFE",
