@@ -316,6 +316,7 @@ constexpr SettingsTooltip kRifeTooltips[] = {
 	{IDC_RIFE_GPU, L"Which NVIDIA GPU runs RIFE. Auto suits a single-GPU system. The number may differ from Task Manager's."},
 	{IDC_RIFE_PROCESSING_RESOLUTION, L"The size RIFE works at. Source resolution keeps all detail. Match displayed size and Custom limit work smaller when they can, trading detail for speed."},
 	{IDC_RIFE_PROCESSING_LIMIT, L"The largest short edge RIFE works at when the processing size is Custom limit, in pixels."},
+	{IDC_RIFE_VSR_FIRST, L"When RTX VSR is on and the video is smaller than your monitor, VSR upscales each source frame to the monitor size and RIFE interpolates the upscaled frames. Sharper than upscaling RIFE's output, but RIFE works at monitor size, which costs more on 1440p and 4K monitors. Applies with Source resolution processing, and not when Maxine is selected."},
 	{IDC_RIFE_PERFORMANCE_BOOST, L"Builds and caches an engine for each resolution instead of one that handles any size. Faster, but the first play at a new resolution waits for the build."},
 	{IDC_RIFE_PRESERVE_PRECISION, L"Keeps more than 8 bits through RIFE when the source and conversion path have them. Uses more memory and bandwidth."},
 	{IDC_RIFE_FEATURE_REUSE, L"Reads each source pair's images once instead of once per generated frame. The picture stays the same apart from rounding, and it is faster and uses less VRAM. Available on 4.15 Lite and 4.25 Lite. The first use at a size builds an engine."},
@@ -392,6 +393,7 @@ void CopyRifeSettings(Settings_t& dst, const Settings_t& src)
 	dst.bRifePreservePrecision = src.bRifePreservePrecision;
 	dst.bRifeFeatureReuse = src.bRifeFeatureReuse;
 	dst.iRifeFlowReuse = src.iRifeFlowReuse;
+	dst.bRifeVsrFirst = src.bRifeVsrFirst;
 	dst.iRifeProcessingResolution = src.iRifeProcessingResolution;
 	dst.iRifeProcessingLimit = src.iRifeProcessingLimit;
 	dst.iRifeSceneDetection = src.iRifeSceneDetection;
@@ -412,6 +414,7 @@ bool RifeSettingsEqual(const Settings_t& a, const Settings_t& b)
 		&& a.bRifePreservePrecision == b.bRifePreservePrecision
 		&& a.bRifeFeatureReuse == b.bRifeFeatureReuse
 		&& a.iRifeFlowReuse == b.iRifeFlowReuse
+		&& a.bRifeVsrFirst == b.bRifeVsrFirst
 		&& a.bRifePerformanceBoost == b.bRifePerformanceBoost
 		&& a.iRifeProcessingResolution == b.iRifeProcessingResolution
 		&& a.iRifeProcessingLimit == b.iRifeProcessingLimit
@@ -437,6 +440,7 @@ void EnableControls(HWND hwnd)
 		IDC_RIFE_GPU,
 		IDC_RIFE_PERFORMANCE_BOOST,
 		IDC_RIFE_PRESERVE_PRECISION,
+		IDC_RIFE_VSR_FIRST,
 		IDC_RIFE_PROCESSING_RESOLUTION,
 		IDC_RIFE_SCENE_DETECTION,
 		IDC_RIFE_SCENE_PROCESSING,
@@ -473,6 +477,7 @@ void SetControls(HWND hwnd, const Settings_t& settings)
 	CheckDlgButton(hwnd, IDC_RIFE_PRESERVE_PRECISION, settings.bRifePreservePrecision ? BST_CHECKED : BST_UNCHECKED);
 	CheckDlgButton(hwnd, IDC_RIFE_FEATURE_REUSE, settings.bRifeFeatureReuse ? BST_CHECKED : BST_UNCHECKED);
 	SelectComboValue(hwnd, IDC_RIFE_FLOW_REUSE, settings.iRifeFlowReuse);
+	CheckDlgButton(hwnd, IDC_RIFE_VSR_FIRST, settings.bRifeVsrFirst ? BST_CHECKED : BST_UNCHECKED);
 	CheckDlgButton(hwnd, IDC_DETAILED_STATS,
 		settings.bDetailedStats ? BST_CHECKED : BST_UNCHECKED);
 	SelectComboValue(hwnd, IDC_RIFE_SCENE_DETECTION, settings.iRifeSceneDetection);
@@ -551,6 +556,7 @@ bool ReadControls(HWND hwnd, Settings_t& settings)
 	settings.iRifeModel = static_cast<int>(ComboValue(hwnd, IDC_RIFE_MODEL));
 	settings.iRifeGPU = static_cast<int>(ComboValue(hwnd, IDC_RIFE_GPU));
 	settings.bRifePreservePrecision = IsDlgButtonChecked(hwnd, IDC_RIFE_PRESERVE_PRECISION) == BST_CHECKED;
+	settings.bRifeVsrFirst = IsDlgButtonChecked(hwnd, IDC_RIFE_VSR_FIRST) == BST_CHECKED;
 	settings.bRifeFeatureReuse = IsDlgButtonChecked(hwnd, IDC_RIFE_FEATURE_REUSE) == BST_CHECKED;
 	settings.iRifeFlowReuse = static_cast<int>(ComboValue(hwnd, IDC_RIFE_FLOW_REUSE));
 	settings.bRifePerformanceBoost = IsDlgButtonChecked(hwnd, IDC_RIFE_PERFORMANCE_BOOST) == BST_CHECKED;

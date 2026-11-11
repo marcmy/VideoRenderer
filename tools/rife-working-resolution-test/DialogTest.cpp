@@ -32,6 +32,8 @@ int wmain(int argc, wchar_t** argv)
     settings.bRifePreservePrecision = settings.bRifeFeatureReuse = true;
     assert(settings.iRifeFlowReuse == RIFE_FLOW_REUSE_Coarse);
     settings.iRifeFlowReuse = RIFE_FLOW_REUSE_Retime;
+    assert(settings.bRifeVsrFirst);
+    settings.bRifeVsrFirst = false;
     const HWND dialog = CreateDialogIndirectParamW(module, resourceTemplate, nullptr, DialogProc,
         reinterpret_cast<LPARAM>(&settings));
     assert(dialog && !IsWindowVisible(dialog));
@@ -45,6 +47,7 @@ int wmain(int argc, wchar_t** argv)
         assert(ReadControls(dialog, readback));
         assert(readback.bRifePreservePrecision && readback.bRifeFeatureReuse);
         assert(readback.iRifeFlowReuse == RIFE_FLOW_REUSE_Retime);
+        assert(!readback.bRifeVsrFirst);
         Settings_t copied;
         CopyRifeSettings(copied, readback);
         assert(RifeSettingsEqual(copied, readback));
@@ -80,6 +83,8 @@ int wmain(int argc, wchar_t** argv)
     assert(settings.iRifeSceneDetection == RIFE_SCENE_SVPflow1);
     assert(settings.iRifeProcessingResolution == RIFE_RESOLUTION_Source);
     assert(!settings.bRifePreservePrecision && settings.bRifeFeatureReuse);
+    assert(settings.bRifeVsrFirst && IsDlgButtonChecked(dialog, IDC_RIFE_VSR_FIRST) == BST_CHECKED);
+    assert(!IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_VSR_FIRST)));
     assert(!IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_FEATURE_REUSE)));
     assert(!IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_FLOW_REUSE)));
     assert(!IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_PRESERVE_PRECISION)));
@@ -87,7 +92,7 @@ int wmain(int argc, wchar_t** argv)
     RECT client = {};
     GetClientRect(dialog, &client);
     for (const int id : {IDC_RIFE_PROCESSING_RESOLUTION, IDC_RIFE_PROCESSING_LIMIT, IDC_RIFE_SCENE_DETECTION,
-            IDC_RIFE_RULES_LIST, IDC_RIFE_FEATURE_REUSE, IDC_RIFE_FLOW_REUSE, IDC_RIFE_PRESERVE_PRECISION, IDOK, IDCANCEL, IDC_BUTTON_RIFE_DEFAULTS}) {
+            IDC_RIFE_RULES_LIST, IDC_RIFE_FEATURE_REUSE, IDC_RIFE_FLOW_REUSE, IDC_RIFE_PRESERVE_PRECISION, IDC_RIFE_VSR_FIRST, IDOK, IDCANCEL, IDC_BUTTON_RIFE_DEFAULTS}) {
         RECT rect = {};
         GetWindowRect(GetDlgItem(dialog, id), &rect);
         MapWindowPoints(nullptr, dialog, reinterpret_cast<POINT*>(&rect), 2);

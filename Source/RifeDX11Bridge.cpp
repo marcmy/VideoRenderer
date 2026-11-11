@@ -280,33 +280,18 @@ DXGI_FORMAT CDX11VideoProcessor::GetRifeSurfaceFormat() const
         ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM;
 }
 
-// Experiment: RTXVSRBeforeRife = 1 runs RIFE at the monitor size, so RTX VSR
-// upscales each source frame once before RIFE instead of every output frame.
-static bool RifeVsrBeforeRifeRequested()
-{
-    // Called from the renderer and the RIFE pipeline threads.
-    static std::atomic<bool> enabled = false;
-    static std::atomic<ULONGLONG> readTick = 0;
-    const auto now = GetTickCount64();
-    const auto last = readTick.load(std::memory_order_relaxed);
-    if (!last || now - last >= 1000) {
-        DWORD value = 0, bytes = sizeof(value);
-        if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\MPC Video Renderer\\Diagnostics",
-                L"RTXVSRBeforeRife", RRF_RT_REG_DWORD, nullptr, &value, &bytes) != ERROR_SUCCESS) value = 0;
-        enabled.store(value == 1, std::memory_order_relaxed);
-        readTick.store(now, std::memory_order_relaxed);
-    }
-    return enabled.load(std::memory_order_relaxed);
-}
-
 CSize CDX11VideoProcessor::GetRifeContentSize() const
 {
     const auto source = GetRifeSourceContentSize();
     const auto& settings = m_pFilter->m_Sets;
+    // VSR first: RIFE works at the monitor size, so the main processor's RTX VSR
+    // upscales each source frame once before RIFE instead of every output frame.
     // Fit to the monitor, not the video rectangle: Zoom, pan-and-scan and window
     // resizing then keep one RIFE size and engine, and the final pass scales.
+    // The smaller processing sizes exist for speed, so they keep their size.
     const LONG displayW = m_DisplaySize.cx, displayH = m_DisplaySize.cy;
-    if (RifeVsrBeforeRifeRequested() && m_VendorId == PCIV_NVIDIA && m_bVPScaling && m_bVPUseSuperRes
+    if (settings.bRifeVsrFirst && settings.iRifeProcessingResolution == RIFE_RESOLUTION_Source
+            && m_VendorId == PCIV_NVIDIA && m_bVPScaling && m_bVPUseSuperRes
             && m_iMaxineOperation == MAXINE_OPERATION_Disabled
             && source.cx > 0 && source.cy > 0 && displayW > 0 && displayH > 0
             && source.cx < displayW && source.cy < displayH) {
