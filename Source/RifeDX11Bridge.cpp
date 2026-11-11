@@ -280,10 +280,41 @@ DXGI_FORMAT CDX11VideoProcessor::GetRifeSurfaceFormat() const
         ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM;
 }
 
+// Experiment: RTXVSRBeforeRife = 1 runs RIFE at the displayed size, so RTX VSR
+// upscales each source frame once before RIFE instead of every output frame.
+static bool RifeVsrBeforeRifeRequested()
+{
+    // Called from the renderer and the RIFE pipeline threads.
+    static std::atomic<bool> enabled = false;
+    static std::atomic<ULONGLONG> readTick = 0;
+    const auto now = GetTickCount64();
+    const auto last = readTick.load(std::memory_order_relaxed);
+    if (!last || now - last >= 1000) {
+        DWORD value = 0, bytes = sizeof(value);
+        if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\MPC Video Renderer\\Diagnostics",
+                L"RTXVSRBeforeRife", RRF_RT_REG_DWORD, nullptr, &value, &bytes) != ERROR_SUCCESS) value = 0;
+        enabled.store(value == 1, std::memory_order_relaxed);
+        readTick.store(now, std::memory_order_relaxed);
+    }
+    return enabled.load(std::memory_order_relaxed);
+}
+
 CSize CDX11VideoProcessor::GetRifeContentSize() const
 {
     const auto source = GetRifeSourceContentSize();
     const auto& settings = m_pFilter->m_Sets;
+    const LONG displayW = m_videoRect.Width(), displayH = m_videoRect.Height();
+    if (RifeVsrBeforeRifeRequested() && m_VendorId == PCIV_NVIDIA && m_bVPScaling && m_bVPUseSuperRes
+            && m_iMaxineOperation == MAXINE_OPERATION_Disabled
+            && source.cx > 0 && source.cy > 0 && displayW > 0 && displayH > 0
+            && source.cx < displayW && source.cy < displayH) {
+        // Fit the source aspect inside the displayed rectangle, growing only.
+        const bool widthBound = static_cast<int64_t>(displayW) * source.cy <= static_cast<int64_t>(displayH) * source.cx;
+        const int64_t num = widthBound ? displayW : displayH;
+        const int64_t den = widthBound ? source.cx : source.cy;
+        return CSize(static_cast<int>((source.cx * num + den / 2) / den),
+            static_cast<int>((source.cy * num + den / 2) / den));
+    }
     const auto size = ResolveRifeWorkingSize(
         {static_cast<uint32_t>(std::max<LONG>(0, source.cx)), static_cast<uint32_t>(std::max<LONG>(0, source.cy))},
         {static_cast<uint32_t>(std::max<LONG>(0, m_videoRect.Width())), static_cast<uint32_t>(std::max<LONG>(0, m_videoRect.Height()))},
