@@ -284,6 +284,24 @@ CSize CDX11VideoProcessor::GetRifeContentSize() const
 {
     const auto source = GetRifeSourceContentSize();
     const auto& settings = m_pFilter->m_Sets;
+    // VSR first: RIFE works at the monitor size, so the main processor's RTX VSR
+    // upscales each source frame once before RIFE instead of every output frame.
+    // Fit to the monitor, not the video rectangle: Zoom, pan-and-scan and window
+    // resizing then keep one RIFE size and engine, and the final pass scales.
+    // The smaller processing sizes exist for speed, so they keep their size.
+    const LONG displayW = m_DisplaySize.cx, displayH = m_DisplaySize.cy;
+    if (settings.bRifeVsrFirst && settings.iRifeProcessingResolution == RIFE_RESOLUTION_Source
+            && m_VendorId == PCIV_NVIDIA && m_bVPScaling && m_bVPUseSuperRes
+            && m_iMaxineOperation == MAXINE_OPERATION_Disabled
+            && source.cx > 0 && source.cy > 0 && displayW > 0 && displayH > 0
+            && source.cx < displayW && source.cy < displayH) {
+        // Fit the source aspect inside the monitor, growing only.
+        const bool widthBound = static_cast<int64_t>(displayW) * source.cy <= static_cast<int64_t>(displayH) * source.cx;
+        const int64_t num = widthBound ? displayW : displayH;
+        const int64_t den = widthBound ? source.cx : source.cy;
+        return CSize(static_cast<int>((source.cx * num + den / 2) / den),
+            static_cast<int>((source.cy * num + den / 2) / den));
+    }
     const auto size = ResolveRifeWorkingSize(
         {static_cast<uint32_t>(std::max<LONG>(0, source.cx)), static_cast<uint32_t>(std::max<LONG>(0, source.cy))},
         {static_cast<uint32_t>(std::max<LONG>(0, m_videoRect.Width())), static_cast<uint32_t>(std::max<LONG>(0, m_videoRect.Height()))},
