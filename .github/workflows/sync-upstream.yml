@@ -14,6 +14,7 @@ concurrency:
 jobs:
   sync:
     runs-on: windows-2022
+    environment: upstream-sync
     steps:
       - uses: actions/checkout@v7
         with:
