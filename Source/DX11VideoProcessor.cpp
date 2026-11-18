@@ -4650,12 +4650,22 @@ HRESULT CDX11VideoProcessor::ResizeShaderPass(const Tex2D_t& Tex, ID3D11Texture2
 
 		D3D11_TEXTURE2D_DESC targetDesc = {};
 		pRenderTarget->GetDesc(&targetDesc);
-		HRESULT amountHr = m_TexMaxineAmountEnhanced.CheckCreate(m_pDevice,
-			targetDesc.Format, targetDesc.Width, targetDesc.Height, Tex2D_DefaultShaderRTarget);
-		if (FAILED(amountHr)) return amountHr;
-		amountHr = ResizeShaderPass(Tex, m_TexMaxineAmountEnhanced.pTexture,
-			srcRect, dstRect, rotation, flip);
-		if (FAILED(amountHr)) return amountHr;
+		const Tex2D_t* enhanced = &Tex;
+		CPoint enhancedOffset(srcRect.left - dstRect.left, srcRect.top - dstRect.top);
+		HRESULT amountHr;
+		// Sample the Maxine result directly when the intermediate draw would
+		// only move its pixels. Preserve any resize, transform or format conversion.
+		if (srcRect.Size() != dstRect.Size() || rotation != 0 || flip
+				|| Tex.desc.Format != targetDesc.Format || Tex.pTexture == pRenderTarget) {
+			amountHr = m_TexMaxineAmountEnhanced.CheckCreate(m_pDevice,
+				targetDesc.Format, targetDesc.Width, targetDesc.Height, Tex2D_DefaultShaderRTarget);
+			if (FAILED(amountHr)) return amountHr;
+			amountHr = ResizeShaderPass(Tex, m_TexMaxineAmountEnhanced.pTexture,
+				srcRect, dstRect, rotation, flip);
+			if (FAILED(amountHr)) return amountHr;
+			enhanced = &m_TexMaxineAmountEnhanced;
+			enhancedOffset = CPoint(0, 0);
+		}
 
 		// Fuse only when the normal policy actually selects one-pass Jinc2m.
 		// Other filters use the ordinary two-axis/50%-reduction decisions.
@@ -4697,23 +4707,22 @@ HRESULT CDX11VideoProcessor::ResizeShaderPass(const Tex2D_t& Tex, ID3D11Texture2
 		}
 		if (!m_pMaxineAmountConstants) {
 			D3D11_BUFFER_DESC desc = {};
-			desc.ByteWidth = 32;
+			desc.ByteWidth = 16;
 			desc.Usage = D3D11_USAGE_DYNAMIC;
 			desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 			desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 			amountHr = m_pDevice->CreateBuffer(&desc, nullptr, &m_pMaxineAmountConstants);
 			if (FAILED(amountHr)) return amountHr;
 		}
-		const float constants[8] = {0, 0,
-			static_cast<float>(targetDesc.Width), static_cast<float>(targetDesc.Height),
-			m_iMaxineAmount / 100.0f, 0, 0, 0};
+		const float constants[4] = {static_cast<float>(enhancedOffset.x),
+			static_cast<float>(enhancedOffset.y), m_iMaxineAmount / 100.0f, 0};
 		D3D11_MAPPED_SUBRESOURCE mapped = {};
 		amountHr = m_pDeviceContext->Map(m_pMaxineAmountConstants, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
 		if (FAILED(amountHr)) return amountHr;
 		memcpy(mapped.pData, constants, sizeof(constants));
 		m_pDeviceContext->Unmap(m_pMaxineAmountConstants, 0);
 		m_pDeviceContext->OMSetRenderTargets(0, nullptr, nullptr);
-		m_pDeviceContext->PSSetShaderResources(1, 1, &m_TexMaxineAmountEnhanced.pShaderResource.p);
+		m_pDeviceContext->PSSetShaderResources(1, 1, &enhanced->pShaderResource.p);
 		m_pDeviceContext->PSSetConstantBuffers(1, 1, &m_pMaxineAmountConstants.p);
 		amountHr = TextureResizeShader(baseline, pRenderTarget, baselineRect, dstRect,
 			*blendShader, drawRotation, drawFlip);

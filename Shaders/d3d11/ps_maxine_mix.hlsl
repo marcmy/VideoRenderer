@@ -3,8 +3,8 @@ Texture2D enhanced : register(t1);
 SamplerState samp : register(s0);
 cbuffer PS_AMOUNT : register(b1)
 {
-    float4 destination;
-    float4 amount;
+    float2 enhancedOffset; // destination pixel to enhanced texture pixel
+    float amount;
 };
 struct PS_INPUT
 {
@@ -13,7 +13,7 @@ struct PS_INPUT
 };
 float4 main(PS_INPUT input) : SV_Target
 {
-    float2 uv = (input.Pos.xy - destination.xy) / destination.zw;
+    int2 enhancedPixel = int2(input.Pos.xy + enhancedOffset);
     return float4(lerp(baseline.Sample(samp, input.Tex).rgb,
-        enhanced.Sample(samp, uv).rgb, amount.x), 1);
+        enhanced.Load(int3(enhancedPixel, 0)).rgb, amount), 1);
 }
