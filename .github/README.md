@@ -268,6 +268,8 @@ Frame interpolation settings includes an optional processing-size control:
 
 Lower resolution trades picture detail for less inference work. All frames in the active RIFE path use this working size, including source endpoints. Normal resizing and optional Maxine enhancement then produce the displayed image. Maxine's extra work can offset the inference saving, so compare first with Maxine disabled. Source-size playback rules still match the original video.
 
+**Light output sharpening** adds one pixel-shader pass after the final SDR shader resize of RIFE frames. It is off by default. Ctrl+J shows **RIFE sharpen** when the pass ran.
+
 Ctrl+J's existing **RIFE input** line shows original, working and model-padded dimensions. Match displayed size can reinitialize RIFE when the displayed rectangle changes; a custom limit stays independent of window size. Changed working dimensions invalidate queued frames and the learned capacity. Seeking and pause/resume otherwise retain their existing behavior, and Stop still clears it. Performance Boost may build a new engine for the new working dimensions; existing caches are retained.
 
 **SVPflow1 motion vectors** is the first scene-detector choice and the default for new or reset settings. Existing saved detector selections remain selected.

@@ -46,6 +46,8 @@
 #define IDC_RIFE_FLOW_REUSE                    20083
 #define IDC_STATIC_RIFE_FLOW_REUSE             20084
 #define IDC_RIFE_VSR_FIRST                     20085
+#define IDC_RIFE_OUTPUT_SHARPEN                20086
+#define IDF_PS_11_RIFE_SHARPEN                 20087
 #define IDC_RIFE_MODEL                         20035
 #define IDC_STATIC_RIFE_CUSTOM_FPS             20036
 #define IDC_RIFE_RULES_ENABLED                 20037

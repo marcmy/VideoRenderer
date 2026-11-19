@@ -13,7 +13,16 @@ end = dx.index('\nvoid CDX11VideoProcessor::SetVideoRect', start)
 process = dx[start:end]
 native = process.index('TryRifeVideoProcessorUpscale(')
 assert process.index('cudaOutput->Export(', process.index('if (cudaOutput && !enhanced)')) < native
-assert native < process.index('return ResizeShaderPass(*pInputTexture', native)
+assert native < process.index('return ResizeRifePresentation(*pInputTexture', native)
+assert process.count('return ResizeRifePresentation(') == 2
+assert process.rindex('return ResizeRifePresentation(') < process.index('const UINT numSteps = GetPostScaleSteps()')
+finish = bridge[bridge.index('HRESULT CDX11VideoProcessor::ResizeRifePresentation('):bridge.index('bool CDX11VideoProcessor::TryRifeVideoProcessorUpscale(')]
+gate = finish[:finish.index('CheckCreate(')]
+assert 'm_RifeRenderingSurface == UINT_MAX || !m_pFilter->m_Sets.bRifeOutputSharpen' in gate
+assert '|| SourceIsHDR() || m_bVPUseRTXVideoHDR' in gate
+assert 'return ResizeShaderPass(input, output, contentRect, dstRect, 0, false)' in gate
+assert finish.index('resize(m_TexRifeSharpenInput.pTexture)') < finish.index('TextureCopyRect(m_TexRifeSharpenInput, target, visible, visible,')
+assert finish.index('visible.IntersectRect(') < finish.index('UpdateSubresource(m_pRifeSharpenBounds')
 assert 'if (!rifeSourcePreparation)' in process[:process.index('if (m_pFrameInterpolationTexture')]
 
 # Preserve source VSR when no final upscale can run. Use the same eligibility

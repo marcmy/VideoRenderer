@@ -100,7 +100,7 @@ assert "GetRifePresentationContentSize(m_RifeRenderingSurface)" in prepared_bran
 assert "dstRect" in prepared_branch, (
     "prepared RIFE output must be scaled into the current presentation video rectangle"
 )
-assert "ResizeShaderPass" in prepared_branch, (
+assert "ResizeRifePresentation(*pInputTexture, pRenderTarget, inputRect, dstRect)" in prepared_branch, (
     "prepared RIFE output must use the renderer scaling path instead of a top-left point copy"
 )
 

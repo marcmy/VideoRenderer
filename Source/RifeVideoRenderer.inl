@@ -37,6 +37,7 @@ constexpr LPCWSTR OPT_RifePreservePrecision = L"RifePreservePrecision";
 constexpr LPCWSTR OPT_RifeFeatureReuse = L"RifeFeatureReuse";
 constexpr LPCWSTR OPT_RifeFlowReuse = L"RifeFlowReuse";
 constexpr LPCWSTR OPT_RifeVsrFirst = L"RifeVsrFirst";
+constexpr LPCWSTR OPT_RifeOutputSharpen = L"RifeOutputSharpen";
 constexpr LPCWSTR OPT_RifePerformanceBoost  = L"RifePerformanceBoost";
 constexpr LPCWSTR OPT_RifeProcessingResolution = L"RifeProcessingResolution";
 constexpr LPCWSTR OPT_RifeProcessingLimit      = L"RifeProcessingLimit";
@@ -352,6 +353,7 @@ void LoadRifeSettings(Settings_t& settings)
 	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeFeatureReuse, dw)) settings.bRifeFeatureReuse = !!dw;
 	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeFlowReuse, dw) && dw <= RIFE_FLOW_REUSE_Retime) settings.iRifeFlowReuse = static_cast<int>(dw);
 	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeVsrFirst, dw)) settings.bRifeVsrFirst = !!dw;
+	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifeOutputSharpen, dw)) settings.bRifeOutputSharpen = !!dw;
 	if (ERROR_SUCCESS == key.QueryDWORDValue(OPT_RifePerformanceBoost, dw)) {
 		settings.bRifePerformanceBoost = !!dw;
 	}
@@ -478,6 +480,7 @@ STDMETHODIMP CMpcVideoRenderer::SaveSettings()
 		key.SetDWORDValue(OPT_RifeFeatureReuse, m_Sets.bRifeFeatureReuse ? 1u : 0u);
 		key.SetDWORDValue(OPT_RifeFlowReuse, static_cast<DWORD>(m_Sets.iRifeFlowReuse));
 		key.SetDWORDValue(OPT_RifeVsrFirst, m_Sets.bRifeVsrFirst ? 1u : 0u);
+		key.SetDWORDValue(OPT_RifeOutputSharpen, m_Sets.bRifeOutputSharpen ? 1u : 0u);
 		key.SetDWORDValue(OPT_RifePerformanceBoost, m_Sets.bRifePerformanceBoost ? 1u : 0u);
 		key.SetDWORDValue(OPT_DetailedStatistics,   m_Sets.bDetailedStats ? 1u : 0u);
 		key.SetDWORDValue(OPT_SdrEnhanceMode,       static_cast<DWORD>(m_Sets.iSdrEnhanceMode));

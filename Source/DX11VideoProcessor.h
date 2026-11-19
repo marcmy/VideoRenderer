@@ -601,6 +601,11 @@ public:
 	}
 private:
 	bool TryRifeVideoProcessorUpscale(Tex2D_t& input, ID3D11Texture2D* target, const CRect& contentRect, const CRect& dstRect);
+	HRESULT ResizeRifePresentation(const Tex2D_t& input, ID3D11Texture2D* target, const CRect& contentRect, const CRect& dstRect);
+	Tex2D_t m_TexRifeSharpenInput;
+	CComPtr<ID3D11PixelShader> m_pPSRifeSharpen;
+	CComPtr<ID3D11Buffer> m_pRifeSharpenBounds;
+	bool m_bRifeOutputSharpenApplied = false;
 	Tex2D_t m_TexRifePreparedMaxine;
 	RifePreparedPresentationKey m_RifePreparedMaxineKey;
 	CRect m_RifePreparedMaxineInputRect, m_RifePreparedMaxineDestRect;

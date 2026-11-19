@@ -869,6 +869,7 @@ void CDX11VideoProcessor::ReleaseVP()
 	m_TexResize.Release();
 	m_TexsPostScale.Release();
 	m_TexsRifePostScale.Release();
+	m_TexRifeSharpenInput.Release();
 
 	m_PSConvColorData.Release();
 	m_pDoviCurvesConstantBuffer.Release();
@@ -925,6 +926,8 @@ void CDX11VideoProcessor::ReleaseDevice()
 	m_pPSHDR10ToneMapping.Release();
 	m_pPSSdrEnhance.Release();
 	m_pSdrEnhanceConstants.Release();
+	m_pPSRifeSharpen.Release();
+	m_pRifeSharpenBounds.Release();
 	m_SdrEnhanceTimer.Release();
 
 	m_pShaderUpscaleX.Release();
@@ -987,6 +990,7 @@ void CDX11VideoProcessor::ReleaseDevice()
 
 void CDX11VideoProcessor::ReleaseSwapChain()
 {
+	m_TexRifeSharpenInput.Release();
 	if (m_pDXGISwapChain1) {
 		m_pDXGISwapChain1->SetFullscreenState(FALSE, nullptr);
 	}
@@ -4971,6 +4975,7 @@ void CDX11VideoProcessor::DrawSubtitles(ID3D11Texture2D* pRenderTarget)
 HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect& srcRect, const CRect& dstRect,
 		const bool second, const bool rifeSourcePreparation)
 {
+	m_bRifeOutputSharpenApplied = false;
 	if (!m_pFrameInterpolationTexture) UpdateRifeVsrSourceRequest(rifeSourcePreparation);
 	m_bMaxineAmountPending = false;
 	m_bMaxineAmountBaselineOriented = false;
@@ -5005,8 +5010,8 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 			m_bMaxineOversampleClamped = m_RifePreparedMaxineOversampleClamped;
 			m_strMaxinePipeline = m_RifePreparedMaxinePipeline;
 			m_strMaxineVSRStatus = m_RifePreparedMaxineStatus;
-			return ResizeShaderPass(m_TexRifePreparedMaxine, pRenderTarget,
-				m_RifePreparedMaxineInputRect, dstRect, 0, false);
+			return ResizeRifePresentation(m_TexRifePreparedMaxine, pRenderTarget,
+				m_RifePreparedMaxineInputRect, dstRect);
 		}
 
 		// RIFE works on the explicitly selected, presentation-oriented image.
@@ -5056,7 +5061,7 @@ HRESULT CDX11VideoProcessor::Process(ID3D11Texture2D* pRenderTarget, const CRect
 		// RTX VSR. Source preparation remains at the selected inference size.
 		// Maxine selection excludes this route even when its effect is ineligible.
 		if (TryRifeVideoProcessorUpscale(*pInputTexture, pRenderTarget, inputRect, dstRect)) return S_OK;
-		return ResizeShaderPass(*pInputTexture, pRenderTarget, inputRect, dstRect, 0, false);
+		return ResizeRifePresentation(*pInputTexture, pRenderTarget, inputRect, dstRect);
 	}
 
 	HRESULT hr = S_OK;
@@ -5712,6 +5717,9 @@ void CDX11VideoProcessor::Configure(const Settings_t& config)
 	m_bDeintBlend          = config.bDeintBlend;
 
 	// checking what needs to be changed
+	if (!config.bRifeOutputSharpen || config.iRifeMode == RIFE_MODE_Disabled) {
+		m_TexRifeSharpenInput.Release();
+	}
 
 	if (config.iResizeStats != m_iResizeStats) {
 		m_iResizeStats = config.iResizeStats;
@@ -6513,6 +6521,9 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 		}
 	}
 	if (m_pFilter->m_Sets.iRifeMode != RIFE_MODE_Disabled && m_pFilter->m_RifePipeline) {
+		if (m_bRifeOutputSharpenApplied) {
+			str += L"\nRIFE sharpen : Light (after resize)";
+		}
 		const bool detailed = m_pFilter->m_Sets.bDetailedStats;
 		const auto rifeDiagnostics = m_pFilter->m_RifePipeline->GetDiagnostics(detailed);
 		if (!rifeDiagnostics.empty()) {

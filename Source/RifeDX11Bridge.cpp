@@ -7,6 +7,7 @@
 #include "Times.h"
 #include "VideoRenderer.h"
 #include "DX11VideoProcessor.h"
+#include "ForkResource.h"
 #include "RifePrecision.h"
 #include "RifeVideoProcessorPolicy.h"
 #include "RifeVsrInputProbe.h"
@@ -67,6 +68,51 @@ bool CDX11VideoProcessor::GetRifeVsrProbeDecoderInput(CComPtr<ID3D11Texture2D>& 
         CComPtr<IMediaSample>& sample, UINT& arraySlice)
 {
     return m_D3D11VP.GetLatestDecoderInput(texture, sample, arraySlice);
+}
+
+HRESULT CDX11VideoProcessor::ResizeRifePresentation(const Tex2D_t& input,
+        ID3D11Texture2D* target, const CRect& contentRect, const CRect& dstRect)
+{
+    const auto resize = [&](ID3D11Texture2D* output) {
+        return ResizeShaderPass(input, output, contentRect, dstRect, 0, false);
+    };
+    if (m_RifeRenderingSurface == UINT_MAX || !m_pFilter->m_Sets.bRifeOutputSharpen
+            || SourceIsHDR() || m_bVPUseRTXVideoHDR) {
+        return resize(target);
+    }
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    target->GetDesc(&desc);
+    CRect visible;
+    if (!visible.IntersectRect(dstRect, CRect(0, 0, desc.Width, desc.Height))
+            || (desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM && desc.Format != DXGI_FORMAT_R10G10B10A2_UNORM)) {
+        return resize(target);
+    }
+    if (!m_pPSRifeSharpen && FAILED(CreatePShaderFromResource(&m_pPSRifeSharpen, IDF_PS_11_RIFE_SHARPEN))) {
+        return resize(target);
+    }
+    if (!m_pRifeSharpenBounds) {
+        const D3D11_BUFFER_DESC cbDesc = {16, D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0};
+        if (FAILED(m_pDevice->CreateBuffer(&cbDesc, nullptr, &m_pRifeSharpenBounds))) {
+            return resize(target);
+        }
+    }
+    if (FAILED(m_TexRifeSharpenInput.CheckCreate(m_pDevice,
+            desc.Format, desc.Width, desc.Height, Tex2D_DefaultShaderRTarget))) {
+        return resize(target);
+    }
+
+    const HRESULT resized = resize(m_TexRifeSharpenInput.pTexture);
+    if (FAILED(resized)) {
+        return resized;
+    }
+    const LONG bounds[] = {visible.left, visible.top, visible.right - 1, visible.bottom - 1};
+    m_pDeviceContext->UpdateSubresource(m_pRifeSharpenBounds, 0, nullptr, bounds, 0, 0);
+    const HRESULT sharpened = TextureCopyRect(m_TexRifeSharpenInput, target, visible, visible,
+        m_pPSRifeSharpen, m_pRifeSharpenBounds, 0, false);
+    m_bRifeOutputSharpenApplied = SUCCEEDED(sharpened);
+    return m_bRifeOutputSharpenApplied ? sharpened : TextureCopyRect(
+        m_TexRifeSharpenInput, target, visible, visible, m_pPS_Simple, nullptr, 0, false);
 }
 
 bool CDX11VideoProcessor::TryRifeVideoProcessorUpscale(Tex2D_t& input,
