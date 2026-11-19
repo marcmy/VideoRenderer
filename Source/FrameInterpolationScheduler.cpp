@@ -1144,6 +1144,20 @@ void CFrameInterpolationScheduler::Reset() noexcept
     m_anchored = false;
 }
 
+bool CFrameInterpolationScheduler::ResetForLongGap(
+    const int64_t firstTime, const int64_t secondTime) noexcept
+{
+    constexpr auto gapTicks = RifeLongGapMs * (ReferenceTicksPerSecond / 1'000);
+    if (secondTime <= firstTime
+            || static_cast<uint64_t>(secondTime) - static_cast<uint64_t>(firstTime) < gapTicks) {
+        return false;
+    }
+
+    // Start the next target grid at the real frame that ends the hold.
+    Reset();
+    return true;
+}
+
 void CFrameInterpolationScheduler::Configure(
     const FrameInterpolationRateMode mode,
     const FrameRate customRate,

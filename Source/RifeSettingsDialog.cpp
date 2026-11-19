@@ -310,6 +310,7 @@ constexpr SettingsTooltip kRuleTooltips[] = {
 constexpr SettingsTooltip kRifeTooltips[] = {
 	{IDC_RIFE_MODE, L"How many frames to show. To screen matches the display's refresh rate, Movie multiplies the source's frame rate, and the others aim for a fixed rate. Audio and source timing don't change."},
 	{IDC_RIFE_CUSTOM_FPS, L"The frame rate to aim for when the interpolation rate is Custom."},
+	{IDC_RIFE_HOLD_LONG_GAPS, L"Hold the earlier source frame across gaps of 100 ms or more. Interpolation resumes after the next source frame."},
 	{IDC_RIFE_FLOW_REUSE, L"Estimates motion once per source pair instead of once per generated frame, which is much faster. Motion within a pair becomes a straight line. Coarse still refines each frame; Retime is fastest, but very fast or repetitive motion can jump. Needs 4.25 Lite and Feature reuse."},
 	{IDC_RIFE_GPU_THREADS, L"How many source pairs RIFE can work on at once. More uses more VRAM, and adds little speed once the GPU is fully busy."},
 	{IDC_RIFE_MODEL, L"The AI model. 4.25 Lite is the fastest, and gets the most from Feature reuse. It is the only one with Flow reuse. 4.4 and 4.6 can't use Feature reuse."},
@@ -396,6 +397,7 @@ void CopyRifeSettings(Settings_t& dst, const Settings_t& src)
 	dst.iRifeFlowReuse = src.iRifeFlowReuse;
 	dst.bRifeVsrFirst = src.bRifeVsrFirst;
 	dst.bRifeOutputSharpen = src.bRifeOutputSharpen;
+	dst.bRifeHoldLongGaps = src.bRifeHoldLongGaps;
 	dst.iRifeProcessingResolution = src.iRifeProcessingResolution;
 	dst.iRifeProcessingLimit = src.iRifeProcessingLimit;
 	dst.iRifeSceneDetection = src.iRifeSceneDetection;
@@ -418,6 +420,7 @@ bool RifeSettingsEqual(const Settings_t& a, const Settings_t& b)
 		&& a.iRifeFlowReuse == b.iRifeFlowReuse
 		&& a.bRifeVsrFirst == b.bRifeVsrFirst
 		&& a.bRifeOutputSharpen == b.bRifeOutputSharpen
+		&& a.bRifeHoldLongGaps == b.bRifeHoldLongGaps
 		&& a.bRifePerformanceBoost == b.bRifePerformanceBoost
 		&& a.iRifeProcessingResolution == b.iRifeProcessingResolution
 		&& a.iRifeProcessingLimit == b.iRifeProcessingLimit
@@ -445,6 +448,7 @@ void EnableControls(HWND hwnd)
 		IDC_RIFE_PRESERVE_PRECISION,
 		IDC_RIFE_VSR_FIRST,
 		IDC_RIFE_OUTPUT_SHARPEN,
+		IDC_RIFE_HOLD_LONG_GAPS,
 		IDC_RIFE_PROCESSING_RESOLUTION,
 		IDC_RIFE_SCENE_DETECTION,
 		IDC_RIFE_SCENE_PROCESSING,
@@ -483,6 +487,7 @@ void SetControls(HWND hwnd, const Settings_t& settings)
 	SelectComboValue(hwnd, IDC_RIFE_FLOW_REUSE, settings.iRifeFlowReuse);
 	CheckDlgButton(hwnd, IDC_RIFE_VSR_FIRST, settings.bRifeVsrFirst ? BST_CHECKED : BST_UNCHECKED);
 	CheckDlgButton(hwnd, IDC_RIFE_OUTPUT_SHARPEN, settings.bRifeOutputSharpen ? BST_CHECKED : BST_UNCHECKED);
+	CheckDlgButton(hwnd, IDC_RIFE_HOLD_LONG_GAPS, settings.bRifeHoldLongGaps ? BST_CHECKED : BST_UNCHECKED);
 	CheckDlgButton(hwnd, IDC_DETAILED_STATS,
 		settings.bDetailedStats ? BST_CHECKED : BST_UNCHECKED);
 	SelectComboValue(hwnd, IDC_RIFE_SCENE_DETECTION, settings.iRifeSceneDetection);
@@ -563,6 +568,7 @@ bool ReadControls(HWND hwnd, Settings_t& settings)
 	settings.bRifePreservePrecision = IsDlgButtonChecked(hwnd, IDC_RIFE_PRESERVE_PRECISION) == BST_CHECKED;
 	settings.bRifeVsrFirst = IsDlgButtonChecked(hwnd, IDC_RIFE_VSR_FIRST) == BST_CHECKED;
 	settings.bRifeOutputSharpen = IsDlgButtonChecked(hwnd, IDC_RIFE_OUTPUT_SHARPEN) == BST_CHECKED;
+	settings.bRifeHoldLongGaps = IsDlgButtonChecked(hwnd, IDC_RIFE_HOLD_LONG_GAPS) == BST_CHECKED;
 	settings.bRifeFeatureReuse = IsDlgButtonChecked(hwnd, IDC_RIFE_FEATURE_REUSE) == BST_CHECKED;
 	settings.iRifeFlowReuse = static_cast<int>(ComboValue(hwnd, IDC_RIFE_FLOW_REUSE));
 	settings.bRifePerformanceBoost = IsDlgButtonChecked(hwnd, IDC_RIFE_PERFORMANCE_BOOST) == BST_CHECKED;

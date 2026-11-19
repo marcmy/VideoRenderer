@@ -242,6 +242,27 @@ void TestResetReanchorsTimeline()
     }
 }
 
+void TestLongGapReanchorsWithoutChangingTargetRate()
+{
+    CFrameInterpolationScheduler scheduler;
+    scheduler.Configure(FrameInterpolationRateMode::Fixed60, {}, {});
+    scheduler.SetVariableSourceTiming(true);
+    scheduler.SetRuntimeOutputFpsCap(48'000);
+    constexpr int64_t first = 416667;
+    constexpr int64_t resume = first + 1'000'000;
+    (void)scheduler.Schedule(0, first, Rate(24));
+    Check(!scheduler.ResetForLongGap(first, first - 1), "reversed timestamps do not count as a hold");
+    Check(!scheduler.ResetForLongGap(first, resume - 1), "99.9999 ms is below the hold threshold");
+    Check(scheduler.ResetForLongGap(first, resume), "a 100 ms gap is held");
+    const auto afterHold = scheduler.Schedule(resume, resume + 416667, Rate(24));
+    Check(scheduler.ResolveTargetRate(Rate(24)).numerator == 48,
+        "a hold preserves the adaptive target cap");
+    Check(afterHold.size() == 2 && afterHold.front().presentationTime == resume + 208333
+            && !afterHold.front().exactSource && afterHold.back().exactSource,
+        "interpolation starts from the real endpoint that ends the hold");
+    Check(scheduler.ResetForLongGap(resume, resume + 10'000'000), "a one second gap is held");
+}
+
 void TestLongRunDoesNotAccumulateRoundedPeriodDrift()
 {
     CFrameInterpolationScheduler scheduler;
@@ -1049,6 +1070,24 @@ void TestSilentOutputShortfallBacksOff()
         "a quiet 120 fps request delivering only 60 fps backs off to aligned 90");
     Check((decision.confirmedPressureReasons & RIFE_PRESSURE_DELIVERY_SHORTFALL) != 0,
         "silent output shortfall is visible as the cause of backoff");
+}
+
+void TestIntentionalHoldDoesNotBecomeDeliveryShortfall()
+{
+    CFrameInterpolationPressureController controller;
+    (void)controller.Update(60'000, 24'000, 0, DeliverySnapshot(0));
+    (void)controller.Update(60'000, 24'000, 1'000, DeliverySnapshot(60));
+    const auto before = controller.Update(60'000, 24'000, 3'000, DeliverySnapshot(180));
+    Check(before.measuredOutputHealthy && before.lastKnownGoodFpsMilli == 60'000,
+        "delivery is verified before the hold");
+    controller.ResetDeliveryMeasurement();
+    const auto resumed = controller.Update(60'000, 24'000, 6'000, DeliverySnapshot(181));
+    Check(!resumed.measuredOutputReady && !resumed.pressureDetected
+            && resumed.lastKnownGoodFpsMilli == 60'000 && resumed.outputCapFpsMilli == 0,
+        "the intentional hold clears the delivery window and preserves the learned rate");
+    const auto stable = controller.Update(60'000, 24'000, 8'000, DeliverySnapshot(301));
+    Check(stable.measuredOutputHealthy && stable.measuredOutputFpsMilli == 60'000,
+        "a fresh measurement excludes held time");
 }
 
 void TestOutputValidatedProbeReturnsToKnownGood()
@@ -1927,6 +1966,7 @@ int main()
     TestPresentationRecoveryAfterStartupStall();
     TestNonGridEndpointRemainsExcluded();
     TestResetReanchorsTimeline();
+    TestLongGapReanchorsWithoutChangingTargetRate();
     TestLongRunDoesNotAccumulateRoundedPeriodDrift();
     TestTwoTimesWithQuantizedSourceTimestamps();
     TestVariableFrameRateUsesStableAverageAndRealPairTimes();
@@ -1946,6 +1986,7 @@ int main()
     TestRuntimeCapComposesWithUserCaps();
     TestAdaptiveCapPreservesExactNtscMultiplier();
     TestSilentOutputShortfallBacksOff();
+    TestIntentionalHoldDoesNotBecomeDeliveryShortfall();
     TestVerifiedRateRecoversAfterAnInterruption();
     TestVerifiedRecoveryFailsOnceUnderSustainedLoad();
     TestVerifiedRecoverySurvivesSeekButStopAndSettingsClearIt();

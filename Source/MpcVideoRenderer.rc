@@ -171,7 +171,7 @@ BEGIN
     COMBOBOX        IDC_RIFE_MODE,101,19,139,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "Custom FPS:",IDC_STATIC_RIFE_CUSTOM_FPS,247,22,43,8
     EDITTEXT        IDC_RIFE_CUSTOM_FPS,292,19,24,13,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "Audio and source timestamps remain unchanged; RIFE fills target presentation times.",IDC_STATIC,16,42,300,10,SS_LEFT
+    CONTROL         "Hold frames across gaps of 100 ms or more",IDC_RIFE_HOLD_LONG_GAPS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,16,42,296,10
 
     GROUPBOX        "RIFE",IDC_STATIC,7,63,314,145
     LTEXT           "Neural network engine:",IDC_STATIC,16,78,82,8

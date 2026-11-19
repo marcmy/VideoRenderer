@@ -281,6 +281,7 @@ struct CRifePlaybackPipeline::Impl
         // The job that used this frame as its second input. Set and read only
         // by the thread that creates pair jobs.
         uint64_t pairIdAsSecond = 0;
+        bool sourcePresentationQueued = false; // Set by the presentation coordinator.
     };
 
     using SourceFramePtr = std::shared_ptr<SourceFrame>;
@@ -421,6 +422,7 @@ struct CRifePlaybackPipeline::Impl
     uint32_t schedulerSourceFrameStride = 1;
     CRifeInferenceTimingWindow<16> adaptiveInferenceTiming;
     CFrameInterpolationPressureController adaptivePressureController;
+    REFERENCE_TIME adaptiveGapEnd = INVALID_TIME;
     uint32_t adaptiveAppliedCapFpsMilli = 0;
     bool adaptiveResumePending = false;
     std::atomic_uint32_t adaptiveRequestedOutputFpsMilli = 0;
@@ -471,6 +473,7 @@ struct CRifePlaybackPipeline::Impl
 
     std::atomic_uint64_t generatedFrames = 0;
     std::atomic_uint64_t sceneRepeatFrames = 0;
+    std::atomic_uint64_t heldLongGaps = 0;
     std::atomic_uint64_t sceneBlendFrames = 0;
     std::atomic_uint64_t alternateSkippedFrames = 0;
     std::atomic_uint32_t sourceFpsMilli = 0;
@@ -714,6 +717,7 @@ struct CRifePlaybackPipeline::Impl
     {
         scheduler.Reset();
         schedulerConfigured = false;
+        adaptiveGapEnd = INVALID_TIME;
         adaptiveResumePending = preserveAdaptive;
         if (!preserveAdaptive) {
             ResetAdaptiveLoadState();
@@ -1104,6 +1108,13 @@ struct CRifePlaybackPipeline::Impl
         }
     }
 
+    bool QueueSourceFrame(SourceFrame& frame, const REFERENCE_TIME time)
+    {
+        const bool queued = QueueTexture(frame, frame.texture, time, false);
+        frame.sourcePresentationQueued |= queued;
+        return queued;
+    }
+
     void ConfigureScheduler(const SourceFrame& frame)
     {
         const uint32_t frameStride = frame.settings.iRifeDuplicateRemoval == RIFE_DUPLICATES_RemoveEveryOther ? 2u : 1u;
@@ -1152,6 +1163,16 @@ struct CRifePlaybackPipeline::Impl
     void UpdateAdaptiveLoadLimit(const SourceFrame& frame, const FrameRate sourceRate,
         const size_t pendingPairDepth, const bool interpolationReady)
     {
+        if (adaptiveGapEnd != INVALID_TIME) {
+            // The worker can run ahead of the display. Discard delivery
+            // measurements until the intentional hold has elapsed on the clock.
+            adaptivePressureController.ResetDeliveryMeasurement();
+            REFERENCE_TIME now = 0;
+            if (!frame.clock || FAILED(frame.clock->GetTime(&now))
+                    || now >= frame.graphStart + adaptiveGapEnd) {
+                adaptiveGapEnd = INVALID_TIME;
+            }
+        }
         const FrameRate requestedRate = scheduler.ResolveConfiguredTargetRate(sourceRate);
         const auto timing = adaptiveInferenceTiming.GetSummary();
         const uint32_t samples = static_cast<uint32_t>(timing.count);
@@ -1930,7 +1951,7 @@ struct CRifePlaybackPipeline::Impl
                 return progressed;
             }
             if (target.exactSource) {
-                job.queuedOutput |= QueueTexture(second, second.texture, target.presentationTime, false);
+                job.queuedOutput |= QueueSourceFrame(second, target.presentationTime);
                 continue;
             }
             if (result.skippedLate) {
@@ -1965,7 +1986,7 @@ struct CRifePlaybackPipeline::Impl
             }
         }
         if (job.presentationFinalized && !job.targets.empty() && !job.queuedOutput && IsCurrent(second)) {
-            if (QueueTexture(second, second.texture, second.time, false)) {
+            if (QueueSourceFrame(second, second.time)) {
                 sourceContinuityFrames.fetch_add(1, std::memory_order_relaxed);
                 job.queuedOutput = true;
             }
@@ -2079,6 +2100,9 @@ struct CRifePlaybackPipeline::Impl
         diagnostics += std::format(L"\nRIFE totals   : generated {}, scene-repeat {}, late-drop {}",
             generatedFrames.load(std::memory_order_relaxed), sceneRepeatFrames.load(std::memory_order_relaxed),
             lateSyntheticDrops.load(std::memory_order_relaxed));
+        if (owner->m_Sets.bRifeHoldLongGaps) {
+            diagnostics += std::format(L"\nRIFE gaps     : held {}", heldLongGaps.load(std::memory_order_relaxed));
+        }
         const auto inferenceFallback = inferenceFallbackFrames.load(std::memory_order_relaxed);
         const auto sourceFallback = sourceContinuityFrames.load(std::memory_order_relaxed);
         const auto presentDrop = presentationDrops.load(std::memory_order_relaxed);
@@ -2293,7 +2317,7 @@ struct CRifePlaybackPipeline::Impl
             if (!previous) {
                 // The scheduler anchors its target grid at this real frame.
                 ConfigureScheduler(*currentFrame);
-                QueueTexture(*currentFrame, currentFrame->texture, currentFrame->time, false);
+                QueueSourceFrame(*currentFrame, currentFrame->time);
                 previous = std::move(currentFrame);
                 continue;
             }
@@ -2303,12 +2327,29 @@ struct CRifePlaybackPipeline::Impl
                 sourceResyncs.fetch_add(1, std::memory_order_relaxed);
                 ResetSequenceState();
                 ConfigureScheduler(*currentFrame);
-                QueueTexture(*currentFrame, currentFrame->texture, currentFrame->time, false);
+                QueueSourceFrame(*currentFrame, currentFrame->time);
                 previous = std::move(currentFrame);
                 continue;
             }
 
             ConfigureScheduler(*currentFrame);
+            if (currentFrame->settings.bRifeHoldLongGaps
+                    && scheduler.ResetForLongGap(previous->time, currentFrame->time)) {
+                drainPending(true);
+                if (IsCurrent(*currentFrame)) {
+                    heldLongGaps.fetch_add(1, std::memory_order_relaxed);
+                    adaptiveGapEnd = currentFrame->time;
+                    adaptiveMeasuredOutputReady.store(false, std::memory_order_relaxed);
+                    // A VFR endpoint can fall between grid ticks. Present that
+                    // real frame too, so a generated frame is never the hold.
+                    if (!previous->sourcePresentationQueued) {
+                        QueueSourceFrame(*previous, previous->time);
+                    }
+                    QueueSourceFrame(*currentFrame, currentFrame->time);
+                }
+                previous = std::move(currentFrame);
+                continue;
+            }
             const FrameRate sourceRate = currentFrame->frameDuration > 0
                 ? RetainedSourceRate(SourceRateFromDuration(currentFrame->frameDuration),
                     currentFrame->settings.iRifeDuplicateRemoval == RIFE_DUPLICATES_RemoveEveryOther ? 2u : 1u)
@@ -2320,7 +2361,7 @@ struct CRifePlaybackPipeline::Impl
             if (!device || !desc.Width || !desc.Height) {
                 drainPending(true);
                 UpdateAdaptiveLoadLimit(*currentFrame, sourceRate, pendingPairs.size(), false);
-                QueueTexture(*currentFrame, currentFrame->texture, currentFrame->time, false);
+                QueueSourceFrame(*currentFrame, currentFrame->time);
                 previous = std::move(currentFrame);
                 continue;
             }
@@ -2360,7 +2401,7 @@ struct CRifePlaybackPipeline::Impl
             if (!runtime) {
                 drainPending(true);
                 runtimeWaitPairs.fetch_add(1, std::memory_order_relaxed);
-                QueueTexture(*currentFrame, currentFrame->texture, currentFrame->time, false);
+                QueueSourceFrame(*currentFrame, currentFrame->time);
                 previous = std::move(currentFrame);
                 continue;
             }

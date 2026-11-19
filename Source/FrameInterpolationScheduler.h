@@ -68,6 +68,8 @@ enum class FrameInterpolationRateMode : uint8_t {
     Custom,
 };
 
+inline constexpr uint32_t RifeLongGapMs = 100;
+
 struct FrameInterpolationTarget {
     int64_t presentationTime = 0;
     double timestep = 0.0;
@@ -149,6 +151,8 @@ struct FrameInterpolationPressureDecision {
 class CFrameInterpolationPressureController {
 public:
     void Reset() noexcept;
+    // An intentional frame hold ends the current delivery measurement.
+    void ResetDeliveryMeasurement() noexcept;
     // Keep the learned cap across a pause or seek, but discard pressure
     // samples from the old presentation generation before evaluating resumed playback.
     void Resume(uint64_t nowMs) noexcept;
@@ -165,7 +169,6 @@ public:
         bool variableSourceTiming = false) noexcept;
 
 private:
-    void ResetDeliveryMeasurement() noexcept;
     FrameInterpolationPressureSnapshot m_previousSnapshot = {};
     bool m_havePreviousSnapshot = false;
     uint32_t m_requestedOutputFpsMilli = 0;
@@ -237,6 +240,7 @@ private:
 class CFrameInterpolationScheduler {
 public:
     void Reset() noexcept;
+    [[nodiscard]] bool ResetForLongGap(int64_t firstTime, int64_t secondTime) noexcept;
     void Configure(FrameInterpolationRateMode mode, FrameRate customRate, FrameRate displayRate,
         uint32_t maxMultiplierMilli = 0, uint32_t maxOutputFpsMilli = 0,
         uint32_t sourceFrameStride = 1) noexcept;

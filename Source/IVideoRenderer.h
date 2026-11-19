@@ -390,6 +390,7 @@ struct Settings_t {
 	int iRifeFlowReuse;
 	bool bRifeVsrFirst; // RTX VSR upscales source frames before RIFE.
 	bool bRifeOutputSharpen;
+	bool bRifeHoldLongGaps;
 
 	Settings_t() {
 		SetDefault();
@@ -484,6 +485,7 @@ struct Settings_t {
 		iRifeFlowReuse                  = RIFE_FLOW_REUSE_Coarse;
 		bRifeVsrFirst                   = true;
 		bRifeOutputSharpen              = false;
+		bRifeHoldLongGaps               = false;
 		iRifeSceneDetection             = RIFE_SCENE_SVPflow1;
 		iRifeProcessingResolution       = RIFE_RESOLUTION_Source;
 		iRifeProcessingLimit            = RifeProcessingLimitDefault;

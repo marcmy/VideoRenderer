@@ -47,6 +47,14 @@ assert "static bool RifeFramesCompatible" in rife_pipeline and "RifeFramesCompat
     "the worker must never pair RIFE source textures from different device/size generations"
 )
 
+gap = function_body(rife_pipeline, "if (currentFrame->settings.bRifeHoldLongGaps")
+assert "scheduler.ResetForLongGap(previous->time, currentFrame->time)" in rife_pipeline
+assert "EnsureRuntimeBuild" not in gap and "DispatchPairJob" not in gap
+assert gap.index("drainPending(true)") < gap.index("if (IsCurrent(*currentFrame))")
+assert gap.index("if (!previous->sourcePresentationQueued)") < gap.index("QueueSourceFrame(*previous, previous->time)")
+assert gap.index("QueueSourceFrame(*previous, previous->time)") < gap.index("QueueSourceFrame(*currentFrame, currentFrame->time)")
+assert "adaptiveGapEnd = currentFrame->time" in gap and "continue;" in gap
+
 assert "AcquireRifePresentationSurface" in dx11_header and "AcquireRifePresentationSurface" in rife_bridge, (
     "generated RIFE frames need a presentation surface whose retirement query owns texture reuse"
 )

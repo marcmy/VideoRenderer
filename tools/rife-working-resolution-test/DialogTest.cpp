@@ -36,11 +36,15 @@ int wmain(int argc, wchar_t** argv)
     settings.bRifeVsrFirst = false;
     assert(!settings.bRifeOutputSharpen);
     settings.bRifeOutputSharpen = true;
+    assert(!settings.bRifeHoldLongGaps);
+    settings.bRifeHoldLongGaps = true;
     const HWND dialog = CreateDialogIndirectParamW(module, resourceTemplate, nullptr, DialogProc,
         reinterpret_cast<LPARAM>(&settings));
     assert(dialog && !IsWindowVisible(dialog));
     assert(IsDlgButtonChecked(dialog, IDC_RIFE_OUTPUT_SHARPEN) == BST_CHECKED);
     assert(IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_OUTPUT_SHARPEN)));
+    assert(IsDlgButtonChecked(dialog, IDC_RIFE_HOLD_LONG_GAPS) == BST_CHECKED);
+    assert(IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_HOLD_LONG_GAPS)));
     for (const int model : {RIFE_MODEL_44, RIFE_MODEL_46, RIFE_MODEL_415_LITE, RIFE_MODEL_425_LITE}) {
         SelectComboValue(dialog, IDC_RIFE_MODEL, model);
         EnableControls(dialog);
@@ -53,6 +57,7 @@ int wmain(int argc, wchar_t** argv)
         assert(readback.iRifeFlowReuse == RIFE_FLOW_REUSE_Retime);
         assert(!readback.bRifeVsrFirst);
         assert(readback.bRifeOutputSharpen);
+        assert(readback.bRifeHoldLongGaps);
         Settings_t copied;
         CopyRifeSettings(copied, readback);
         assert(RifeSettingsEqual(copied, readback));
@@ -92,6 +97,8 @@ int wmain(int argc, wchar_t** argv)
     assert(!IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_VSR_FIRST)));
     assert(!settings.bRifeOutputSharpen && IsDlgButtonChecked(dialog, IDC_RIFE_OUTPUT_SHARPEN) == BST_UNCHECKED);
     assert(!IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_OUTPUT_SHARPEN)));
+    assert(!settings.bRifeHoldLongGaps && IsDlgButtonChecked(dialog, IDC_RIFE_HOLD_LONG_GAPS) == BST_UNCHECKED);
+    assert(!IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_HOLD_LONG_GAPS)));
     RECT vsrFirst = {}, sharpen = {};
     assert(GetWindowRect(GetDlgItem(dialog, IDC_RIFE_VSR_FIRST), &vsrFirst));
     assert(GetWindowRect(GetDlgItem(dialog, IDC_RIFE_OUTPUT_SHARPEN), &sharpen));
@@ -104,7 +111,7 @@ int wmain(int argc, wchar_t** argv)
     GetClientRect(dialog, &client);
     for (const int id : {IDC_RIFE_PROCESSING_RESOLUTION, IDC_RIFE_PROCESSING_LIMIT, IDC_RIFE_SCENE_DETECTION,
             IDC_RIFE_RULES_LIST, IDC_RIFE_FEATURE_REUSE, IDC_RIFE_FLOW_REUSE, IDC_RIFE_PRESERVE_PRECISION,
-            IDC_RIFE_VSR_FIRST, IDC_RIFE_OUTPUT_SHARPEN, IDOK, IDCANCEL, IDC_BUTTON_RIFE_DEFAULTS}) {
+            IDC_RIFE_VSR_FIRST, IDC_RIFE_OUTPUT_SHARPEN, IDC_RIFE_HOLD_LONG_GAPS, IDOK, IDCANCEL, IDC_BUTTON_RIFE_DEFAULTS}) {
         RECT rect = {};
         GetWindowRect(GetDlgItem(dialog, id), &rect);
         MapWindowPoints(nullptr, dialog, reinterpret_cast<POINT*>(&rect), 2);

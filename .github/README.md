@@ -270,6 +270,8 @@ Lower resolution trades picture detail for less inference work. All frames in th
 
 **Light output sharpening** adds one pixel-shader pass after the final SDR shader resize of RIFE frames. It is off by default. Ctrl+J shows **RIFE sharpen** when the pass ran.
 
+**Hold frames across gaps of 100 ms or more** leaves the earlier source frame on screen during long gaps and resumes interpolation on the next eligible pair. This is off by default. Ctrl+J shows the number of gaps held under **RIFE gaps**.
+
 Ctrl+J's existing **RIFE input** line shows original, working and model-padded dimensions. Match displayed size can reinitialize RIFE when the displayed rectangle changes; a custom limit stays independent of window size. Changed working dimensions invalidate queued frames and the learned capacity. Seeking and pause/resume otherwise retain their existing behavior, and Stop still clears it. Performance Boost may build a new engine for the new working dimensions; existing caches are retained.
 
 **SVPflow1 motion vectors** is the first scene-detector choice and the default for new or reset settings. Existing saved detector selections remain selected.
