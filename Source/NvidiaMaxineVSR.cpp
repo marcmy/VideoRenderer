@@ -65,6 +65,7 @@ enum NvCVImage_PixelFormat : int {
 enum NvCVImage_ComponentType : int {
 	NVCV_TYPE_UNKNOWN = 0,
 	NVCV_U8 = 1,
+	NVCV_P32 = 11, // Packed RGB10A2.
 };
 
 constexpr unsigned NVCV_INTERLEAVED = 0;
@@ -945,11 +946,19 @@ struct CNvidiaMaxineVSR::Impl
 			return false;
 		}
 
-		if ((d3dInput.pixelFormat != NVCV_RGBA && d3dInput.pixelFormat != NVCV_BGRA)
-				|| d3dInput.componentType != NVCV_U8 || d3dInput.planar != NVCV_INTERLEAVED
-				|| (d3dOutput.pixelFormat != NVCV_RGBA && d3dOutput.pixelFormat != NVCV_BGRA)
-				|| d3dOutput.componentType != NVCV_U8 || d3dOutput.planar != NVCV_INTERLEAVED) {
-			status = L"Only RGBA/BGRA 8-bit D3D11 textures are supported";
+		const auto is8Bit = [](const NvCVImage& image) {
+			return (image.pixelFormat == NVCV_RGBA || image.pixelFormat == NVCV_BGRA)
+				&& image.componentType == NVCV_U8 && image.planar == NVCV_INTERLEAVED;
+		};
+		const auto is10Bit = [](ID3D11Texture2D* texture, const NvCVImage& image) {
+			D3D11_TEXTURE2D_DESC desc = {};
+			texture->GetDesc(&desc);
+			return desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM
+				&& image.componentType == NVCV_P32 && image.planar == NVCV_INTERLEAVED;
+		};
+		if (!(is8Bit(d3dInput) && is8Bit(d3dOutput))
+				&& !(is10Bit(input, d3dInput) && is10Bit(output, d3dOutput))) {
+			status = L"Maxine requires matching 8-bit RGBA/BGRA or packed 10-bit RGB textures";
 			DLog(L"NVIDIA Maxine VSR: {}", status);
 			ReleaseD3DImages();
 			return false;
@@ -971,7 +980,7 @@ struct CNvidiaMaxineVSR::Impl
 		}
 
 		NvCV_Status code = NvCVImage_Alloc(&gpuInput, d3dInput.width, d3dInput.height, d3dInput.pixelFormat,
-			NVCV_U8, NVCV_INTERLEAVED, NVCV_GPU, 32);
+			d3dInput.componentType, NVCV_INTERLEAVED, NVCV_GPU, 32);
 		if (code != NVCV_SUCCESS) {
 			SetError(L"NvCVImage_Alloc(input)", code);
 			ReleaseGpuImages();
@@ -979,7 +988,7 @@ struct CNvidiaMaxineVSR::Impl
 		}
 
 		code = NvCVImage_Alloc(&gpuOutput, d3dOutput.width, d3dOutput.height, d3dOutput.pixelFormat,
-			NVCV_U8, NVCV_INTERLEAVED, NVCV_GPU, 32);
+			d3dOutput.componentType, NVCV_INTERLEAVED, NVCV_GPU, 32);
 		if (code != NVCV_SUCCESS) {
 			SetError(L"NvCVImage_Alloc(output)", code);
 			ReleaseGpuImages();
@@ -1299,9 +1308,11 @@ struct CNvidiaMaxineVSR::Impl
 			const bool gpuImagesMatch = gpuInput.width == d3dInput.width
 				&& gpuInput.height == d3dInput.height
 				&& gpuInput.pixelFormat == d3dInput.pixelFormat
+				&& gpuInput.componentType == d3dInput.componentType
 				&& gpuOutput.width == d3dOutput.width
 				&& gpuOutput.height == d3dOutput.height
-				&& gpuOutput.pixelFormat == d3dOutput.pixelFormat;
+				&& gpuOutput.pixelFormat == d3dOutput.pixelFormat
+				&& gpuOutput.componentType == d3dOutput.componentType;
 			const bool qualityMatches = quality == requestedMode;
 
 			if (gpuImagesMatch && qualityMatches) {

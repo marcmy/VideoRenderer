@@ -4171,31 +4171,38 @@ bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, c
 	const CRect inputRect(0, 0, sourceSize.cx, sourceSize.cy);
 	D3D11_TEXTURE2D_DESC maxineInputDesc = {};
 	pInputTexture->pTexture->GetDesc(&maxineInputDesc);
-	const bool directBgraCompatible = maxineInputDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM
+	// Keep precision already present in the SDR render or RIFE surface. The
+	// optional CUDA handoff currently supplies BGRA8 only.
+	const DXGI_FORMAT maxineFormat = !cudaInput && m_srcParams.CDepth > 8
+			&& (maxineInputDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM
+				|| maxineInputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT)
+		? DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM;
+	const bool directInputCompatible = maxineInputDesc.Format == maxineFormat
 		&& maxineInputDesc.SampleDesc.Count == 1
 		&& maxineInputDesc.Width == static_cast<UINT>(sourceSize.cx)
 		&& maxineInputDesc.Height == static_cast<UINT>(sourceSize.cy)
 		&& srcRect.left == 0 && srcRect.top == 0
 		&& srcRect.right == sourceSize.cx && srcRect.bottom == sourceSize.cy;
-	const bool directBgraInput = CanUseDirectMaxineInput(directBgraCompatible, forceInputStaging);
+	const bool directInput = CanUseDirectMaxineInput(directInputCompatible, forceInputStaging);
 
 	Tex2D_t* pMaxineResult = pInputTexture;
-	if (!directBgraInput) {
+	if (!directInput) {
 		const HRESULT inputCreateHr = m_TexMaxineInput.CheckCreate(m_pDevice,
-			DXGI_FORMAT_B8G8R8A8_UNORM, sourceSize.cx, sourceSize.cy, Tex2D_DefaultShaderRTarget);
+			maxineFormat, sourceSize.cx, sourceSize.cy, Tex2D_DefaultShaderRTarget);
 		if (FAILED(inputCreateHr)) {
-			m_strMaxineVSRStatus = L"Could not create the BGRA8 Maxine input texture";
+			m_strMaxineVSRStatus = L"Could not create the Maxine input texture";
 			return false;
 		}
 
 		// Only the RIFE handoff opts into the copy path; format conversion or
 		// resizing retains the existing point-sampled shader fallback.
-		const bool copiedBgra = !cudaInput && forceInputStaging && TryCopyMaxineBgraInput(m_pDeviceContext,
+		const bool copiedBgra = maxineFormat == DXGI_FORMAT_B8G8R8A8_UNORM
+			&& !cudaInput && forceInputStaging && TryCopyMaxineBgraInput(m_pDeviceContext,
 			pInputTexture->pTexture, m_TexMaxineInput.pTexture, srcRect);
 		const HRESULT copyHr = cudaInput || copiedBgra ? S_OK : TextureCopyRect(*pInputTexture, m_TexMaxineInput.pTexture,
 			srcRect, inputRect, m_pPS_Simple, nullptr, 0, false);
 		if (FAILED(copyHr)) {
-			m_strMaxineVSRStatus = L"Could not convert the source to BGRA8";
+			m_strMaxineVSRStatus = L"Could not convert the source to the Maxine input format";
 			return false;
 		}
 		pMaxineResult = &m_TexMaxineInput;
@@ -4268,7 +4275,7 @@ bool CDX11VideoProcessor::ApplyMaxine(Tex2D_t*& pInputTexture, CRect& srcRect, c
 			break;
 		}
 
-		const HRESULT createHr = pOutput->CheckCreate(m_pDevice, DXGI_FORMAT_B8G8R8A8_UNORM,
+		const HRESULT createHr = pOutput->CheckCreate(m_pDevice, maxineFormat,
 			outputSize.cx, outputSize.cy, Tex2D_DefaultShaderRTarget);
 		if (FAILED(createHr)) {
 			m_strMaxineVSRStatus = std::format(L"Could not create the Maxine {} texture", passName);
