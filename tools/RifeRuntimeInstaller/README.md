@@ -33,7 +33,7 @@ Earlier releases hold these five files together in `MPCVR-RIFE-Common.zip`. The 
 
 Each architecture archive contains exactly one matching `nvinfer_builder_resource_<architecture>_11.dll`. TensorRT engines are generated locally on the target machine; prebuilt `.plan` engines are not distributed.
 
-The release stack is pinned to CUDA toolkit 13.4.1, CUDA runtime 13.4.49, and TensorRT 11.4.0.106. CUDA 13 links the runtime through the NVIDIA display driver's hybrid CUDA loader, so the library archive does not carry a standalone `cudart64_13.dll`. `runtime-manifest.json` records the version contract and runtime ABI 2.
+The release stack is pinned to CUDA toolkit 13.5.0, CUDA runtime 13.5.37, and TensorRT 11.5.0.63. CUDA 13 links the runtime through the NVIDIA display driver's hybrid CUDA loader, so the library archive does not carry a standalone `cudart64_13.dll`. `runtime-manifest.json` records the version contract and runtime ABI 2.
 
 Validate an assembled bundle with either Windows PowerShell 5.1 or PowerShell 7:
 

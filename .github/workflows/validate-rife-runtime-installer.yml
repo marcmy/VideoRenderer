@@ -96,9 +96,9 @@ jobs:
 
           [pscustomobject]@{
             schemaVersion = 1
-            cudaVersion = '13.4.1'
-            cudaRuntimeVersion = '13.4.49'
-            tensorRtVersion = '11.4.0.106'
+            cudaVersion = '13.5.0'
+            cudaRuntimeVersion = '13.5.37'
+            tensorRtVersion = '11.5.0.63'
             runtimeAbi = 2
             architectures = @(
               [pscustomobject]@{ computeCapability = '7.5'; key = 'sm75'; builderResource = 'nvinfer_builder_resource_sm75_11.dll' },
@@ -223,9 +223,9 @@ jobs:
 
           [pscustomobject]@{
             schemaVersion = 1
-            cudaVersion = '13.4.1'
-            cudaRuntimeVersion = '13.4.49'
-            tensorRtVersion = '11.4.0.106'
+            cudaVersion = '13.5.0'
+            cudaRuntimeVersion = '13.5.37'
+            tensorRtVersion = '11.5.0.63'
             runtimeAbi = 2
             architectures = @(
               [pscustomobject]@{ computeCapability = '7.5'; key = 'sm75'; builderResource = 'nvinfer_builder_resource_sm75_11.dll' },
