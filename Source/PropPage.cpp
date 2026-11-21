@@ -27,6 +27,7 @@
 #include "SdrEnhanceDialog.h"
 #include "FeatureHotkeyDialog.h"
 #include "SettingsDialogTheme.h"
+#include "NvidiaMaxineVSR.h"
 
 void SetCursor(HWND hWnd, LPCWSTR lpCursorName)
 {
@@ -127,8 +128,10 @@ void EnableMaxineDialogControls(HWND hwnd)
 		IDC_STATIC_MAXINE_SCALE, IDC_MAXINE_SCALE, IDC_STATIC_MAXINE_PIPELINE, IDC_MAXINE_PIPELINE}) {
 		EnableWindow(GetDlgItem(hwnd, id), enabled && upscale);
 	}
-	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_QUALITY), enabled && upscale && sourceMode != MAXINE_SOURCE_Bicubic);
-	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_MAXINE_QUALITY), enabled && upscale && sourceMode != MAXINE_SOURCE_Bicubic);
+	const bool selectableQuality = enabled && upscale && sourceMode != MAXINE_SOURCE_Bicubic
+		&& sourceMode != MAXINE_SOURCE_StreamingMedium && sourceMode != MAXINE_SOURCE_StreamingUltra;
+	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_QUALITY), selectableQuality);
+	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_MAXINE_QUALITY), selectableQuality);
 	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_AMOUNT), enabled && upscale && sourceMode != MAXINE_SOURCE_Bicubic);
 	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_MAXINE_AMOUNT), enabled && upscale && sourceMode != MAXINE_SOURCE_Bicubic);
 	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_MAXINE_OVERSAMPLE), enabled && upscale && scale == MAXINE_SCALE_MatchOutput);
@@ -141,10 +144,31 @@ void EnableMaxineDialogControls(HWND hwnd)
 	EnableWindow(GetDlgItem(hwnd, IDC_MAXINE_AUTO_BITRATE), enabled && upscale && sourceMode == MAXINE_SOURCE_Auto);
 }
 
+void PopulateMaxineSourceModes(HWND hwnd, int gpu, int selectedMode)
+{
+	PopulateMaxineCombo(hwnd, IDC_MAXINE_SOURCE_MODE, {
+		{L"Automatic from reported source bitrate", MAXINE_SOURCE_Auto},
+		{L"Standard, compressed video", MAXINE_SOURCE_Standard},
+		{L"High bitrate / clean source", MAXINE_SOURCE_HighBitrate},
+		{L"Bicubic baseline, no AI enhancement", MAXINE_SOURCE_Bicubic},
+	});
+	if (MaxineSupportsStreamingVSR(gpu)) {
+		const HWND combo = GetDlgItem(hwnd, IDC_MAXINE_SOURCE_MODE);
+		for (const auto& [label, mode] : {std::pair{L"Streaming Medium", MAXINE_SOURCE_StreamingMedium},
+				std::pair{L"Streaming Ultra", MAXINE_SOURCE_StreamingUltra}}) {
+			const LRESULT index = SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label));
+			if (index >= 0) SendMessageW(combo, CB_SETITEMDATA, index, mode);
+		}
+	} else if (selectedMode == MAXINE_SOURCE_StreamingMedium || selectedMode == MAXINE_SOURCE_StreamingUltra) {
+		selectedMode = MAXINE_SOURCE_Standard;
+	}
+	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_SOURCE_MODE, selectedMode);
+}
+
 void SetMaxineDialogControls(HWND hwnd, const Settings_t& settings)
 {
 	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_OPERATION, settings.iMaxineOperation);
-	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_SOURCE_MODE, settings.iMaxineSourceMode);
+	PopulateMaxineSourceModes(hwnd, settings.iMaxineGPU, settings.iMaxineSourceMode);
 	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_QUALITY, settings.iMaxineQuality);
 	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_SCALE, settings.iMaxineScale);
 	ComboBox_SelectByItemData(hwnd, IDC_MAXINE_OVERSAMPLE, settings.iMaxineOversample);
@@ -165,12 +189,6 @@ void InitializeMaxineDialog(HWND hwnd, const Settings_t& settings)
 		{L"Upscale, with optional cleanup passes", MAXINE_OPERATION_Upscale},
 		{L"Denoise only, keep source resolution", MAXINE_OPERATION_Denoise},
 		{L"Deblur only, keep source resolution", MAXINE_OPERATION_Deblur},
-	});
-	PopulateMaxineCombo(hwnd, IDC_MAXINE_SOURCE_MODE, {
-		{L"Automatic from reported source bitrate", MAXINE_SOURCE_Auto},
-		{L"Standard, compressed video", MAXINE_SOURCE_Standard},
-		{L"High bitrate / clean source", MAXINE_SOURCE_HighBitrate},
-		{L"Bicubic baseline, no AI enhancement", MAXINE_SOURCE_Bicubic},
 	});
 	PopulateMaxineCombo(hwnd, IDC_MAXINE_QUALITY, {
 		{L"Low", MAXINE_QUALITY_Low},
@@ -304,6 +322,14 @@ INT_PTR CALLBACK MaxineSettingsDlgProc(HWND hwnd, UINT message, WPARAM wParam, L
 
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
+		case IDC_MAXINE_GPU:
+			if (HIWORD(wParam) == CBN_SELCHANGE) {
+				PopulateMaxineSourceModes(hwnd, static_cast<int>(ComboBox_GetCurItemData(hwnd, IDC_MAXINE_GPU)),
+					static_cast<int>(ComboBox_GetCurItemData(hwnd, IDC_MAXINE_SOURCE_MODE)));
+				EnableMaxineDialogControls(hwnd);
+				return TRUE;
+			}
+			break;
 		case IDC_MAXINE_OPERATION:
 		case IDC_MAXINE_SOURCE_MODE:
 		case IDC_MAXINE_SCALE:

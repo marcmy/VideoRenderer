@@ -15,6 +15,7 @@
 #include "MaxineRunFailure.h"
 
 #include <d3d11_4.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -1210,7 +1211,7 @@ struct CNvidiaMaxineVSR::Impl
 	bool UpdateStrength(unsigned mode, int percent)
 	{
 		requestedStrengthPercent = std::clamp(percent, 0, 100);
-		const bool aiUpscale = (mode >= 1 && mode <= 4) || (mode >= 16 && mode <= 19);
+		const bool aiUpscale = (mode >= 1 && mode <= 4) || (mode >= 16 && mode <= 19) || IsMaxineStreamingMode(mode);
 		if (!aiUpscale || !NvVFX_SetF32 || strengthRejected
 				|| ((sdkVersion >> 24) & 0xff) != 1 || ((sdkVersion >> 16) & 0xff) < 3) {
 			strengthAvailable = false;
@@ -1461,6 +1462,46 @@ struct CNvidiaMaxineVSR::Impl
 #endif // _WIN64
 };
 
+bool MaxineSupportsStreamingVSR(int gpuIndex)
+{
+#ifdef _WIN64
+	// CUDA ordinals match the Maxine GPU picker. Auto can choose any CUDA
+	// adapter, so require a supported explicit selection on mixed systems.
+	static const auto capabilityMajors = [] {
+		std::vector<int> majors;
+		const HMODULE driver = LoadLibraryExW(L"nvcuda.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+		if (!driver) return majors;
+		const auto init = reinterpret_cast<int (WINAPI*)(unsigned)>(GetProcAddress(driver, "cuInit"));
+		const auto getCount = reinterpret_cast<int (WINAPI*)(int*)>(GetProcAddress(driver, "cuDeviceGetCount"));
+		const auto getDevice = reinterpret_cast<int (WINAPI*)(int*, int)>(GetProcAddress(driver, "cuDeviceGet"));
+		const auto getAttribute = reinterpret_cast<int (WINAPI*)(int*, int, int)>(GetProcAddress(driver, "cuDeviceGetAttribute"));
+		int count = 0;
+		if (init && getCount && getDevice && getAttribute && init(0) == 0 && getCount(&count) == 0) {
+			for (int ordinal = 0; ordinal < count; ++ordinal) {
+				int device = 0;
+				int major = 0;
+				constexpr int computeCapabilityMajor = 75; // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR
+				if (getDevice(&device, ordinal) == 0 && getAttribute(&major, computeCapabilityMajor, device) == 0) {
+					majors.push_back(major);
+				} else {
+					majors.push_back(0);
+				}
+			}
+		}
+		FreeLibrary(driver);
+		return majors;
+	}();
+	if (gpuIndex >= 0) {
+		return static_cast<size_t>(gpuIndex) < capabilityMajors.size() && capabilityMajors[gpuIndex] >= 8;
+	}
+	return !capabilityMajors.empty() && std::all_of(capabilityMajors.begin(), capabilityMajors.end(),
+		[](int major) { return major >= 8; });
+#else
+	UNREFERENCED_PARAMETER(gpuIndex);
+	return false;
+#endif
+}
+
 CNvidiaMaxineVSR::CNvidiaMaxineVSR()
 	: m_impl(std::make_unique<Impl>())
 {
@@ -1499,7 +1540,11 @@ bool CNvidiaMaxineVSR::Process(
 		return result;
 	};
 
-	const bool upscaleMode = mode <= 4 || (mode >= 16 && mode <= 19);
+	const bool upscaleMode = mode <= 4 || (mode >= 16 && mode <= 19) || IsMaxineStreamingMode(mode);
+	if (IsMaxineStreamingMode(mode) && !MaxineSupportsStreamingVSR(gpuIndex)) {
+		m_impl->status = L"Streaming VSR requires an NVIDIA Ampere or newer GPU";
+		return Finish(false);
+	}
 	const bool sameSizeMode = mode >= 8 && mode <= 15;
 	if (!pDeviceContext || !pInputTexture || !pOutputTexture || (!upscaleMode && !sameSizeMode)) {
 		m_impl->status = L"Invalid processing parameters";

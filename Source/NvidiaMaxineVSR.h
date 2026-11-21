@@ -13,6 +13,15 @@
 
 struct MpcvrRifeCudaOutput;
 
+bool MaxineSupportsStreamingVSR(int gpuIndex);
+constexpr unsigned MaxineStreamingMedium = 21;
+constexpr unsigned MaxineStreamingUltra = 23;
+
+constexpr bool IsMaxineStreamingMode(unsigned mode)
+{
+	return mode == MaxineStreamingMedium || mode == MaxineStreamingUltra;
+}
+
 class CNvidiaMaxineVSR
 {
 public:

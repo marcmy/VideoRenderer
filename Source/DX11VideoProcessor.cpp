@@ -3964,6 +3964,12 @@ unsigned CDX11VideoProcessor::ResolveMaxineUpscaleMode() const
 		return 0;
 	case MAXINE_SOURCE_HighBitrate:
 		return 15u + quality;
+	case MAXINE_SOURCE_StreamingMedium:
+	case MAXINE_SOURCE_StreamingUltra:
+		if (MaxineSupportsStreamingVSR(m_iMaxineGPU)) {
+			return m_iMaxineSourceMode == MAXINE_SOURCE_StreamingMedium ? MaxineStreamingMedium : MaxineStreamingUltra;
+		}
+		return quality;
 	case MAXINE_SOURCE_Auto:
 		if (m_dwSourceBitRate > 0
 				&& static_cast<unsigned long long>(m_dwSourceBitRate)
@@ -6471,7 +6477,9 @@ HRESULT CDX11VideoProcessor::DrawStats(ID3D11Texture2D* pRenderTarget)
 				MaxinePlaybackInputWait ? L"every frame" : L"paused only",
 				timingEffect.GetGraphicsInputWaitDiagnostics());
 			str += std::format(L"\nMaxine config: quality {}, denoise {}, deblur {}, GPU {}",
-				MaxineQualityToString(m_iMaxineQuality), MaxineFilterToString(m_iMaxineDenoise),
+				m_iMaxineResolvedMode == MaxineStreamingMedium ? L"Streaming Medium"
+				: m_iMaxineResolvedMode == MaxineStreamingUltra ? L"Streaming Ultra"
+				: MaxineQualityToString(m_iMaxineQuality), MaxineFilterToString(m_iMaxineDenoise),
 				MaxineFilterToString(m_iMaxineDeblur), gpuLabel);
 			if (m_iMaxineScale == MAXINE_SCALE_MatchOutput) {
 				str += std::format(L", output oversampling {}", MaxineOversampleToString(m_iMaxineOversample));

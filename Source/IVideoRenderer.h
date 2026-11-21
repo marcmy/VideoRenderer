@@ -60,6 +60,8 @@ enum :int {
 	MAXINE_SOURCE_Standard,
 	MAXINE_SOURCE_HighBitrate,
 	MAXINE_SOURCE_Bicubic,
+	MAXINE_SOURCE_StreamingMedium,
+	MAXINE_SOURCE_StreamingUltra,
 	MAXINE_SOURCE_COUNT
 };
 
