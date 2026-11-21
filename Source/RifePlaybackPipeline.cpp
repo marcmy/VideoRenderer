@@ -136,6 +136,7 @@ const wchar_t* RifeModelDisplayName(const int model) noexcept
     case RIFE_MODEL_44:       return L"4.4";
     case RIFE_MODEL_415_LITE: return L"4.15 Lite";
     case RIFE_MODEL_425_LITE: return L"4.25 Lite";
+    case RIFE_MODEL_MAXINE:   return L"Maxine Frame Generation";
     case RIFE_MODEL_46:
     default:                  return L"4.6";
     }
@@ -213,6 +214,17 @@ struct RuntimeBuildState {
 constexpr int RequestedFlowReuse(const Settings_t& settings) noexcept
 {
     return settings.bRifeFeatureReuse && RifeModelSupportsFlowReuse(settings.iRifeModel) ? settings.iRifeFlowReuse : RIFE_FLOW_REUSE_Off;
+}
+
+int InterpolationContextCount(const Settings_t& settings)
+{
+    return settings.iRifeModel == RIFE_MODEL_MAXINE ? 1
+        : std::clamp(settings.iRifeGpuThreads, RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX);
+}
+
+bool InterpolationPerformanceBoost(const Settings_t& settings)
+{
+    return settings.iRifeModel != RIFE_MODEL_MAXINE && settings.bRifePerformanceBoost;
 }
 
 struct RuntimeKey {
@@ -926,8 +938,7 @@ struct CRifePlaybackPipeline::Impl
             return false;
         }
 
-        const uint32_t inferenceContextCount = static_cast<uint32_t>(std::clamp(
-            settings.iRifeGpuThreads, RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX));
+        const uint32_t inferenceContextCount = static_cast<uint32_t>(InterpolationContextCount(settings));
         size_t slot = SIZE_MAX;
         CComPtr<ID3D11Texture2D> texture;
         CComPtr<ID3D11Texture2D> inferenceAsFirst;
@@ -1123,7 +1134,7 @@ struct CRifePlaybackPipeline::Impl
             && schedulerCustomFps == frame.settings.iRifeCustomFps
             && schedulerMaxMultiplierMilli == frame.maxMultiplierMilli
             && schedulerMaxOutputFpsMilli == frame.maxOutputFpsMilli
-            && schedulerPerformanceBoost == frame.settings.bRifePerformanceBoost
+            && schedulerPerformanceBoost == InterpolationPerformanceBoost(frame.settings)
             && schedulerVariableTiming == frame.variableTiming
             && schedulerDisplayRate.numerator == frame.displayRate.numerator
             && schedulerDisplayRate.denominator == frame.displayRate.denominator;
@@ -1139,7 +1150,7 @@ struct CRifePlaybackPipeline::Impl
         schedulerCustomFps = frame.settings.iRifeCustomFps;
         schedulerMaxMultiplierMilli = frame.maxMultiplierMilli;
         schedulerMaxOutputFpsMilli = frame.maxOutputFpsMilli;
-        schedulerPerformanceBoost = frame.settings.bRifePerformanceBoost;
+        schedulerPerformanceBoost = InterpolationPerformanceBoost(frame.settings);
         schedulerVariableTiming = frame.variableTiming;
         schedulerDisplayRate = frame.displayRate;
         schedulerSerial = frame.resetSerial;
@@ -1176,13 +1187,12 @@ struct CRifePlaybackPipeline::Impl
         const FrameRate requestedRate = scheduler.ResolveConfiguredTargetRate(sourceRate);
         const auto timing = adaptiveInferenceTiming.GetSummary();
         const uint32_t samples = static_cast<uint32_t>(timing.count);
-        const uint32_t contexts = static_cast<uint32_t>(std::clamp(
-            frame.settings.iRifeGpuThreads, RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX));
+        const uint32_t contexts = static_cast<uint32_t>(InterpolationContextCount(frame.settings));
 
         // Actual delivery and congestion decide backoff. Inference capacity
         // can authorize a recovery probe only with fresh presenter measurements
         // and sustained spare capacity; it never lowers a verified output rate.
-        const uint32_t headroom = frame.settings.bRifePerformanceBoost ? 990u : 970u;
+        const uint32_t headroom = InterpolationPerformanceBoost(frame.settings) ? 990u : 970u;
         const auto estimate = EstimateFrameInterpolationLoad(
             sourceRate, requestedRate, timing.parallelismPermille, timing.averageWallUs, samples, headroom,
             frame.variableTiming);
@@ -1297,9 +1307,9 @@ struct CRifePlaybackPipeline::Impl
         key.contentWidth = frame.contentWidth;
         key.contentHeight = frame.contentHeight;
         key.gpu = frame.settings.iRifeGPU;
-        key.contexts = std::clamp(frame.settings.iRifeGpuThreads, RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX);
+        key.contexts = InterpolationContextCount(frame.settings);
         key.model = frame.settings.iRifeModel;
-        key.performanceBoost = frame.settings.bRifePerformanceBoost;
+        key.performanceBoost = InterpolationPerformanceBoost(frame.settings);
         key.format = TextureFormat(frame.texture);
         key.featureReuse = frame.settings.bRifeFeatureReuse
             && RifeModelSupportsFeatureReuse(key.model);
@@ -1363,7 +1373,7 @@ struct CRifePlaybackPipeline::Impl
         const auto root = LocalAppDataRoot();
         const auto model = root / L"models" / RifeModelFileName(key.model);
         const auto cache = root / L"cache";
-        if (root.empty() || !std::filesystem::exists(model)) {
+        if (key.model != RIFE_MODEL_MAXINE && (root.empty() || !std::filesystem::exists(model))) {
             state->status = std::format(L"RIFE {} model is not installed", RifeModelDisplayName(key.model));
             state->retryAfterTick.store(GetTickCount64() + kRuntimeRetryDelayMs,
                 std::memory_order_release);
@@ -1376,7 +1386,7 @@ struct CRifePlaybackPipeline::Impl
             ? UINT32_MAX : static_cast<uint32_t>(key.gpu);
         std::thread([state, device, width, height, gpuIndex, key, model, cache]() {
             auto runtime = std::make_shared<CRifeFrameInterpolation>();
-            const bool ok = runtime->Initialize(
+            const bool ok = key.model == RIFE_MODEL_MAXINE ? runtime->InitializeMaxine(device, key.gpu) : runtime->Initialize(
                 L"", device, width, height, key.contentWidth, key.contentHeight, gpuIndex,
                 static_cast<uint32_t>(key.contexts), key.performanceBoost,
                 model.wstring(), cache.wstring(), key.format == DXGI_FORMAT_R16G16B16A16_FLOAT, key.featureReuse,
@@ -2007,11 +2017,14 @@ struct CRifePlaybackPipeline::Impl
             return std::format(L"off by rule #{} (source playback)", ruleIndex + 1);
         }
         const bool ready = adaptiveInterpolationReady.load(std::memory_order_relaxed);
-        std::wstring diagnostics = std::format(L"{}, {} GPU threads, boost {}{}",
-            RifeModelDisplayName(owner->m_Sets.iRifeModel), owner->m_Sets.iRifeGpuThreads,
-            owner->m_Sets.bRifePerformanceBoost ? L"On" : L"Off",
-            ready ? L"" : L", waiting for engine");
-        if (detailed) {
+        const bool maxine = owner->m_Sets.iRifeModel == RIFE_MODEL_MAXINE;
+        std::wstring diagnostics = maxine
+            ? std::format(L"Maxine Frame Generation{}", ready ? L"" : L", waiting for runtime")
+            : std::format(L"{}, {} GPU threads, boost {}{}",
+                RifeModelDisplayName(owner->m_Sets.iRifeModel), InterpolationContextCount(owner->m_Sets),
+                InterpolationPerformanceBoost(owner->m_Sets) ? L"On" : L"Off",
+                ready ? L"" : L", waiting for engine");
+        if (detailed && !maxine) {
             diagnostics += std::format(L", contexts {}, I/O {}",
                 configuredInferenceContexts.load(std::memory_order_relaxed),
                 tensorIoLinearValidated.load(std::memory_order_relaxed) ? L"LINEAR" : L"pending");
@@ -2262,8 +2275,7 @@ struct CRifePlaybackPipeline::Impl
             }
 
             const uint32_t configuredContexts = previous
-                ? static_cast<uint32_t>(std::clamp(previous->settings.iRifeGpuThreads,
-                    RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX))
+                ? static_cast<uint32_t>(InterpolationContextCount(previous->settings))
                 : static_cast<uint32_t>(RIFE_GPU_THREADS_MAX);
             const bool canConsumeSource = !previous || pendingPairs.size() < configuredContexts;
             SourceFrame current;
@@ -2366,8 +2378,7 @@ struct CRifePlaybackPipeline::Impl
                 continue;
             }
 
-            const int contextCount = std::clamp(currentFrame->settings.iRifeGpuThreads,
-                RIFE_GPU_THREADS_MIN, RIFE_GPU_THREADS_MAX);
+            const int contextCount = InterpolationContextCount(currentFrame->settings);
             const bool runtimeSettingsChanged = runtimeKey
                 && (runtimeKey->device != device
                     || runtimeKey->width != desc.Width
@@ -2381,7 +2392,7 @@ struct CRifePlaybackPipeline::Impl
                     || runtimeKey->featureReuse != (currentFrame->settings.bRifeFeatureReuse
                         && RifeModelSupportsFeatureReuse(currentFrame->settings.iRifeModel))
                     || runtimeKey->flowReuse != RequestedFlowReuse(currentFrame->settings)
-                    || runtimeKey->performanceBoost != currentFrame->settings.bRifePerformanceBoost);
+                    || runtimeKey->performanceBoost != InterpolationPerformanceBoost(currentFrame->settings));
             if (runtimeSettingsChanged) {
                 // Retire all work using the previous runtime before switching a
                 // setting that can create another registration cache for the

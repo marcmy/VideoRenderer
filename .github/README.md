@@ -260,6 +260,8 @@ its own plans on first use. Detailed Ctrl+J reports which mode is actually activ
 This is experimental: compare delivered FPS and picture quality at identical
 settings. Encoder reuse does not guarantee a throughput improvement.
 
+The **AI model** dropdown selects one interpolation backend. **Maxine Frame Generation** appears when the GPU selection supports it (NVIDIA Ada or Blackwell). On mixed GPU systems, choose a supported GPU explicitly. Maxine needs to run on the renderer's Direct3D 11 adapter. It uses one GPU context and 8-bit SDR surfaces. RIFE-specific engine and reuse settings apply when a RIFE model is selected.
+
 Frame interpolation settings includes an optional processing-size control:
 
 - **Source resolution** (default) keeps the original oriented picture size.

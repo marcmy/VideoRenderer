@@ -9,6 +9,7 @@
 #include <Windows.h>
 
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <format>
 #include <string>
@@ -366,6 +367,16 @@ bool CRifeFrameInterpolation::LoadAndCreate(
     return true;
 }
 
+bool CRifeFrameInterpolation::InitializeMaxine(ID3D11Device* device, int gpuIndex)
+{
+    Reset();
+    auto backend = std::make_unique<CNvidiaMaxineVSR>();
+    const bool ready = backend->InitializeFrameGeneration(device, gpuIndex);
+    m_status = backend->GetStatus();
+    if (ready) m_maxine = std::move(backend);
+    return ready;
+}
+
 bool CRifeFrameInterpolation::Interpolate(
     const uint32_t contextIndex,
     ID3D11Texture2D* first,
@@ -380,6 +391,16 @@ bool CRifeFrameInterpolation::Interpolate(
         return false;
     }
 
+    stats = {};
+    if (m_maxine) {
+        const auto start = std::chrono::steady_clock::now();
+        std::lock_guard lock(m_maxineMutex);
+        const bool ok = m_maxine->GenerateFrame(first, second, output, timestep);
+        stats.inferenceMs = stats.totalRuntimeMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        return ok;
+    }
+
     MpcvrRifeRequest request = {};
     request.contextIndex = contextIndex;
     request.first = first;
@@ -389,7 +410,6 @@ bool CRifeFrameInterpolation::Interpolate(
     request.inputPairId = inputPairId;
     request.previousPairId = previousPairId;
 
-    stats = {};
     const int result = m_interpolate(m_handle, &request, &stats);
     // Interpolate() is intentionally callable from multiple renderer workers.
     // Initialization status is immutable while those workers are active; do
@@ -412,6 +432,7 @@ void CRifeFrameInterpolation::Reset() noexcept
     // A normal model switch creates another runtime. Explicit Reset on the
     // same owner must also leave any queued GPU pixels and exports alive.
     if (m_liveCudaLeases.load(std::memory_order_acquire)) return;
+    m_maxine.reset();
     if (m_handle && m_destroy) {
         m_destroy(m_handle);
     }

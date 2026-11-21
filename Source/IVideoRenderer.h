@@ -178,6 +178,7 @@ enum :int {
 	RIFE_MODEL_44 = 44,
 	RIFE_MODEL_415_LITE = 4151,
 	RIFE_MODEL_425_LITE = 4251,
+	RIFE_MODEL_MAXINE = 10000,
 };
 
 // Models whose exports have a separate image encoder that can be reused for

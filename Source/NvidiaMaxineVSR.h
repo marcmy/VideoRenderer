@@ -14,6 +14,7 @@
 struct MpcvrRifeCudaOutput;
 
 bool MaxineSupportsStreamingVSR(int gpuIndex);
+bool MaxineSupportsFrameGeneration(int gpuIndex);
 constexpr unsigned MaxineStreamingMedium = 21;
 constexpr unsigned MaxineStreamingUltra = 23;
 
@@ -44,6 +45,9 @@ public:
 		int strengthPercent = 100);
 
 	void Reset();
+	bool InitializeFrameGeneration(ID3D11Device* renderDevice, int gpuIndex);
+	bool GenerateFrame(ID3D11Texture2D* first, ID3D11Texture2D* second,
+		ID3D11Texture2D* output, float timestep);
 	bool IsModelLoading() const noexcept;
 	bool CanUseCudaInput() const noexcept;
 	const std::wstring& GetStatus() const;
