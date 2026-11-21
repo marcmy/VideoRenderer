@@ -9,9 +9,11 @@
 #include <Windows.h>
 
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <format>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -366,6 +368,14 @@ bool CRifeFrameInterpolation::LoadAndCreate(
     return true;
 }
 
+bool CRifeFrameInterpolation::InitializeFrameGenerator(FrameGenerator generator, std::wstring status)
+{
+    Reset();
+    m_status = std::move(status);
+    m_generateFrame = std::move(generator);
+    return static_cast<bool>(m_generateFrame);
+}
+
 bool CRifeFrameInterpolation::Interpolate(
     const uint32_t contextIndex,
     ID3D11Texture2D* first,
@@ -380,6 +390,16 @@ bool CRifeFrameInterpolation::Interpolate(
         return false;
     }
 
+    stats = {};
+    if (m_generateFrame) {
+        const auto start = std::chrono::steady_clock::now();
+        std::lock_guard lock(m_generationMutex);
+        const bool ok = m_generateFrame(first, second, output, timestep);
+        stats.inferenceMs = stats.totalRuntimeMs = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        return ok;
+    }
+
     MpcvrRifeRequest request = {};
     request.contextIndex = contextIndex;
     request.first = first;
@@ -389,7 +409,6 @@ bool CRifeFrameInterpolation::Interpolate(
     request.inputPairId = inputPairId;
     request.previousPairId = previousPairId;
 
-    stats = {};
     const int result = m_interpolate(m_handle, &request, &stats);
     // Interpolate() is intentionally callable from multiple renderer workers.
     // Initialization status is immutable while those workers are active; do
@@ -412,6 +431,7 @@ void CRifeFrameInterpolation::Reset() noexcept
     // A normal model switch creates another runtime. Explicit Reset on the
     // same owner must also leave any queued GPU pixels and exports alive.
     if (m_liveCudaLeases.load(std::memory_order_acquire)) return;
+    m_generateFrame = {};
     if (m_handle && m_destroy) {
         m_destroy(m_handle);
     }

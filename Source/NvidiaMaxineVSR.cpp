@@ -15,6 +15,7 @@
 #include "MaxineRunFailure.h"
 
 #include <d3d11_4.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -342,6 +343,9 @@ struct CNvidiaMaxineVSR::Impl
 	NvCVImage d3dInput = {};
 	NvCVImage d3dOutput = {};
 	NvCVImage gpuInput = {};
+	NvCVImage gpuSecond = {};
+	NvCVImage d3dSecond = {};
+	int frameGenerationGpu = -1;
 	NvCVImage gpuOutput = {};
 	CComPtr<ID3D11Multithread> d3dMultithread;
 	CMaxineCompletionEvent graphicsInputCompletion;
@@ -532,16 +536,10 @@ struct CNvidiaMaxineVSR::Impl
 		}
 	}
 
-	bool GetCudaDeviceForTexture(ID3D11Texture2D* texture, CUdevice& cudaDevice)
+	bool GetCudaDeviceForD3DDevice(ID3D11Device* device, CUdevice& cudaDevice)
 	{
 		cudaDevice = -1;
-		if (!texture || !LoadCudaDriver()) {
-			return false;
-		}
-
-		CComPtr<ID3D11Device> device;
-		texture->GetDevice(&device);
-		if (!device) {
+		if (!device || !LoadCudaDriver()) {
 			return false;
 		}
 		CComPtr<IDXGIDevice> dxgiDevice;
@@ -553,6 +551,13 @@ struct CNvidiaMaxineVSR::Impl
 			return false;
 		}
 		return CuD3D11GetDevice(&cudaDevice, adapter) == CUDA_SUCCESS;
+	}
+
+	bool GetCudaDeviceForTexture(ID3D11Texture2D* texture, CUdevice& cudaDevice)
+	{
+		CComPtr<ID3D11Device> device;
+		if (texture) texture->GetDevice(&device);
+		return GetCudaDeviceForD3DDevice(device, cudaDevice);
 	}
 
 	bool ActivatePrimaryCudaContext(CUcontext& previousContext)
@@ -865,10 +870,12 @@ struct CNvidiaMaxineVSR::Impl
 			D3D11InteropLock interopLock(d3dMultithread);
 			if (NvCVImage_Dealloc) {
 				NvCVImage_Dealloc(&d3dInput);
+				NvCVImage_Dealloc(&d3dSecond);
 				NvCVImage_Dealloc(&d3dOutput);
 			}
 		}
 		d3dInput = {};
+		d3dSecond = {};
 		d3dOutput = {};
 		inputTexture = nullptr;
 		outputTexture = nullptr;
@@ -884,9 +891,11 @@ struct CNvidiaMaxineVSR::Impl
 		}
 		if (NvCVImage_Dealloc) {
 			NvCVImage_Dealloc(&gpuInput);
+			NvCVImage_Dealloc(&gpuSecond);
 			NvCVImage_Dealloc(&gpuOutput);
 		}
 		gpuInput = {};
+		gpuSecond = {};
 		gpuOutput = {};
 	}
 
@@ -1068,7 +1077,7 @@ struct CNvidiaMaxineVSR::Impl
 		runtimeInfo.clear();
 	}
 
-	bool LoadRuntime()
+	bool LoadRuntime(bool frameGeneration = false)
 	{
 		if (hNvCVImage && hNvVideoEffects) {
 			return true;
@@ -1093,20 +1102,21 @@ struct CNvidiaMaxineVSR::Impl
 			L"nvonnxparser_10.dll",
 		};
 
+		const auto featureName = frameGeneration ? L"nvVFXVideoFrameGeneration.dll" : L"nvVFXVideoSuperRes.dll";
 		for (const auto& directory : GetRuntimeSearchDirectories()) {
 			const std::filesystem::path base(directory);
 			const auto imagePath = base / L"NVCVImage.dll";
 			const auto effectsPath = base / L"NVVideoEffects.dll";
 			const auto ngxRuntimePath = base / L"nvngxruntime.dll";
 			const auto ngxVsrPath = base / L"nvngx_vsr.dll";
-			const auto featurePath = base / L"nvVFXVideoSuperRes.dll";
+			const auto featurePath = base / featureName;
 
 			// Core-only/older Maxine installations expose NvVFX_CreateEffect but
 			// cannot create the modern VideoSuperRes selector. Skip them.
 			if (!std::filesystem::is_regular_file(imagePath)
 					|| !std::filesystem::is_regular_file(effectsPath)
 					|| !std::filesystem::is_regular_file(ngxRuntimePath)
-					|| !std::filesystem::is_regular_file(ngxVsrPath)
+					|| (!frameGeneration && !std::filesystem::is_regular_file(ngxVsrPath))
 					|| !std::filesystem::is_regular_file(featurePath)) {
 				continue;
 			}
@@ -1132,14 +1142,14 @@ struct CNvidiaMaxineVSR::Impl
 			HMODULE imageModule = LoadRuntimeLibrary(directory, L"NVCVImage.dll");
 			HMODULE ngxRuntimeModule = LoadRuntimeLibrary(directory, L"nvngxruntime.dll");
 			HMODULE effectsModule = LoadRuntimeLibrary(directory, L"NVVideoEffects.dll");
-			HMODULE ngxVsrModule = LoadRuntimeLibrary(directory, L"nvngx_vsr.dll");
-			HMODULE featureModule = LoadRuntimeLibrary(directory, L"nvVFXVideoSuperRes.dll");
+			HMODULE ngxVsrModule = frameGeneration ? nullptr : LoadRuntimeLibrary(directory, L"nvngx_vsr.dll");
+			HMODULE featureModule = LoadRuntimeLibrary(directory, featureName);
 
-			if (imageModule && ngxRuntimeModule && effectsModule && ngxVsrModule && featureModule) {
+			if (imageModule && ngxRuntimeModule && effectsModule && (frameGeneration || ngxVsrModule) && featureModule) {
 				hNvCVImage = imageModule;
 				hNvVideoEffects = effectsModule;
 				dependencies.push_back(ngxRuntimeModule);
-				dependencies.push_back(ngxVsrModule);
+				if (ngxVsrModule) dependencies.push_back(ngxVsrModule);
 				dependencies.push_back(featureModule);
 				hRuntimeDependencies = std::move(dependencies);
 				runtimeDirectory = directory;
@@ -1157,7 +1167,8 @@ struct CNvidiaMaxineVSR::Impl
 		}
 
 		if (!hNvCVImage || !hNvVideoEffects) {
-			status = L"Compatible VideoSuperRes runtime not found; set NV_VIDEO_EFFECTS_PATH to the nvvfx\\libs directory";
+			status = frameGeneration ? L"Maxine Video Frame Generation runtime not found"
+				: L"Compatible VideoSuperRes runtime not found; set NV_VIDEO_EFFECTS_PATH to the nvvfx\\libs directory";
 			return false;
 		}
 
@@ -1219,7 +1230,7 @@ struct CNvidiaMaxineVSR::Impl
 	bool UpdateStrength(unsigned mode, int percent)
 	{
 		requestedStrengthPercent = std::clamp(percent, 0, 100);
-		const bool aiUpscale = (mode >= 1 && mode <= 4) || (mode >= 16 && mode <= 19);
+		const bool aiUpscale = (mode >= 1 && mode <= 4) || (mode >= 16 && mode <= 19) || IsMaxineStreamingMode(mode);
 		if (!aiUpscale || !NvVFX_SetF32 || strengthRejected
 				|| ((sdkVersion >> 24) & 0xff) != 1 || ((sdkVersion >> 16) & 0xff) < 3) {
 			strengthAvailable = false;
@@ -1472,6 +1483,55 @@ struct CNvidiaMaxineVSR::Impl
 #endif // _WIN64
 };
 
+static bool MaxineGpuSupports(int gpuIndex, bool frameGeneration)
+{
+#ifdef _WIN64
+	// CUDA ordinals match the Maxine GPU picker. Auto can choose any CUDA
+	// adapter, so require a supported explicit selection on mixed systems.
+	static const auto capabilities = [] {
+		std::vector<int> devices;
+		const HMODULE driver = LoadLibraryExW(L"nvcuda.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+		if (!driver) return devices;
+		const auto init = reinterpret_cast<int (WINAPI*)(unsigned)>(GetProcAddress(driver, "cuInit"));
+		const auto getCount = reinterpret_cast<int (WINAPI*)(int*)>(GetProcAddress(driver, "cuDeviceGetCount"));
+		const auto getDevice = reinterpret_cast<int (WINAPI*)(int*, int)>(GetProcAddress(driver, "cuDeviceGet"));
+		const auto getAttribute = reinterpret_cast<int (WINAPI*)(int*, int, int)>(GetProcAddress(driver, "cuDeviceGetAttribute"));
+		int count = 0;
+		if (init && getCount && getDevice && getAttribute && init(0) == 0 && getCount(&count) == 0) {
+			for (int ordinal = 0; ordinal < count; ++ordinal) {
+				int device = 0;
+				int major = 0;
+				int minor = 0;
+				constexpr int computeCapabilityMajor = 75; // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR
+				constexpr int computeCapabilityMinor = 76;
+				if (getDevice(&device, ordinal) == 0 && getAttribute(&major, computeCapabilityMajor, device) == 0
+						&& getAttribute(&minor, computeCapabilityMinor, device) == 0) {
+					devices.push_back(major * 10 + minor);
+				} else {
+					devices.push_back(0);
+				}
+			}
+		}
+		FreeLibrary(driver);
+		return devices;
+	}();
+	const auto supported = [frameGeneration](int capability) {
+		return frameGeneration ? capability == 89 || capability / 10 == 12 : capability >= 80;
+	};
+	if (gpuIndex >= 0) {
+		return static_cast<size_t>(gpuIndex) < capabilities.size() && supported(capabilities[gpuIndex]);
+	}
+	return !capabilities.empty() && std::all_of(capabilities.begin(), capabilities.end(), supported);
+#else
+	UNREFERENCED_PARAMETER(gpuIndex);
+	UNREFERENCED_PARAMETER(frameGeneration);
+	return false;
+#endif
+}
+
+bool MaxineSupportsStreamingVSR(int gpuIndex) { return MaxineGpuSupports(gpuIndex, false); }
+bool MaxineSupportsFrameGeneration(int gpuIndex) { return MaxineGpuSupports(gpuIndex, true); }
+
 CNvidiaMaxineVSR::CNvidiaMaxineVSR()
 	: m_impl(std::make_unique<Impl>())
 {
@@ -1484,6 +1544,131 @@ CNvidiaMaxineVSR::~CNvidiaMaxineVSR()
 {
 #ifdef _WIN64
 	m_impl->UnloadRuntime();
+#endif
+}
+
+bool CNvidiaMaxineVSR::InitializeFrameGeneration(ID3D11Device* renderDevice, int gpuIndex)
+{
+#ifdef _WIN64
+	CUdevice device = -1;
+	if (!MaxineSupportsFrameGeneration(gpuIndex) || !m_impl->GetCudaDeviceForD3DDevice(renderDevice, device)
+			|| !MaxineSupportsFrameGeneration(device) || (gpuIndex >= 0 && gpuIndex != device)) {
+		m_impl->status = L"Maxine Frame Generation requires a matching Ada or Blackwell render GPU";
+		return false;
+	}
+	if (!m_impl->LoadRuntime(true)) return false;
+	if (!m_impl->NvVFX_SetF32) {
+		m_impl->status = L"Maxine runtime lacks the Frame Generation timestep API";
+		return false;
+	}
+	m_impl->frameGenerationGpu = device;
+	m_impl->status = L"Maxine Frame Generation ready";
+	return true;
+#else
+	UNREFERENCED_PARAMETER(renderDevice);
+	UNREFERENCED_PARAMETER(gpuIndex);
+	return false;
+#endif
+}
+
+bool CNvidiaMaxineVSR::GenerateFrame(ID3D11Texture2D* first, ID3D11Texture2D* second,
+	ID3D11Texture2D* output, float timestep)
+{
+#ifdef _WIN64
+	auto& vfg = *m_impl;
+	if (vfg.failed || !first || !second || !output || first == second || first == output || second == output
+			|| !(timestep > 0.f && timestep < 1.f)) return false;
+	const auto fail = [&](const wchar_t* operation, NvCV_Status code) {
+		vfg.SetError(operation, code);
+		vfg.ResetEffect();
+		vfg.failed = true;
+		return false;
+	};
+	if (!vfg.stream) {
+		CUdevice device = -1;
+		if (!vfg.GetCudaDeviceForTexture(first, device) || !MaxineSupportsFrameGeneration(device)
+				|| (vfg.frameGenerationGpu >= 0 && vfg.frameGenerationGpu != device)
+				|| !vfg.CuStreamSynchronize || !vfg.CreateEffectStream(first, device)
+				|| !vfg.streamUsesPrimaryContext) {
+			return fail(L"Maxine Frame Generation CUDA adapter", -1);
+		}
+	}
+	if (!vfg.AttachD3DImages(first, output)) return fail(L"Maxine Frame Generation D3D11 textures", -1);
+	Impl::PrimaryCudaContextScope cudaContext(vfg);
+	if (!cudaContext.IsValid()) return fail(L"Maxine Frame Generation CUDA context", -1);
+	const auto width = vfg.d3dInput.width;
+	const auto height = vfg.d3dInput.height;
+	if (vfg.d3dInput.componentType != NVCV_U8 || vfg.d3dOutput.componentType != NVCV_U8
+			|| width != vfg.d3dOutput.width || height != vfg.d3dOutput.height) {
+		return fail(L"Maxine Frame Generation requires equal 8-bit textures", -1);
+	}
+	NvCV_Status code;
+	{
+		D3D11InteropLock lock(vfg.d3dMultithread);
+		code = vfg.NvCVImage_InitFromD3D11Texture(&vfg.d3dSecond, second);
+	}
+	if (code != NVCV_SUCCESS || vfg.d3dSecond.width != width || vfg.d3dSecond.height != height
+			|| vfg.d3dSecond.pixelFormat != vfg.d3dInput.pixelFormat
+			|| vfg.d3dSecond.componentType != NVCV_U8 || vfg.d3dSecond.planar != NVCV_INTERLEAVED) {
+		return fail(L"Maxine Frame Generation second texture", code == NVCV_SUCCESS ? -1 : code);
+	}
+	if (!vfg.effect) {
+		if (!vfg.AllocateGpuImages()) return fail(L"Maxine Frame Generation GPU images", -1);
+		code = vfg.NvCVImage_Alloc(&vfg.gpuSecond, width, height, vfg.d3dSecond.pixelFormat,
+			NVCV_U8, NVCV_INTERLEAVED, NVCV_GPU, 32);
+		if (code != NVCV_SUCCESS) return fail(L"NvCVImage_Alloc(second)", code);
+		code = vfg.NvVFX_CreateEffect("VideoFrameGeneration", &vfg.effect);
+		if (code != NVCV_SUCCESS) return fail(L"NvVFX_CreateEffect(VideoFrameGeneration)", code);
+		const std::array<std::pair<const wchar_t*, NvCV_Status>, 8> setup = {{
+			{L"NvVFX_SetImage(previous)", vfg.NvVFX_SetImage(vfg.effect, "SrcImage0", &vfg.gpuInput)},
+			{L"NvVFX_SetImage(current)", vfg.NvVFX_SetImage(vfg.effect, "SrcImage1", &vfg.gpuSecond)},
+			{L"NvVFX_SetImage(output)", vfg.NvVFX_SetImage(vfg.effect, "DstImage0", &vfg.gpuOutput)},
+			{L"NvVFX_SetCudaStream", vfg.NvVFX_SetCudaStream(vfg.effect, "CudaStream", vfg.stream)},
+			{L"NvVFX_SetU32(InputWidth)", vfg.NvVFX_SetU32(vfg.effect, "InputWidth", width)},
+			{L"NvVFX_SetU32(InputHeight)", vfg.NvVFX_SetU32(vfg.effect, "InputHeight", height)},
+			{L"NvVFX_SetU32(Mode)", vfg.NvVFX_SetU32(vfg.effect, "Mode", 1)},
+			{L"NvVFX_SetU32(FrameMultiplier)", vfg.NvVFX_SetU32(vfg.effect, "FrameMultiplier", 0)},
+		}};
+		for (const auto& [operation, result] : setup) {
+			if (result != NVCV_SUCCESS) return fail(operation, result);
+		}
+		code = vfg.NvVFX_Load(vfg.effect);
+		if (code != NVCV_SUCCESS) return fail(L"NvVFX_Load(VideoFrameGeneration)", code);
+	}
+
+	const std::array<NvCVImage*, 3> images = {&vfg.d3dInput, &vfg.d3dSecond, &vfg.d3dOutput};
+	size_t mapped = 0;
+	{
+		D3D11InteropLock lock(vfg.d3dMultithread);
+		for (; mapped < images.size(); ++mapped) {
+			code = vfg.NvCVImage_MapResource(images[mapped], vfg.stream);
+			if (code != NVCV_SUCCESS) break;
+		}
+	}
+	if (code == NVCV_SUCCESS) code = vfg.NvCVImage_Transfer(images[0], &vfg.gpuInput, 1.f, vfg.stream, nullptr);
+	if (code == NVCV_SUCCESS) code = vfg.NvCVImage_Transfer(images[1], &vfg.gpuSecond, 1.f, vfg.stream, nullptr);
+	if (code == NVCV_SUCCESS) code = vfg.NvVFX_SetF32(vfg.effect, "Timestep", timestep);
+	if (code == NVCV_SUCCESS) code = vfg.NvVFX_Run(vfg.effect, 0);
+	if (code == NVCV_SUCCESS) code = vfg.NvCVImage_Transfer(&vfg.gpuOutput, images[2], 1.f, vfg.stream, nullptr);
+	{
+		D3D11InteropLock lock(vfg.d3dMultithread);
+		while (mapped) {
+			const auto result = vfg.NvCVImage_UnmapResource(images[--mapped], vfg.stream);
+			if (code == NVCV_SUCCESS) code = result;
+		}
+	}
+	const auto completed = vfg.CuStreamSynchronize(vfg.stream);
+	if (code != NVCV_SUCCESS || completed != CUDA_SUCCESS) {
+		return fail(L"Maxine Frame Generation processing", code == NVCV_SUCCESS ? -1 : code);
+	}
+	vfg.ReleaseD3DImages();
+	return true;
+#else
+	UNREFERENCED_PARAMETER(first);
+	UNREFERENCED_PARAMETER(second);
+	UNREFERENCED_PARAMETER(output);
+	UNREFERENCED_PARAMETER(timestep);
+	return false;
 #endif
 }
 
@@ -1510,7 +1695,11 @@ bool CNvidiaMaxineVSR::Process(
 		return result;
 	};
 
-	const bool upscaleMode = mode <= 4 || (mode >= 16 && mode <= 19);
+	const bool upscaleMode = mode <= 4 || (mode >= 16 && mode <= 19) || IsMaxineStreamingMode(mode);
+	if (IsMaxineStreamingMode(mode) && !MaxineSupportsStreamingVSR(gpuIndex)) {
+		m_impl->status = L"Streaming VSR requires an NVIDIA Ampere or newer GPU";
+		return Finish(false);
+	}
 	const bool sameSizeMode = mode >= 8 && mode <= 15;
 	if (!pDeviceContext || !pInputTexture || !pOutputTexture || (!upscaleMode && !sameSizeMode)) {
 		m_impl->status = L"Invalid processing parameters";

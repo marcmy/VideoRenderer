@@ -7,6 +7,7 @@
 #include "stdafx.h"
 #include "resource.h"
 #include "RifeSettingsDialog.h"
+#include "NvidiaMaxineVSR.h"
 #include "SettingsDialogTheme.h"
 
 #include <algorithm>
@@ -313,7 +314,7 @@ constexpr SettingsTooltip kRifeTooltips[] = {
 	{IDC_RIFE_HOLD_LONG_GAPS, L"Hold the earlier source frame across gaps of 100 ms or more. Interpolation resumes after the next source frame."},
 	{IDC_RIFE_FLOW_REUSE, L"Estimates motion once per source pair instead of once per generated frame, which is much faster. Motion within a pair becomes a straight line. Coarse still refines each frame; Retime is fastest, but very fast or repetitive motion can jump. Needs 4.25 Lite and Feature reuse."},
 	{IDC_RIFE_GPU_THREADS, L"How many source pairs RIFE can work on at once. More uses more VRAM, and adds little speed once the GPU is fully busy."},
-	{IDC_RIFE_MODEL, L"The AI model. 4.25 Lite is the fastest, and gets the most from Feature reuse. It is the only one with Flow reuse. 4.4 and 4.6 can't use Feature reuse."},
+	{IDC_RIFE_MODEL, L"Select one interpolation model. RIFE 4.25 Lite is the fastest RIFE option and the only one with Flow reuse. Maxine Frame Generation appears for supported Ada and Blackwell GPUs."},
 	{IDC_RIFE_GPU, L"Which NVIDIA GPU runs RIFE. Auto suits a single-GPU system. The number may differ from Task Manager's."},
 	{IDC_RIFE_PROCESSING_RESOLUTION, L"The size RIFE works at. Source resolution keeps all detail. Match displayed size and Custom limit work smaller when they can, trading detail for speed."},
 	{IDC_RIFE_PROCESSING_LIMIT, L"The largest short edge RIFE works at when the processing size is Custom limit, in pixels."},
@@ -457,6 +458,11 @@ void EnableControls(HWND hwnd)
 		EnableWindow(GetDlgItem(hwnd, id), enabled);
 	}
 	const auto model = ComboValue(hwnd, IDC_RIFE_MODEL);
+	if (model == RIFE_MODEL_MAXINE) {
+		for (const int id : {IDC_RIFE_GPU_THREADS, IDC_RIFE_PERFORMANCE_BOOST, IDC_RIFE_PRESERVE_PRECISION}) {
+			EnableWindow(GetDlgItem(hwnd, id), FALSE);
+		}
+	}
 	EnableWindow(GetDlgItem(hwnd, IDC_RIFE_FEATURE_REUSE), enabled
 		&& RifeModelSupportsFeatureReuse(static_cast<int>(model)));
 	const BOOL flowReuseEnabled = enabled && RifeModelSupportsFlowReuse(static_cast<int>(model))
@@ -471,12 +477,30 @@ void EnableControls(HWND hwnd)
 	EnableWindow(GetDlgItem(hwnd, IDC_STATIC_RIFE_PROCESSING_LIMIT), limitEnabled);
 }
 
+void PopulateInterpolationModels(HWND hwnd, int gpu, int model)
+{
+	PopulateCombo(hwnd, IDC_RIFE_MODEL, {
+		{L"RIFE 4.25 Lite", RIFE_MODEL_425_LITE},
+		{L"RIFE 4.4", RIFE_MODEL_44},
+		{L"RIFE 4.6", RIFE_MODEL_46},
+		{L"RIFE 4.15 Lite", RIFE_MODEL_415_LITE},
+	});
+	if (MaxineSupportsFrameGeneration(gpu)) {
+		const auto index = SendDlgItemMessageW(hwnd, IDC_RIFE_MODEL, CB_ADDSTRING, 0,
+			reinterpret_cast<LPARAM>(L"Maxine Frame Generation"));
+		if (index >= 0) SendDlgItemMessageW(hwnd, IDC_RIFE_MODEL, CB_SETITEMDATA, index, RIFE_MODEL_MAXINE);
+	} else if (model == RIFE_MODEL_MAXINE) {
+		model = RIFE_MODEL_425_LITE;
+	}
+	SelectComboValue(hwnd, IDC_RIFE_MODEL, model);
+}
+
 void SetControls(HWND hwnd, const Settings_t& settings)
 {
 	SelectComboValue(hwnd, IDC_RIFE_MODE, settings.iRifeMode);
 	SetDlgItemInt(hwnd, IDC_RIFE_CUSTOM_FPS, settings.iRifeCustomFps, FALSE);
 	SelectComboValue(hwnd, IDC_RIFE_GPU_THREADS, settings.iRifeGpuThreads);
-	SelectComboValue(hwnd, IDC_RIFE_MODEL, settings.iRifeModel);
+	PopulateInterpolationModels(hwnd, settings.iRifeGPU, settings.iRifeModel);
 	SelectComboValue(hwnd, IDC_RIFE_GPU, settings.iRifeGPU);
 	SelectComboValue(hwnd, IDC_RIFE_PROCESSING_RESOLUTION, settings.iRifeProcessingResolution);
 	SetDlgItemInt(hwnd, IDC_RIFE_PROCESSING_LIMIT, settings.iRifeProcessingLimit, FALSE);
@@ -520,12 +544,6 @@ void InitializeDialog(HWND hwnd, const Settings_t& settings)
 	});
 	PopulateCombo(hwnd, IDC_RIFE_GPU_THREADS, {
 		{L"1", 1}, {L"2", 2}, {L"3", 3},
-	});
-	PopulateCombo(hwnd, IDC_RIFE_MODEL, {
-		{L"4.25 Lite", RIFE_MODEL_425_LITE},
-		{L"4.4", RIFE_MODEL_44},
-		{L"4.6", RIFE_MODEL_46},
-		{L"4.15 Lite", RIFE_MODEL_415_LITE},
 	});
 	PopulateCombo(hwnd, IDC_RIFE_GPU, {
 		{L"Auto", RIFE_GPU_Auto},
@@ -593,7 +611,7 @@ bool ReadControls(HWND hwnd, Settings_t& settings)
 	const UINT threshold = GetDlgItemInt(hwnd, IDC_RIFE_SCENE_THRESHOLD, &thresholdValid, FALSE);
 	if (!thresholdValid || threshold > 100) {
 		MessageBoxW(hwnd, L"Enter an image scene threshold from 0 to 100 percent.",
-			L"RIFE frame interpolation settings", MB_OK | MB_ICONERROR);
+			L"Frame interpolation settings", MB_OK | MB_ICONERROR);
 		return false;
 	}
 	settings.iRifeSceneThreshold = static_cast<int>(threshold);
@@ -602,7 +620,7 @@ bool ReadControls(HWND hwnd, Settings_t& settings)
 	if (settings.iRifeMode == RIFE_MODE_Custom
 			&& (!valid || customFps < RIFE_CUSTOM_FPS_MIN || customFps > RIFE_CUSTOM_FPS_MAX)) {
 		MessageBoxW(hwnd, L"Enter a custom RIFE output rate from 24 to 240 fps.",
-			L"RIFE frame interpolation settings", MB_OK | MB_ICONERROR);
+			L"Frame interpolation settings", MB_OK | MB_ICONERROR);
 		return false;
 	}
 	if (valid) {
@@ -611,7 +629,7 @@ bool ReadControls(HWND hwnd, Settings_t& settings)
 	}
 	if (!ValidateRifeRateRules(settings.rifeRules)) {
 		MessageBoxW(hwnd, L"One or more RIFE playback rules are invalid.",
-			L"RIFE frame interpolation settings", MB_OK | MB_ICONERROR);
+			L"Frame interpolation settings", MB_OK | MB_ICONERROR);
 		return false;
 	}
 	return true;
@@ -632,6 +650,14 @@ INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
+		case IDC_RIFE_GPU:
+			if (HIWORD(wParam) == CBN_SELCHANGE) {
+				PopulateInterpolationModels(hwnd, static_cast<int>(ComboValue(hwnd, IDC_RIFE_GPU)),
+					static_cast<int>(ComboValue(hwnd, IDC_RIFE_MODEL)));
+				EnableControls(hwnd);
+				return TRUE;
+			}
+			break;
 		case IDC_RIFE_MODE:
 		case IDC_RIFE_MODEL:
 		case IDC_RIFE_SCENE_DETECTION:
@@ -673,7 +699,7 @@ INT_PTR CALLBACK DialogProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 			if (HIWORD(wParam) == BN_CLICKED) {
 				if (settings->rifeRules.count >= settings->rifeRules.rules.size()) {
 					MessageBoxW(hwnd, L"A maximum of 32 RIFE playback rules is supported.",
-						L"RIFE frame interpolation settings", MB_OK | MB_ICONINFORMATION);
+						L"Frame interpolation settings", MB_OK | MB_ICONINFORMATION);
 					return TRUE;
 				}
 				RifeRateRule rule;
@@ -752,7 +778,7 @@ bool ShowRifeFrameInterpolationSettings(HWND parent, HINSTANCE instance, Setting
 	const INT_PTR result = DialogBoxParamW(instance, MAKEINTRESOURCEW(IDD_FRAMEINTERPOLATION),
 		parent, DialogProc, reinterpret_cast<LPARAM>(&candidate));
 	if (result == -1) {
-		MessageBoxW(parent, L"The RIFE frame interpolation settings window could not be opened.",
+		MessageBoxW(parent, L"The frame interpolation settings window could not be opened.",
 			L"MPC Video Renderer", MB_OK | MB_ICONERROR);
 		return false;
 	}

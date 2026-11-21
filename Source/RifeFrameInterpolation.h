@@ -10,7 +10,9 @@
 #include "RifeCudaOutputApi.h"
 
 #include <atomic>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 
 class RifeCudaOutputLease;
@@ -31,6 +33,8 @@ public:
     CRifeFrameInterpolation& operator=(const CRifeFrameInterpolation&) = delete;
 
     static RifeRuntimeProbeResult Probe(const std::wstring& overrideDirectory = {});
+    using FrameGenerator = std::function<bool(ID3D11Texture2D*, ID3D11Texture2D*, ID3D11Texture2D*, float)>;
+    bool InitializeFrameGenerator(FrameGenerator generator, std::wstring status);
 
     bool Initialize(
         const std::wstring& overrideDirectory,
@@ -62,7 +66,7 @@ public:
 
     void Reset() noexcept;
 
-    [[nodiscard]] bool IsReady() const noexcept { return m_module && m_handle && m_interpolate; }
+    [[nodiscard]] bool IsReady() const noexcept { return m_generateFrame || (m_module && m_handle && m_interpolate); }
     [[nodiscard]] const std::wstring& GetStatus() const noexcept { return m_status; }
     [[nodiscard]] const std::wstring& GetModulePath() const noexcept { return m_modulePath; }
 
@@ -83,6 +87,8 @@ private:
         bool* abiCompatibleRuntime = nullptr, bool highPrecision = false, bool featureReuse = false, uint32_t flowReuseFlags = 0);
 
     HMODULE m_module = nullptr;
+    FrameGenerator m_generateFrame;
+    std::mutex m_generationMutex;
     void* m_handle = nullptr;
     MpcvrRifeInterpolateFn m_interpolate = nullptr;
     MpcvrRifeDrainContextFn m_drainContext = nullptr;

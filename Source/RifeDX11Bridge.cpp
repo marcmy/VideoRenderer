@@ -321,7 +321,8 @@ bool CDX11VideoProcessor::TryRifeVideoProcessorUpscale(Tex2D_t& input,
 DXGI_FORMAT CDX11VideoProcessor::GetRifeSurfaceFormat() const
 {
     const auto inputFormat = m_D3D11VP.IsReady() ? m_D3D11OutputFmt : m_InternalTexFmt;
-    return m_pFilter->m_Sets.bRifePreservePrecision && m_srcParams.CDepth > 8
+    return m_pFilter->m_Sets.iRifeModel != RIFE_MODEL_MAXINE
+        && m_pFilter->m_Sets.bRifePreservePrecision && m_srcParams.CDepth > 8
         && inputFormat != DXGI_FORMAT_B8G8R8A8_UNORM
         ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM;
 }
