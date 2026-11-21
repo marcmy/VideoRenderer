@@ -2,6 +2,12 @@
 #include <iostream>
 #include "../../Source/RifeSettingsDialog.cpp"
 
+// The dialog fixture loads only resources. Simulate one supported GPU without CUDA.
+bool MaxineSupportsFrameGeneration(int gpuIndex)
+{
+    return gpuIndex == 0;
+}
+
 int wmain(int argc, wchar_t** argv)
 {
     assert(argc == 2);
@@ -41,6 +47,20 @@ int wmain(int argc, wchar_t** argv)
     const HWND dialog = CreateDialogIndirectParamW(module, resourceTemplate, nullptr, DialogProc,
         reinterpret_cast<LPARAM>(&settings));
     assert(dialog && !IsWindowVisible(dialog));
+    assert(SendDlgItemMessageW(dialog, IDC_RIFE_MODEL, CB_GETCOUNT, 0, 0) == 4);
+    SelectComboValue(dialog, IDC_RIFE_GPU, 0);
+    DialogProc(dialog, WM_COMMAND, MAKEWPARAM(IDC_RIFE_GPU, CBN_SELCHANGE), 0);
+    assert(SendDlgItemMessageW(dialog, IDC_RIFE_MODEL, CB_GETCOUNT, 0, 0) == 5);
+    SelectComboValue(dialog, IDC_RIFE_MODEL, RIFE_MODEL_MAXINE);
+    EnableControls(dialog);
+    assert(!IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_GPU_THREADS)));
+    assert(!IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_PRESERVE_PRECISION)));
+    assert(!IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_FLOW_REUSE)));
+    SelectComboValue(dialog, IDC_RIFE_GPU, RIFE_GPU_Auto);
+    DialogProc(dialog, WM_COMMAND, MAKEWPARAM(IDC_RIFE_GPU, CBN_SELCHANGE), 0);
+    assert(SendDlgItemMessageW(dialog, IDC_RIFE_MODEL, CB_GETCOUNT, 0, 0) == 4);
+    assert(ComboValue(dialog, IDC_RIFE_MODEL) == RIFE_MODEL_425_LITE);
+    assert(IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_PRESERVE_PRECISION)));
     assert(IsDlgButtonChecked(dialog, IDC_RIFE_OUTPUT_SHARPEN) == BST_CHECKED);
     assert(IsWindowEnabled(GetDlgItem(dialog, IDC_RIFE_OUTPUT_SHARPEN)));
     assert(IsDlgButtonChecked(dialog, IDC_RIFE_HOLD_LONG_GAPS) == BST_CHECKED);
