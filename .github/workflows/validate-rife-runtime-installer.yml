@@ -358,6 +358,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "$hostExe first fixture install failed with $LASTEXITCODE" }
 
             Set-Content -LiteralPath (Join-Path $installRoot 'cache\fixture.plan') -Value 'cached engine' -Encoding ASCII
+            $compatiblePlan = Join-Path $installRoot 'cache\rife46_0123456789abcdef_abi2_trt11_5_cc75_fixture.plan'
+            Set-Content -LiteralPath $compatiblePlan -Value 'compatible engine' -Encoding ASCII
             $before = Get-TreeHashes -Path $installRoot
 
             & $hostExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script `
@@ -373,6 +375,8 @@ jobs:
               throw "$hostExe repeated install changed installed hashes or lost the compatible cache."
             }
 
+            $stalePlan = Join-Path $installRoot 'cache\rife46_0123456789abcdef_abi2_trt11_4_cc75_fixture.plan'
+            Set-Content -LiteralPath $stalePlan -Value 'old engine' -Encoding ASCII
             $rollbackBefore = Get-TreeHashes -Path $installRoot
             $failureOutput = & $hostExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script `
               -RuntimeBundleRoot $bundle `
@@ -391,6 +395,16 @@ jobs:
             $rollbackAfter = Get-TreeHashes -Path $installRoot
             if (@(Compare-Object $rollbackBefore $rollbackAfter).Count -ne 0) {
               throw "$hostExe rollback did not restore the original installed tree."
+            }
+            & $hostExe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script `
+              -RuntimeBundleRoot $bundle `
+              -ModelArchive $modelArchive `
+              -InstallRoot $installRoot `
+              -GpuInventoryJson $inventoryPath `
+              -NoPause
+            if ($LASTEXITCODE -ne 0) { throw "$hostExe cache cleanup install failed with $LASTEXITCODE" }
+            if (@(Compare-Object $before (Get-TreeHashes -Path $installRoot)).Count -ne 0) {
+              throw "$hostExe successful cleanup did not remove only the incompatible engine plan."
             }
             $global:LASTEXITCODE = 0
           }

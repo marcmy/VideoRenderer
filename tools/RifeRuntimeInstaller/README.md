@@ -85,7 +85,7 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `
   -NoPause
 ```
 
-The installer verifies archive/model hashes before moving the existing install. Existing TensorRT engine plans are preserved across runtime upgrades because every cache filename is isolated by TensorRT major/minor, runtime ABI, model SHA-256, GPU, dimensions, and builder mode. Incompatible plans remain available for rollback but cannot be selected by a different runtime key. Upgrading from TensorRT 11.2 to 11.3 therefore requires a one-time 11.3 engine build for each selected model and builder mode. Any post-swap preflight failure removes the failed tree and restores the previous install.
+The installer verifies archive and model hashes before moving the existing install. It carries forward plans for the incoming TensorRT major/minor version and preserves unrecognized plan names. Recognized RIFE plans for other TensorRT versions are omitted from the new cache. If preflight fails, rollback restores the original install with its complete cache. After a successful upgrade, the first playback for each configuration without a matching plan builds a new one.
 
 `Test-MPCVRRifePreflight.ps1` checks the common runtime DLLs, every builder resource required by the detected GPUs, the installed model hash, cache writability, and the native `MpcvrRifeGetAbiVersion` export. The expected ABI is 2.
 
