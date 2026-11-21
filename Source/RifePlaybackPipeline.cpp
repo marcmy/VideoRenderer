@@ -4,6 +4,7 @@
 #include "RifePrecision.h"
 
 #include "DX11VideoProcessor.h"
+#include "NvidiaMaxineVSR.h"
 #include "NvidiaSceneChangeDetector.h"
 #include "RifeFrameInterpolation.h"
 #include "RifeInferenceTiming.h"
@@ -1386,12 +1387,25 @@ struct CRifePlaybackPipeline::Impl
             ? UINT32_MAX : static_cast<uint32_t>(key.gpu);
         std::thread([state, device, width, height, gpuIndex, key, model, cache]() {
             auto runtime = std::make_shared<CRifeFrameInterpolation>();
-            const bool ok = key.model == RIFE_MODEL_MAXINE ? runtime->InitializeMaxine(device, key.gpu) : runtime->Initialize(
-                L"", device, width, height, key.contentWidth, key.contentHeight, gpuIndex,
-                static_cast<uint32_t>(key.contexts), key.performanceBoost,
-                model.wstring(), cache.wstring(), key.format == DXGI_FORMAT_R16G16B16A16_FLOAT, key.featureReuse,
-                key.flowReuse == RIFE_FLOW_REUSE_Coarse ? MPCVR_RIFE_CREATE_FLOW_REUSE_COARSE
-                    : key.flowReuse == RIFE_FLOW_REUSE_Retime ? MPCVR_RIFE_CREATE_FLOW_REUSE_RETIME : 0u);
+            bool ok;
+            if (key.model == RIFE_MODEL_MAXINE) {
+                const auto backend = std::make_shared<CNvidiaMaxineVSR>();
+                CRifeFrameInterpolation::FrameGenerator generate;
+                if (backend->InitializeFrameGeneration(device, key.gpu)) {
+                    generate = [backend](ID3D11Texture2D* first, ID3D11Texture2D* second,
+                            ID3D11Texture2D* output, float timestep) {
+                        return backend->GenerateFrame(first, second, output, timestep);
+                    };
+                }
+                ok = runtime->InitializeFrameGenerator(std::move(generate), backend->GetStatus());
+            } else {
+                ok = runtime->Initialize(
+                    L"", device, width, height, key.contentWidth, key.contentHeight, gpuIndex,
+                    static_cast<uint32_t>(key.contexts), key.performanceBoost,
+                    model.wstring(), cache.wstring(), key.format == DXGI_FORMAT_R16G16B16A16_FLOAT, key.featureReuse,
+                    key.flowReuse == RIFE_FLOW_REUSE_Coarse ? MPCVR_RIFE_CREATE_FLOW_REUSE_COARSE
+                        : key.flowReuse == RIFE_FLOW_REUSE_Retime ? MPCVR_RIFE_CREATE_FLOW_REUSE_RETIME : 0u);
+            }
             device->Release();
 
             {

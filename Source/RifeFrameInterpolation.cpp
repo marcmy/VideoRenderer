@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <format>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -367,14 +368,12 @@ bool CRifeFrameInterpolation::LoadAndCreate(
     return true;
 }
 
-bool CRifeFrameInterpolation::InitializeMaxine(ID3D11Device* device, int gpuIndex)
+bool CRifeFrameInterpolation::InitializeFrameGenerator(FrameGenerator generator, std::wstring status)
 {
     Reset();
-    auto backend = std::make_unique<CNvidiaMaxineVSR>();
-    const bool ready = backend->InitializeFrameGeneration(device, gpuIndex);
-    m_status = backend->GetStatus();
-    if (ready) m_maxine = std::move(backend);
-    return ready;
+    m_status = std::move(status);
+    m_generateFrame = std::move(generator);
+    return static_cast<bool>(m_generateFrame);
 }
 
 bool CRifeFrameInterpolation::Interpolate(
@@ -392,10 +391,10 @@ bool CRifeFrameInterpolation::Interpolate(
     }
 
     stats = {};
-    if (m_maxine) {
+    if (m_generateFrame) {
         const auto start = std::chrono::steady_clock::now();
-        std::lock_guard lock(m_maxineMutex);
-        const bool ok = m_maxine->GenerateFrame(first, second, output, timestep);
+        std::lock_guard lock(m_generationMutex);
+        const bool ok = m_generateFrame(first, second, output, timestep);
         stats.inferenceMs = stats.totalRuntimeMs = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - start).count();
         return ok;
@@ -432,7 +431,7 @@ void CRifeFrameInterpolation::Reset() noexcept
     // A normal model switch creates another runtime. Explicit Reset on the
     // same owner must also leave any queued GPU pixels and exports alive.
     if (m_liveCudaLeases.load(std::memory_order_acquire)) return;
-    m_maxine.reset();
+    m_generateFrame = {};
     if (m_handle && m_destroy) {
         m_destroy(m_handle);
     }
