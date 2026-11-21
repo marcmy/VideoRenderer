@@ -1,4 +1,4 @@
-﻿/*
+/*
  * (C) 2018-2026 see Authors.txt
  *
  * This file is part of MPC-BE.
@@ -263,7 +263,7 @@ bool ReadMaxineDialog(HWND hwnd, Settings_t& settings)
 	const UINT bitrate = GetDlgItemInt(hwnd, IDC_MAXINE_AUTO_BITRATE, &valid, FALSE);
 	if (!valid || bitrate < MAXINE_AUTO_BITRATE_MIN || bitrate > MAXINE_AUTO_BITRATE_MAX) {
 		MessageBoxW(hwnd, L"Enter an automatic high-bitrate threshold from 1 to 1000 Mbps.",
-			L"NVIDIA Maxine settings", MB_OK | MB_ICONERROR);
+			L"AI upscaling", MB_OK | MB_ICONERROR);
 		return false;
 	}
 	settings.iMaxineAutoBitrate = static_cast<int>(bitrate);
@@ -271,7 +271,7 @@ bool ReadMaxineDialog(HWND hwnd, Settings_t& settings)
 	const UINT amount = GetDlgItemInt(hwnd, IDC_MAXINE_AMOUNT, &valid, FALSE);
 	if (!valid || amount > 100) {
 		MessageBoxW(hwnd, L"Enter an AI amount from 0 to 100 percent.",
-			L"NVIDIA Maxine settings", MB_OK | MB_ICONERROR);
+			L"AI upscaling", MB_OK | MB_ICONERROR);
 		return false;
 	}
 	settings.iMaxineAmount = static_cast<int>(amount);
@@ -279,13 +279,13 @@ bool ReadMaxineDialog(HWND hwnd, Settings_t& settings)
 	if (settings.iMaxineOperation == MAXINE_OPERATION_Denoise
 			&& settings.iMaxineDenoise == MAXINE_FILTER_Off) {
 		MessageBoxW(hwnd, L"Choose a denoise strength for Denoise-only operation.",
-			L"NVIDIA Maxine settings", MB_OK | MB_ICONERROR);
+			L"AI upscaling", MB_OK | MB_ICONERROR);
 		return false;
 	}
 	if (settings.iMaxineOperation == MAXINE_OPERATION_Deblur
 			&& settings.iMaxineDeblur == MAXINE_FILTER_Off) {
 		MessageBoxW(hwnd, L"Choose a deblur strength for Deblur-only operation.",
-			L"NVIDIA Maxine settings", MB_OK | MB_ICONERROR);
+			L"AI upscaling", MB_OK | MB_ICONERROR);
 		return false;
 	}
 	return true;
@@ -485,7 +485,7 @@ bool CVRMainPPage::ShowMaxineSettings()
 	const INT_PTR result = DialogBoxParamW(g_hInst, MAKEINTRESOURCEW(IDD_MAXINESETTINGS),
 		m_hWnd, MaxineSettingsDlgProc, reinterpret_cast<LPARAM>(&candidate));
 	if (result == -1) {
-		MessageBoxW(L"The NVIDIA Maxine settings window could not be opened.", L"MPC Video Renderer",
+		MessageBoxW(L"The AI upscaling window could not be opened.", L"MPC Video Renderer",
 			MB_OK | MB_ICONERROR);
 		return false;
 	}
@@ -690,7 +690,7 @@ HRESULT CVRMainPPage::OnActivate()
 		"more correctly in some rare situations.");
 
 	AddHint(IDC_BUTTON_MAXINE,
-		L"Opens the dedicated NVIDIA Maxine settings window.\n"
+		L"Opens the AI upscaling window.\n"
 		L"Maxine is available in the 64-bit Direct3D 11 renderer.");
 
 	AddHint(IDC_BUTTON_HOTKEYS,

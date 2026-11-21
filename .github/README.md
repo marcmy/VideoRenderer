@@ -70,7 +70,7 @@ Start playing a video, then use either route:
 - **View > Renderer Settings**
 - right-click the video, then open **Filters > MPC Video Renderer**
 
-The main property page contains the normal MPC Video Renderer controls. Click **NVIDIA Maxine settings...** in the **DXVA2 and D3D11 video processor** section to open the dedicated Maxine panel.
+The main property page contains the normal MPC Video Renderer controls. Click **AI upscaling...** in the **DXVA2 and D3D11 video processor** section to open the dedicated Maxine panel.
 
 ## Recommended starting configuration
 
@@ -92,7 +92,7 @@ These settings are a safe starting point for normal SDR video:
 
 After applying the settings, play a video and press **Ctrl+J**. The renderer statistics should show the Maxine operation, selected mode, processing size, and loaded runtime path.
 
-## NVIDIA Maxine settings explained
+## AI upscaling settings explained
 
 ### Operation
 
@@ -339,7 +339,7 @@ The manual ZIP does not perform the complete setup and does not install the Maxi
 
 ## Troubleshooting
 
-### The NVIDIA Maxine settings button is missing
+### The AI upscaling button is missing
 
 Confirm that the player is actually loading this fork's renderer. Open **View > Renderer Settings**, then check the Information tab or Ctrl+J overlay. A normal upstream renderer will not contain this fork's Maxine panel.
 
