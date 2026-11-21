@@ -55,13 +55,13 @@ function Assert-Manifest {
     if ([int]$Manifest.schemaVersion -ne 1) {
         throw "runtime-manifest.json has unsupported schemaVersion '$($Manifest.schemaVersion)'"
     }
-    if ([string]$Manifest.cudaVersion -ne '13.4.1') {
+    if ([string]$Manifest.cudaVersion -ne '13.5.0') {
         throw "runtime-manifest.json has unexpected cudaVersion '$($Manifest.cudaVersion)'"
     }
-    if ([string]$Manifest.cudaRuntimeVersion -ne '13.4.49') {
+    if ([string]$Manifest.cudaRuntimeVersion -ne '13.5.37') {
         throw "runtime-manifest.json has unexpected cudaRuntimeVersion '$($Manifest.cudaRuntimeVersion)'"
     }
-    if ([string]$Manifest.tensorRtVersion -ne '11.4.0.106') {
+    if ([string]$Manifest.tensorRtVersion -ne '11.5.0.63') {
         throw "runtime-manifest.json has unexpected tensorRtVersion '$($Manifest.tensorRtVersion)'"
     }
     if ([int]$Manifest.runtimeAbi -ne 2) {

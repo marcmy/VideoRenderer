@@ -19,16 +19,16 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 30
     env:
-      CUDA_VERSION: 13.4.1
-      CUDA_COMPILER_VERSION: 13.4.59
-      CUDA_RUNTIME_VERSION: 13.4.49
-      TENSORRT_VERSION: 11.4.0.106
+      CUDA_VERSION: 13.5.0
+      CUDA_COMPILER_VERSION: 13.5.37
+      CUDA_RUNTIME_VERSION: 13.5.37
+      TENSORRT_VERSION: 11.5.0.63
       TENSORRT_SLA_SHA256: eea91074c3bb4db31015e9c4bece1a1ff7db3ca59bdc3ad0d5b3c344aeb5cba4
       CUDA_LICENSE_SHA256: e2c71babfd18a8e69542dd7e9ca018f9caa438094001a58e6bc4d8c999bf0d07
       NVIDIA_DOWNLOAD_CACHE: ${{ github.workspace }}\_rife-download-cache
-      CUDA_ROOT: ${{ github.workspace }}\_rife-deps\cuda-13.4
-      TENSORRT_ARCHIVE: ${{ github.workspace }}\_rife-download-cache\TensorRT-11.4.0.106.zip
-      TENSORRT_EXPECTED_SHA256: b6fd86301ad803492adf7a06de29ce45e3968d29637a1437d0fb0994f412c980
+      CUDA_ROOT: ${{ github.workspace }}\_rife-deps\cuda-13.5
+      TENSORRT_ARCHIVE: ${{ github.workspace }}\_rife-download-cache\TensorRT-11.5.0.63.zip
+      TENSORRT_EXPECTED_SHA256: 802faa3ca9ca15715b41b5057b8c85a906a26515f64eed410b596b376e2fa9da
       TENSORRT_EXTRACT: ${{ github.workspace }}\_rife-deps\tensorrt
       BUILD_DIR: ${{ github.workspace }}\_rife-runtime-build
       PACKAGE_DIR: ${{ github.workspace }}\_rife-runtime-package
@@ -47,7 +47,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ github.workspace }}\_rife-download-cache
-          key: rife-nvidia-sdk-windows-cuda-13.4.1-tensorrt-11.4.0.106-${{ github.repository }}-${{ github.ref }}-v1
+          key: rife-nvidia-sdk-windows-cuda-13.5.0-tensorrt-11.5.0.63-${{ github.repository }}-${{ github.ref }}-v1
 
       - name: Enter Visual Studio x64 developer shell
         shell: pwsh
@@ -64,7 +64,7 @@ jobs:
           cmake --version
           ninja --version
 
-      - name: Download pinned CUDA 13.4.1 build components
+      - name: Download pinned CUDA 13.5.0 build components
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -98,20 +98,20 @@ jobs:
           }
 
           Add-CudaArchive 'cuda_nvcc' `
-            'cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-13.4.59-archive.zip' `
-            '06a4fe6ec543030c5e5a7b85493cda90612015d9fff2a54ed0227162c937ea46'
+            'cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-13.5.37-archive.zip' `
+            'daf9ea2304917ea6426be5fbe0e86c34cccc07c4f593cbc9070da54a8f7f4b27'
           Add-CudaArchive 'cuda_crt' `
-            'cuda_crt/windows-x86_64/cuda_crt-windows-x86_64-13.4.59-archive.zip' `
-            'f969a0e3b086a48f940563cd1b965cb5197fd9540c79cc952b1abfa479f9ede7'
+            'cuda_crt/windows-x86_64/cuda_crt-windows-x86_64-13.5.37-archive.zip' `
+            'acf9730a9731f08fab5719684ed3e64f16cb592571c700bfa342fe32d3ca2047'
           Add-CudaArchive 'libnvvm' `
-            'libnvvm/windows-x86_64/libnvvm-windows-x86_64-13.4.59-archive.zip' `
-            'a7a07bcc21cc05bce83eedebcbcd9b9f5418c58316b0fa28a57cb2c548b29841'
+            'libnvvm/windows-x86_64/libnvvm-windows-x86_64-13.5.37-archive.zip' `
+            '0cb16fa041acd156b3654b66f182f65373a4ebfd4c2353ce7303f4d1b1eb88b2'
           Add-CudaArchive 'cuda_cudart' `
-            'cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-13.4.49-archive.zip' `
-            'e6663f3d3e8949eedc2d5ab92c7c5b9fa3f2a222086d91c42bfc5a38bf2b0225'
+            'cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-13.5.37-archive.zip' `
+            'ef9747b13bd2c2c199a5f2756b56c94d0b5acf04556ce95ef4649122ee9b752a'
           Add-CudaArchive 'cuda_cccl' `
-            'cccl/windows-x86_64/cccl-windows-x86_64-13.3.4.2.1-archive.zip' `
-            'ea3ebdd98d4d98819cc26b66bc5a0931004ed35ff18eea8b93e0bd2c8bfa5d7c'
+            'cccl/windows-x86_64/cccl-windows-x86_64-13.3.5.0.6-archive.zip' `
+            '33b31a28db58aff9bd0a60a53e8424086b65da0684dade8f3c81ff2ff6f6a563'
 
           $nvcc = Join-Path $env:CUDA_ROOT 'bin\nvcc.exe'
           if (-not (Test-Path $nvcc)) { throw "nvcc not found at $nvcc" }
@@ -119,12 +119,12 @@ jobs:
           "CUDAToolkit_ROOT=$env:CUDA_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "$env:CUDA_ROOT\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
-      - name: Download TensorRT 11.4.0.106 for CUDA 13.4
+      - name: Download TensorRT 11.5.0.63 for CUDA 13.5
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path $env:NVIDIA_DOWNLOAD_CACHE | Out-Null
-          $url = 'https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/11.4.0/zip/TensorRT-Enterprise-11.4.0.106-Windows-amd64-cuda-13.4-Release-external.zip'
+          $url = 'https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/11.5.0/zip/TensorRT-Enterprise-11.5.0.63-Windows-amd64-cuda-13.5-Release-external.zip'
           if (-not (Test-Path -LiteralPath $env:TENSORRT_ARCHIVE -PathType Leaf)) {
               & curl.exe --fail --location --retry 3 --output $env:TENSORRT_ARCHIVE $url
               if ($LASTEXITCODE -ne 0) { throw 'TensorRT download failed' }
@@ -145,7 +145,7 @@ jobs:
           if (-not $root) { throw 'TensorRT root directory was not found after extraction' }
           "TENSORRT_ROOT=$($root.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "TENSORRT_DOWNLOAD_SHA256=$actual" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Get-ChildItem (Join-Path $root.FullName 'lib') -Filter 'nvinfer*.dll' | Select-Object -First 8 -ExpandProperty Name
+          Get-ChildItem (Join-Path $root.FullName 'bin') -Filter 'nvinfer*.dll' | Select-Object -First 8 -ExpandProperty Name
 
       - name: Configure and build runtime
         shell: pwsh

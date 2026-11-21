@@ -312,10 +312,16 @@ try {
     $installedManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $stagedManifestPath -Encoding UTF8
 
     $existingCache = Join-Path $InstallRoot 'cache'
+    $stalePlanCount = 0
     if (Test-Path -LiteralPath $existingCache -PathType Container) {
-        Get-ChildItem -LiteralPath $existingCache -Filter '*.plan' -File -ErrorAction SilentlyContinue |
-            Copy-Item -Destination $stagedCache -Force
-        Write-Host 'Preserved previous TensorRT engine plans for rollback. A different TensorRT major/minor version must build its own version-keyed plans.'
+        $currentTensorRtKey = $tensorRtMajorMinor.Replace('.', '_')
+        foreach ($plan in Get-ChildItem -LiteralPath $existingCache -Filter '*.plan' -File -ErrorAction SilentlyContinue) {
+            if ($plan.Name -match '^rife46_[0-9a-f]{16}_abi\d+_trt(\d+_\d+)_cc\d+_.+\.plan$' -and $Matches[1] -ne $currentTensorRtKey) {
+                $stalePlanCount++
+                continue
+            }
+            Copy-Item -LiteralPath $plan.FullName -Destination $stagedCache -Force
+        }
     }
 
     if (Test-Path -LiteralPath $backupRoot) {
@@ -346,6 +352,9 @@ try {
 
     Write-Host
     Write-Host 'MPC-VR RIFE TensorRT runtime installed successfully.' -ForegroundColor Green
+    if ($stalePlanCount -gt 0) {
+        Write-Host "Removed $stalePlanCount cached engine plan(s) for other TensorRT versions."
+    }
     Write-Host "Install root: $InstallRoot"
     Write-Host ('Architecture packs: {0}' -f ($architectureKeys -join ', '))
 }

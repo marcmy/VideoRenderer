@@ -387,7 +387,7 @@ if ($env:MPCVR_TEST_FAIL_PREFLIGHT) { throw 'fixture preflight failure' }
     function New-RuntimeBundle($Name,[string[]]$Archives) {
         $bundle=Join-Path $split $Name; New-Item -ItemType Directory $bundle | Out-Null
         foreach ($archive in $Archives) { $target=$archive.Split('=',2); Copy-Item $target[1] (Join-Path $bundle $target[0]) }
-        @{schemaVersion=1;runtimeAbi=2;tensorRtVersion='11.4.0.106';cudaVersion='13.4.1';cudaRuntimeVersion='13.4.49'
+        @{schemaVersion=1;runtimeAbi=2;tensorRtVersion='11.5.0.63';cudaVersion='13.5.0';cudaRuntimeVersion='13.5.37'
           architectures=@(@{computeCapability='7.5';key='sm75';builderResource='nvinfer_builder_resource_sm75_11.dll'})} | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $bundle 'runtime-manifest.json')
         Get-ChildItem $bundle -Filter '*.zip' | ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),$_.Name } | Set-Content (Join-Path $bundle 'SHA256SUMS.txt') -Encoding ASCII
         return $bundle
